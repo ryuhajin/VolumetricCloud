@@ -1,0 +1,23 @@
+# ---- 빌드 산출물 ----
+build/
+out/
+bin/
+lib/
+
+# ---- Visual Studio / CMake 생성물 ----
+.vs/
+*.user
+*.suo
+*.sln           # CMake가 생성하므로 추적하지 않음
+*.vcxproj
+*.vcxproj.filters
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# ---- 컴파일된 셰이더 캐시 ----
+*.cso
+*.pdb
+*.ilk
+*.exe
+*.obj

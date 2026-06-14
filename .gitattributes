@@ -1,0 +1,17 @@
+# 기본: 텍스트 자동 정규화
+* text=auto
+
+# Windows 줄바꿈 유지
+*.sln       text eol=crlf
+*.vcxproj   text eol=crlf
+
+# 소스/셰이더는 LF
+*.cpp       text eol=lf
+*.h         text eol=lf
+*.hlsl      text eol=lf
+*.md        text eol=lf
+*.cmake     text eol=lf
+CMakeLists.txt text eol=lf
+
+# GitHub linguist: HLSL을 셰이더로 인식하게 힌트
+*.hlsl linguist-language=HLSL
