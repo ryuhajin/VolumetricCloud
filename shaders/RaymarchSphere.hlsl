@@ -13,6 +13,8 @@
 //    (자세한 수식은 doc/RAYMARCHING.md 참고)
 // ============================================================================
 
+#include "VolumeIntersections.hlsli"
+
 cbuffer cbCamera : register(b0)
 {
     float4x4 invViewProj;  // 역 뷰-투영 행렬 (C++에서 transpose 후 업로드)
@@ -45,24 +47,6 @@ float3 SkyColor(float3 rd)
 
     // 레이가 위를 향할수록 zenith 색에 가까워짐
     return lerp(horizon, zenith, t);
-}
-
-// ---- ray-box(AABB) 교차: slab 방식 ----
-//  교차하면 true, t0(진입)/t1(탈출) 출력. t0 <= t1.
-bool RayBox(float3 ro, float3 rd, float3 boxMin, float3 boxMax,
-            out float t0, out float t1)
-{
-    float3 invRd = 1.0 / rd;
-    float3 tA = (boxMin - ro) * invRd;
-    float3 tB = (boxMax - ro) * invRd;
-
-    float3 tNear = min(tA, tB);
-    float3 tFar  = max(tA, tB);
-
-    t0 = max(max(tNear.x, tNear.y), tNear.z);
-    t1 = min(min(tFar.x,  tFar.y),  tFar.z);
-
-    return t1 > max(t0, 0.0);
 }
 
 float4 main(VSOut input) : SV_TARGET

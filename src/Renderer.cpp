@@ -52,6 +52,7 @@ bool Renderer::Init(HWND hwnd, int width, int height)
     m_shaderDir = ResolveShaderDir();
     m_vsPath = m_shaderDir + L"Fullscreen.hlsl";
     m_psPath = m_shaderDir + L"RaymarchSphere.hlsl";
+    m_intersectionsPath = m_shaderDir + L"VolumeIntersections.hlsli";
 
     // ---- 스왑체인 + 디바이스 + 컨텍스트 생성 ----
     DXGI_SWAP_CHAIN_DESC scd = {};
@@ -171,35 +172,43 @@ bool Renderer::CreateShaders(bool showErrors)
 }
 
 bool Renderer::GetShaderWriteTimes(std::filesystem::file_time_type& vsTime,
-                                   std::filesystem::file_time_type& psTime) const
+                                   std::filesystem::file_time_type& psTime,
+                                   std::filesystem::file_time_type& intersectionsTime) const
 {
     std::error_code ec;
     vsTime = std::filesystem::last_write_time(m_vsPath, ec);
     if (ec) return false;
 
     psTime = std::filesystem::last_write_time(m_psPath, ec);
+    if (ec) return false;
+
+    intersectionsTime = std::filesystem::last_write_time(m_intersectionsPath, ec);
     return !ec;
 }
 
 void Renderer::UpdateShaderWriteTimes()
 {
-    GetShaderWriteTimes(m_vsWriteTime, m_psWriteTime);
+    GetShaderWriteTimes(m_vsWriteTime, m_psWriteTime, m_intersectionsWriteTime);
 }
 
 void Renderer::CheckShaderHotReload()
 {
     std::filesystem::file_time_type vsTime;
     std::filesystem::file_time_type psTime;
-    if (!GetShaderWriteTimes(vsTime, psTime))
+    std::filesystem::file_time_type intersectionsTime;
+    if (!GetShaderWriteTimes(vsTime, psTime, intersectionsTime))
         return;
 
-    if (vsTime == m_vsWriteTime && psTime == m_psWriteTime)
+    if (vsTime == m_vsWriteTime &&
+        psTime == m_psWriteTime &&
+        intersectionsTime == m_intersectionsWriteTime)
         return;
 
     // 실패해도 기존 셰이더는 유지한다. 타임스탬프는 갱신해 같은 오류를 매 프레임 반복하지 않는다.
     CreateShaders(false);
     m_vsWriteTime = vsTime;
     m_psWriteTime = psTime;
+    m_intersectionsWriteTime = intersectionsTime;
 }
 
 void Renderer::Resize(int width, int height)
