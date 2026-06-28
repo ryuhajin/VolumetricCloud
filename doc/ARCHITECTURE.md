@@ -24,8 +24,8 @@
 └───────────────────────┬────────────────────────┘
                         │ 파이프라인
                         ▼
-       Fullscreen.hlsl (VS)  →  RaymarchSphere.hlsl (PS)
-                               ↳ VolumeIntersections.hlsli
+       Fullscreen.hlsl (VS)  →  VolumetricClouds.hlsl (PS)
+                               ↳ Ray.hlsli
        화면 덮는 삼각형         픽셀마다 레이마칭 → 색
 ```
 
@@ -38,8 +38,8 @@
 | 카메라 | `src/Camera.*` | yaw/pitch/distance 궤도 → view·proj·invViewProj, 카메라 위치 |
 | 렌더러 | `src/Renderer.*` | D3D11 초기화, HLSL 런타임 컴파일/핫-리로드, 상수버퍼 갱신, 드로우/Present |
 | VS | `shaders/Fullscreen.hlsl` | `SV_VertexID`로 풀스크린 삼각형 생성, uv 전달 |
-| PS | `shaders/RaymarchSphere.hlsl` | uv→레이, ray-box(AABB) 교차, 밀도 적분, 합성 |
-| HLSL include | `shaders/VolumeIntersections.hlsli` | `RaySphere`, `RayBox` 등 볼륨 교차 함수 보관 |
+| PS | `shaders/VolumetricClouds.hlsl` | uv→레이, ray-box(AABB) 교차, 밀도 적분, 합성 |
+| HLSL include | `shaders/Ray.hlsli` | `RaySphere`, `RayBox` 등 레이 교차 함수 보관 |
 
 ## 3. 렌더 파이프라인 (한 프레임)
 
@@ -67,7 +67,7 @@ HLSL은 16바이트 단위로 패킹되므로 순서/패딩에 주의하세요. 
 | `volumeHalfSize` | float3 | 박스 볼륨 절반 크기 |
 | `_pad` | float | 16바이트 정렬 패딩 |
 
-> **주의:** 이 구조를 바꾸면 `Renderer.h`의 `CameraCB`와 `RaymarchSphere.hlsl`의
+> **주의:** 이 구조를 바꾸면 `Renderer.h`의 `CameraCB`와 `VolumetricClouds.hlsl`의
 > `cbCamera`를 **동시에** 수정하고, 위 표도 갱신하세요.
 
 ## 5. 셰이더 컴파일 전략
@@ -75,7 +75,7 @@ HLSL은 16바이트 단위로 패킹되므로 순서/패딩에 주의하세요. 
 - 셰이더는 **런타임에** `D3DCompileFromFile`로 컴파일합니다 (오프라인 .cso 아님).
 - 개발 중에는 CMake가 정의한 소스 트리 `shaders/`를 우선 읽고, 없으면 exe 옆 `shaders/`로 폴백합니다.
 - `shaders/` 폴더 전체를 복사하므로 `.hlsli` include 파일도 실행 파일 옆에 함께 배치됩니다.
-- `Renderer::Render`는 `Fullscreen.hlsl`, `RaymarchSphere.hlsl`, `VolumeIntersections.hlsli`의 수정 시각을
+- `Renderer::Render`는 `Fullscreen.hlsl`, `VolumetricClouds.hlsl`, `Ray.hlsli`의 수정 시각을
   매 프레임 확인합니다.
   변경이 있으면 실행 중 자동 재컴파일하고, 성공한 경우에만 기존 VS/PS를 교체합니다.
 - 초기 컴파일 실패 시에는 MessageBox로 에러를 표시하고 시작을 중단합니다. 핫-리로드 중 컴파일 실패 시에는

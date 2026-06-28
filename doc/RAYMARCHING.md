@@ -1,6 +1,6 @@
 # 레이마칭 (Ray Marching) 이해하기
 
-이 문서는 `RaymarchSphere.hlsl`과 `VolumeIntersections.hlsli`에서 사용하는 레이마칭 수식을 단계별로 설명합니다.
+이 문서는 `VolumetricClouds.hlsl`과 `Ray.hlsli`에서 사용하는 레이마칭 수식을 단계별로 설명합니다.
 볼류메트릭 클라우드의 핵심 뼈대가 모두 여기에 들어 있습니다.
 
 ## 0. 큰 그림
@@ -55,7 +55,7 @@ t1 = min(tFar.x,  tFar.y,  tFar.z)    // 가장 빨리 나가는 축
 `t1 > max(t0, 0)`이면 레이가 박스를 통과합니다. `t0`은 카메라가 박스 안/뒤에 있을 수 있으니
 `max(t0, 0)`으로 클램프합니다.
 
-1단계에서 사용한 `RaySphere`도 `VolumeIntersections.hlsli`에 보존합니다. 현재 픽셀 셰이더는
+1단계에서 사용한 `RaySphere`도 `Ray.hlsli`에 보존합니다. 현재 픽셀 셰이더는
 `RayBox`를 호출하지만, 구 교차 수식과 주석을 다시 보거나 이후 형상 전환 단계에서 재사용할 수 있습니다.
 
 ## 3. 밀도 적분 + Beer-Lambert 법칙

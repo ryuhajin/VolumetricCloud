@@ -37,7 +37,7 @@ private:
     void UpdateShaderWriteTimes();
     bool GetShaderWriteTimes(std::filesystem::file_time_type& vsTime,
                              std::filesystem::file_time_type& psTime,
-                             std::filesystem::file_time_type& intersectionsTime) const;
+                             std::filesystem::file_time_type& rayLibTime) const;
 
     // 셰이더 상수버퍼 — HLSL cbCamera 와 레이아웃이 정확히 일치해야 함 (112 바이트)
     struct CameraCB
@@ -69,8 +69,8 @@ private:
     std::wstring m_shaderDir; // 개발 중 소스 shaders/ 우선, 없으면 실행 파일 옆 shaders/ 경로
     std::wstring m_vsPath;
     std::wstring m_psPath;
-    std::wstring m_intersectionsPath;
+    std::wstring m_rayLibPath;
     std::filesystem::file_time_type m_vsWriteTime = {};
     std::filesystem::file_time_type m_psWriteTime = {};
-    std::filesystem::file_time_type m_intersectionsWriteTime = {};
+    std::filesystem::file_time_type m_rayLibWriteTime = {};
 };
