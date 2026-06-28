@@ -2,6 +2,7 @@
 #include "Camera.h"
 
 #include <d3dcompiler.h>
+#include <cstring>
 #include <vector>
 
 using namespace DirectX;
@@ -17,11 +18,40 @@ static std::wstring GetExeDir()
     return (slash == std::wstring::npos) ? L"." : full.substr(0, slash);
 }
 
+static std::wstring WidenUtf8(const char* text)
+{
+    int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+    if (length <= 0)
+        return L"";
+
+    std::wstring result(static_cast<size_t>(length - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, result.data(), length);
+    return result;
+}
+
+static bool DirectoryExists(const std::wstring& path)
+{
+    DWORD attr = GetFileAttributesW(path.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static std::wstring ResolveShaderDir()
+{
+#ifdef VCLOUD_SHADER_SOURCE_DIR
+    std::wstring sourceDir = WidenUtf8(VCLOUD_SHADER_SOURCE_DIR);
+    if (DirectoryExists(sourceDir))
+        return sourceDir + L"\\";
+#endif
+    return GetExeDir() + L"\\shaders\\";
+}
+
 bool Renderer::Init(HWND hwnd, int width, int height)
 {
     m_width  = width;
     m_height = height;
-    m_shaderDir = GetExeDir() + L"\\shaders\\";
+    m_shaderDir = ResolveShaderDir();
+    m_vsPath = m_shaderDir + L"Fullscreen.hlsl";
+    m_psPath = m_shaderDir + L"RaymarchSphere.hlsl";
 
     // ---- 스왑체인 + 디바이스 + 컨텍스트 생성 ----
     DXGI_SWAP_CHAIN_DESC scd = {};
@@ -53,7 +83,8 @@ bool Renderer::Init(HWND hwnd, int width, int height)
     }
 
     if (!CreateRenderTarget()) return false;
-    if (!CreateShaders())      return false;
+    if (!CreateShaders(true))  return false;
+    UpdateShaderWriteTimes();
 
     // ---- 상수버퍼 생성 (매 프레임 갱신할 dynamic 버퍼) ----
     D3D11_BUFFER_DESC bd = {};
@@ -84,7 +115,8 @@ bool Renderer::CreateRenderTarget()
 bool Renderer::CompileShaderFromFile(const std::wstring& path,
                                      const char* entryPoint,
                                      const char* target,
-                                     ComPtr<ID3DBlob>& outBlob)
+                                     ComPtr<ID3DBlob>& outBlob,
+                                     bool showErrors)
 {
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
 #ifdef _DEBUG
@@ -102,31 +134,72 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
         std::string msg = "셰이더 컴파일 실패:\n";
         if (errors)
             msg += static_cast<const char*>(errors->GetBufferPointer());
-        MessageBoxA(nullptr, msg.c_str(), "HLSL Error", MB_OK | MB_ICONERROR);
+        if (showErrors)
+            MessageBoxA(nullptr, msg.c_str(), "HLSL Error", MB_OK | MB_ICONERROR);
+        else
+            OutputDebugStringA(msg.c_str());
         return false;
     }
     return true;
 }
 
-bool Renderer::CreateShaders()
+bool Renderer::CreateShaders(bool showErrors)
 {
     ComPtr<ID3DBlob> vsBlob, psBlob;
 
-    if (!CompileShaderFromFile(m_shaderDir + L"Fullscreen.hlsl", "main", "vs_5_0", vsBlob))
+    if (!CompileShaderFromFile(m_vsPath, "main", "vs_5_0", vsBlob, showErrors))
         return false;
-    if (!CompileShaderFromFile(m_shaderDir + L"RaymarchSphere.hlsl", "main", "ps_5_0", psBlob))
+    if (!CompileShaderFromFile(m_psPath, "main", "ps_5_0", psBlob, showErrors))
         return false;
 
+    ComPtr<ID3D11VertexShader> newVs;
+    ComPtr<ID3D11PixelShader>  newPs;
+
     HRESULT hr = m_device->CreateVertexShader(
-        vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &m_vs);
+        vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &newVs);
     if (FAILED(hr)) return false;
 
     hr = m_device->CreatePixelShader(
-        psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &m_ps);
+        psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &newPs);
     if (FAILED(hr)) return false;
+
+    m_vs = newVs;
+    m_ps = newPs;
 
     // 입력 레이아웃 없음: 정점은 SV_VertexID 로 셰이더 내부에서 생성
     return true;
+}
+
+bool Renderer::GetShaderWriteTimes(std::filesystem::file_time_type& vsTime,
+                                   std::filesystem::file_time_type& psTime) const
+{
+    std::error_code ec;
+    vsTime = std::filesystem::last_write_time(m_vsPath, ec);
+    if (ec) return false;
+
+    psTime = std::filesystem::last_write_time(m_psPath, ec);
+    return !ec;
+}
+
+void Renderer::UpdateShaderWriteTimes()
+{
+    GetShaderWriteTimes(m_vsWriteTime, m_psWriteTime);
+}
+
+void Renderer::CheckShaderHotReload()
+{
+    std::filesystem::file_time_type vsTime;
+    std::filesystem::file_time_type psTime;
+    if (!GetShaderWriteTimes(vsTime, psTime))
+        return;
+
+    if (vsTime == m_vsWriteTime && psTime == m_psWriteTime)
+        return;
+
+    // 실패해도 기존 셰이더는 유지한다. 타임스탬프는 갱신해 같은 오류를 매 프레임 반복하지 않는다.
+    CreateShaders(false);
+    m_vsWriteTime = vsTime;
+    m_psWriteTime = psTime;
 }
 
 void Renderer::Resize(int width, int height)
@@ -147,18 +220,18 @@ void Renderer::Resize(int width, int height)
 void Renderer::Render(const Camera& camera, float timeSeconds)
 {
     if (!m_rtv) return;
+    CheckShaderHotReload();
 
     // ---- 상수버퍼 갱신 ----
     CameraCB cb = {};
     // HLSL은 mul(vector, matrix) 규약 → DirectXMath 행렬을 transpose 해서 업로드
     XMStoreFloat4x4(&cb.invViewProj, XMMatrixTranspose(camera.GetInvViewProj()));
-    cb.cameraPos    = camera.GetPosition();
-    cb.time         = timeSeconds;
-    cb.sphereCenter = XMFLOAT3(0.0f, 0.0f, 0.0f); // 원점에 떠 있는 구
-    cb.sphereRadius = 2.0f;
-    cb.screenSize   = XMFLOAT2(static_cast<float>(m_width), static_cast<float>(m_height));
-    cb.densityScale = 1.2f;                        // 밀도 (불투명도)
-    cb._pad         = 0.0f;
+    cb.cameraPos      = camera.GetPosition();
+    cb.time           = timeSeconds;
+    cb.volumeCenter   = XMFLOAT3(0.0f, 0.0f, 0.0f); // 원점에 놓인 박스 볼륨
+    cb.densityScale   = 1.2f;                        // 밀도 (불투명도)
+    cb.volumeHalfSize = XMFLOAT3(2.0f, 1.2f, 1.2f);  // AABB 절반 크기
+    cb._pad           = 0.0f;
 
     D3D11_MAPPED_SUBRESOURCE mapped;
     if (SUCCEEDED(m_context->Map(m_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))

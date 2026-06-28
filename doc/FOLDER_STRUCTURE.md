@@ -5,7 +5,7 @@
 
 ```
 VolumetricCloud/
-├── CMakeLists.txt          # CMake 빌드 정의 (d3d11/dxgi/d3dcompiler 링크, 셰이더 복사, /utf-8)
+├── CMakeLists.txt          # CMake 빌드 정의 (d3d11/dxgi/d3dcompiler 링크, 셰이더 경로 정의/복사, /utf-8)
 ├── README.md               # 프로젝트 개요 · 빌드 방법 · 로드맵 (GitHub 표지)
 ├── CLAUDE.md               # AI 에이전트용 진입점 (아키텍처 요약 + 규칙 링크)
 ├── .gitignore              # 빌드 산출물 · VS 생성물 제외
@@ -22,11 +22,11 @@ VolumetricCloud/
 │   ├── main.cpp            # 진입점(wWinMain): 창·카메라·렌더러 생성 및 메인 루프
 │   ├── Window.h / .cpp     # Win32 윈도우 생성 · 마우스 입력 → 카메라/렌더러 전달
 │   ├── Camera.h / .cpp     # 마우스 오빗 카메라 → view/proj/invViewProj 계산
-│   └── Renderer.h / .cpp   # D3D11 device/swapchain/RTV, 셰이더 컴파일, 드로우
+│   └── Renderer.h / .cpp   # D3D11 device/swapchain/RTV, 셰이더 컴파일/핫-리로드, 드로우
 │
-├── shaders/                # HLSL 셰이더 (런타임 컴파일, 빌드 시 exe 옆으로 복사)
+├── shaders/                # HLSL 셰이더 (런타임 컴파일/핫-리로드, 빌드 시 exe 옆으로도 복사)
 │   ├── Fullscreen.hlsl     # 풀스크린 삼각형 정점 셰이더 (정점 버퍼 없음)
-│   └── RaymarchSphere.hlsl # 안개 구 레이마칭 픽셀 셰이더
+│   └── RaymarchSphere.hlsl # 박스 볼륨 레이마칭 픽셀 셰이더
 │
 ├── third_party/            # 외부 라이브러리 자리 (현재 비어 있음, 추후 ImGui 등)
 │

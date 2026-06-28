@@ -2,7 +2,7 @@
 //  main.cpp  —  진입점 (WinMain)
 // ----------------------------------------------------------------------------
 //  창(Window) · 카메라(Camera) · 렌더러(Renderer)를 생성·연결하고,
-//  메인 루프에서 매 프레임 안개 구를 레이마칭으로 그린다.
+//  메인 루프에서 매 프레임 박스 볼륨을 레이마칭으로 그린다.
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -17,7 +17,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     const int kHeight = 720;
 
     // ---- 객체 생성 ----
-    Window   window(hInstance, kWidth, kHeight, L"VolumetricCloud - Raymarched Fog Sphere");
+    Window   window(hInstance, kWidth, kHeight, L"VolumetricCloud - Raymarched Box Volume");
     Camera   camera;
     Renderer renderer;
 
