@@ -38,7 +38,12 @@ target_link_libraries(VolumetricCloud PRIVATE
 )
 
 # 유니코드 윈도우 API 사용
-target_compile_definitions(VolumetricCloud PRIVATE UNICODE _UNICODE)
+# 개발 중에는 소스 트리의 shaders/를 직접 읽어 실행 중 HLSL 핫-리로드가 바로 반영되게 한다.
+target_compile_definitions(VolumetricCloud PRIVATE
+    UNICODE
+    _UNICODE
+    VCLOUD_SHADER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/shaders"
+)
 
 # 소스 파일이 UTF-8(한국어 주석 포함)임을 MSVC에 알림 (C4819 방지)
 if (MSVC)
@@ -50,6 +55,8 @@ endif()
 #  빌드 후 build/<Config>/shaders/ 에 hlsl이 위치하게 됨
 # ----------------------------------------------------------------------------
 add_custom_command(TARGET VolumetricCloud POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+        $<TARGET_FILE_DIR:VolumetricCloud>/shaders
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/shaders
         $<TARGET_FILE_DIR:VolumetricCloud>/shaders
