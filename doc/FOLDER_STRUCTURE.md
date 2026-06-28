@@ -7,7 +7,7 @@
 VolumetricCloud/
 ├── CMakeLists.txt          # CMake 빌드 정의 (d3d11/dxgi/d3dcompiler 링크, 셰이더 경로 정의/복사, /utf-8)
 ├── README.md               # 프로젝트 개요 · 빌드 방법 · 로드맵 (GitHub 표지)
-├── CLAUDE.md               # AI 에이전트용 진입점 (아키텍처 요약 + 규칙 링크)
+├── AGENTS.md               # AI 에이전트용 진입점 (아키텍처 요약 + 규칙 링크)
 ├── .gitignore              # 빌드 산출물 · VS 생성물 제외
 ├── .gitattributes          # 줄바꿈 정규화 · HLSL linguist 힌트
 │
@@ -26,7 +26,8 @@ VolumetricCloud/
 │
 ├── shaders/                # HLSL 셰이더 (런타임 컴파일/핫-리로드, 빌드 시 exe 옆으로도 복사)
 │   ├── Fullscreen.hlsl     # 풀스크린 삼각형 정점 셰이더 (정점 버퍼 없음)
-│   └── RaymarchSphere.hlsl # 박스 볼륨 레이마칭 픽셀 셰이더
+│   ├── VolumetricClouds.hlsl # 박스 볼륨 레이마칭 픽셀 셰이더
+│   └── Ray.hlsli             # RaySphere/RayBox 등 레이 교차 함수 모음
 │
 ├── third_party/            # 외부 라이브러리 자리 (현재 비어 있음, 추후 ImGui 등)
 │
@@ -36,6 +37,6 @@ VolumetricCloud/
 ## 핵심 흐름 요약
 
 `main.cpp` → `Window`(입력) + `Camera`(행렬) → `Renderer`(상수버퍼 업로드) →
-`Fullscreen.hlsl`(레이 준비) → `RaymarchSphere.hlsl`(레이마칭) → 화면.
+`Fullscreen.hlsl`(레이 준비) → `VolumetricClouds.hlsl`(+ `Ray.hlsli`) → 화면.
 
 자세한 구조는 [ARCHITECTURE.md](ARCHITECTURE.md)를 참고하세요.

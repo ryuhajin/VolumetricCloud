@@ -3,8 +3,7 @@
 볼류메트릭 클라우드라는 최종 목표까지 가는 단계별 계획입니다.
 한 단계를 완료하면 체크박스를 채우고, 관련 문서를 갱신하세요. (→ [CONTRIBUTING.md](CONTRIBUTING.md))
 
-최종 목표: [`chihirobelmo/volumetric-cloud-for-directx11`](https://github.com/chihirobelmo/volumetric-cloud-for-directx11)
-수준의 실시간 볼류메트릭 구름 렌더링.
+최종 목표는 실시간 볼류메트릭 구름 렌더링입니다.
 
 ---
 
@@ -17,7 +16,7 @@
 - [x] 해석적 ray-sphere 교차
 - [x] Beer-Lambert 밀도 적분 → 반투명 구
 - [x] 마우스 오빗 카메라
-- [x] 문서화 (doc/, CLAUDE.md, README.md)
+- [x] 문서화 (doc/, AGENTS.md, README.md)
 
 ## ⬜ 2단계 — 형상 일반화 (박스 / SDF) (현재)
 
@@ -50,3 +49,6 @@
 ### 진행 규칙
 - 각 단계는 별도 `feature/<단계>` 브랜치에서 진행합니다.
 - 단계 완료 시 이 문서의 체크박스와 [ARCHITECTURE.md](ARCHITECTURE.md)·[RAYMARCHING.md](RAYMARCHING.md)를 갱신합니다.
+
+### 참고 / 영감
+- [`chihirobelmo/volumetric-cloud-for-directx11`](https://github.com/chihirobelmo/volumetric-cloud-for-directx11): 실시간 볼류메트릭 구름 렌더링의 참고 사례입니다. 이 저장소는 해당 프로젝트와 별개의 학습용 구현입니다.
