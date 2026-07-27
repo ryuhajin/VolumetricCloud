@@ -16,7 +16,7 @@ DirectX 11 풀스크린 픽셀 셰이더에서 넓은 평면 구름층을 레이
 
 캐시는 사용자 `%LOCALAPPDATA%\VolumetricCloud\cache`의 active 세대, 저장소 `assets/noise-cache/bundle`, 런타임 생성 순으로 선택한다. `active-bundle.txt`가 없는 기존 캐시는 `bundle/`로 읽어 호환성을 유지한다. 정상 캐시는 `.cso`로 셰이더를 만들고 Texture3D 초기 데이터로 업로드하므로 시작 시 HLSL 컴파일과 compute dispatch가 없다. 소스가 저장 캐시보다 새로우면 마지막 정상 캐시로 첫 프레임을 Present한 뒤 핫 리로드한다.
 
-프레임 순서는 `UI Begin → 변경 감지 → 필요 시 볼륨/미리보기 갱신 → GPU total 시작 → cloud timestamp/draw → F1·F2 UI draw → GPU total 종료 → Present → 소스 변경 검사`다. 기본 숨김 상태에서는 4-MRT 미리보기도 만들지 않는다. 한 outer disjoint query 안의 timestamp 네 개로 GPU 전체와 cloud draw 시간을 함께 구해 중첩 disjoint query를 피한다.
+프레임 순서는 `UI Begin → 변경 감지 → 필요 시 볼륨/미리보기 갱신 → GPU total 시작 → cloud timestamp/draw → F1·F2 UI draw → GPU total 종료 → Present → 소스 변경 검사`다. 기본 숨김 상태에서는 4-MRT 미리보기도 만들지 않는다. 한 outer disjoint query 안의 timestamp 네 개로 GPU 전체와 cloud draw 시간을 함께 구해 중첩 disjoint query를 피한다. benchmark mode는 query 슬롯에 같은 frame의 CPU 시간과 수집 여부를 기록해 resolve 시 표본을 만들며 HUD와 VSync를 끈다.
 
 ## 상수버퍼
 

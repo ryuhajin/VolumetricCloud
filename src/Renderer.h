@@ -23,6 +23,13 @@
 
 class Camera;
 
+struct BenchmarkFrameSample
+{
+    float gpuCloudMs = 0.0f;
+    float gpuTotalMs = 0.0f;
+    float cpuRenderMs = 0.0f;
+};
+
 class Renderer
 {
 public:
@@ -37,6 +44,11 @@ public:
     void ToggleTelemetry();
     bool SaveDefaultNoiseCache();
     bool RunCodeTests();
+    void SetBenchmarkMode(bool enabled);
+    void ConfigureViewStepBenchmark(int viewSteps, float cloudThickness);
+    void BeginBenchmarkCollection();
+    void EndBenchmarkCollection();
+    const std::vector<BenchmarkFrameSample>& BenchmarkSamples() const { return m_benchmarkSamples; }
     unsigned int RuntimeCompileCount() const { return m_runtimeCompileCount; }
     unsigned int NoiseDispatchCount() const { return m_noiseDispatchCount; }
 
@@ -134,11 +146,17 @@ private:
     std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalBeginQueries;
     std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalEndQueries;
     std::array<bool, 2> m_gpuTotalQueryIssued = { false, false };
+    std::array<bool, 2> m_gpuTotalQueryBenchmark = { false, false };
+    std::array<float, 2> m_gpuTotalQueryCpuMs = { 0.0f, 0.0f };
     unsigned int m_gpuTotalQueryIndex = 0;
+    int m_lastIssuedGpuQueryIndex = -1;
     bool m_gpuTotalTimerActive = false;
     float m_gpuTotalMs = 0.0f;
     float m_cpuRenderMs = 0.0f;
     float m_frameIntervalMs = 0.0f;
+    bool m_benchmarkMode = false;
+    bool m_benchmarkCollecting = false;
+    std::vector<BenchmarkFrameSample> m_benchmarkSamples;
 
     CloudParameters m_cloudParams = CumulusWideShowcaseCloudParameters();
     NoisePreviewSettings m_previewSettings;

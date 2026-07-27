@@ -41,6 +41,7 @@ public:
     void ToggleVisible();
     bool IsVisible() const { return m_visible; }
     void ToggleTelemetry() { m_telemetryVisible = !m_telemetryVisible; }
+    void SetTelemetryVisible(bool visible) { m_telemetryVisible = visible; }
 
     void BeginFrame();
     bool Draw(CloudParameters& params,

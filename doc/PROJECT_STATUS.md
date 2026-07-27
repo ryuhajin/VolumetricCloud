@@ -1,13 +1,13 @@
 # 프로젝트 현황 & 프레임 흐름
 
 > 복귀 시 현재 구현과 한 프레임의 작업을 빠르게 확인하는 문서.
-> Stage 4 / `feature/cloud-thickness-debug-ui` 기준.
+> Stage 4 / `feature/view-step-quality` 기준.
 
 ## 현재 구현
 
 | 영역 | 상태 |
 |---|---|
-| 레이마칭 | 평면 구름층 교차, 3~16 km 기준 두께, 최대 거리, 48~128 view step, weather 4×/2×/1× 진행 |
+| 레이마칭 | 평면 구름층 교차, 3~16 km 기준 두께, 최대 거리, 48~256 view step, weather 4×/2×/1× 진행 |
 | 광역 분포 | 512² RGBA weather map, coverage/type/base-height/thickness |
 | 형태 | periodic Perlin-Worley + Worley base 3밴드 + detail 4옥타브 |
 | 높이 | 하단이 좁고 중단이 부푸는 Cumulus profile |
@@ -15,7 +15,7 @@
 | 다중 산란 | light visibility의 3-octave 저비용 근사 |
 | 캐시 | v5 불변 세대 + active 포인터, `.cso` 7개 + 128³ base + 64³ detail + 512² weather |
 | 진단 | 20개 렌더 모드, 4-MRT Inspector, F2 HUD, CPU·GPU cloud·GPU total ms |
-| 검증 | slab 교차, seam, 3D/weather RGBA 분산, cache round-trip, 산란 수치 |
+| 검증 | slab 교차, seam, 3D/weather RGBA 분산, cache round-trip, 산란 수치, view-step CSV benchmark |
 
 형태와 조명 수식은 구현됐지만 최종 심미 품질과 30 FPS 목표는 사용자 장비에서 승인해야 한다. 자동 테스트는 스크린샷의 미적 합격 여부를 판단하지 않는다.
 

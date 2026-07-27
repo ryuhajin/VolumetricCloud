@@ -4,7 +4,7 @@ DirectX 11 + HLSL로 광역 weather map, periodic 3D noise, 가변 레이마칭�
 
 ## 현재 기능
 
-- 평면 구름층 교차와 최대 거리 제한, 48~128-step 가변 ray marching
+- 평면 구름층 교차와 최대 거리 제한, 48~256-step 가변 ray marching
 - 512² RGBA weather map: coverage, cloud type, base-height, thickness
 - 심리스 periodic Value/Worley/FBM 및 Perlin–Worley 밀도장
 - 128³ base, 64³ detail RGBA8 Texture3D
@@ -47,5 +47,7 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 `VolumetricCloud.CacheSmoke`는 GPU 성능과 무관하게 초기화까지만 수행하고 정상 캐시 시작에서 컴파일과 noise dispatch가 0회인지 검사합니다. `VolumetricCloud.CodeTests`는 평면 교차, GPU periodic seam, 3D/weather RGBA 분산, 밀도 포화, 캐시 저장/재로드와 산란 수치를 검사합니다. 화면 품질 비교는 포함하지 않습니다.
+
+View step 비용은 `.\build\Release\VolumetricCloud.exe --benchmark-view-steps`로 측정합니다. 고정된 1280×720 장면에서 3.8/16 km와 128/160/192/256 step을 각각 120회 측정하고 `%LOCALAPPDATA%\VolumetricCloud\benchmarks\view-step-quality.csv`에 GPU/CPU mean·median·p95를 기록합니다. 에이전트는 캡처를 만들지 않으며 최종 화면 품질은 사용자가 평가합니다.
 
 자세한 구조와 수식은 [아키텍처](doc/ARCHITECTURE.md), [레이마칭](doc/RAYMARCHING.md), [로드맵](doc/ROADMAP.md)을 참고하세요. 브랜치별 문제 분석과 설계 이유는 [`doc/changes/`](doc/changes/)에 기록합니다.

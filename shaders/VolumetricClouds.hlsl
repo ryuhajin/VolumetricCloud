@@ -148,7 +148,7 @@ float4 main(VSOut input) : SV_TARGET
     }
 
     // ---- 3) 빈 공간은 2배 스텝, 밀도 구간은 기본 스텝으로 행진한다. ----
-    int         steps = clamp(viewSteps, 48, 128);
+    int         steps = clamp(viewSteps, 48, 256);
     float       baseDt = (t1 - t0) / steps;
     float       rayDistance = t0 + InterleavedGradientNoise(input.pos.xy) * baseDt * saturate(jitterStrength);
     float       transmittance = 1.0; // 투과율 (1=완전 투명, 0=완전 불투명)
@@ -163,7 +163,7 @@ float4 main(VSOut input) : SV_TARGET
     bool        foundDensity = false;
 
     [loop]
-    for (int i = 0; i < 128; ++i)
+    for (int i = 0; i < 256; ++i)
     {
         if (i >= steps || rayDistance >= t1) break;
         float3 p = ro + rd * rayDistance;

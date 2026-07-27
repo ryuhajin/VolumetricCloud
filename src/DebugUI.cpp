@@ -259,7 +259,19 @@ bool DebugUI::Draw(CloudParameters& p,
 
                 if (BeginParameterCategory("Sampling", 3))
                 {
-                    changed |= ImGui::SliderInt("View steps", &p.viewSteps, 48, 128);
+                    changed |= ImGui::SliderInt("View steps", &p.viewSteps, 48, 256);
+                    const int comparisonSteps[] = { 128, 160, 192, 256 };
+                    for (size_t i = 0; i < IM_ARRAYSIZE(comparisonSteps); ++i)
+                    {
+                        if (i > 0) ImGui::SameLine();
+                        ImGui::PushID(comparisonSteps[i]);
+                        if (ImGui::Button(std::to_string(comparisonSteps[i]).c_str()))
+                        {
+                            p.viewSteps = comparisonSteps[i];
+                            changed = true;
+                        }
+                        ImGui::PopID();
+                    }
                     changed |= ImGui::SliderFloat("Ray jitter", &p.jitterStrength, 0.0f, 1.0f, "%.2f");
                 }
 

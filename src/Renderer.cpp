@@ -476,14 +476,25 @@ void Renderer::ResolveGpuTotalTimer()
                 static_cast<float>((cloudEnd - cloudBegin) * 1000.0 / disjoint.Frequency);
             m_gpuTotalMs = m_gpuTotalMs > 0.0f ? m_gpuTotalMs * 0.9f + totalSample * 0.1f : totalSample;
             m_gpuFrameMs = m_gpuFrameMs > 0.0f ? m_gpuFrameMs * 0.9f + cloudSample * 0.1f : cloudSample;
+            if (m_gpuTotalQueryBenchmark[readIndex] &&
+                std::isfinite(totalSample) && totalSample > 0.0f &&
+                std::isfinite(cloudSample) && cloudSample > 0.0f &&
+                std::isfinite(m_gpuTotalQueryCpuMs[readIndex]) &&
+                m_gpuTotalQueryCpuMs[readIndex] > 0.0f)
+            {
+                m_benchmarkSamples.push_back({
+                    cloudSample, totalSample, m_gpuTotalQueryCpuMs[readIndex] });
+            }
         }
         m_gpuTotalQueryIssued[readIndex] = false;
+        m_gpuTotalQueryBenchmark[readIndex] = false;
     }
 }
 
 void Renderer::BeginGpuTotalTimer()
 {
     ResolveGpuTotalTimer();
+    m_lastIssuedGpuQueryIndex = -1;
     if (m_gpuTotalQueryIssued[m_gpuTotalQueryIndex])
     {
         m_gpuTotalTimerActive = false;
@@ -497,9 +508,13 @@ void Renderer::BeginGpuTotalTimer()
 void Renderer::EndGpuTotalTimer()
 {
     if (!m_gpuTotalTimerActive) return;
-    m_context->End(m_gpuTotalEndQueries[m_gpuTotalQueryIndex].Get());
-    m_context->End(m_gpuTotalDisjointQueries[m_gpuTotalQueryIndex].Get());
-    m_gpuTotalQueryIssued[m_gpuTotalQueryIndex] = true;
+    const unsigned int issuedIndex = m_gpuTotalQueryIndex;
+    m_context->End(m_gpuTotalEndQueries[issuedIndex].Get());
+    m_context->End(m_gpuTotalDisjointQueries[issuedIndex].Get());
+    m_gpuTotalQueryIssued[issuedIndex] = true;
+    m_gpuTotalQueryBenchmark[issuedIndex] = m_benchmarkCollecting;
+    m_gpuTotalQueryCpuMs[issuedIndex] = 0.0f;
+    m_lastIssuedGpuQueryIndex = static_cast<int>(issuedIndex);
     m_gpuTotalQueryIndex = (m_gpuTotalQueryIndex + 1) % 2;
     m_gpuTotalTimerActive = false;
 }
@@ -624,6 +639,33 @@ void Renderer::ToggleDebugUI()
 void Renderer::ToggleTelemetry()
 {
     m_debugUI.ToggleTelemetry();
+}
+
+void Renderer::SetBenchmarkMode(bool enabled)
+{
+    m_benchmarkMode = enabled;
+    if (enabled)
+        m_debugUI.SetTelemetryVisible(false);
+}
+
+void Renderer::ConfigureViewStepBenchmark(int viewSteps, float cloudThickness)
+{
+    m_cloudParams = CumulusWideShowcaseCloudParameters();
+    m_cloudParams.viewSteps = std::clamp(viewSteps, 48, 256);
+    m_cloudParams.cloudThickness = (std::max)(cloudThickness, 0.1f);
+    m_previewSettings.freeze = true;
+    m_previewSettings.previewTime = 0.0f;
+}
+
+void Renderer::BeginBenchmarkCollection()
+{
+    m_benchmarkSamples.clear();
+    m_benchmarkCollecting = true;
+}
+
+void Renderer::EndBenchmarkCollection()
+{
+    m_benchmarkCollecting = false;
 }
 
 void Renderer::Render(const Camera& camera, float timeSeconds)
@@ -783,8 +825,10 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     EndGpuTotalTimer();
     const float cpuSample =
         static_cast<float>((PerformanceCounterSeconds() - cpuRenderStart) * 1000.0);
+    if (m_lastIssuedGpuQueryIndex >= 0)
+        m_gpuTotalQueryCpuMs[static_cast<size_t>(m_lastIssuedGpuQueryIndex)] = cpuSample;
     m_cpuRenderMs = m_cpuRenderMs > 0.0f ? m_cpuRenderMs * 0.9f + cpuSample * 0.1f : cpuSample;
-    m_swapChain->Present(1, 0); // vsync
+    m_swapChain->Present(m_benchmarkMode ? 0 : 1, 0);
     m_hasPresented = true;
     CheckShaderHotReload();
 }
@@ -1032,23 +1076,26 @@ bool Renderer::RunCodeTests()
                               std::isfinite(dualLobe(1.0f)) &&
                               multiScatter(0.0f) >= 0.0f && multiScatter(1.0f) <= 1.0f &&
                               std::isfinite(multiScatter(0.35f));
-    // UI가 허용하는 3/8/16 km 두께에서 weather 변형 후의 local thickness와
-    // 고정 128-step 샘플 간격이 모두 유한하고 양수인지 확인한다.
+    // 벤치마크 두께와 48~256 view-step 범위에서 weather 변형 후의
+    // local thickness와 샘플 간격이 모두 유한하고 양수인지 확인한다.
     bool thicknessSampling = true;
-    for (const float thickness : { 3.0f, 8.0f, 16.0f })
+    for (const float thickness : { 3.8f, 16.0f })
     {
         for (const float weatherThickness : { 0.0f, 0.5f, 1.0f })
         {
             const float localThickness = thickness *
                 (1.0f + (weatherThickness * 2.0f - 1.0f) * 0.8f);
-            const float sampleSpacing = localThickness / 128.0f;
-            thicknessSampling = thicknessSampling &&
-                std::isfinite(localThickness) && localThickness > 0.0f &&
-                std::isfinite(sampleSpacing) && sampleSpacing > 0.0f;
+            for (const int steps : { 48, 128, 160, 192, 256 })
+            {
+                const float sampleSpacing = localThickness / steps;
+                thicknessSampling = thicknessSampling &&
+                    std::isfinite(localThickness) && localThickness > 0.0f &&
+                    std::isfinite(sampleSpacing) && sampleSpacing > 0.0f;
+            }
         }
     }
-    const int clampedViewSteps = std::clamp(256, 48, 128);
-    thicknessSampling = thicknessSampling && clampedViewSteps == 128;
+    const int clampedViewSteps = std::clamp(512, 48, 256);
+    thicknessSampling = thicknessSampling && clampedViewSteps == 256;
     const bool seamless = maxError <= 1.0e-5f;
     const bool roundTrip = m_noiseCacheManager.RunRoundTripTest(
         m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,

@@ -3,7 +3,7 @@
 ## 완료
 
 - [x] DirectX11 풀스크린 삼각형과 AABB 레이마칭
-- [x] Beer–Lambert 투과율, 48~128 가변 view steps, 고정 jitter, 조기 종료
+- [x] Beer–Lambert 투과율, 48~256 가변 view steps, 고정 jitter, 조기 종료
 - [x] periodic Value/Worley/FBM 및 Perlin–Worley 형상
 - [x] 높이 마스크, noise cutoff threshold, detail erosion, X/Z wind
 - [x] 128³ RGBA base 형태 밴드 + 64³ RGBA detail Texture3D 캐시 v4
@@ -16,6 +16,7 @@
 - [x] weather 기반 4×/2×/1× 가변 진행과 수평선 거리 페이드
 - [x] 분석적 하늘, 태양 glow, tone mapping과 GPU timestamp query
 - [x] 캐시 v5: 3D base/detail + 2D weather + 셰이더 7개
+- [x] 128/160/192/256 view-step GPU/CPU 자동 benchmark와 CSV
 
 ## 다음 통합 단계
 
