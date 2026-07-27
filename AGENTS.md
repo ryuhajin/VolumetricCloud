@@ -11,7 +11,7 @@ DirectX11 + HLSL로 레이마칭과 볼류메트릭 클라우드를 학습하는
 - C++17, HLSL shader model 5.0, DirectX 11, Win32
 - 빌드: `cmake -B build -G "Visual Studio 17 2022" -A x64` 후 `cmake --build build --config Debug`
 - 실행: `build/Debug/VolumetricCloud.exe`, F1 디버그 UI
-- 정상 시작은 저장된 `.cso`, 128³/64³ volume과 512² weather cache를 사용
+- 정상 시작은 저장된 `.cso`, 128³/128³ volume과 512² weather cache를 사용
 - 개발 중 HLSL 변경은 첫 Present 뒤 런타임 컴파일·재생성
 - 문서/주석은 한국어, 소스 UTF-8, MSVC `/utf-8`
 

@@ -59,6 +59,21 @@ cbuffer CloudCB : register(b1)
     float horizonFadeStart;
     float horizonFadeEnd;
     float weatherSeed;
+
+    float detailNoiseWorldSize;
+    float baseNoiseVerticalSize;
+    float detailNoiseVerticalSize;
+    float maxViewStepLength;
+
+    float localLightDistance;
+    float cumulusGrowth;
+    float anvilStrength;
+    float detailErosionWidth;
+
+    int farLightSteps;
+    int boundaryRefineSteps;
+    float _cloudPad0;
+    float _cloudPad1;
 };
 
 Texture3D<float4> baseNoiseTexture : register(t0);
@@ -285,6 +300,9 @@ void LocalCloudLayerBounds(float4 weather, out float localBase, out float localT
     localBase = cloudBaseHeight + (weather.b * 2.0 - 1.0) * max(heightVariation, 0.0);
     float localThickness = max(cloudThickness, 0.1) *
         max(0.2, 1.0 + (weather.a * 2.0 - 1.0) * saturate(thicknessVariation));
+    float cloudType = smoothstep(
+        0.35, 0.75, saturate(weather.g + weatherTypeBias - 0.5));
+    localThickness *= lerp(1.0, max(cumulusGrowth, 1.0), cloudType);
     localTop = localBase + localThickness;
 }
 
@@ -298,14 +316,39 @@ float WeatherPotential(float4 weather)
     return smoothstep(0.28, 0.48, WeatherCoverage(weather));
 }
 
-float3 WorldToLayerUVW(float3 worldPosition, float4 weather)
+float2 WindOffsetWorld(float sampleTime)
+{
+    float2 direction = normalize(windDirection + 0.0001);
+    return direction * (sampleTime * windSpeed);
+}
+
+float3 WorldToBaseUVW(float3 worldPosition, float4 weather, float sampleTime)
 {
     float localBase, localTop;
     LocalCloudLayerBounds(weather, localBase, localTop);
-    float worldSize = max(cloudNoiseWorldSize, 0.1);
-    return float3(worldPosition.x / worldSize,
-                  saturate((worldPosition.y - localBase) / max(localTop - localBase, 0.1)),
-                  worldPosition.z / worldSize);
+    float horizontalSize = max(cloudNoiseWorldSize, 0.1);
+    float verticalSize = max(baseNoiseVerticalSize, 0.1);
+    float2 animatedXZ = worldPosition.xz + WindOffsetWorld(sampleTime);
+    return frac(float3(animatedXZ.x / horizontalSize,
+                       (worldPosition.y - localBase) / verticalSize,
+                       animatedXZ.y / horizontalSize));
+}
+
+float3 WorldToDetailUVW(float3 worldPosition, float4 weather, float sampleTime)
+{
+    float localBase, localTop;
+    LocalCloudLayerBounds(weather, localBase, localTop);
+    float horizontalSize = max(detailNoiseWorldSize, 0.05);
+    float verticalSize = max(detailNoiseVerticalSize, 0.05);
+    float2 animatedXZ = worldPosition.xz + WindOffsetWorld(sampleTime);
+    return frac(float3(animatedXZ.x / horizontalSize,
+                       (worldPosition.y - localBase) / verticalSize,
+                       animatedXZ.y / horizontalSize));
+}
+
+float3 WorldToLayerUVW(float3 worldPosition, float4 weather)
+{
+    return WorldToBaseUVW(worldPosition, weather, 0.0);
 }
 
 float LayerHeightGradient(float height01, float cloudType)
@@ -324,14 +367,21 @@ float4 EvaluateLayerCloudComponents(float3 worldPosition, float4 weather, float 
     float localBase, localTop;
     LocalCloudLayerBounds(weather, localBase, localTop);
     float height01 = saturate((worldPosition.y - localBase) / max(localTop - localBase, 0.1));
-    float3 uvw = WorldToLayerUVW(worldPosition, weather);
-    float3 animated = AnimatedUVW(uvw, sampleTime);
-    float4 baseChannels = baseNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0);
+    float3 baseUVW = WorldToBaseUVW(worldPosition, weather, sampleTime);
+    float3 detailUVW = WorldToDetailUVW(worldPosition, weather, sampleTime);
+    float4 baseChannels = baseNoiseTexture.SampleLevel(noiseVolumeSampler, baseUVW, 0);
     float detail = DetailErosionFromChannels(
-        detailNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0));
+        detailNoiseTexture.SampleLevel(noiseVolumeSampler, detailUVW, 0));
     float localCoverage = WeatherCoverage(weather);
     float baseShape = BaseShapeFromChannels(baseChannels, height01, localCoverage);
-    float boundary = 1.0 - smoothstep(0.45, 0.92, baseShape);
+    float cloudType = smoothstep(
+        0.35, 0.75, saturate(weather.g + weatherTypeBias - 0.5));
+    float anvilBand = smoothstep(0.52, 0.76, height01) *
+        (1.0 - smoothstep(0.90, 1.0, height01));
+    baseShape = saturate(baseShape +
+        anvilBand * cloudType * saturate(anvilStrength) * (1.0 - baseShape) * 0.45);
+    float erosionStart = saturate(1.0 - max(detailErosionWidth, 0.05));
+    float boundary = 1.0 - smoothstep(erosionStart, 0.95, baseShape);
     float shaped = saturate(baseShape - detail * erosionStrength * boundary);
     float height = LayerHeightGradient(height01, weather.g);
     float insideLayer = step(localBase, worldPosition.y) * step(worldPosition.y, localTop);

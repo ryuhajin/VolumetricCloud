@@ -15,7 +15,7 @@ namespace
 {
 constexpr uint32_t kManifestMagic = 0x48434356; // VCCH
 constexpr uint32_t kVolumeMagic = 0x4E434356;   // VCCN
-constexpr uint32_t kCacheVersion = 5; // v5: RGBA weather map과 176바이트 파라미터
+constexpr uint32_t kCacheVersion = 6; // v6: 128^3 detail과 224바이트 월드 공간 파라미터
 constexpr DXGI_FORMAT kBaseVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDetailVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kWeatherFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -403,7 +403,7 @@ bool NoiseCacheManager::LoadBundleDirectory(
     std::ifstream file(bundle / L"manifest.bin", std::ios::binary);
     if (!file.read(reinterpret_cast<char*>(&manifest), sizeof(manifest))) return false;
     if (manifest.magic != kManifestMagic || manifest.version != kCacheVersion ||
-        manifest.baseSize != 128 || manifest.detailSize != 64 ||
+        manifest.baseSize != 128 || manifest.detailSize != 128 ||
         manifest.weatherSize != 512 ||
         manifest.baseFormat != static_cast<uint32_t>(kBaseVolumeFormat) ||
         manifest.detailFormat != static_cast<uint32_t>(kDetailVolumeFormat) ||
@@ -419,7 +419,7 @@ bool NoiseCacheManager::LoadBundleDirectory(
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2> loadedUavs;
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> loadedSrvs;
     if (!LoadVolume(bundle / L"base.vcnoise", device, 128, kBaseVolumeFormat, loadedVolumes[0], loadedUavs[0], loadedSrvs[0])) return false;
-    if (!LoadVolume(bundle / L"detail.vcnoise", device, 64, kDetailVolumeFormat, loadedVolumes[1], loadedUavs[1], loadedSrvs[1])) return false;
+    if (!LoadVolume(bundle / L"detail.vcnoise", device, 128, kDetailVolumeFormat, loadedVolumes[1], loadedUavs[1], loadedSrvs[1])) return false;
     WeatherMapResources loadedWeather;
     if (!LoadWeatherMap(bundle / L"weather.vcnoise", device, 512, loadedWeather)) return false;
 
@@ -508,7 +508,7 @@ bool NoiseCacheManager::RunRoundTripTest(
     };
     CacheManifest bad = {};
     std::memcpy(&bad, originalManifest.data(), sizeof(bad));
-    ++bad.version;
+    bad.version = 5;
     if (!rejectsManifest(bad)) return false;
     std::memcpy(&bad, originalManifest.data(), sizeof(bad));
     ++bad.parameterHash;
@@ -583,7 +583,7 @@ bool NoiseCacheManager::SaveBundle(
     manifest.sourceHash = SourceHash();
     manifest.parameterHash = ParameterHash(params);
     manifest.baseSize = 128;
-    manifest.detailSize = 64;
+    manifest.detailSize = 128;
     manifest.weatherSize = 512;
     manifest.baseFormat = static_cast<uint32_t>(kBaseVolumeFormat);
     manifest.detailFormat = static_cast<uint32_t>(kDetailVolumeFormat);

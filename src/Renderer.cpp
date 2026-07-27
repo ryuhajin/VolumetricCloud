@@ -370,7 +370,7 @@ bool Renderer::CreateNoisePreviewResources()
 
 bool Renderer::CreateNoiseVolumeResources()
 {
-    const UINT sizes[2] = { 128, 64 };
+    const UINT sizes[2] = { 128, 128 };
     // base/detail 모두 RGBA8: base는 형태 밴드, detail은 침식 옥타브를 저장한다.
     const DXGI_FORMAT formats[2] = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM };
     for (size_t i = 0; i < 2; ++i)
@@ -527,7 +527,7 @@ void Renderer::GenerateNoiseVolumes()
     m_context->CSSetConstantBuffers(2, 1, m_noiseVolumeGenerationCb.GetAddressOf());
 
     // base → CSBase, outputBase(u0) / detail → CSDetail, outputDetail(u2). (u1은 CSSeamTest 전용)
-    const UINT sizes[2] = { 128, 64 };
+    const UINT sizes[2] = { 128, 128 };
     ID3D11ComputeShader* shaders[2] = { m_noiseVolumeCsBase.Get(), m_noiseVolumeCsDetail.Get() };
     const UINT uavSlots[2] = { 0, 2 };
     for (UINT i = 0; i < 2; ++i)
@@ -898,11 +898,52 @@ bool Renderer::RunCodeTests()
     m_noiseVolumes[1]->GetDesc(&detailDesc);
     const bool volumeLayout =
         baseDesc.Width == 128 && baseDesc.Height == 128 && baseDesc.Depth == 128 &&
-        detailDesc.Width == 64 && detailDesc.Height == 64 && detailDesc.Depth == 64 &&
+        detailDesc.Width == 128 && detailDesc.Height == 128 && detailDesc.Depth == 128 &&
         baseDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && // Perlin-Worley + Worley 3밴드
         detailDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && // Worley 옥타브 4채널
         static_cast<uint64_t>(baseDesc.Width) * baseDesc.Height * baseDesc.Depth * 4 == 8388608ull &&
-        static_cast<uint64_t>(detailDesc.Width) * detailDesc.Height * detailDesc.Depth * 4 == 1048576ull;
+        static_cast<uint64_t>(detailDesc.Width) * detailDesc.Height * detailDesc.Depth * 4 == 8388608ull;
+
+    bool detailDistribution = false;
+    if (volumeLayout)
+    {
+        D3D11_TEXTURE3D_DESC readDesc = detailDesc;
+        readDesc.Usage = D3D11_USAGE_STAGING;
+        readDesc.BindFlags = 0;
+        readDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        readDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture3D> readback;
+        if (SUCCEEDED(m_device->CreateTexture3D(&readDesc, nullptr, &readback)))
+        {
+            m_context->CopyResource(readback.Get(), m_noiseVolumes[1].Get());
+            D3D11_MAPPED_SUBRESOURCE detailMapped = {};
+            if (SUCCEEDED(m_context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &detailMapped)))
+            {
+                std::array<unsigned char, 4> channelMin = { 255, 255, 255, 255 };
+                std::array<unsigned char, 4> channelMax = { 0, 0, 0, 0 };
+                for (UINT z = 0; z < detailDesc.Depth; ++z)
+                for (UINT y = 0; y < detailDesc.Height; ++y)
+                {
+                    const auto* row = static_cast<const unsigned char*>(detailMapped.pData) +
+                        static_cast<size_t>(z) * detailMapped.DepthPitch +
+                        static_cast<size_t>(y) * detailMapped.RowPitch;
+                    for (UINT x = 0; x < detailDesc.Width; ++x)
+                    {
+                        const auto* texel = row + static_cast<size_t>(x) * 4;
+                        for (size_t c = 0; c < 4; ++c)
+                        {
+                            channelMin[c] = (std::min)(channelMin[c], texel[c]);
+                            channelMax[c] = (std::max)(channelMax[c], texel[c]);
+                        }
+                    }
+                }
+                m_context->Unmap(readback.Get(), 0);
+                detailDistribution = true;
+                for (size_t c = 0; c < 4; ++c)
+                    detailDistribution = detailDistribution && channelMax[c] > channelMin[c] + 8;
+            }
+        }
+    }
 
     D3D11_TEXTURE2D_DESC weatherDesc = {};
     m_weatherMap.texture->GetDesc(&weatherDesc);
@@ -1076,6 +1117,74 @@ bool Renderer::RunCodeTests()
                               std::isfinite(dualLobe(1.0f)) &&
                               multiScatter(0.0f) >= 0.0f && multiScatter(1.0f) <= 1.0f &&
                               std::isfinite(multiScatter(0.35f));
+
+    const float baseOffsetY = 1.25f;
+    const float baseUvYThin = baseOffsetY / m_cloudParams.baseNoiseVerticalSize;
+    const float baseUvYThick = baseOffsetY / m_cloudParams.baseNoiseVerticalSize;
+    const float detailUvYThin = baseOffsetY / m_cloudParams.detailNoiseVerticalSize;
+    const float detailUvYThick = baseOffsetY / m_cloudParams.detailNoiseVerticalSize;
+    const bool worldSpaceCoordinates =
+        m_cloudParams.detailNoiseWorldSize > 0.0f &&
+        m_cloudParams.baseNoiseVerticalSize > 0.0f &&
+        m_cloudParams.detailNoiseVerticalSize > 0.0f &&
+        std::abs(baseUvYThin - baseUvYThick) < 1.0e-6f &&
+        std::abs(detailUvYThin - detailUvYThick) < 1.0e-6f;
+    const bool detailNyquist =
+        m_cloudParams.detailPeriod >= 2 && m_cloudParams.detailPeriod <= 8 &&
+        m_cloudParams.detailPeriod * 8 <= static_cast<int>(detailDesc.Width / 2);
+
+    const auto localThicknessFor = [&](float weatherThickness, float weatherType)
+    {
+        const float varied = m_cloudParams.cloudThickness *
+            (std::max)(0.2f, 1.0f + (weatherThickness * 2.0f - 1.0f) *
+                                  std::clamp(m_cloudParams.thicknessVariation, 0.0f, 1.0f));
+        const float shiftedType = std::clamp(
+            weatherType + m_cloudParams.weatherTypeBias - 0.5f, 0.0f, 1.0f);
+        const float typeT = shiftedType * shiftedType * (3.0f - 2.0f * shiftedType);
+        const float growth = (std::max)(m_cloudParams.cumulusGrowth, 1.0f);
+        return varied * (1.0f + (growth - 1.0f) * typeT);
+    };
+    const float lowTypeThickness = localThicknessFor(0.5f, 0.0f);
+    const float highTypeThickness = localThicknessFor(0.5f, 1.0f);
+    const bool cumulusBounds = std::isfinite(lowTypeThickness) &&
+        std::isfinite(highTypeThickness) && lowTypeThickness > 0.0f &&
+        highTypeThickness >= lowTypeThickness;
+
+    const float fineStep = (std::min)(
+        96.0f / static_cast<float>((std::max)(m_cloudParams.viewSteps, 48)),
+        (std::max)(m_cloudParams.maxViewStepLength, 0.001f));
+    const float targetStep = 96.0f /
+        static_cast<float>((std::max)(m_cloudParams.viewSteps, 48));
+    const float weatherSkip = (std::min)(
+        (std::max)(targetStep * 4.0f, fineStep * 4.0f), 1.6f);
+    const float candidateSkip = (std::min)(
+        (std::max)(targetStep * 2.0f, fineStep * 2.0f), 0.4f);
+    const int emptyIterations = static_cast<int>(std::ceil(96.0f / weatherSkip));
+    const int candidateIterations = static_cast<int>(std::ceil(96.0f / candidateSkip));
+    const int denseIterations = static_cast<int>(std::ceil(16.0f / fineStep));
+    const float refinedBoundaryWidth = fineStep * 2.0f /
+        static_cast<float>(1 << std::clamp(m_cloudParams.boundaryRefineSteps, 0, 5));
+    const bool adaptiveMarching = std::isfinite(fineStep) && fineStep > 0.0f &&
+        fineStep <= m_cloudParams.maxViewStepLength + 1.0e-6f &&
+        weatherSkip > 0.0f && candidateSkip > 0.0f &&
+        emptyIterations <= 2000 && candidateIterations <= 2000 &&
+        denseIterations <= 2000 &&
+        std::isfinite(refinedBoundaryWidth) && refinedBoundaryWidth > 0.0f;
+
+    const float lightExitDistance = 7.0f;
+    const float localSegment = (std::min)(
+        lightExitDistance, (std::max)(m_cloudParams.localLightDistance, 0.01f));
+    const float farSegment = (std::max)(lightExitDistance - localSegment, 0.0f);
+    const float coveredLightDistance = localSegment +
+        (m_cloudParams.farLightSteps > 0 ? farSegment : 0.0f);
+    const float testVisibility = std::exp(-density * coveredLightDistance *
+                                         m_cloudParams.lightAbsorption);
+    const bool lightSegments = localSegment > 0.0f && farSegment >= 0.0f &&
+        m_cloudParams.lightSteps >= 1 && m_cloudParams.lightSteps <= 12 &&
+        m_cloudParams.farLightSteps >= 0 && m_cloudParams.farLightSteps <= 8 &&
+        std::abs(coveredLightDistance - lightExitDistance) < 1.0e-5f &&
+        std::isfinite(testVisibility) && testVisibility >= 0.0f && testVisibility <= 1.0f;
+    const bool presetRoundTrip = DebugUI::RunWorldSpacePresetRoundTripTest();
     // 벤치마크 두께와 48~256 view-step 범위에서 weather 변형 후의
     // local thickness와 샘플 간격이 모두 유한하고 양수인지 확인한다.
     bool thicknessSampling = true;
@@ -1121,7 +1230,9 @@ bool Renderer::RunCodeTests()
         }
     }
 #endif
-    return seamless && roundTrip && volumeLayout && baseDistribution &&
+    return seamless && roundTrip && volumeLayout && baseDistribution && detailDistribution &&
            weatherLayout && weatherDistribution && weatherHash && layerMath &&
-           lightingMath && thicknessSampling && debugLayerClean;
+           lightingMath && worldSpaceCoordinates && detailNyquist && cumulusBounds &&
+           adaptiveMarching && lightSegments && sizeof(CloudParameters) == 224 &&
+           presetRoundTrip && thicknessSampling && debugLayerClean;
 }

@@ -17,6 +17,9 @@
 - [x] 분석적 하늘, 태양 glow, tone mapping과 GPU timestamp query
 - [x] 캐시 v5: 3D base/detail + 2D weather + 셰이더 7개
 - [x] 128/160/192/256 view-step GPU/CPU 자동 benchmark와 CSV
+- [x] 128³ detail, 독립 base/detail 월드 좌표와 cache v6
+- [x] 50m view step 상한, 밀도 경계 정제와 2000회 안전 상한
+- [x] weather type 수직 성장·anvil과 근거리/원거리 light march
 
 ## 다음 통합 단계
 

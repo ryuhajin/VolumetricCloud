@@ -22,7 +22,7 @@ HLSL(`.hlsl`)은 **사람이 읽는 소스 코드**다. GPU는 이걸 바로 실
 |---|---|---|
 | 시점 | 첫 실행 / 소스 변경 시 | 두 번째 실행 이후(캐시 히트) |
 | 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 7개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
-| 노이즈 리소스 | 컴퓨트 셰이더로 128³+64³+512² 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
+| 노이즈 리소스 | 컴퓨트 셰이더로 128³+128³+512² 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
 | 비용 성격 | 컴파일 7회 + compute dispatch 3회 | 컴파일·dispatch 0회 |
 
 **미리 컴파일의 이점 정리**
@@ -124,7 +124,7 @@ bundle/
   ├ noise_cs_detail.cso │
   ├ noise_cs_weather.cso┘
   ├ base.vcnoise       ← 128³ RGBA8  (8 MB, Perlin-Worley + Worley 3밴드)
-  ├ detail.vcnoise     ← 64³  RGBA8  (1 MB, Worley 옥타브 4채널)
+  ├ detail.vcnoise     ← 128³ RGBA8  (8 MB, Worley 옥타브 4채널)
   └ weather.vcnoise    ← 512² RGBA8  (1 MB, coverage/type/base-height/thickness)
 ```
 `.vcnoise`는 헤더(매직/버전/크기/포맷) + 원시 볼륨 바이트. `.cso`는 순수 DXBC 바이트코드.
@@ -157,10 +157,10 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 `SaveBundle`은 활성 디렉터리를 직접 rename하지 않는다.
 
 ```text
-bundle-v5-<generation>.tmp
+bundle-v6-<generation>.tmp
   → 파일 flush
   → manifest/셰이더/볼륨을 실제 D3D 리소스로 재로드 검증
-  → bundle-v5-<generation> 게시
+  → bundle-v6-<generation> 게시
   → active-bundle.tmp 기록
   → active-bundle.txt만 원자적 교체
 ```
@@ -213,7 +213,7 @@ target_link_libraries(VolumetricCloud PRIVATE DirectXTex)
 | | 캐시 히트 | 캐시 미스 (첫 실행/소스 변경) |
 |---|---|---|
 | HLSL 컴파일 | 0회 | 7회 (`D3DCompileFromFile`) |
-| 노이즈 굽기 | 0회 (파일 로드) | 컴퓨트 디스패치 3회 (128³+64³+512²) |
+| 노이즈 굽기 | 0회 (파일 로드) | 컴퓨트 디스패치 3회 (128³+128³+512²) |
 
 ---
 
@@ -250,7 +250,7 @@ GPU 텍스처 ─CopyResource→ STAGING 텍스처 ─Map(READ)→ CPU 버퍼 �
               읽기 가능한 스테이징으로 복사)
 ```
 `VolumeHeader`(매직/버전/크기/포맷) 40바이트 뒤에 복셀 데이터를 그대로 붙인다.
-base = 128³ × 4바이트 = 8 MB, detail = 64³ × 4바이트 = 1 MB, weather = 512² × 4바이트 = 1 MB다.
+base = 128³ × 4바이트 = 8 MB, detail = 128³ × 4바이트 = 8 MB, weather = 512² × 4바이트 = 1 MB다.
 
 ### Q. v4에서 base가 다시 RGBA8이 된 이유는?
 v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주파 형태를 렌더 시점에 다시 조합할 수 없어 큰 흐린 덩어리로 보였다. v4는 중복 채널이 아니라 서로 다른 정보를 저장한다.
@@ -258,7 +258,7 @@ v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주�
 | 볼륨 | 이전 | 현재 | 효과 |
 |------|------|------|------|
 | base | R8 Perlin-Worley 1개 (2 MB) | **RGBA8: Perlin-Worley + Worley 3밴드 (8 MB)** | 거시 형태를 재굽기 없이 조합 |
-| detail | RGBA8 Worley 옥타브 (1 MB) | 동일 | 경계 침식 전용 |
+| detail | 64³ RGBA8 Worley 옥타브 (1 MB) | **128³ RGBA8 Worley 옥타브 (8 MB)** | 6/12/24/48 밴드의 경계 침식 |
 
 - detail은 `DetailNoiseOctaves`가 Worley 옥타브 4개를 채널로 굽고,
   `DetailErosionFromChannels`(가중치 상수)가 렌더 시점에 재합성 → **재굽기 없이 HLSL에서 결 조절**.

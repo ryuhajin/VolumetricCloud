@@ -29,6 +29,37 @@ struct ParameterCategorySettings
 
 ParameterCategorySettings g_parameterCategories;
 
+bool ApplyWorldSpacePresetValue(
+    CloudParameters& p, const std::string& key, float value)
+{
+    if (key == "detailNoiseWorldSize") p.detailNoiseWorldSize = value;
+    else if (key == "baseNoiseVerticalSize") p.baseNoiseVerticalSize = value;
+    else if (key == "detailNoiseVerticalSize") p.detailNoiseVerticalSize = value;
+    else if (key == "maxViewStepLength") p.maxViewStepLength = value;
+    else if (key == "localLightDistance") p.localLightDistance = value;
+    else if (key == "cumulusGrowth") p.cumulusGrowth = value;
+    else if (key == "anvilStrength") p.anvilStrength = value;
+    else if (key == "detailErosionWidth") p.detailErosionWidth = value;
+    else if (key == "farLightSteps") p.farLightSteps = static_cast<int>(value);
+    else if (key == "boundaryRefineSteps") p.boundaryRefineSteps = static_cast<int>(value);
+    else return false;
+    return true;
+}
+
+void WriteWorldSpacePresetValues(std::ostream& output, const CloudParameters& p)
+{
+    output << "detailNoiseWorldSize=" << p.detailNoiseWorldSize << "\n"
+           << "baseNoiseVerticalSize=" << p.baseNoiseVerticalSize << "\n"
+           << "detailNoiseVerticalSize=" << p.detailNoiseVerticalSize << "\n"
+           << "maxViewStepLength=" << p.maxViewStepLength << "\n"
+           << "localLightDistance=" << p.localLightDistance << "\n"
+           << "cumulusGrowth=" << p.cumulusGrowth << "\n"
+           << "anvilStrength=" << p.anvilStrength << "\n"
+           << "detailErosionWidth=" << p.detailErosionWidth << "\n"
+           << "farLightSteps=" << p.farLightSteps << "\n"
+           << "boundaryRefineSteps=" << p.boundaryRefineSteps << "\n";
+}
+
 void* ParameterSettingsReadOpen(
     ImGuiContext*, ImGuiSettingsHandler* handler, const char* name)
 {
@@ -223,7 +254,7 @@ bool DebugUI::Draw(CloudParameters& p,
                     p.noiseWorldScale = std::round(p.noiseWorldScale);
                     changed |= ImGui::SliderInt("Base period", &p.basePeriod, 2, 12);
                     changed |= ImGui::SliderInt("Base octaves", &p.baseOctaves, 1, 5);
-                    changed |= ImGui::SliderInt("Detail period", &p.detailPeriod, 4, 32);
+                    changed |= ImGui::SliderInt("Detail period", &p.detailPeriod, 2, 8);
                     changed |= ImGui::SliderInt("Detail octaves", &p.detailOctaves, 1, 4);
                     changed |= ImGui::SliderFloat("Noise cutoff threshold", &p.noiseCutoffThreshold,
                                                   0.0f, 0.95f, "%.3f");
@@ -231,6 +262,8 @@ bool DebugUI::Draw(CloudParameters& p,
                     changed |= ImGui::SliderFloat("Base erosion", &p.baseErosion, 0.0f, 0.75f, "%.3f");
                     changed |= ImGui::SliderFloat("Density", &p.densityMultiplier, 0.0f, 5.0f, "%.2f");
                     changed |= ImGui::SliderFloat("Erosion", &p.erosionStrength, 0.0f, 1.0f, "%.3f");
+                    changed |= ImGui::SliderFloat("Detail erosion width", &p.detailErosionWidth,
+                                                  0.05f, 0.95f, "%.3f");
                     changed |= ImGui::SliderFloat("Bottom fade", &p.bottomFade, 0.01f, 0.49f, "%.3f");
                     changed |= ImGui::SliderFloat("Top fade", &p.topFade, 0.01f, 0.49f, "%.3f");
                     changed |= ImGui::InputFloat("Seed", &p.seed, 1.0f, 10.0f, "%.0f");
@@ -250,7 +283,10 @@ bool DebugUI::Draw(CloudParameters& p,
                     changed |= ImGui::SliderFloat("Ambient", &p.ambientIntensity, 0.0f, 2.0f, "%.2f");
                     changed |= ImGui::SliderFloat("HG eccentricity", &p.phaseG, -0.9f, 0.9f, "%.2f");
                     changed |= ImGui::SliderFloat("Light absorption", &p.lightAbsorption, 0.1f, 4.0f, "%.2f");
-                    changed |= ImGui::SliderInt("Light steps", &p.lightSteps, 1, 12);
+                    changed |= ImGui::SliderInt("Local light steps", &p.lightSteps, 1, 12);
+                    changed |= ImGui::SliderFloat("Local light distance", &p.localLightDistance,
+                                                  0.1f, 2.0f, "%.2f km");
+                    changed |= ImGui::SliderInt("Far light steps", &p.farLightSteps, 0, 8);
                     changed |= ImGui::SliderFloat("Powder", &p.powderStrength, 0.0f, 1.5f, "%.2f");
                     changed |= ImGui::SliderFloat("Multi scattering", &p.multiScatterStrength, 0.0f, 1.0f, "%.2f");
                     changed |= ImGui::SliderFloat("Silver lining", &p.silverLiningStrength, 0.0f, 2.0f, "%.2f");
@@ -273,13 +309,21 @@ bool DebugUI::Draw(CloudParameters& p,
                         ImGui::PopID();
                     }
                     changed |= ImGui::SliderFloat("Ray jitter", &p.jitterStrength, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Max view step length", &p.maxViewStepLength,
+                                                  0.025f, 0.20f, "%.3f km");
+                    changed |= ImGui::SliderInt("Boundary refine steps", &p.boundaryRefineSteps, 0, 5);
                 }
 
                 if (BeginParameterCategory("Wide Cloud Layer", 4))
                 {
                     changed |= ImGui::SliderFloat("Cloud base height", &p.cloudBaseHeight, -2.0f, 10.0f, "%.2f km");
                     changed |= ImGui::SliderFloat("Cloud thickness", &p.cloudThickness, 3.0f, 16.0f, "%.2f km");
-                    changed |= ImGui::SliderFloat("3D noise world size", &p.cloudNoiseWorldSize, 2.0f, 50.0f, "%.1f km");
+                    changed |= ImGui::SliderFloat("Base noise XZ size", &p.cloudNoiseWorldSize, 2.0f, 50.0f, "%.1f km");
+                    changed |= ImGui::SliderFloat("Base noise Y size", &p.baseNoiseVerticalSize, 0.5f, 12.0f, "%.2f km");
+                    changed |= ImGui::SliderFloat("Detail noise XZ size", &p.detailNoiseWorldSize, 0.25f, 6.0f, "%.2f km");
+                    changed |= ImGui::SliderFloat("Detail noise Y size", &p.detailNoiseVerticalSize, 0.1f, 4.0f, "%.2f km");
+                    changed |= ImGui::SliderFloat("Cumulus growth", &p.cumulusGrowth, 1.0f, 2.5f, "%.2f");
+                    changed |= ImGui::SliderFloat("Anvil strength", &p.anvilStrength, 0.0f, 1.0f, "%.2f");
                     changed |= ImGui::SliderFloat("Max march distance", &p.maxMarchDistance, 20.0f, 250.0f, "%.1f km");
                     changed |= ImGui::SliderFloat("Weather world size", &p.weatherWorldSize, 20.0f, 300.0f, "%.1f km");
                     changed |= ImGui::SliderFloat("Weather coverage", &p.weatherCoverageStrength, 0.0f, 1.5f, "%.2f");
@@ -333,7 +377,7 @@ bool DebugUI::Draw(CloudParameters& p,
                 ImGui::Text("Inspector source: %s", p.useTextureCache ? "3D texture cache" : "procedural HLSL");
                 ImGui::TextUnformatted("Main ray march source: 3D texture cache");
                 ImGui::TextUnformatted("Base cache: 128^3 RGBA8 (8.0 MiB, shape bands)");
-                ImGui::TextUnformatted("Detail cache: 64^3 RGBA8 (1.0 MiB)");
+                ImGui::TextUnformatted("Detail cache: 128^3 RGBA8 (8.0 MiB)");
                 ImGui::TextUnformatted("Weather cache: 512^2 RGBA8 (1.0 MiB)");
                 ImGui::SeparatorText("Persistent cache");
                 if (ImGui::Button("Save Noise Cache")) cacheActions.save = true;
@@ -370,7 +414,8 @@ void DebugUI::DrawTelemetry(const CloudParameters& p, const TelemetrySnapshot& t
     const float layerBottom = p.cloudBaseHeight - (std::max)(p.heightVariation, 0.0f);
     const float layerTop = p.cloudBaseHeight + (std::max)(p.heightVariation, 0.0f) +
         (std::max)(p.cloudThickness, 0.1f) *
-        (1.0f + (std::clamp)(p.thicknessVariation, 0.0f, 1.0f));
+        (1.0f + (std::clamp)(p.thicknessVariation, 0.0f, 1.0f)) *
+        (std::max)(p.cumulusGrowth, 1.0f);
 
     const ImGuiIO& io = ImGui::GetIO();
     std::array<std::string, 8> lines;
@@ -388,8 +433,8 @@ void DebugUI::DrawTelemetry(const CloudParameters& p, const TelemetrySnapshot& t
     std::snprintf(text, sizeof(text), "Cloud %.1f-%.1f km | Coverage %.2f",
                   layerBottom, layerTop, p.coverage);
     lines[4] = text;
-    std::snprintf(text, sizeof(text), "March V%d L%d | Max %.0f km",
-                  p.viewSteps, p.lightSteps, p.maxMarchDistance);
+    std::snprintf(text, sizeof(text), "March V%d L%d+%d | Max %.0f km",
+                  p.viewSteps, p.lightSteps, p.farLightSteps, p.maxMarchDistance);
     lines[5] = text;
     lines[6] = "Cache " + t.cacheStatus;
     lines[7] = "F1 editor | F2 HUD";
@@ -501,7 +546,62 @@ void DebugUI::LoadPresets()
         else if (key == "horizonFadeStart") p.horizonFadeStart = value;
         else if (key == "horizonFadeEnd") p.horizonFadeEnd = value;
         else if (key == "weatherSeed") p.weatherSeed = value;
+        else ApplyWorldSpacePresetValue(p, key, value);
     }
+    for (auto& [presetName, p] : m_userPresets)
+    {
+        p.detailPeriod = std::clamp(p.detailPeriod, 2, 8);
+        p.detailOctaves = std::clamp(p.detailOctaves, 1, 4);
+        p.viewSteps = std::clamp(p.viewSteps, 48, 256);
+        p.lightSteps = std::clamp(p.lightSteps, 1, 12);
+        p.farLightSteps = std::clamp(p.farLightSteps, 0, 8);
+        p.boundaryRefineSteps = std::clamp(p.boundaryRefineSteps, 0, 5);
+    }
+}
+
+bool DebugUI::RunWorldSpacePresetRoundTripTest()
+{
+    CloudParameters expected = DefaultCloudParameters();
+    expected.detailNoiseWorldSize = 2.25f;
+    expected.baseNoiseVerticalSize = 4.5f;
+    expected.detailNoiseVerticalSize = 1.125f;
+    expected.maxViewStepLength = 0.075f;
+    expected.localLightDistance = 0.8f;
+    expected.cumulusGrowth = 1.6f;
+    expected.anvilStrength = 0.45f;
+    expected.detailErosionWidth = 0.7f;
+    expected.farLightSteps = 3;
+    expected.boundaryRefineSteps = 4;
+
+    std::ostringstream output;
+    output << std::setprecision(9);
+    WriteWorldSpacePresetValues(output, expected);
+
+    CloudParameters actual = DefaultCloudParameters();
+    std::istringstream input(output.str());
+    std::string line;
+    size_t applied = 0;
+    while (std::getline(input, line))
+    {
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) return false;
+        const std::string key = line.substr(0, eq);
+        const float value = std::strtof(line.c_str() + eq + 1, nullptr);
+        if (!ApplyWorldSpacePresetValue(actual, key, value)) return false;
+        ++applied;
+    }
+    const auto same = [](float a, float b) { return std::abs(a - b) < 1.0e-6f; };
+    return applied == 10 &&
+        same(actual.detailNoiseWorldSize, expected.detailNoiseWorldSize) &&
+        same(actual.baseNoiseVerticalSize, expected.baseNoiseVerticalSize) &&
+        same(actual.detailNoiseVerticalSize, expected.detailNoiseVerticalSize) &&
+        same(actual.maxViewStepLength, expected.maxViewStepLength) &&
+        same(actual.localLightDistance, expected.localLightDistance) &&
+        same(actual.cumulusGrowth, expected.cumulusGrowth) &&
+        same(actual.anvilStrength, expected.anvilStrength) &&
+        same(actual.detailErosionWidth, expected.detailErosionWidth) &&
+        actual.farLightSteps == expected.farLightSteps &&
+        actual.boundaryRefineSteps == expected.boundaryRefineSteps;
 }
 
 bool DebugUI::SavePreset(const std::string& name, const CloudParameters& p)
@@ -554,7 +654,9 @@ bool DebugUI::SavePreset(const std::string& name, const CloudParameters& p)
              << "thicknessVariation=" << v.thicknessVariation << "\n"
              << "horizonFadeStart=" << v.horizonFadeStart << "\n"
              << "horizonFadeEnd=" << v.horizonFadeEnd << "\n"
-             << "weatherSeed=" << v.weatherSeed << "\n\n";
+             << "weatherSeed=" << v.weatherSeed << "\n";
+        WriteWorldSpacePresetValues(file, v);
+        file << "\n";
     }
     return true;
 }
@@ -608,7 +710,9 @@ bool DebugUI::DeletePreset(const std::string& name)
              << "thicknessVariation=" << v.thicknessVariation << "\n"
              << "horizonFadeStart=" << v.horizonFadeStart << "\n"
              << "horizonFadeEnd=" << v.horizonFadeEnd << "\n"
-             << "weatherSeed=" << v.weatherSeed << "\n\n";
+             << "weatherSeed=" << v.weatherSeed << "\n";
+        WriteWorldSpacePresetValues(file, v);
+        file << "\n";
     }
     return true;
 }

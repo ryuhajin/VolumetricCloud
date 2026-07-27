@@ -2,15 +2,17 @@
 
 ## 레이와 평면 구름층
 
-픽셀 UV를 NDC로 바꾸고 `invViewProj`로 `ro`, `rd`를 만든다. 전역 구름층의 하단·상단 평면과 교차해 `[t0,t1]`을 구하고 `maxMarchDistance`로 수평선 방향을 제한한다. weather coverage가 없는 곳은 4배, 후보 영역은 2배, 실제 밀도는 기본 스텝으로 진행한다. 고정 gradient jitter는 밴딩을 줄이되 temporal shimmer를 만들지 않는다.
+픽셀 UV를 NDC로 바꾸고 `invViewProj`로 `ro`, `rd`를 만든다. 전역 구름층의 하단·상단 평면과 교차해 `[t0,t1]`을 구하고 `maxMarchDistance`로 수평선 방향을 제한한다. fine step은 `(t1-t0)/viewSteps`와 `maxViewStepLength` 중 작은 값이며 기본 물리 상한은 0.05km다. 실제 밀도는 fine step, 후보지만 비어 있으면 목표 간격의 2배(최대 0.4km), weather가 비면 4배(최대 1.6km)로 진행한다. 빈 구간 뒤 처음 밀도를 찾으면 직전 구간을 기본 3회 이분 탐색해 경계 진입점을 정제한다. 정적 loop 상한은 2000회지만 구간 종료와 투과율 0.01에서 조기 종료한다.
 
 광역 장면의 표시 규칙은 `1 world unit = 1 km`, `+Y=고도`, `+Z=북쪽`, `+X=동쪽`이다. 정규화된 `rd`를 사용하므로 ray parameter `t`도 km로 해석한다. 예를 들어 `cloudBaseHeight=2`, `cloudThickness=3.8`, `maxMarchDistance=96`은 각각 2 km 하단, 3.8 km 기준 두께, 96 km 제한이다. 다만 `densityMultiplier`와 `lightAbsorption`은 실제 대기 측정 단위를 복원한 값이 아니라 화면 품질을 위한 예술적 계수다.
 
-F1은 기준 두께를 3~16 km로, view step을 48~256으로 조절한다. 지역 두께는 weather A와 `thicknessVariation`의 영향을 받아 기준 범위를 넘을 수 있다. 높은 step은 `baseDt`를 줄이지만 실제 반복 수는 weather 기반 4×/2×/1× 진행과 투과율 조기 종료에 따라 달라진다. 따라서 GPU 시간은 step에 정비례하거나 항상 단조 증가하지 않으며 128/160/192/256을 고정 benchmark와 사용자 화면에서 함께 비교한다.
+F1은 기준 두께를 3~16 km로, view step을 48~256으로 조절한다. 지역 두께는 weather A, `thicknessVariation`, cloud type과 `cumulusGrowth`의 영향을 받아 기준 범위를 넘을 수 있다. 높은 step은 목표 간격을 줄이지만 실제 반복 수는 50m 물리 상한, weather 기반 4×/2×/1× 진행과 투과율 조기 종료에 따라 달라진다. 따라서 GPU 시간은 step에 정비례하거나 항상 단조 증가하지 않으며 128/160/192/256을 고정 benchmark와 사용자 화면에서 함께 비교한다.
 
 ## Weather map과 월드 좌표
 
-512² RGBA map은 R=coverage, G=cloud type, B=base-height variation, A=thickness variation이다. XZ 월드 좌표를 `weatherWorldSize`로 나눠 반복 샘플링하고, B/A로 각 지점의 실제 하단과 상단을 만든다. 3D 노이즈는 `worldXZ / cloudNoiseWorldSize`와 지역 높이 비율을 사용하므로 유한 AABB 모서리가 없다.
+512² RGBA map은 R=coverage, G=cloud type, B=base-height variation, A=thickness variation이다. XZ 월드 좌표를 `weatherWorldSize`로 나눠 반복 샘플링하고, B/A로 각 지점의 실제 하단과 기준 두께를 만든다. G가 적운형일수록 `cumulusGrowth`가 실제 상단을 높이고 `anvilStrength`가 상부 형태를 넓힌다.
+
+Base와 detail은 같은 UVW를 공유하지 않는다. Base XZ는 `cloudNoiseWorldSize`, Y는 `baseNoiseVerticalSize`, detail XZ는 `detailNoiseWorldSize`, Y는 `detailNoiseVerticalSize`로 나눈다. Y 좌표는 local base에서의 물리적 km 오프셋을 사용하고 `height01`은 envelope에만 쓰므로 cloud thickness를 바꿔도 노이즈 특징 크기가 늘어나지 않는다. 바람도 월드 km 오프셋을 먼저 계산한 뒤 각 크기로 변환한다.
 
 ## 심리스 periodic 노이즈
 
@@ -23,11 +25,12 @@ localBottom / localTop = weather.b / weather.a로 변형
 height01 = remap(worldY, localBottom, localTop)
 base.r = periodic Perlin-Worley(basePeriod)
 base.gba = low/mid/high periodic Worley bands
-detail = periodic Worley FBM(detailPeriod)
+detail.rgba = periodic Worley(detailPeriod * 1/2/4/8)
 macro  = remap(base.r, cutoff + localCoverage + height profile)
 macro -= dot(base.gba, weights) * baseErosion at boundary
-shape  = macro - detail * erosion at boundary
-density = saturate(shape) * CumulusHeightProfile(y) * densityMultiplier
+macro += weatherType * anvil(height01) * anvilStrength
+shape  = macro - detail * erosion inside detailErosionWidth
+density = saturate(shape) * CumulusHeightProfile(height01) * densityMultiplier
 ```
 
 전역 `coverage`는 전체 채움 비율, weather R은 지역별 맑음/흐림을 조절한다. weather G는 층운과 적운 높이 프로파일을 혼합한다. `baseErosion`은 거시 경계를, detail은 코어가 아닌 경계만 깎는다.
@@ -36,10 +39,11 @@ density = saturate(shape) * CumulusHeightProfile(y) * densityMultiplier
 
 각 view step에서 `stepT = exp(-density * dt)`를 계산하고 front-to-back으로 누적한다. 누적 투과율이 0.01 미만이면 조기 종료한다.
 
-밀도가 있는 위치에서는 태양 방향으로 구름층 상단까지 기본 8회 light march하여 self-shadow를 구한다. 위상은 정규화된 전방 HG와 약한 후방 HG를 혼합한다. 최종 하늘과 산란광에는 지수 tone mapping을 적용해 밝은 가장자리 포화를 완화한다.
+밀도가 있는 위치에서는 태양 방향으로 별도 light ray를 만든다. 처음 `localLightDistance=0.6km`는 기본 8회로 적분해 약 75m 간격의 근거리 자기 그림자를 보존하고, 남은 출구 구간은 기본 4회로 적분해 큰 구름 덩어리의 차폐를 얻는다. 두 구간의 optical depth를 합친 뒤 Beer–Lambert 투과율을 계산한다. 50m 간격의 인접 dense view sample 두 개는 첫 sample의 light visibility를 공유해 light ray를 약 100m마다 갱신한다. 위상은 정규화된 전방 HG와 약한 후방 HG를 혼합한다. 최종 하늘과 산란광에는 지수 tone mapping을 적용해 밝은 가장자리 포화를 완화한다.
 
 ```text
-visibility *= exp(-lightDensity * lightStep * lightAbsorption)
+opticalDepth += lightDensity * segmentStep * lightAbsorption
+visibility = exp(-opticalDepth)
 multiVisibility = weighted_sum(visibility, sqrt(visibility), fourth_root(visibility))
 direct = sun * lerp(visibility, multiVisibility, strength) * dualLobePhase
 direct += powder + thin-edge silver lining

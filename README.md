@@ -4,15 +4,15 @@ DirectX 11 + HLSL로 광역 weather map, periodic 3D noise, 가변 레이마칭�
 
 ## 현재 기능
 
-- 평면 구름층 교차와 최대 거리 제한, 48~256-step 가변 ray marching
+- 평면 구름층 교차와 최대 거리 제한, 50m 물리 상한·경계 정제를 갖는 최대 2000회 가변 ray marching
 - 512² RGBA weather map: coverage, cloud type, base-height, thickness
 - 심리스 periodic Value/Worley/FBM 및 Perlin–Worley 밀도장
-- 128³ base, 64³ detail RGBA8 Texture3D
-- 128³ base RGBA 형태 밴드와 64³ detail RGBA 침식 옥타브
-- 태양 light march, dual-lobe HG, powder, silver lining과 3-octave 다중 산란 근사
+- 128³ base/detail RGBA8 Texture3D와 독립 월드 공간 XYZ 크기
+- 128³ base RGBA 형태 밴드와 128³ detail RGBA 침식 옥타브
+- 근거리/원거리 태양 light march, dual-lobe HG, powder, silver lining과 3-octave 다중 산란 근사
 - F1 Dear ImGui 편집기와 F2 상시 HUD: 성능·태양·구름층·마칭·캐시 상태
 - 분석적 하늘, 수평선 haze, 태양 glow와 CPU/DX11 GPU timestamp 계측
-- 검증된 `.cso`, 3D volume, 2D weather map 영구 캐시 v5
+- 검증된 `.cso`, 3D volume, 2D weather map 영구 캐시 v6
 - HLSL 핫 리로드 실패 시 마지막 정상 리소스 유지
 
 ## 빌드

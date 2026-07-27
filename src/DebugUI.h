@@ -52,6 +52,7 @@ public:
               NoiseCacheUiActions& cacheActions);
     void DrawTelemetry(const CloudParameters& params, const TelemetrySnapshot& telemetry);
     void EndFrame();
+    static bool RunWorldSpacePresetRoundTripTest();
 
 private:
     void LoadPresets();

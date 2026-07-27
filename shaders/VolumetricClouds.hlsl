@@ -61,7 +61,8 @@ float2 CloudLayerInterval(float3 ro, float3 rd)
 {
     float envelopeBottom = cloudBaseHeight - max(heightVariation, 0.0);
     float envelopeTop = cloudBaseHeight + max(heightVariation, 0.0) +
-        max(cloudThickness, 0.1) * (1.0 + saturate(thicknessVariation));
+        max(cloudThickness, 0.1) * (1.0 + saturate(thicknessVariation)) *
+        max(cumulusGrowth, 1.0);
     float distanceLimit = max(maxMarchDistance, 1.0);
     float horizontal = 1.0 - step(1e-5, abs(rd.y));
     float safeY = lerp(rd.y, rd.y >= 0.0 ? 1e-5 : -1e-5, horizontal);
@@ -79,23 +80,40 @@ float LightTransmittance(float3 p, float3 sunDir)
     float2 lightInterval = CloudLayerInterval(lightOrigin, sunDir);
     float validInterval = step(lightInterval.x + 1e-5, lightInterval.y);
     float distanceToExit = max(lightInterval.y, 0.0) * validInterval;
-    int steps = clamp(lightSteps, 1, 12);
-    float stepLength = distanceToExit / steps;
-    float visibility = 1.0;
+    float nearDistance = min(distanceToExit, max(localLightDistance, 0.01));
+    int nearSteps = clamp(lightSteps, 1, 12);
+    float nearStepLength = nearDistance / nearSteps;
+    float opticalDepth = 0.0;
 
     [loop]
     for (int j = 0; j < 12; ++j)
     {
-        if (j >= steps) break;
-        float lightDistance = (j + 0.5) * stepLength;
+        if (j >= nearSteps) break;
+        float lightDistance = (j + 0.5) * nearStepLength;
         float3 lightPosition = lightOrigin + sunDir * lightDistance;
         float4 weather = SampleWeather(lightPosition.xz);
         float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
             densityMultiplier * densityScale;
-        visibility *= exp(-lightDensity * stepLength * lightAbsorption);
-        if (visibility < 0.01) break;
+        opticalDepth += lightDensity * nearStepLength * lightAbsorption;
+        if (opticalDepth > 4.60517) return 0.01;
     }
-    return lerp(1.0, visibility, validInterval);
+
+    float farDistance = max(distanceToExit - nearDistance, 0.0);
+    int farSteps = clamp(farLightSteps, 0, 8);
+    float farStepLength = farSteps > 0 ? farDistance / farSteps : 0.0;
+    [loop]
+    for (int farJ = 0; farJ < 8; ++farJ)
+    {
+        if (farJ >= farSteps || farDistance <= 0.0) break;
+        float lightDistance = nearDistance + (farJ + 0.5) * farStepLength;
+        float3 lightPosition = lightOrigin + sunDir * lightDistance;
+        float4 weather = SampleWeather(lightPosition.xz);
+        float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
+            densityMultiplier * densityScale;
+        opticalDepth += lightDensity * farStepLength * lightAbsorption;
+        if (opticalDepth > 4.60517) return 0.01;
+    }
+    return lerp(1.0, exp(-opticalDepth), validInterval);
 }
 
 float InterleavedGradientNoise(float2 pixel)
@@ -149,8 +167,11 @@ float4 main(VSOut input) : SV_TARGET
 
     // ---- 3) 빈 공간은 2배 스텝, 밀도 구간은 기본 스텝으로 행진한다. ----
     int         steps = clamp(viewSteps, 48, 256);
-    float       baseDt = (t1 - t0) / steps;
-    float       rayDistance = t0 + InterleavedGradientNoise(input.pos.xy) * baseDt * saturate(jitterStrength);
+    float       targetDt = (t1 - t0) / steps;
+    float       fineDt = min(targetDt, max(maxViewStepLength, 0.001));
+    float       rayDistance = t0 + InterleavedGradientNoise(input.pos.xy) * fineDt * saturate(jitterStrength);
+    float       previousRayDistance = rayDistance;
+    float       previousDensity = 0.0;
     float       transmittance = 1.0; // 투과율 (1=완전 투명, 0=완전 불투명)
     float4      debugMax = 0.0;
     float3      scattering = 0.0;
@@ -161,11 +182,13 @@ float4 main(VSOut input) : SV_TARGET
     float3      debugDirect = 0.0;
     float4      debugWeather = 0.0;
     bool        foundDensity = false;
+    float       cachedLightVisibility = 1.0;
+    int         denseSampleIndex = 0;
 
     [loop]
-    for (int i = 0; i < 256; ++i)
+    for (int i = 0; i < 2000; ++i)
     {
-        if (i >= steps || rayDistance >= t1) break;
+        if (rayDistance >= t1) break;
         float3 p = ro + rd * rayDistance;
         float4 weather = SampleWeather(p.xz);
         float4 components = EvaluateLayerCloudComponents(p, weather, time);
@@ -173,12 +196,44 @@ float4 main(VSOut input) : SV_TARGET
             min(horizonFadeStart, horizonFadeEnd - 0.01),
             max(horizonFadeEnd, horizonFadeStart + 0.01), rayDistance);
         float density = components.w * densityMultiplier * densityScale * distanceFade;
+
+        if (density > 0.0001 && previousDensity <= 0.0001 &&
+            rayDistance > previousRayDistance + 1e-5)
+        {
+            float refineEmpty = previousRayDistance;
+            float refineDense = rayDistance;
+            int refineSteps = clamp(boundaryRefineSteps, 0, 5);
+            [loop]
+            for (int refine = 0; refine < 5; ++refine)
+            {
+                if (refine >= refineSteps) break;
+                float refineDistance = (refineEmpty + refineDense) * 0.5;
+                float3 refinePosition = ro + rd * refineDistance;
+                float4 refineWeather = SampleWeather(refinePosition.xz);
+                float refineDensity = EvaluateLayerCloudComponents(
+                    refinePosition, refineWeather, time).w * densityMultiplier * densityScale;
+                if (refineDensity > 0.0001) refineDense = refineDistance;
+                else refineEmpty = refineDistance;
+            }
+            rayDistance = refineDense;
+            p = ro + rd * rayDistance;
+            weather = SampleWeather(p.xz);
+            components = EvaluateLayerCloudComponents(p, weather, time);
+            distanceFade = 1.0 - smoothstep(
+                min(horizonFadeStart, horizonFadeEnd - 0.01),
+                max(horizonFadeEnd, horizonFadeStart + 0.01), rayDistance);
+            density = components.w * densityMultiplier * densityScale * distanceFade;
+        }
+
         debugMax = max(debugMax, components);
         debugWeather = max(debugWeather, weather);
 
         float potential = WeatherPotential(weather);
-        float stepMultiplier = potential <= 0.001 ? 4.0 : (density > 0.001 ? 1.0 : 2.0);
-        float dt = min(baseDt * stepMultiplier, t1 - rayDistance);
+        float weatherSkip = min(max(targetDt * 4.0, fineDt * 4.0), 1.6);
+        float candidateSkip = min(max(targetDt * 2.0, fineDt * 2.0), 0.4);
+        float adaptiveDt = density > 0.001 ? fineDt :
+            (potential <= 0.001 ? weatherSkip : candidateSkip);
+        float dt = min(adaptiveDt, t1 - rayDistance);
 
         // ---- 4) 태양 방향 self-shadow + 근사 다중 산란 ----
         float stepTransmittance = exp(-density * dt);
@@ -186,7 +241,10 @@ float4 main(VSOut input) : SV_TARGET
         if (density > 0.0001)
         {
             foundDensity = true;
-            float lightVisibility = LightTransmittance(p, sunDir);
+            if ((denseSampleIndex & 1) == 0)
+                cachedLightVisibility = LightTransmittance(p, sunDir);
+            float lightVisibility = cachedLightVisibility;
+            ++denseSampleIndex;
             float multiVisibility = MultiScatterVisibility(lightVisibility);
             float effectiveVisibility = lerp(lightVisibility, multiVisibility, saturate(multiScatterStrength));
             float localBase, localTop;
@@ -209,6 +267,8 @@ float4 main(VSOut input) : SV_TARGET
         }
         transmittance *= stepTransmittance;
         if (transmittance < 0.01) break;
+        previousRayDistance = rayDistance;
+        previousDensity = density;
         rayDistance += dt;
     }
 

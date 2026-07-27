@@ -36,12 +36,12 @@ enum class NoiseSliceAxis : int
     YZ,
 };
 
-// HLSL CloudCB(b1)와 정확히 같은 128바이트 레이아웃을 사용한다.
+// HLSL CloudCB(b1)와 정확히 같은 224바이트 레이아웃을 사용한다.
 struct alignas(16) CloudParameters
 {
     float noiseWorldScale  = 1.0f; // 한 볼륨 안에서 반복되는 타일 수(정수로 사용)
     int   basePeriod       = 4;
-    int   detailPeriod     = 16;
+    int   detailPeriod     = 6;
     float densityMultiplier= 2.4f;
 
     float noiseCutoffThreshold = 0.48f;
@@ -54,7 +54,7 @@ struct alignas(16) CloudParameters
     float seed             = 17.0f;
 
     int baseOctaves        = 4;
-    int detailOctaves      = 3;
+    int detailOctaves      = 4;
     int renderMode         = static_cast<int>(CloudRenderMode::LitCloud);
     int useTextureCache    = 1;
 
@@ -92,9 +92,24 @@ struct alignas(16) CloudParameters
     float horizonFadeStart     = 70.0f;
     float horizonFadeEnd       = 120.0f;
     float weatherSeed          = 31.0f;
+
+    float detailNoiseWorldSize    = 1.5f;  // km, detail XZ 반복 크기
+    float baseNoiseVerticalSize   = 3.0f;  // km, base Y 반복 크기
+    float detailNoiseVerticalSize = 0.75f; // km, detail Y 반복 크기
+    float maxViewStepLength       = 0.05f; // km, 밀도 구간 최대 50 m
+
+    float localLightDistance = 0.60f; // km, 근거리 자기 그림자 구간
+    float cumulusGrowth       = 1.35f;
+    float anvilStrength       = 0.35f;
+    float detailErosionWidth  = 0.65f;
+
+    int farLightSteps       = 4;
+    int boundaryRefineSteps = 3;
+    float _cloudPad0        = 0.0f;
+    float _cloudPad1        = 0.0f;
 };
 
-static_assert(sizeof(CloudParameters) == 176, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 224, "CloudParameters must match CloudCB");
 
 struct NoisePreviewSettings
 {
@@ -113,7 +128,7 @@ inline CloudParameters CumulusCloudParameters()
 {
     CloudParameters p;
     p.basePeriod = 4;
-    p.detailPeriod = 16;
+    p.detailPeriod = 6;
     p.noiseCutoffThreshold = 0.46f;
     p.densityMultiplier = 3.0f;
     p.erosionStrength = 0.38f;
@@ -134,7 +149,7 @@ inline CloudParameters StratusCloudParameters()
 {
     CloudParameters p;
     p.basePeriod = 6;
-    p.detailPeriod = 20;
+    p.detailPeriod = 6;
     p.noiseCutoffThreshold = 0.56f;
     p.densityMultiplier = 1.2f;
     p.erosionStrength = 0.25f;
@@ -153,7 +168,7 @@ inline CloudParameters CumulusShowcaseCloudParameters()
     CloudParameters p = CumulusCloudParameters();
     p.noiseWorldScale = 1.0f;
     p.basePeriod = 5;
-    p.detailPeriod = 20;
+    p.detailPeriod = 6;
     p.densityMultiplier = 3.20f;
     p.noiseCutoffThreshold = 0.45f;
     p.coverage = 0.78f;
@@ -197,5 +212,15 @@ inline CloudParameters CumulusWideShowcaseCloudParameters()
     p.horizonFadeStart = 60.0f;
     p.horizonFadeEnd = 96.0f;
     p.weatherSeed = 31.0f;
+    p.detailNoiseWorldSize = 1.5f;
+    p.baseNoiseVerticalSize = 3.0f;
+    p.detailNoiseVerticalSize = 0.75f;
+    p.maxViewStepLength = 0.05f;
+    p.localLightDistance = 0.60f;
+    p.cumulusGrowth = 1.35f;
+    p.anvilStrength = 0.35f;
+    p.detailErosionWidth = 0.65f;
+    p.farLightSteps = 4;
+    p.boundaryRefineSteps = 3;
     return p;
 }
