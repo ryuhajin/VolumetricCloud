@@ -47,7 +47,7 @@ localThickness =
 ## 6. 실제 수정 내용
 
 - `src/DebugUI.cpp`
-  - 두께 범위와 km 단위 format, 8 km 초과 비용 도움말을 추가했다.
+  - 두께 범위와 km 단위 format을 추가했다.
   - Parameters를 6개 `CollapsingHeader`로 재구성했다.
   - 카테고리 상태용 ImGui settings handler와 stable key를 추가했다.
   - Stats 중복 항목을 제거하고 창 크기 제약 및 Inspector 반응형 열 수를 적용했다.

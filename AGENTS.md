@@ -36,7 +36,7 @@ DirectX11 + HLSL로 레이마칭과 볼류메트릭 클라우드를 학습하는
 2. `CloudParameters.h`의 구조체, `CloudNoise.hlsli`의 `CloudCB`, `doc/ARCHITECTURE.md` 표를 동시에 맞춥니다.
 3. periodic noise나 생성 파라미터 호환성이 깨지면 캐시 버전을 올리고 `assets/noise-cache/bundle`을 재생성합니다.
 4. 변경 후 Debug/Release 빌드와 `ctest --test-dir build -C Release --output-on-failure`를 확인합니다.
-5. 실제 렌더의 심미적 평가는 사용자 영역이며 에이전트 자동 테스트에는 스크린샷 비교를 넣지 않습니다.
+5. 에이전트는 렌더 캡처를 생성하거나 자동 평가하지 않습니다. 반환 코드, 수치 범위, HLSL 컴파일, D3D11 디버그 메시지, 빌드와 테스트로 검증하고 실제 렌더의 심미적 평가는 사용자가 직접 실행한 화면으로 승인합니다.
 6. 브랜치·커밋은 [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md)를 따릅니다.
 7. 코드를 바꾸는 브랜치는 `doc/changes/<브랜치명>.md` 작업 기록을 만들고, 변경 이유·대안·구현·검증 결과를 같은 커밋에서 갱신합니다. 파일명에서는 `/`를 `-`로 바꿉니다.
 8. 공개 작업 기록에는 개인 면접 답변을 넣지 않습니다. 면접용 정리는 Git에서 제외된 `notes/interview/`에만 작성합니다.

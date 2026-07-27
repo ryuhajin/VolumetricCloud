@@ -267,8 +267,6 @@ bool DebugUI::Draw(CloudParameters& p,
                 {
                     changed |= ImGui::SliderFloat("Cloud base height", &p.cloudBaseHeight, -2.0f, 10.0f, "%.2f km");
                     changed |= ImGui::SliderFloat("Cloud thickness", &p.cloudThickness, 3.0f, 16.0f, "%.2f km");
-                    ImGui::TextWrapped("8 km 초과 시 128 view step의 샘플 간격이 넓어지고, "
-                                       "밀도 구간의 light march가 늘어 GPU 시간이 증가할 수 있습니다.");
                     changed |= ImGui::SliderFloat("3D noise world size", &p.cloudNoiseWorldSize, 2.0f, 50.0f, "%.1f km");
                     changed |= ImGui::SliderFloat("Max march distance", &p.maxMarchDistance, 20.0f, 250.0f, "%.1f km");
                     changed |= ImGui::SliderFloat("Weather world size", &p.weatherWorldSize, 20.0f, 300.0f, "%.1f km");
