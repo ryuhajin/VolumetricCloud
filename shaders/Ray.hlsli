@@ -7,6 +7,8 @@
 // ============================================================================
 
 // ---- 해석적 ray-sphere 교차 (rd는 정규화되어 a=1) ----
+// 구의 방정식 (x - cx)^2 + (y - cy)^2 + (z - cz)^2 = r^2에
+// ray 방정식을 대입하여 2차방정식을 푼다
 //  교차하면 true, t0(진입)/t1(탈출) 출력. t0 <= t1.
 bool RaySphere(float3 ro, float3 rd, float3 center, float radius,
                out float t0, out float t1)
@@ -43,14 +45,22 @@ bool RaySphere(float3 ro, float3 rd, float3 center, float radius,
 }
 
 // ---- ray-box(AABB) 교차: slab 방식 ----
+// 점 P(t)가 세 조건을 모두 만족하는지 체크
+// 박스 안이라는 건 x/y/z 범위에 동시에 들어간다는 뜻이므로, 세 구간의 교집합을 구함
+// boxMin.x <= p.x <= boxMax.x
+// boxMin.y <= p.y <= boxMax.y
+// boxMin.z <= p.z <= boxMax.z
 //  교차하면 true, t0(진입)/t1(탈출) 출력. t0 <= t1.
 bool RayBox(float3 ro, float3 rd, float3 boxMin, float3 boxMax,
             out float t0, out float t1)
 {
     // 각 축의 두 평면과 만나는 t를 구한다.
     float3 invRd = 1.0 / rd;
-    float3 tA = (boxMin - ro) * invRd;
-    float3 tB = (boxMax - ro) * invRd;
+
+    // ray 공식 p(t) = ro + rd * t
+    // t = (boxMin.x - ro.x) / rd.x
+    float3 tA = (boxMin - ro) * invRd; // Min tx,ty,tz
+    float3 tB = (boxMax - ro) * invRd; // Max tx,ty,tz
 
     // 레이 방향이 음수인 축은 near/far가 뒤집히므로 min/max로 정렬한다.
     float3 tNear = min(tA, tB);

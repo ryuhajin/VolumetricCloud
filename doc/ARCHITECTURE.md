@@ -1,89 +1,53 @@
 # 아키텍처
 
-이 문서는 모듈 구조, 렌더 파이프라인, 데이터 흐름(특히 상수버퍼)을 설명합니다.
-코드 동작을 바꾸면 이 문서도 함께 갱신하세요. (→ [CONTRIBUTING.md](CONTRIBUTING.md))
+DirectX 11 풀스크린 픽셀 셰이더에서 AABB 볼륨을 레이마칭한다. `Renderer`가 카메라, 구름 파라미터, 영구 캐시와 디버그 UI를 연결한다.
 
-## 1. 전체 구조
+## 모듈
 
-이 프로젝트는 "정점 버퍼 없이 화면 전체를 덮는 삼각형 1개를 그리고, 픽셀 셰이더에서
-레이마칭으로 볼륨을 그린다"는 **풀스크린 포스트프로세스 형태**의 렌더러입니다.
-지오메트리(메시)는 없습니다 — 박스 볼륨은 픽셀 셰이더 안에서 수학적으로만 존재합니다.
+| 모듈 | 역할 |
+|---|---|
+| `Window` / `Camera` | Win32 메시지, 오빗 카메라, 리사이즈. ImGui가 마우스를 캡처하면 카메라 입력 차단 |
+| `Renderer` | D3D11 리소스, 캐시 로드, HLSL 핫 리로드, 3D 노이즈 생성, 레이마칭, UI 합성 |
+| `NoiseCacheManager` | `.cso`, 128³/64³ RGBA8 볼륨, manifest의 검증·로드·원자적 저장 |
+| `DebugUI` | F1 패널, 단면 검사, 파라미터·라이팅·프리셋·캐시 명령 |
+| `CloudNoise.hlsli` | periodic Value/Worley/FBM, 높이 마스크, 공통 밀도 함수 |
 
-```
-┌─────────────┐   입력(마우스)    ┌──────────┐
-│   Window    │ ───────────────► │  Camera   │
-│ (Win32)     │                   │ (오빗)    │
-└─────┬───────┘   리사이즈        └────┬─────┘
-      │                                │ view/proj/invViewProj
-      │ WM_SIZE                        │
-      ▼                                ▼
-┌──────────────────────────────────────────────┐
-│                  Renderer (D3D11)              │
-│  device · context · swapchain · RTV            │
-│  상수버퍼(cbCamera) 업데이트 → Draw(3)         │
-└───────────────────────┬────────────────────────┘
-                        │ 파이프라인
-                        ▼
-       Fullscreen.hlsl (VS)  →  VolumetricClouds.hlsl (PS)
-                               ↳ Ray.hlsli
-       화면 덮는 삼각형         픽셀마다 레이마칭 → 색
-```
+## 시작 및 프레임 순서
 
-## 2. 모듈 책임
+캐시는 사용자 `%LOCALAPPDATA%\VolumetricCloud\cache\bundle`, 저장소 `assets/noise-cache/bundle`, 런타임 생성 순으로 선택한다. 정상 캐시는 `.cso`로 셰이더를 만들고 Texture3D 초기 데이터로 업로드하므로 시작 시 HLSL 컴파일과 compute dispatch가 없다. 소스가 저장 캐시보다 새로우면 마지막 정상 캐시로 첫 프레임을 Present한 뒤 핫 리로드한다.
 
-| 모듈 | 파일 | 책임 |
-|------|------|------|
-| 진입점 | `src/main.cpp` | 객체 생성·연결, 타이머, 메인 루프 |
-| 윈도우 | `src/Window.*` | Win32 창 생성, 메시지 펌프, 마우스 입력 → Camera, 리사이즈 → Renderer |
-| 카메라 | `src/Camera.*` | yaw/pitch/distance 궤도 → view·proj·invViewProj, 카메라 위치 |
-| 렌더러 | `src/Renderer.*` | D3D11 초기화, HLSL 런타임 컴파일/핫-리로드, 상수버퍼 갱신, 드로우/Present |
-| VS | `shaders/Fullscreen.hlsl` | `SV_VertexID`로 풀스크린 삼각형 생성, uv 전달 |
-| PS | `shaders/VolumetricClouds.hlsl` | uv→레이, ray-box(AABB) 교차, 밀도 적분, 합성 |
-| HLSL include | `shaders/Ray.hlsli` | `RaySphere`, `RayBox` 등 레이 교차 함수 보관 |
+프레임 순서는 `UI Begin → 변경 감지 → 필요 시 볼륨/미리보기 갱신 → cloud draw → UI draw → Present → 소스 변경 검사`다. 기본 숨김 상태에서는 4-MRT 미리보기도 만들지 않는다.
 
-## 3. 렌더 파이프라인 (한 프레임)
+## 상수버퍼
 
-1. `main` 루프: 경과 시간 계산, 종횡비 갱신.
-2. `Renderer::Render(camera, time)`:
-   - HLSL 파일 수정 시각을 확인하고, 변경되었으면 VS/PS를 다시 컴파일한다.
-   - 새 셰이더 생성이 모두 성공한 경우에만 기존 셰이더를 교체한다.
-   - `camera`에서 `invViewProj`·위치를 받아 **상수버퍼(cbCamera)** 를 채운다.
-   - DirectXMath 행렬을 `XMMatrixTranspose` 후 업로드 (HLSL `mul(vector,matrix)` 규약).
-   - 백버퍼 클리어 → VS/PS/상수버퍼 바인딩 → `Draw(3, 0)` → `Present`.
-3. GPU: VS가 삼각형 3정점을 만들고, PS가 픽셀마다 레이마칭을 수행.
+### `CameraCB` / `cbCamera` (`b0`, 112바이트)
 
-## 4. 데이터 흐름 — 상수버퍼 `cbCamera`
+| 필드 | 타입 |
+|---|---|
+| `invViewProj` | `float4x4` |
+| `cameraPos`, `time` | `float3`, `float` |
+| `volumeCenter`, `densityScale` | `float3`, `float` |
+| `volumeHalfSize`, `_pad` | `float3`, `float` |
 
-CPU(`Renderer::CameraCB`)와 GPU(`cbCamera`)의 메모리 레이아웃은 **정확히 일치**해야 합니다.
-HLSL은 16바이트 단위로 패킹되므로 순서/패딩에 주의하세요. (총 112바이트)
+### `CloudParameters` / `CloudCB` (`b1`, 96바이트)
 
-| 필드 | 타입 | 의미 |
-|------|------|------|
-| `invViewProj` | float4x4 | 역 뷰-투영. 픽셀→월드 레이 생성 (transpose 업로드) |
-| `cameraPos` | float3 | 레이 원점 (카메라 월드 위치) |
-| `time` | float | 경과 시간 (현재 미사용, 추후 애니메이션) |
-| `volumeCenter` | float3 | 박스 볼륨 중심 |
-| `densityScale` | float | 밀도(불투명도) |
-| `volumeHalfSize` | float3 | 박스 볼륨 절반 크기 |
-| `_pad` | float | 16바이트 정렬 패딩 |
+CPU 구조체와 HLSL cbuffer의 16바이트 묶음 순서는 반드시 같다.
 
-> **주의:** 이 구조를 바꾸면 `Renderer.h`의 `CameraCB`와 `VolumetricClouds.hlsl`의
-> `cbCamera`를 **동시에** 수정하고, 위 표도 갱신하세요.
+| 묶음 | 필드 |
+|---|---|
+| 0 | `noiseWorldScale`, `basePeriod`, `detailPeriod`, `densityMultiplier` |
+| 1 | `noiseCutoffThreshold`, `erosionStrength`, `bottomFade`, `topFade` |
+| 2 | `windDirection(float2)`, `windSpeed`, `seed` |
+| 3 | `baseOctaves`, `detailOctaves`, `renderMode`, `useTextureCache` |
+| 4 | `showBounds`, `lightSteps`, `sunAzimuth`, `sunElevation` |
+| 5 | `sunIntensity`, `ambientIntensity`, `phaseG`, `lightAbsorption` |
 
-## 5. 셰이더 컴파일 전략
+### `NoisePreviewCB` (`b2`, 16바이트)
 
-- 셰이더는 **런타임에** `D3DCompileFromFile`로 컴파일합니다 (오프라인 .cso 아님).
-- 개발 중에는 CMake가 정의한 소스 트리 `shaders/`를 우선 읽고, 없으면 exe 옆 `shaders/`로 폴백합니다.
-- `shaders/` 폴더 전체를 복사하므로 `.hlsli` include 파일도 실행 파일 옆에 함께 배치됩니다.
-- `Renderer::Render`는 `Fullscreen.hlsl`, `VolumetricClouds.hlsl`, `Ray.hlsli`의 수정 시각을
-  매 프레임 확인합니다.
-  변경이 있으면 실행 중 자동 재컴파일하고, 성공한 경우에만 기존 VS/PS를 교체합니다.
-- 초기 컴파일 실패 시에는 MessageBox로 에러를 표시하고 시작을 중단합니다. 핫-리로드 중 컴파일 실패 시에는
-  기존 정상 셰이더를 유지하고 디버그 출력으로 에러를 남깁니다.
+`axis`, `slice`, `previewTime`, `source`를 전달한다. 볼륨 생성 시 같은 슬롯에 16바이트 `NoiseVolumeGenerationCB`를 사용한다.
 
-## 6. 의도적으로 생략한 것 (현재 2단계)
+## 캐시 일관성
 
-- noise(밀도 변조), light(산란/그림자), 깊이 버퍼, ImGui UI, 알파 블렌드 스테이트.
-- 합성은 셰이더 내부에서 절차적 하늘 위에 직접 수행하므로 하드웨어 블렌딩이 필요 없습니다.
+manifest에는 버전, 전체 셰이더 소스 hash, 노이즈 생성 파라미터 hash, 크기와 DXGI format이 들어간다. 저장은 `bundle.tmp`에 완전한 세트를 만든 뒤 기존 세트를 교체한다. HLSL 컴파일이나 생성이 실패하면 현재 정상 리소스는 바꾸지 않는다. `Save Noise Cache`를 누르기 전 변경은 현재 세션에만 존재한다.
 
-다음 단계는 [ROADMAP.md](ROADMAP.md)를 참고하세요.
+캐시되는 셰이더는 main VS/PS, preview VS/PS, volume CS 다섯 개다. `.cso`는 `D3DReflect`와 실제 shader 생성으로 검증한다.

@@ -21,6 +21,7 @@ cmake_install.cmake
 *.ilk
 *.exe
 *.obj
+imgui.ini
 
 # ---- 로컬 전용 AI 도구 설정 ----
 CLAUDE.md

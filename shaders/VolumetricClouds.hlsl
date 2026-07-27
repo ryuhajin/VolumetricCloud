@@ -4,16 +4,13 @@
 //  볼류메트릭 렌더링의 가장 작은 뼈대:
 //    1) 픽셀마다 카메라 레이(원점 ro, 방향 rd)를 만든다.
 //    2) 레이와 AABB 박스의 교차 구간 [t0, t1]을 slab 방식으로 구한다.
-//    3) 그 구간을 고정 스텝으로 행진하며 상수 밀도(density)를 적분한다.
-//    4) Beer-Lambert 법칙으로 투과율(transmittance)을 누적해 알파를 만든다.
-//    5) 절차적 하늘(sky) 위에 안개 색을 합성한다.
-//
-//  ※ noise 없음 / light(산란) 없음. 이후 단계에서 density에 noise를,
-//    적분 루프에 light scattering을 더하면 그대로 구름으로 확장된다.
-//    (자세한 수식은 doc/RAYMARCHING.md 참고)
+//    3) periodic noise 밀도를 적분한다.
+//    4) 태양 방향 light march로 self-shadow를 구한다.
+//    5) HG 위상 함수와 Beer-Lambert 투과율로 single scattering을 합성한다.
 // ============================================================================
 
 #include "Ray.hlsli"
+#include "CloudNoise.hlsli"
 
 cbuffer cbCamera : register(b0)
 {
@@ -47,6 +44,43 @@ float3 SkyColor(float3 rd)
 
     // 레이가 위를 향할수록 zenith 색에 가까워짐
     return lerp(horizon, zenith, t);
+}
+
+float3 SunDirection()
+{
+    float azimuth = radians(sunAzimuth);
+    float elevation = radians(sunElevation);
+    float cosElevation = cos(elevation);
+    return normalize(float3(
+        cosElevation * cos(azimuth),
+        sin(elevation),
+        cosElevation * sin(azimuth)));
+}
+
+float LightTransmittance(float3 p, float3 sunDir, float3 boxMin, float3 boxMax)
+{
+    float lightT0, lightT1;
+    float3 lightOrigin = p + sunDir * 0.002;
+    if (!RayBox(lightOrigin, sunDir, boxMin, boxMax, lightT0, lightT1))
+        return 1.0;
+
+    float distanceToExit = max(lightT1, 0.0);
+    int steps = clamp(lightSteps, 1, 12);
+    float stepLength = distanceToExit / steps;
+    float visibility = 1.0;
+
+    [loop]
+    for (int j = 0; j < 12; ++j)
+    {
+        if (j >= steps) break;
+        float lightDistance = (j + 0.5) * stepLength;
+        float3 lightPosition = lightOrigin + sunDir * lightDistance;
+        float3 lightUVW = (lightPosition - boxMin) / (boxMax - boxMin);
+        float lightDensity = EvaluateCloudDensity(lightUVW, time) * densityScale;
+        visibility *= exp(-lightDensity * stepLength * lightAbsorption);
+        if (visibility < 0.01) break;
+    }
+    return visibility;
 }
 
 float4 main(VSOut input) : SV_TARGET
@@ -85,10 +119,14 @@ float4 main(VSOut input) : SV_TARGET
         return float4(sky, 1.0); // 박스가 카메라 뒤쪽
     }
 
-    // ---- 3) 박스 내부 구간 [t0,t1]을 고정 스텝으로 행진하며 밀도 적분 ----
+    // ---- 3) 박스 내부 구간 [t0,t1]을 고정 스텝으로 행진하며 노이즈 밀도 적분 ----
     const int   STEPS = 64;
     float       dt    = (t1 - t0) / STEPS;
     float       transmittance = 1.0; // 투과율 (1=완전 투명, 0=완전 불투명)
+    float4      debugMax = 0.0;
+    float3      scattering = 0.0;
+    float3      sunDir = SunDirection();
+    float       phase = HenyeyGreenstein(dot(rd, sunDir));
 
     [loop]
     for (int i = 0; i < STEPS; ++i)
@@ -96,18 +134,53 @@ float4 main(VSOut input) : SV_TARGET
         // 스텝 구간의 중앙에서 샘플 (3단계 noise에서 p를 밀도장 좌표로 사용)
         float t = t0 + (i + 0.5) * dt;
         float3 p = ro + rd * t;
-        float density = densityScale;
+        float3 uvw = (p - boxMin) / (boxMax - boxMin);
+        float4 components = EvaluateCloudComponents(uvw, time);
+        float density = components.w * densityMultiplier * densityScale;
+        debugMax = max(debugMax, components);
 
-        // ---- 4) Beer-Lambert: 거리 dt 만큼 통과 시 투과율 감쇠 ----
-        transmittance *= exp(-density * dt);
+        // ---- 4) 태양 방향 self-shadow + single scattering ----
+        float stepTransmittance = exp(-density * dt);
+        float stepOpacity = 1.0 - stepTransmittance;
+        if (density > 0.0001)
+        {
+            float lightVisibility = LightTransmittance(p, sunDir, boxMin, boxMax);
+            float3 ambient = SkyColor(float3(0, 1, 0)) * ambientIntensity;
+            float3 direct = float3(1.0, 0.96, 0.88) * (sunIntensity * lightVisibility * phase);
+            scattering += transmittance * stepOpacity * (ambient + direct);
+        }
+        transmittance *= stepTransmittance;
+        if (transmittance < 0.01) break;
     }
 
-    float  alpha      = 1.0 - transmittance;     // 누적 불투명도
-    float3 fogColor   = float3(0.92, 0.93, 0.96); // 균일한 안개색 (light 없음)
+    if (renderMode == 1) return float4(debugMax.www, 1.0);
+    if (renderMode == 2) return float4(debugMax.xxx, 1.0);
+    if (renderMode == 3) return float4(debugMax.yyy, 1.0);
+    if (renderMode == 4) return float4(debugMax.zzz, 1.0);
+    if (renderMode == 5) return float4(transmittance.xxx, 1.0);
+    if (renderMode == 6)
+    {
+        float3 midUVW = (ro + rd * ((t0 + t1) * 0.5) - boxMin) / (boxMax - boxMin);
+        float procedural = EvaluateProceduralCloudComponents(midUVW, time).w;
+        float cached = EvaluateCachedCloudComponents(midUVW, time).w;
+        float difference = saturate(abs(procedural - cached) * 8.0);
+        return float4(difference, 0.0, 1.0 - difference, 1.0);
+    }
+    if (renderMode == 7)
+    {
+        float3 midUVW = (ro + rd * ((t0 + t1) * 0.5) - boxMin) / (boxMax - boxMin);
+        float seamError = saturate(EvaluatePeriodicSeamError(midUVW) * 4096.0);
+        return float4(seamError, 1.0 - seamError, 0.0, 1.0);
+    }
 
+    // 진입점이 두 축의 경계에 가까우면 AABB 와이어를 표시한다.
+    float3 entryUVW = (ro + rd * t0 - boxMin) / (boxMax - boxMin);
+    float3 edgeDistance = min(entryUVW, 1.0 - entryUVW);
+    int edgeAxes = (edgeDistance.x < 0.012) + (edgeDistance.y < 0.012) + (edgeDistance.z < 0.012);
+    if (showBounds != 0 && edgeAxes >= 2)
+        return float4(1.0, 0.45, 0.08, 1.0);
 
-
-    // ---- 5) 하늘 위에 안개 합성 (반투명) ----
-    float3 color = lerp(sky, fogColor, alpha);
+    // ---- 5) 남은 배경 투과율과 산란광 합성 ----
+    float3 color = scattering + sky * transmittance;
     return float4(color, 1.0);
 }

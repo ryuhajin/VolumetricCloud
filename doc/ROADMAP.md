@@ -1,54 +1,25 @@
 # 로드맵
 
-볼류메트릭 클라우드라는 최종 목표까지 가는 단계별 계획입니다.
-한 단계를 완료하면 체크박스를 채우고, 관련 문서를 갱신하세요. (→ [CONTRIBUTING.md](CONTRIBUTING.md))
+## 완료
 
-최종 목표는 실시간 볼류메트릭 구름 렌더링입니다.
+- [x] DirectX11 풀스크린 삼각형과 AABB 레이마칭
+- [x] Beer–Lambert 투과율, 64 view steps, 조기 종료
+- [x] periodic Value/Worley/FBM 및 Perlin–Worley 형상
+- [x] 높이 마스크, noise cutoff threshold, detail erosion, X/Z wind
+- [x] 128³ base + 64³ detail Texture3D 캐시
+- [x] ImGui Noise Inspector와 렌더 디버그 모드
+- [x] 사용자 프리셋
+- [x] `.cso` + volume + manifest 영구 캐시와 Save/Revert/Rebuild
+- [x] 6-step 태양 light march, Beer–Lambert self-shadow, HG, ambient
+- [x] GPU seam 검사, 캐시 왕복, 빠른 시작 계측용 코드 테스트
 
----
+## 다음 품질 단계
 
-## ✅ 1단계 — 반투명 안개 구
+- [ ] 사용자의 실제 화면 평가에 따른 density/noise cutoff/light 기본값 튜닝
+- [ ] blue-noise jitter로 view-step banding 완화
+- [ ] 다중 산란 근사
+- [ ] 깊이 버퍼 통합과 장면 오브젝트 교차
+- [ ] 반해상도 렌더링 + temporal reprojection
+- [ ] 날씨 맵과 더 넓은 월드 볼륨
 
-레이마칭의 뼈대를 익히는 단계. **noise·light 없음.**
-
-- [x] DirectX11 + HLSL 환경 구축 (CMake, Win32 창, D3D11 렌더러)
-- [x] 풀스크린 삼각형 + 픽셀 셰이더 레이마칭
-- [x] 해석적 ray-sphere 교차
-- [x] Beer-Lambert 밀도 적분 → 반투명 구
-- [x] 마우스 오빗 카메라
-- [x] 문서화 (doc/, AGENTS.md, README.md)
-
-## ⬜ 2단계 — 형상 일반화 (박스 / SDF) (현재)
-
-- [x] ray-box(AABB) 교차로 박스 볼륨 추가
-- [ ] SDF 기반 형상(구/박스/혼합)으로 밀도 영역 정의
-- [ ] 셰이더 상수로 형상 전환
-
-## ⬜ 3단계 — Noise (구름 형태)
-
-- [ ] 3D 값/Perlin/Worley noise 함수 (또는 3D noise 텍스처)
-- [ ] `density = shape × noise`로 뭉게구름 실루엣
-- [ ] FBM(다중 옥타브)으로 디테일
-- [ ] `time`으로 noise 이동 → 흐르는 구름
-
-## ⬜ 4단계 — Light (산란/그림자)
-
-- [ ] 적분 스텝마다 태양 방향 보조 레이로 self-shadow 적분
-- [ ] Henyey-Greenstein 위상 함수로 전방 산란
-- [ ] 다중 산란 근사, ambient
-
-## ⬜ 5단계 — 구름 완성 / 최적화
-
-- [ ] 하늘 모델 / 톤매핑
-- [ ] 깊이 버퍼 통합(씬과 합성)
-- [ ] 적응형 스텝, 조기 종료(early-out), 해상도 분리로 성능 확보
-- [ ] (선택) ImGui로 파라미터 실시간 조절
-
----
-
-### 진행 규칙
-- 각 단계는 별도 `feature/<단계>` 브랜치에서 진행합니다.
-- 단계 완료 시 이 문서의 체크박스와 [ARCHITECTURE.md](ARCHITECTURE.md)·[RAYMARCHING.md](RAYMARCHING.md)를 갱신합니다.
-
-### 참고 / 영감
-- [`chihirobelmo/volumetric-cloud-for-directx11`](https://github.com/chihirobelmo/volumetric-cloud-for-directx11): 실시간 볼류메트릭 구름 렌더링의 참고 사례입니다. 이 저장소는 해당 프로젝트와 별개의 학습용 구현입니다.
+현재 완료 기준은 심리스 노이즈, 영구 캐시, 단일 산란 라이팅과 코드 검증이다. 시각적 품질 승인은 실제 렌더 화면에서 별도로 수행한다.

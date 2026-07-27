@@ -75,6 +75,8 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    const bool uiHandled = m_renderer && m_renderer->HandleWindowMessage(hwnd, msg, wParam, lParam);
+
     switch (msg)
     {
     case WM_DESTROY:
@@ -91,6 +93,7 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_LBUTTONDOWN:
+        if (uiHandled || (m_renderer && m_renderer->WantsMouseCapture())) return 0;
         m_dragging   = true;
         m_lastMouseX = GET_X_LPARAM(lParam);
         m_lastMouseY = GET_Y_LPARAM(lParam);
@@ -98,11 +101,13 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_LBUTTONUP:
+        if (uiHandled || (m_renderer && m_renderer->WantsMouseCapture())) return 0;
         m_dragging = false;
         ReleaseCapture();
         return 0;
 
     case WM_MOUSEMOVE:
+        if (uiHandled || (m_renderer && m_renderer->WantsMouseCapture())) return 0;
         if (m_dragging && m_camera)
         {
             int x = GET_X_LPARAM(lParam);
@@ -116,9 +121,19 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_MOUSEWHEEL:
+        if (uiHandled || (m_renderer && m_renderer->WantsMouseCapture())) return 0;
         if (m_camera)
             m_camera->Zoom(static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)));
         return 0;
+
+    case WM_KEYDOWN:
+        if (wParam == VK_F1 && m_renderer)
+        {
+            m_renderer->ToggleDebugUI();
+            return 0;
+        }
+        if (uiHandled || (m_renderer && m_renderer->WantsKeyboardCapture())) return 0;
+        break;
     }
 
     return DefWindowProc(hwnd, msg, wParam, lParam);
