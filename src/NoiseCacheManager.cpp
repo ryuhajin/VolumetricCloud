@@ -1,8 +1,13 @@
 #include "NoiseCacheManager.h"
 
+#include <atomic>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <thread>
 
 using Microsoft::WRL::ComPtr;
 
@@ -81,7 +86,49 @@ bool ReadFile(const std::filesystem::path& path, std::vector<unsigned char>& byt
 bool WriteFile(const std::filesystem::path& path, const void* data, size_t size)
 {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    return file && file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size)).good();
+    if (!file || !file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size)).good())
+        return false;
+    file.flush();
+    return file.good();
+}
+
+std::string WindowsErrorMessage(DWORD error)
+{
+    char* message = nullptr;
+    const DWORD size = FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, error, 0, reinterpret_cast<char*>(&message), 0, nullptr);
+    std::string result = size && message ? std::string(message, size) : "unknown Windows error";
+    if (message) LocalFree(message);
+    while (!result.empty() && (result.back() == '\r' || result.back() == '\n'))
+        result.pop_back();
+    return result;
+}
+
+bool MoveWithRetry(const std::filesystem::path& from,
+                   const std::filesystem::path& to,
+                   DWORD flags,
+                   std::string& error)
+{
+    constexpr DWORD delaysMs[] = { 0, 10, 25, 50, 100 };
+    for (DWORD delay : delaysMs)
+    {
+        if (delay) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        if (MoveFileExW(from.c_str(), to.c_str(), flags)) return true;
+        const DWORD code = GetLastError();
+        error = "Win32 " + std::to_string(code) + ": " + WindowsErrorMessage(code);
+        if (code != ERROR_SHARING_VIOLATION && code != ERROR_ACCESS_DENIED &&
+            code != ERROR_LOCK_VIOLATION && code != ERROR_ALREADY_EXISTS)
+            break;
+    }
+    return false;
+}
+
+bool IsSafeBundleName(const std::wstring& name)
+{
+    return !name.empty() && name != L"." && name != L".." &&
+        name.find(L'/') == std::wstring::npos && name.find(L'\\') == std::wstring::npos &&
+        name.rfind(L"bundle-v", 0) == 0;
 }
 
 bool LoadBlob(const std::filesystem::path& path, ComPtr<ID3DBlob>& blob)
@@ -316,6 +363,7 @@ bool NoiseCacheManager::LoadPreferred(
     WeatherMapResources& weather,
     bool& sourceModified)
 {
+    m_lastError.clear();
     if (LoadBundle(m_userCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, weather, sourceModified)) return true;
     return LoadBundle(m_defaultCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, weather, sourceModified);
 }
@@ -327,7 +375,30 @@ bool NoiseCacheManager::LoadBundle(
     std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
     WeatherMapResources& weather, bool& sourceModified)
 {
-    const auto bundle = root / L"bundle";
+    return LoadBundleDirectory(ResolveBundleDirectory(root), device, params, shaderBlobs,
+                               volumes, uavs, srvs, weather, sourceModified);
+}
+
+std::filesystem::path NoiseCacheManager::ResolveBundleDirectory(
+    const std::filesystem::path& root) const
+{
+    std::wifstream pointer(root / L"active-bundle.txt");
+    std::wstring name;
+    if (pointer && std::getline(pointer, name) && IsSafeBundleName(name))
+    {
+        const auto generation = root / name;
+        if (std::filesystem::is_directory(generation)) return generation;
+    }
+    return root / L"bundle";
+}
+
+bool NoiseCacheManager::LoadBundleDirectory(
+    const std::filesystem::path& bundle, ID3D11Device* device, CloudParameters& params,
+    ShaderBlobArray& shaderBlobs, std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
+    std::array<ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
+    std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
+    WeatherMapResources& weather, bool& sourceModified)
+{
     CacheManifest manifest = {};
     std::ifstream file(bundle / L"manifest.bin", std::ios::binary);
     if (!file.read(reinterpret_cast<char*>(&manifest), sizeof(manifest))) return false;
@@ -389,6 +460,9 @@ bool NoiseCacheManager::RunRoundTripTest(
     std::error_code ec;
     std::filesystem::remove_all(testRoot, ec);
     if (!SaveBundle(first, device, context, params, shaderBlobs, volumes, weather)) return false;
+    std::vector<unsigned char> originalPointer;
+    if (!ReadFile(first / L"active-bundle.txt", originalPointer) || originalPointer.empty())
+        return false;
 
     CloudParameters loadedParams;
     ShaderBlobArray loadedBlobs;
@@ -405,15 +479,17 @@ bool NoiseCacheManager::RunRoundTripTest(
     const wchar_t* files[] = { L"manifest.bin", L"base.vcnoise", L"detail.vcnoise", L"weather.vcnoise",
         L"main_vs.cso", L"main_ps.cso", L"preview_vs.cso", L"preview_ps.cso",
         L"noise_cs_base.cso", L"noise_cs_detail.cso", L"noise_cs_weather.cso" };
+    const auto firstBundle = ResolveBundleDirectory(first);
+    const auto secondBundle = ResolveBundleDirectory(second);
     for (const wchar_t* name : files)
     {
         std::vector<unsigned char> a, b;
-        if (!ReadFile(first / L"bundle" / name, a) || !ReadFile(second / L"bundle" / name, b) || a != b)
+        if (!ReadFile(firstBundle / name, a) || !ReadFile(secondBundle / name, b) || a != b)
             return false;
     }
 
     // manifest의 호환성 필드가 깨지면 bundle 전체를 거부해야 한다.
-    const auto manifestPath = first / L"bundle" / L"manifest.bin";
+    const auto manifestPath = firstBundle / L"manifest.bin";
     std::vector<unsigned char> originalManifest;
     if (!ReadFile(manifestPath, originalManifest) || originalManifest.size() != sizeof(CacheManifest))
         return false;
@@ -449,6 +525,10 @@ bool NoiseCacheManager::RunRoundTripTest(
     std::vector<unsigned char> manifestAfterFailure;
     if (!ReadFile(manifestPath, manifestAfterFailure) || manifestAfterFailure != originalManifest)
         return false;
+    std::vector<unsigned char> pointerAfterFailure;
+    if (!ReadFile(first / L"active-bundle.txt", pointerAfterFailure) ||
+        pointerAfterFailure != originalPointer)
+        return false;
     std::filesystem::remove_all(testRoot, ec);
     return true;
 }
@@ -459,23 +539,43 @@ bool NoiseCacheManager::SaveBundle(
     const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
     const WeatherMapResources& weather)
 {
-    if (!device || !context) return false;
-    for (const auto& blob : shaderBlobs) if (!blob) return false;
+    m_lastError.clear();
+    const auto fail = [&](const char* stage, const std::string& detail = {})
+    {
+        m_lastError = stage;
+        if (!detail.empty()) m_lastError += ": " + detail;
+        return false;
+    };
+    if (!device || !context) return fail("Validate", "missing D3D11 device or context");
+    for (const auto& blob : shaderBlobs)
+        if (!blob) return fail("Validate", "missing compiled shader blob");
 
-    const auto temp = root / L"bundle.tmp";
-    const auto live = root / L"bundle";
-    const auto backup = root / L"bundle.old";
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    static std::atomic_uint64_t generationCounter = 0;
+    std::wostringstream generationStream;
+    generationStream << L"bundle-v" << kCacheVersion << L"-" << stamp << L"-"
+                     << GetCurrentProcessId() << L"-" << generationCounter++;
+    const std::wstring generationName = generationStream.str();
+    const auto temp = root / (generationName + L".tmp");
+    const auto generation = root / generationName;
+    const auto pointerTemp = root / L"active-bundle.tmp";
+    const auto pointerLive = root / L"active-bundle.txt";
     std::error_code ec;
     std::filesystem::create_directories(root, ec);
     std::filesystem::remove_all(temp, ec);
     std::filesystem::create_directories(temp, ec);
-    if (ec) return false;
+    if (ec) return fail("Prepare", ec.message());
 
     for (size_t i = 0; i < shaderBlobs.size(); ++i)
-        if (!WriteFile(temp / kShaderNames[i], shaderBlobs[i]->GetBufferPointer(), shaderBlobs[i]->GetBufferSize())) return false;
-    if (!SaveVolume(temp / L"base.vcnoise", device, context, volumes[0].Get())) return false;
-    if (!SaveVolume(temp / L"detail.vcnoise", device, context, volumes[1].Get())) return false;
-    if (!SaveWeatherMap(temp / L"weather.vcnoise", device, context, weather.texture.Get())) return false;
+        if (!WriteFile(temp / kShaderNames[i], shaderBlobs[i]->GetBufferPointer(), shaderBlobs[i]->GetBufferSize()))
+            return fail("Writing shaders", kShaderNames[i]);
+    if (!SaveVolume(temp / L"base.vcnoise", device, context, volumes[0].Get()))
+        return fail("GPU readback", "base volume");
+    if (!SaveVolume(temp / L"detail.vcnoise", device, context, volumes[1].Get()))
+        return fail("GPU readback", "detail volume");
+    if (!SaveWeatherMap(temp / L"weather.vcnoise", device, context, weather.texture.Get()))
+        return fail("GPU readback", "weather map");
 
     CacheManifest manifest = {};
     manifest.magic = kManifestMagic;
@@ -489,17 +589,34 @@ bool NoiseCacheManager::SaveBundle(
     manifest.detailFormat = static_cast<uint32_t>(kDetailVolumeFormat);
     manifest.weatherFormat = static_cast<uint32_t>(kWeatherFormat);
     manifest.params = params;
-    if (!WriteFile(temp / L"manifest.bin", &manifest, sizeof(manifest))) return false;
+    if (!WriteFile(temp / L"manifest.bin", &manifest, sizeof(manifest)))
+        return fail("Writing manifest");
 
-    std::filesystem::remove_all(backup, ec);
-    if (std::filesystem::exists(live)) std::filesystem::rename(live, backup, ec);
-    if (ec) return false;
-    std::filesystem::rename(temp, live, ec);
-    if (ec)
-    {
-        if (std::filesystem::exists(backup)) std::filesystem::rename(backup, live, ec);
-        return false;
-    }
-    std::filesystem::remove_all(backup, ec);
+    // 활성 bundle을 건드리기 전에 방금 기록한 모든 파일을 실제 D3D 리소스로 다시 읽는다.
+    CloudParameters verifiedParams;
+    ShaderBlobArray verifiedBlobs;
+    std::array<ComPtr<ID3D11Texture3D>, 2> verifiedVolumes;
+    std::array<ComPtr<ID3D11UnorderedAccessView>, 2> verifiedUavs;
+    std::array<ComPtr<ID3D11ShaderResourceView>, 2> verifiedSrvs;
+    WeatherMapResources verifiedWeather;
+    bool verifiedModified = false;
+    if (!LoadBundleDirectory(temp, device, verifiedParams, verifiedBlobs, verifiedVolumes,
+                             verifiedUavs, verifiedSrvs, verifiedWeather, verifiedModified))
+        return fail("Verifying", "saved bundle reload failed");
+
+    std::string moveError;
+    if (!MoveWithRetry(temp, generation, MOVEFILE_WRITE_THROUGH, moveError))
+        return fail("Publishing generation", moveError);
+
+    std::string pointerValue;
+    pointerValue.reserve(generationName.size());
+    for (wchar_t c : generationName) pointerValue.push_back(static_cast<char>(c));
+    if (!WriteFile(pointerTemp, pointerValue.data(), pointerValue.size()))
+        return fail("Activating", "could not write active pointer");
+    if (!MoveWithRetry(pointerTemp, pointerLive,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH, moveError))
+        return fail("Activating", moveError);
+
+    m_lastError.clear();
     return true;
 }

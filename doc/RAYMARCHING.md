@@ -4,6 +4,8 @@
 
 픽셀 UV를 NDC로 바꾸고 `invViewProj`로 `ro`, `rd`를 만든다. 전역 구름층의 하단·상단 평면과 교차해 `[t0,t1]`을 구하고 `maxMarchDistance`로 수평선 방향을 제한한다. weather coverage가 없는 곳은 4배, 후보 영역은 2배, 실제 밀도는 기본 스텝으로 진행한다. 고정 gradient jitter는 밴딩을 줄이되 temporal shimmer를 만들지 않는다.
 
+광역 장면의 표시 규칙은 `1 world unit = 1 km`, `+Y=고도`, `+Z=북쪽`, `+X=동쪽`이다. 정규화된 `rd`를 사용하므로 ray parameter `t`도 km로 해석한다. 예를 들어 `cloudBaseHeight=2`, `cloudThickness=3.8`, `maxMarchDistance=96`은 각각 2 km 하단, 3.8 km 기준 두께, 96 km 제한이다. 다만 `densityMultiplier`와 `lightAbsorption`은 실제 대기 측정 단위를 복원한 값이 아니라 화면 품질을 위한 예술적 계수다.
+
 ## Weather map과 월드 좌표
 
 512² RGBA map은 R=coverage, G=cloud type, B=base-height variation, A=thickness variation이다. XZ 월드 좌표를 `weatherWorldSize`로 나눠 반복 샘플링하고, B/A로 각 지점의 실제 하단과 상단을 만든다. 3D 노이즈는 `worldXZ / cloudNoiseWorldSize`와 지역 높이 비율을 사용하므로 유한 AABB 모서리가 없다.

@@ -152,15 +152,59 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 ```
 `SaveVolume`이 이 과정을 담당한다.
 
-### 원자적 저장 (안전 교체)
-`SaveBundle`은 `bundle.tmp`에 먼저 전부 쓴 뒤 rename으로 교체한다.
-중간에 실패하면 `bundle.old` 백업으로 **롤백**한다 → 저장 중 크래시가 나도 기존 캐시가
-깨지지 않는다.
+### 세대형 원자적 저장
+
+`SaveBundle`은 활성 디렉터리를 직접 rename하지 않는다.
+
+```text
+bundle-v5-<generation>.tmp
+  → 파일 flush
+  → manifest/셰이더/볼륨을 실제 D3D 리소스로 재로드 검증
+  → bundle-v5-<generation> 게시
+  → active-bundle.tmp 기록
+  → active-bundle.txt만 원자적 교체
+```
+
+마지막 교체는 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`를 사용한다.
+sharing/access/lock violation은 0/10/25/50/100 ms backoff로 제한해서 재시도한다. 실패 단계와
+Win32 코드가 HUD/F1 상태에 남으며, 기존 active bundle은 이동하거나 삭제하지 않는다.
+`active-bundle.txt`가 없는 배포 기본 캐시와 구버전 사용자 캐시는 기존 `bundle/`에서 읽는다.
 
 ### 자체 검증 테스트
 `RunRoundTripTest`: 저장→로드→재저장 결과를 **바이트 단위로 비교**하고, manifest를
 일부러 손상시켜(버전/해시/포맷) 제대로 **거부**하는지까지 확인한다.
 (`main.cpp --cache-smoke-test` 등 CLI 옵션으로 실행)
+
+### DDS 도입 계획
+
+DDS 지원은 과거 DirectX SDK의 폐기된 D3DX 라이브러리를 사용하지 않는다. Microsoft의
+오픈소스 **DirectXTex**를 고정 커밋 submodule로 추가하고 정적 링크한다.
+
+```cmake
+# DirectXTex 자체 CMake 요구사항에 맞춰 프로젝트 최소 버전도 3.21로 올린다.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
+# DDS CPU codec만 사용한다. 기존 D3D11 Texture3D 생성 코드는 프로젝트에 유지해
+# DirectXTex의 BC DirectCompute shader/fxc 빌드 의존성을 만들지 않는다.
+set(BUILD_DX11 OFF CACHE BOOL "" FORCE)
+set(BUILD_DX12 OFF CACHE BOOL "" FORCE)
+set(BC_USE_OPENMP OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/DirectXTex EXCLUDE_FROM_ALL)
+target_link_libraries(VolumetricCloud PRIVATE DirectXTex)
+```
+
+- 정적 링크이므로 배포 폴더에 DirectXTex DLL을 추가하지 않는다.
+- clone은 기존 ImGui와 같이 `--recurse-submodules`만 필요하다.
+- 저장/검증에는 volume metadata와 `SaveToDDSFile`을 제공하는 DirectXTex를 사용한다.
+- 런타임 로드는 `LoadFromDDSFile`의 metadata/이미지 데이터를 검증한 뒤 현재
+  `CreateTexture3D` 초기 데이터 경로로 올린다. 이 때문에 DirectXTex의 DX11 helper와 fxc가 필요 없다.
+- 첫 전환은 무압축 `DXGI_FORMAT_R8G8B8A8_UNORM`으로 byte round-trip을 확인한다. BC 압축은
+  밀도 오차와 블록 흔적을 별도로 평가하기 전에는 사용하지 않는다.
+- `manifest.bin`의 캐시 버전·source/parameter hash·content hash와 세대형 활성화 방식은
+  DDS로 바뀌어도 유지한다.
+- `.vcnoise`와 DDS를 같은 입력에서 생성해 texel, 로드 시간, 파일 크기를 비교한 뒤
+  별도 포맷 브랜치에서 마이그레이션한다. PNG는 Inspector 슬라이스 export에만 사용한다.
 
 ---
 
@@ -218,9 +262,9 @@ v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주�
 
 - detail은 `DetailNoiseOctaves`가 Worley 옥타브 4개를 채널로 굽고,
   `DetailErosionFromChannels`(가중치 상수)가 렌더 시점에 재합성 → **재굽기 없이 HLSL에서 결 조절**.
-- 기각한 대안: **DDS/DirectXTex** — D3D11은 Texture3D에 **BC 압축 미지원**이라 크기 이득이 없고
-  의존성만 늘어 커스텀 포맷을 유지했다. **해상도 축소/디스크 압축**은 각각 디테일 손실/런타임 해제
-  비용이 있어 보류.
+- v4 당시 보류한 대안: **DDS/DirectXTex** — 무압축 RGBA8을 DDS로 감싸도 크기 이득은 없고
+  의존성이 먼저 늘어나 커스텀 포맷을 유지했다. 현재는 압축보다 표준 도구 호환성과 volume metadata를
+  목적으로 별도 포맷 브랜치에서 다시 검토한다. **해상도 축소/손실 압축**은 디테일·밀도 오차 때문에 보류한다.
 - 총 볼륨 메모리는 9 MB다. 해상도 증가는 보간 품질보다 메모리·생성비용을 먼저 늘리므로 채널 정보량을 우선했다. 관련 코드는 `NoiseVolumeCS.hlsl`, `CloudNoise.hlsli`, `NoiseCacheManager.cpp`의 `kCacheVersion=4`다.
 
 ### Q. 해시가 꼭 필요한가? 파일 수정 시각(타임스탬프)으로 체크하면 안 되나?

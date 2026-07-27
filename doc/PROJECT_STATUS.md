@@ -1,7 +1,7 @@
 # 프로젝트 현황 & 프레임 흐름
 
 > 복귀 시 현재 구현과 한 프레임의 작업을 빠르게 확인하는 문서.
-> Stage 4 / `feature/cloud-layer-weather-map` 기준.
+> Stage 4 / `feature/cache-telemetry-hud` 기준.
 
 ## 현재 구현
 
@@ -13,8 +13,8 @@
 | 높이 | 하단이 좁고 중단이 부푸는 Cumulus profile |
 | 조명 | 8-step self-shadow, 정규화 dual-lobe phase, powder, silver lining |
 | 다중 산란 | light visibility의 3-octave 저비용 근사 |
-| 캐시 | v5 `.cso` 7개 + 128³ base + 64³ detail + 512² weather |
-| 진단 | 20개 렌더 모드, 4-MRT Noise Inspector, weather preview, GPU ms |
+| 캐시 | v5 불변 세대 + active 포인터, `.cso` 7개 + 128³ base + 64³ detail + 512² weather |
+| 진단 | 20개 렌더 모드, 4-MRT Inspector, F2 HUD, CPU·GPU cloud·GPU total ms |
 | 검증 | slab 교차, seam, 3D/weather RGBA 분산, cache round-trip, 산란 수치 |
 
 형태와 조명 수식은 구현됐지만 최종 심미 품질과 30 FPS 목표는 사용자 장비에서 승인해야 한다. 자동 테스트는 스크린샷의 미적 합격 여부를 판단하지 않는다.
@@ -46,20 +46,21 @@ ImGui Begin
       → jittered/adaptive view march
       → density가 있을 때 light march
       → Beer–Lambert + dual-lobe + multiple-scatter approximation
-  → ImGui draw
+  → F1 편집기 + F2 telemetry draw
   → Present
   → HLSL hot reload 확인
 ```
 
 정상 v5 캐시 시작에서는 HLSL runtime compile과 noise dispatch가 모두 0회다.
 
-## F1 진단
+## F1 진단과 F2 HUD
 
 - 형태: Final Density, Base Shape, Detail, Height, Base R/G/B/A, Weather R/G/B/A
 - 조명: Transmittance, Light Visibility, Phase, Ambient, Direct
 - 일관성: Procedural/Cache Difference, Seam Difference
 - 프리셋: Default, Cumulus, Stratus, Cumulus Showcase
-- 통계: FPS, CPU frame, view/light step, cache 상태
+- 통계: frame interval, CPU render, GPU cloud/total, view/light step, cache 상태
+- 상시 HUD: 프리셋·모드, FPS, 태양 방위/고도, km 구름층, 마칭과 상세 캐시 오류
 
 ## 남은 우선순위
 

@@ -20,6 +20,15 @@ struct NoiseCacheUiActions
     bool rebuild = false;
 };
 
+struct TelemetrySnapshot
+{
+    float frameIntervalMs = 0.0f;
+    float cpuRenderMs = 0.0f;
+    float gpuCloudMs = 0.0f;
+    float gpuTotalMs = 0.0f;
+    std::string cacheStatus;
+};
+
 class DebugUI
 {
 public:
@@ -31,6 +40,7 @@ public:
     bool WantsKeyboardCapture() const;
     void ToggleVisible();
     bool IsVisible() const { return m_visible; }
+    void ToggleTelemetry() { m_telemetryVisible = !m_telemetryVisible; }
 
     void BeginFrame();
     bool Draw(CloudParameters& params,
@@ -38,10 +48,13 @@ public:
               const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
               ID3D11ShaderResourceView* weatherSrv,
               bool previewDirty,
-              float cpuFrameMs,
-              float gpuFrameMs,
+              float frameIntervalMs,
+              float cpuRenderMs,
+              float gpuCloudMs,
+              float gpuTotalMs,
               const std::string& cacheStatus,
               NoiseCacheUiActions& cacheActions);
+    void DrawTelemetry(const CloudParameters& params, const TelemetrySnapshot& telemetry);
     void EndFrame();
 
 private:
@@ -52,7 +65,9 @@ private:
 
     bool m_initialized = false;
     bool m_visible = false;
+    bool m_telemetryVisible = true;
     char m_presetName[64] = "MyCloud";
+    std::string m_activePreset = "Cumulus Wide";
     std::map<std::string, CloudParameters> m_userPresets;
     std::string m_status;
 };

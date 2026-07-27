@@ -43,7 +43,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     if (cacheSmokeTest)
     {
         ShowWindow(window.GetHandle(), SW_HIDE);
-        renderer.Render(camera, 0.0f);
+        // 캐시 히트 여부는 Init에서 이미 결정된다. 1280×720 cloud draw/Present를
+        // 수행하지 않아 CI의 GPU 속도와 무관하게 시작 경로만 검사한다.
         return renderer.RuntimeCompileCount() == 0 && renderer.NoiseDispatchCount() == 0 ? 0 : 3;
     }
     if (runCodeTests)

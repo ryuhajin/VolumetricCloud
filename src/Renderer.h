@@ -34,6 +34,7 @@ public:
     bool WantsMouseCapture() const;
     bool WantsKeyboardCapture() const;
     void ToggleDebugUI();
+    void ToggleTelemetry();
     bool SaveDefaultNoiseCache();
     bool RunCodeTests();
     unsigned int RuntimeCompileCount() const { return m_runtimeCompileCount; }
@@ -57,7 +58,9 @@ private:
     bool CreateGpuTimerResources();
     void BeginGpuTimer();
     void EndGpuTimer();
-    void ResolveGpuTimer();
+    void BeginGpuTotalTimer();
+    void EndGpuTotalTimer();
+    void ResolveGpuTotalTimer();
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
 
@@ -123,13 +126,19 @@ private:
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> m_noiseVolumeSrvs;
     WeatherMapResources m_weatherMap;
 
-    std::array<ComPtr<ID3D11Query>, 2> m_gpuDisjointQueries;
     std::array<ComPtr<ID3D11Query>, 2> m_gpuBeginQueries;
     std::array<ComPtr<ID3D11Query>, 2> m_gpuEndQueries;
-    std::array<bool, 2> m_gpuQueryIssued = { false, false };
-    unsigned int m_gpuQueryIndex = 0;
     bool m_gpuTimerActive = false;
     float m_gpuFrameMs = 0.0f;
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalDisjointQueries;
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalBeginQueries;
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalEndQueries;
+    std::array<bool, 2> m_gpuTotalQueryIssued = { false, false };
+    unsigned int m_gpuTotalQueryIndex = 0;
+    bool m_gpuTotalTimerActive = false;
+    float m_gpuTotalMs = 0.0f;
+    float m_cpuRenderMs = 0.0f;
+    float m_frameIntervalMs = 0.0f;
 
     CloudParameters m_cloudParams = CumulusWideShowcaseCloudParameters();
     NoisePreviewSettings m_previewSettings;

@@ -27,6 +27,19 @@ static std::wstring GetExeDir()
     return (slash == std::wstring::npos) ? L"." : full.substr(0, slash);
 }
 
+static double PerformanceCounterSeconds()
+{
+    static LARGE_INTEGER frequency = []
+    {
+        LARGE_INTEGER value = {};
+        QueryPerformanceFrequency(&value);
+        return value;
+    }();
+    LARGE_INTEGER now = {};
+    QueryPerformanceCounter(&now);
+    return static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart);
+}
+
 static std::wstring WidenUtf8(const char* text)
 {
     int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
@@ -407,58 +420,88 @@ bool Renderer::CreateNoiseSampler()
 bool Renderer::CreateGpuTimerResources()
 {
     D3D11_QUERY_DESC desc = {};
-    for (size_t i = 0; i < m_gpuDisjointQueries.size(); ++i)
+    for (size_t i = 0; i < m_gpuBeginQueries.size(); ++i)
     {
         desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
-        if (FAILED(m_device->CreateQuery(&desc, &m_gpuDisjointQueries[i]))) return false;
+        if (FAILED(m_device->CreateQuery(&desc, &m_gpuTotalDisjointQueries[i]))) return false;
         desc.Query = D3D11_QUERY_TIMESTAMP;
         if (FAILED(m_device->CreateQuery(&desc, &m_gpuBeginQueries[i]))) return false;
         if (FAILED(m_device->CreateQuery(&desc, &m_gpuEndQueries[i]))) return false;
+        if (FAILED(m_device->CreateQuery(&desc, &m_gpuTotalBeginQueries[i]))) return false;
+        if (FAILED(m_device->CreateQuery(&desc, &m_gpuTotalEndQueries[i]))) return false;
     }
     return true;
 }
 
-void Renderer::ResolveGpuTimer()
-{
-    const unsigned int readIndex = m_gpuQueryIndex;
-    if (!m_gpuQueryIssued[readIndex]) return;
-    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint = {};
-    UINT64 begin = 0;
-    UINT64 end = 0;
-    if (m_context->GetData(m_gpuDisjointQueries[readIndex].Get(), &disjoint, sizeof(disjoint),
-                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-        m_context->GetData(m_gpuBeginQueries[readIndex].Get(), &begin, sizeof(begin),
-                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-        m_context->GetData(m_gpuEndQueries[readIndex].Get(), &end, sizeof(end),
-                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK)
-    {
-        if (!disjoint.Disjoint && disjoint.Frequency > 0 && end >= begin)
-            m_gpuFrameMs = static_cast<float>((end - begin) * 1000.0 / disjoint.Frequency);
-        m_gpuQueryIssued[readIndex] = false;
-    }
-}
-
 void Renderer::BeginGpuTimer()
 {
-    ResolveGpuTimer();
-    if (m_gpuQueryIssued[m_gpuQueryIndex])
-    {
-        m_gpuTimerActive = false;
-        return;
-    }
-    m_context->Begin(m_gpuDisjointQueries[m_gpuQueryIndex].Get());
-    m_context->End(m_gpuBeginQueries[m_gpuQueryIndex].Get());
+    if (!m_gpuTotalTimerActive) return;
+    m_context->End(m_gpuBeginQueries[m_gpuTotalQueryIndex].Get());
     m_gpuTimerActive = true;
 }
 
 void Renderer::EndGpuTimer()
 {
     if (!m_gpuTimerActive) return;
-    m_context->End(m_gpuEndQueries[m_gpuQueryIndex].Get());
-    m_context->End(m_gpuDisjointQueries[m_gpuQueryIndex].Get());
-    m_gpuQueryIssued[m_gpuQueryIndex] = true;
-    m_gpuQueryIndex = (m_gpuQueryIndex + 1) % 2;
+    m_context->End(m_gpuEndQueries[m_gpuTotalQueryIndex].Get());
     m_gpuTimerActive = false;
+}
+
+void Renderer::ResolveGpuTotalTimer()
+{
+    const unsigned int readIndex = m_gpuTotalQueryIndex;
+    if (!m_gpuTotalQueryIssued[readIndex]) return;
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint = {};
+    UINT64 totalBegin = 0;
+    UINT64 cloudBegin = 0;
+    UINT64 cloudEnd = 0;
+    UINT64 totalEnd = 0;
+    if (m_context->GetData(m_gpuTotalDisjointQueries[readIndex].Get(), &disjoint, sizeof(disjoint),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+        m_context->GetData(m_gpuTotalBeginQueries[readIndex].Get(), &totalBegin, sizeof(totalBegin),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+        m_context->GetData(m_gpuBeginQueries[readIndex].Get(), &cloudBegin, sizeof(cloudBegin),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+        m_context->GetData(m_gpuEndQueries[readIndex].Get(), &cloudEnd, sizeof(cloudEnd),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+        m_context->GetData(m_gpuTotalEndQueries[readIndex].Get(), &totalEnd, sizeof(totalEnd),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK)
+    {
+        if (!disjoint.Disjoint && disjoint.Frequency > 0 &&
+            totalEnd >= totalBegin && cloudEnd >= cloudBegin)
+        {
+            const float totalSample =
+                static_cast<float>((totalEnd - totalBegin) * 1000.0 / disjoint.Frequency);
+            const float cloudSample =
+                static_cast<float>((cloudEnd - cloudBegin) * 1000.0 / disjoint.Frequency);
+            m_gpuTotalMs = m_gpuTotalMs > 0.0f ? m_gpuTotalMs * 0.9f + totalSample * 0.1f : totalSample;
+            m_gpuFrameMs = m_gpuFrameMs > 0.0f ? m_gpuFrameMs * 0.9f + cloudSample * 0.1f : cloudSample;
+        }
+        m_gpuTotalQueryIssued[readIndex] = false;
+    }
+}
+
+void Renderer::BeginGpuTotalTimer()
+{
+    ResolveGpuTotalTimer();
+    if (m_gpuTotalQueryIssued[m_gpuTotalQueryIndex])
+    {
+        m_gpuTotalTimerActive = false;
+        return;
+    }
+    m_context->Begin(m_gpuTotalDisjointQueries[m_gpuTotalQueryIndex].Get());
+    m_context->End(m_gpuTotalBeginQueries[m_gpuTotalQueryIndex].Get());
+    m_gpuTotalTimerActive = true;
+}
+
+void Renderer::EndGpuTotalTimer()
+{
+    if (!m_gpuTotalTimerActive) return;
+    m_context->End(m_gpuTotalEndQueries[m_gpuTotalQueryIndex].Get());
+    m_context->End(m_gpuTotalDisjointQueries[m_gpuTotalQueryIndex].Get());
+    m_gpuTotalQueryIssued[m_gpuTotalQueryIndex] = true;
+    m_gpuTotalQueryIndex = (m_gpuTotalQueryIndex + 1) % 2;
+    m_gpuTotalTimerActive = false;
 }
 
 void Renderer::GenerateNoiseVolumes()
@@ -578,11 +621,20 @@ void Renderer::ToggleDebugUI()
     m_debugUI.ToggleVisible();
 }
 
+void Renderer::ToggleTelemetry()
+{
+    m_debugUI.ToggleTelemetry();
+}
+
 void Renderer::Render(const Camera& camera, float timeSeconds)
 {
     if (!m_rtv) return;
 
-    const float cpuFrameMs = m_lastFrameTime > 0.0f ? (timeSeconds - m_lastFrameTime) * 1000.0f : 0.0f;
+    const double cpuRenderStart = PerformanceCounterSeconds();
+    const float frameSample = m_lastFrameTime > 0.0f ? (timeSeconds - m_lastFrameTime) * 1000.0f : 0.0f;
+    if (frameSample > 0.0f)
+        m_frameIntervalMs = m_frameIntervalMs > 0.0f
+            ? m_frameIntervalMs * 0.9f + frameSample * 0.1f : frameSample;
     m_lastFrameTime = timeSeconds;
     m_debugUI.BeginFrame();
 
@@ -591,7 +643,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     const CloudParameters previousParams = m_cloudParams;
     NoiseCacheUiActions cacheActions;
     if (m_debugUI.Draw(m_cloudParams, m_previewSettings, previewViews, m_weatherMap.srv.Get(),
-                       m_previewDirty, cpuFrameMs, m_gpuFrameMs, m_cacheStatus, cacheActions))
+                       m_previewDirty, m_frameIntervalMs, m_cpuRenderMs,
+                       m_gpuFrameMs, m_gpuTotalMs, m_cacheStatus, cacheActions))
     {
         m_previewDirty = true;
         if (previousParams.noiseWorldScale != m_cloudParams.noiseWorldScale ||
@@ -635,7 +688,11 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
             m_sourceModified = modified;
             m_cacheStatus = modified ? "Source Modified" : "Saved";
         }
-        else m_cacheStatus = "Error";
+        else
+        {
+            const std::string& detail = m_noiseCacheManager.LastError();
+            m_cacheStatus = detail.empty() ? "Error: cache reload failed" : "Error: " + detail;
+        }
     }
 
     const float cloudTime = m_previewSettings.freeze ? m_previewSettings.previewTime : timeSeconds;
@@ -674,15 +731,17 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     if (cacheActions.save)
     {
         m_cacheStatus = "Saving";
-        m_cacheStatus = m_noiseCacheManager.SaveUser(
+        const bool saved = m_noiseCacheManager.SaveUser(
             m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
-            m_noiseVolumes, m_weatherMap)
-            ? "Saved" : "Error";
+            m_noiseVolumes, m_weatherMap);
+        m_cacheStatus = saved ? "Saved" : "Error: " + m_noiseCacheManager.LastError();
     }
     // 패널이 기본 숨김인 동안에는 비싼 4-MRT 절차식 미리보기를 만들지 않는다.
     // F1로 처음 열면 유지된 dirty 플래그에 의해 즉시 한 번 생성된다.
     if (m_previewDirty && m_debugUI.IsVisible())
         RenderNoisePreview(cloudTime);
+
+    BeginGpuTotalTimer();
 
     // ---- 뷰포트 ----
     D3D11_VIEWPORT vp = {};
@@ -714,7 +773,18 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     EndGpuTimer();
 
     // 구름 위에 디버그 UI를 합성한 뒤 Present.
+    TelemetrySnapshot telemetry;
+    telemetry.frameIntervalMs = m_frameIntervalMs;
+    telemetry.cpuRenderMs = m_cpuRenderMs;
+    telemetry.gpuCloudMs = m_gpuFrameMs;
+    telemetry.gpuTotalMs = m_gpuTotalMs;
+    telemetry.cacheStatus = m_cacheStatus;
+    m_debugUI.DrawTelemetry(m_cloudParams, telemetry);
     m_debugUI.EndFrame();
+    EndGpuTotalTimer();
+    const float cpuSample =
+        static_cast<float>((PerformanceCounterSeconds() - cpuRenderStart) * 1000.0);
+    m_cpuRenderMs = m_cpuRenderMs > 0.0f ? m_cpuRenderMs * 0.9f + cpuSample * 0.1f : cpuSample;
     m_swapChain->Present(1, 0); // vsync
     m_hasPresented = true;
     CheckShaderHotReload();

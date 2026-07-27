@@ -132,6 +132,11 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             m_renderer->ToggleDebugUI();
             return 0;
         }
+        if (wParam == VK_F2 && m_renderer)
+        {
+            m_renderer->ToggleTelemetry();
+            return 0;
+        }
         if (uiHandled || (m_renderer && m_renderer->WantsKeyboardCapture())) return 0;
         break;
     }

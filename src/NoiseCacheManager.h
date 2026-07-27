@@ -80,6 +80,7 @@ public:
     uint64_t SourceHash() const;
     static uint64_t ParameterHash(const CloudParameters& params);
     const std::filesystem::path& UserCacheRoot() const { return m_userCacheRoot; }
+    const std::string& LastError() const { return m_lastError; }
 
 private:
     bool LoadBundle(
@@ -92,6 +93,17 @@ private:
         std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
         WeatherMapResources& weather,
         bool& sourceModified);
+    bool LoadBundleDirectory(
+        const std::filesystem::path& bundle,
+        ID3D11Device* device,
+        CloudParameters& params,
+        ShaderBlobArray& shaderBlobs,
+        std::array<Microsoft::WRL::ComPtr<ID3D11Texture3D>, 2>& volumes,
+        std::array<Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
+        std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
+        WeatherMapResources& weather,
+        bool& sourceModified);
+    std::filesystem::path ResolveBundleDirectory(const std::filesystem::path& root) const;
     bool SaveBundle(
         const std::filesystem::path& root,
         ID3D11Device* device,
@@ -104,4 +116,5 @@ private:
     std::filesystem::path m_defaultCacheRoot;
     std::filesystem::path m_userCacheRoot;
     std::vector<std::wstring> m_sourcePaths;
+    std::string m_lastError;
 };

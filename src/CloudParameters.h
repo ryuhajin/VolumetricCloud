@@ -78,12 +78,12 @@ struct alignas(16) CloudParameters
     int   viewSteps            = 96;
     float skyExposure          = 1.0f;
 
-    float cloudBaseHeight      = 2.0f;
-    float cloudThickness       = 3.0f;
-    float cloudNoiseWorldSize  = 14.0f;
-    float maxMarchDistance     = 120.0f;
+    float cloudBaseHeight      = 2.0f;  // km (광역 장면: 1 world unit = 1 km)
+    float cloudThickness       = 3.0f;  // km
+    float cloudNoiseWorldSize  = 14.0f; // km, 3D noise XZ 반복 크기
+    float maxMarchDistance     = 120.0f;// km
 
-    float weatherWorldSize         = 100.0f;
+    float weatherWorldSize         = 100.0f; // km, weather map XZ 반복 크기
     float weatherCoverageStrength  = 0.85f;
     float weatherTypeBias          = 0.62f;
     float heightVariation          = 0.45f;

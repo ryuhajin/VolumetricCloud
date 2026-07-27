@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -79,14 +80,17 @@ bool DebugUI::Draw(CloudParameters& p,
                    const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
                    ID3D11ShaderResourceView* weatherSrv,
                    bool previewDirty,
-                   float cpuFrameMs,
-                   float gpuFrameMs,
+                   float frameIntervalMs,
+                   float cpuRenderMs,
+                   float gpuCloudMs,
+                   float gpuTotalMs,
                    const std::string& cacheStatus,
                    NoiseCacheUiActions& cacheActions)
 {
     if (!m_initialized || !m_visible) return false;
 
     bool changed = false;
+    bool presetSelected = false;
     ImGui::SetNextWindowSize(ImVec2(620, 720), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Cloud Debug", &m_visible))
     {
@@ -111,7 +115,12 @@ bool DebugUI::Draw(CloudParameters& p,
                 changed |= ImGui::Checkbox("Freeze animation", &preview.freeze);
                 if (preview.freeze)
                     changed |= ImGui::SliderFloat("Preview time", &preview.previewTime, 0.0f, 120.0f, "%.2f s");
-                if (ImGui::Button("Reset defaults")) { p = DefaultCloudParameters(); changed = true; }
+                if (ImGui::Button("Reset defaults"))
+                {
+                    p = DefaultCloudParameters();
+                    changed = presetSelected = true;
+                    m_activePreset = "Default";
+                }
                 ImGui::EndTabItem();
             }
 
@@ -191,22 +200,28 @@ bool DebugUI::Draw(CloudParameters& p,
                 if (ImGui::Button("Load"))
                 {
                     auto it = m_userPresets.find(m_presetName);
-                    if (it != m_userPresets.end()) { p = it->second; changed = true; m_status = "loaded"; }
+                    if (it != m_userPresets.end())
+                    {
+                        p = it->second;
+                        changed = presetSelected = true;
+                        m_activePreset = m_presetName;
+                        m_status = "loaded";
+                    }
                     else m_status = "preset not found";
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Delete"))
                     m_status = DeletePreset(m_presetName) ? "deleted" : "delete failed";
 
-                if (ImGui::Button("Default")) { p = DefaultCloudParameters(); changed = true; }
+                if (ImGui::Button("Default")) { p = DefaultCloudParameters(); changed = presetSelected = true; m_activePreset = "Default"; }
                 ImGui::SameLine();
-                if (ImGui::Button("Cumulus")) { p = CumulusCloudParameters(); changed = true; }
+                if (ImGui::Button("Cumulus")) { p = CumulusCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus"; }
                 ImGui::SameLine();
-                if (ImGui::Button("Stratus")) { p = StratusCloudParameters(); changed = true; }
+                if (ImGui::Button("Stratus")) { p = StratusCloudParameters(); changed = presetSelected = true; m_activePreset = "Stratus"; }
                 ImGui::SameLine();
-                if (ImGui::Button("Showcase")) { p = CumulusShowcaseCloudParameters(); changed = true; }
+                if (ImGui::Button("Showcase")) { p = CumulusShowcaseCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus Showcase"; }
                 ImGui::SameLine();
-                if (ImGui::Button("Wide")) { p = CumulusWideShowcaseCloudParameters(); changed = true; }
+                if (ImGui::Button("Wide")) { p = CumulusWideShowcaseCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus Wide"; }
                 if (!m_status.empty()) ImGui::TextUnformatted(m_status.c_str());
                 ImGui::EndTabItem();
             }
@@ -215,9 +230,11 @@ bool DebugUI::Draw(CloudParameters& p,
             {
                 const ImGuiIO& io = ImGui::GetIO();
                 ImGui::Text("FPS: %.1f", io.Framerate);
-                ImGui::Text("CPU frame: %.3f ms", cpuFrameMs);
-                ImGui::Text("GPU cloud: %.3f ms%s", gpuFrameMs,
-                            gpuFrameMs > 33.3f ? " (over 30 FPS budget)" : "");
+                ImGui::Text("Frame interval: %.3f ms", frameIntervalMs);
+                ImGui::Text("CPU render: %.3f ms", cpuRenderMs);
+                ImGui::Text("GPU cloud: %.3f ms%s", gpuCloudMs,
+                            gpuCloudMs > 33.3f ? " (over 30 FPS budget)" : "");
+                ImGui::Text("GPU total: %.3f ms", gpuTotalMs);
                 ImGui::TextUnformatted("Preview: 256 x 256 x 4 MRT");
                 ImGui::Text("Inspector source: %s", p.useTextureCache ? "3D texture cache" : "procedural HLSL");
                 ImGui::TextUnformatted("Main ray march source: 3D texture cache");
@@ -238,7 +255,82 @@ bool DebugUI::Draw(CloudParameters& p,
         }
     }
     ImGui::End();
+    if (changed && !presetSelected) m_activePreset = "Custom";
     return changed;
+}
+
+void DebugUI::DrawTelemetry(const CloudParameters& p, const TelemetrySnapshot& t)
+{
+    if (!m_initialized || !m_telemetryVisible) return;
+
+    static const char* modeNames[] = {
+        "Lit", "Density", "Base Shape", "Detail", "Height", "Transmittance",
+        "Cache Diff", "Seam Diff", "Base R", "Base G", "Base B", "Base A",
+        "Light Visibility", "Phase", "Ambient", "Direct",
+        "Weather Coverage", "Weather Type", "Weather Base", "Weather Thickness"
+    };
+    const int modeCount = static_cast<int>(IM_ARRAYSIZE(modeNames));
+    const char* mode = p.renderMode >= 0 && p.renderMode < modeCount ? modeNames[p.renderMode] : "Unknown";
+
+    const float compassAzimuth = std::fmod(90.0f - p.sunAzimuth + 720.0f, 360.0f);
+    static const char* directions[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+    const int directionIndex = static_cast<int>(std::floor((compassAzimuth + 22.5f) / 45.0f)) & 7;
+    const float layerBottom = p.cloudBaseHeight - (std::max)(p.heightVariation, 0.0f);
+    const float layerTop = p.cloudBaseHeight + (std::max)(p.heightVariation, 0.0f) +
+        (std::max)(p.cloudThickness, 0.1f) *
+        (1.0f + (std::clamp)(p.thicknessVariation, 0.0f, 1.0f));
+
+    const ImGuiIO& io = ImGui::GetIO();
+    std::array<std::string, 8> lines;
+    char text[256] = {};
+    std::snprintf(text, sizeof(text), "%s | %s", m_activePreset.c_str(), mode);
+    lines[0] = text;
+    std::snprintf(text, sizeof(text), "FPS %.0f | Frame %.1f ms", io.Framerate, t.frameIntervalMs);
+    lines[1] = text;
+    std::snprintf(text, sizeof(text), "CPU %.2f ms | GPU %.2f ms (cloud %.2f)",
+                  t.cpuRenderMs, t.gpuTotalMs, t.gpuCloudMs);
+    lines[2] = text;
+    std::snprintf(text, sizeof(text), "Sun %s | Az %03.0f deg | El %.0f deg",
+                  directions[directionIndex], compassAzimuth, p.sunElevation);
+    lines[3] = text;
+    std::snprintf(text, sizeof(text), "Cloud %.1f-%.1f km | Coverage %.2f",
+                  layerBottom, layerTop, p.coverage);
+    lines[4] = text;
+    std::snprintf(text, sizeof(text), "March V%d L%d | Max %.0f km",
+                  p.viewSteps, p.lightSteps, p.maxMarchDistance);
+    lines[5] = text;
+    lines[6] = "Cache " + t.cacheStatus;
+    lines[7] = "F1 editor | F2 HUD";
+
+    constexpr float padding = 10.0f;
+    const float lineHeight = ImGui::GetTextLineHeightWithSpacing();
+    // Win32 DPI 배율이 있는 환경에서는 draw-list 좌표를 논리 폭으로 환산한다.
+    const float dpiScale = (std::max)(io.DisplayFramebufferScale.x, 1.0f);
+    const float displayWidth = io.DisplaySize.x / dpiScale;
+    constexpr float boxWidth = 330.0f;
+    const ImVec2 boxMin((std::max)(12.0f, displayWidth - boxWidth - 12.0f), 12.0f);
+    const ImVec2 boxMax(displayWidth - 12.0f,
+                        boxMin.y + padding * 2.0f + lineHeight * static_cast<float>(lines.size()));
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    drawList->AddRectFilled(boxMin, boxMax, IM_COL32(10, 14, 20, 165), 5.0f);
+    drawList->AddRect(boxMin, boxMax, IM_COL32(150, 175, 205, 120), 5.0f);
+    ImVec2 cursor(boxMin.x + padding, boxMin.y + padding);
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        ImU32 color = IM_COL32(235, 240, 245, 255);
+        if (i == 6)
+        {
+            color = t.cacheStatus.find("Error") != std::string::npos
+                ? IM_COL32(255, 90, 75, 255)
+                : t.cacheStatus == "Saved"
+                    ? IM_COL32(115, 230, 140, 255)
+                    : IM_COL32(255, 200, 65, 255);
+        }
+        else if (i == 7)
+            color = IM_COL32(155, 165, 180, 255);
+        drawList->AddText(cursor, color, lines[i].c_str());
+        cursor.y += lineHeight;
+    }
 }
 
 void DebugUI::EndFrame()
