@@ -49,7 +49,7 @@ PreviewOutput PSMain(VSOut input)
     else if (previewAxis == 1) uvw = float3(uv.x, previewSlice, 1.0 - uv.y); // XZ
     else                       uvw = float3(previewSlice, 1.0 - uv.y, uv.x); // YZ
 
-    float4 components = EvaluateCloudComponents(uvw, previewTime);
+    float4 components = EvaluatePreviewCloudComponents(uvw, previewTime);
     PreviewOutput output;
     output.baseShape    = float4(components.xxx, 1.0);
     output.detailNoise  = float4(components.yyy, 1.0);

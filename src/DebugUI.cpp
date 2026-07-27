@@ -92,10 +92,16 @@ bool DebugUI::Draw(CloudParameters& p,
         {
             if (ImGui::BeginTabItem("Render"))
             {
-                const char* modes[] = { "Lit Cloud", "Final Density", "Base Shape", "Detail Noise", "Height Mask", "Transmittance", "Cache Difference", "Seam Difference" };
+                const char* modes[] = {
+                    "Lit Cloud", "Final Density", "Base Shape", "Detail Noise",
+                    "Height Mask", "Transmittance", "Cache Difference", "Seam Difference",
+                    "Base R: Perlin-Worley", "Base G: Worley Low",
+                    "Base B: Worley Mid", "Base A: Worley High",
+                    "Light Visibility", "Dual-Lobe Phase", "Ambient Lighting", "Direct Lighting"
+                };
                 changed |= ImGui::Combo("Render mode", &p.renderMode, modes, IM_ARRAYSIZE(modes));
                 bool useCache = p.useTextureCache != 0;
-                if (ImGui::Checkbox("Use 3D texture cache", &useCache)) { p.useTextureCache = useCache ? 1 : 0; changed = true; }
+                if (ImGui::Checkbox("Inspector uses 3D cache", &useCache)) { p.useTextureCache = useCache ? 1 : 0; changed = true; }
                 bool showBounds = p.showBounds != 0;
                 if (ImGui::Checkbox("Show AABB bounds", &showBounds)) { p.showBounds = showBounds ? 1 : 0; changed = true; }
                 changed |= ImGui::Checkbox("Freeze animation", &preview.freeze);
@@ -133,6 +139,8 @@ bool DebugUI::Draw(CloudParameters& p,
                 changed |= ImGui::SliderInt("Detail octaves", &p.detailOctaves, 1, 4);
                 changed |= ImGui::SliderFloat("Noise cutoff threshold", &p.noiseCutoffThreshold,
                                               0.0f, 0.95f, "%.3f");
+                changed |= ImGui::SliderFloat("Coverage", &p.coverage, 0.05f, 0.95f, "%.3f");
+                changed |= ImGui::SliderFloat("Base erosion", &p.baseErosion, 0.0f, 0.75f, "%.3f");
                 changed |= ImGui::SliderFloat("Density", &p.densityMultiplier, 0.0f, 5.0f, "%.2f");
                 changed |= ImGui::SliderFloat("Erosion", &p.erosionStrength, 0.0f, 1.0f, "%.3f");
                 changed |= ImGui::SliderFloat("Bottom fade", &p.bottomFade, 0.01f, 0.49f, "%.3f");
@@ -143,11 +151,18 @@ bool DebugUI::Draw(CloudParameters& p,
                 ImGui::SeparatorText("Lighting");
                 changed |= ImGui::SliderFloat("Sun azimuth", &p.sunAzimuth, -180.0f, 180.0f, "%.1f deg");
                 changed |= ImGui::SliderFloat("Sun elevation", &p.sunElevation, -10.0f, 90.0f, "%.1f deg");
-                changed |= ImGui::SliderFloat("Sun intensity", &p.sunIntensity, 0.0f, 5.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Ambient", &p.ambientIntensity, 0.0f, 1.0f, "%.2f");
+                changed |= ImGui::SliderFloat("Sun intensity", &p.sunIntensity, 0.0f, 12.0f, "%.2f");
+                changed |= ImGui::SliderFloat("Ambient", &p.ambientIntensity, 0.0f, 2.0f, "%.2f");
                 changed |= ImGui::SliderFloat("HG eccentricity", &p.phaseG, -0.9f, 0.9f, "%.2f");
                 changed |= ImGui::SliderFloat("Light absorption", &p.lightAbsorption, 0.1f, 4.0f, "%.2f");
                 changed |= ImGui::SliderInt("Light steps", &p.lightSteps, 1, 12);
+                changed |= ImGui::SliderFloat("Powder", &p.powderStrength, 0.0f, 1.5f, "%.2f");
+                changed |= ImGui::SliderFloat("Multi scattering", &p.multiScatterStrength, 0.0f, 1.0f, "%.2f");
+                changed |= ImGui::SliderFloat("Silver lining", &p.silverLiningStrength, 0.0f, 2.0f, "%.2f");
+                changed |= ImGui::SliderFloat("Sky exposure", &p.skyExposure, 0.25f, 2.5f, "%.2f");
+                ImGui::SeparatorText("Sampling");
+                changed |= ImGui::SliderInt("View steps", &p.viewSteps, 48, 128);
+                changed |= ImGui::SliderFloat("Ray jitter", &p.jitterStrength, 0.0f, 1.0f, "%.2f");
                 ImGui::SeparatorText("Preset");
                 ImGui::InputText("Name", m_presetName, IM_ARRAYSIZE(m_presetName));
                 if (ImGui::Button("Save"))
@@ -170,6 +185,8 @@ bool DebugUI::Draw(CloudParameters& p,
                 if (ImGui::Button("Cumulus")) { p = CumulusCloudParameters(); changed = true; }
                 ImGui::SameLine();
                 if (ImGui::Button("Stratus")) { p = StratusCloudParameters(); changed = true; }
+                ImGui::SameLine();
+                if (ImGui::Button("Showcase")) { p = CumulusShowcaseCloudParameters(); changed = true; }
                 if (!m_status.empty()) ImGui::TextUnformatted(m_status.c_str());
                 ImGui::EndTabItem();
             }
@@ -180,9 +197,11 @@ bool DebugUI::Draw(CloudParameters& p,
                 ImGui::Text("FPS: %.1f", io.Framerate);
                 ImGui::Text("CPU frame: %.3f ms", cpuFrameMs);
                 ImGui::TextUnformatted("Preview: 256 x 256 x 4 MRT");
-                ImGui::Text("Noise source: %s", p.useTextureCache ? "3D texture cache" : "procedural HLSL");
-                ImGui::TextUnformatted("Base cache: 128^3 RGBA8 (8.0 MiB)");
+                ImGui::Text("Inspector source: %s", p.useTextureCache ? "3D texture cache" : "procedural HLSL");
+                ImGui::TextUnformatted("Main ray march source: 3D texture cache");
+                ImGui::TextUnformatted("Base cache: 128^3 RGBA8 (8.0 MiB, shape bands)");
                 ImGui::TextUnformatted("Detail cache: 64^3 RGBA8 (1.0 MiB)");
+                ImGui::Text("Marching: %d view / %d light steps", p.viewSteps, p.lightSteps);
                 ImGui::SeparatorText("Persistent cache");
                 ImGui::Text("Status: %s", cacheStatus.c_str());
                 if (ImGui::Button("Save Noise Cache")) cacheActions.save = true;
@@ -237,8 +256,9 @@ void DebugUI::LoadPresets()
         if (key == "noiseWorldScale") p.noiseWorldScale = value;
         else if (key == "basePeriod") p.basePeriod = static_cast<int>(value);
         else if (key == "detailPeriod") p.detailPeriod = static_cast<int>(value);
-        else if (key == "noiseCutoffThreshold" || key == "coverage")
-            p.noiseCutoffThreshold = value; // coverage는 기존 사용자 프리셋 호환용
+        else if (key == "noiseCutoffThreshold") p.noiseCutoffThreshold = value;
+        else if (key == "coverage") p.coverage = value;
+        else if (key == "baseErosion") p.baseErosion = value;
         else if (key == "density") p.densityMultiplier = value;
         else if (key == "erosion") p.erosionStrength = value;
         else if (key == "bottomFade") p.bottomFade = value;
@@ -256,6 +276,12 @@ void DebugUI::LoadPresets()
         else if (key == "phaseG") p.phaseG = value;
         else if (key == "lightAbsorption") p.lightAbsorption = value;
         else if (key == "lightSteps") p.lightSteps = static_cast<int>(value);
+        else if (key == "powderStrength") p.powderStrength = value;
+        else if (key == "multiScatterStrength") p.multiScatterStrength = value;
+        else if (key == "silverLiningStrength") p.silverLiningStrength = value;
+        else if (key == "jitterStrength") p.jitterStrength = value;
+        else if (key == "viewSteps") p.viewSteps = static_cast<int>(value);
+        else if (key == "skyExposure") p.skyExposure = value;
     }
 }
 
@@ -273,6 +299,8 @@ bool DebugUI::SavePreset(const std::string& name, const CloudParameters& p)
              << "basePeriod=" << v.basePeriod << "\n"
              << "detailPeriod=" << v.detailPeriod << "\n"
              << "noiseCutoffThreshold=" << v.noiseCutoffThreshold << "\n"
+             << "coverage=" << v.coverage << "\n"
+             << "baseErosion=" << v.baseErosion << "\n"
              << "density=" << v.densityMultiplier << "\n"
              << "erosion=" << v.erosionStrength << "\n"
              << "bottomFade=" << v.bottomFade << "\n"
@@ -289,7 +317,13 @@ bool DebugUI::SavePreset(const std::string& name, const CloudParameters& p)
              << "ambientIntensity=" << v.ambientIntensity << "\n"
              << "phaseG=" << v.phaseG << "\n"
              << "lightAbsorption=" << v.lightAbsorption << "\n"
-             << "lightSteps=" << v.lightSteps << "\n\n";
+             << "lightSteps=" << v.lightSteps << "\n"
+             << "powderStrength=" << v.powderStrength << "\n"
+             << "multiScatterStrength=" << v.multiScatterStrength << "\n"
+             << "silverLiningStrength=" << v.silverLiningStrength << "\n"
+             << "jitterStrength=" << v.jitterStrength << "\n"
+             << "viewSteps=" << v.viewSteps << "\n"
+             << "skyExposure=" << v.skyExposure << "\n\n";
     }
     return true;
 }
@@ -307,6 +341,8 @@ bool DebugUI::DeletePreset(const std::string& name)
              << "basePeriod=" << v.basePeriod << "\n"
              << "detailPeriod=" << v.detailPeriod << "\n"
              << "noiseCutoffThreshold=" << v.noiseCutoffThreshold << "\n"
+             << "coverage=" << v.coverage << "\n"
+             << "baseErosion=" << v.baseErosion << "\n"
              << "density=" << v.densityMultiplier << "\n"
              << "erosion=" << v.erosionStrength << "\n"
              << "bottomFade=" << v.bottomFade << "\n"
@@ -323,7 +359,13 @@ bool DebugUI::DeletePreset(const std::string& name)
              << "ambientIntensity=" << v.ambientIntensity << "\n"
              << "phaseG=" << v.phaseG << "\n"
              << "lightAbsorption=" << v.lightAbsorption << "\n"
-             << "lightSteps=" << v.lightSteps << "\n\n";
+             << "lightSteps=" << v.lightSteps << "\n"
+             << "powderStrength=" << v.powderStrength << "\n"
+             << "multiScatterStrength=" << v.multiScatterStrength << "\n"
+             << "silverLiningStrength=" << v.silverLiningStrength << "\n"
+             << "jitterStrength=" << v.jitterStrength << "\n"
+             << "viewSteps=" << v.viewSteps << "\n"
+             << "skyExposure=" << v.skyExposure << "\n\n";
     }
     return true;
 }

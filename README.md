@@ -1,14 +1,15 @@
 # VolumetricCloud
 
-DirectX 11 + HLSL로 periodic 3D noise, 레이마칭, single scattering을 구현하는 볼류메트릭 클라우드 학습 프로젝트입니다.
+DirectX 11 + HLSL로 periodic 3D noise, 가변 레이마칭과 근사 다중 산란을 구현하는 볼류메트릭 클라우드 학습 프로젝트입니다.
 
 ## 현재 기능
 
-- AABB 내부 64-step ray marching과 Beer–Lambert 조기 종료
+- AABB 내부 48~128-step 가변 ray marching, 고정 jitter와 Beer–Lambert 조기 종료
 - 심리스 periodic Value/Worley/FBM 및 Perlin–Worley 밀도장
 - 128³ base, 64³ detail RGBA8 Texture3D
-- 태양 방향 light march, self-shadow, Henyey–Greenstein, ambient
-- F1 Dear ImGui 패널: 단면, density 단계, seam/cache difference, 파라미터와 프리셋
+- 128³ base RGBA 형태 밴드와 64³ detail RGBA 침식 옥타브
+- 태양 light march, dual-lobe HG, powder, silver lining과 3-octave 다중 산란 근사
+- F1 Dear ImGui 패널: 노이즈·조명 성분, seam/cache difference, 파라미터와 Showcase 프리셋
 - 검증된 `.cso`와 3D volume 영구 캐시로 빠른 시작
 - HLSL 핫 리로드 실패 시 마지막 정상 리소스 유지
 
@@ -42,6 +43,6 @@ cmake --build build --config Debug
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-`VolumetricCloud.CacheSmoke`는 정상 캐시 시작에서 컴파일과 noise dispatch가 0회인지 검사합니다. `VolumetricCloud.CodeTests`는 GPU periodic seam, 볼륨 레이아웃, 캐시 저장/재로드 바이트 일치, Beer–Lambert/HG 수치 성질을 검사합니다. 화면 품질 비교는 포함하지 않습니다.
+`VolumetricCloud.CacheSmoke`는 정상 캐시 시작에서 컴파일과 noise dispatch가 0회인지 검사합니다. `VolumetricCloud.CodeTests`는 GPU periodic seam, RGBA 채널 분산과 밀도 포화, 캐시 저장/재로드, Beer–Lambert/dual-lobe phase/다중 산란 수치를 검사합니다. 화면 품질 비교는 포함하지 않습니다.
 
-자세한 구조와 수식은 [아키텍처](doc/ARCHITECTURE.md), [레이마칭](doc/RAYMARCHING.md), [로드맵](doc/ROADMAP.md)을 참고하세요.
+자세한 구조와 수식은 [아키텍처](doc/ARCHITECTURE.md), [레이마칭](doc/RAYMARCHING.md), [로드맵](doc/ROADMAP.md)을 참고하세요. 브랜치별 문제 분석과 설계 이유는 [`doc/changes/`](doc/changes/)에 기록합니다.

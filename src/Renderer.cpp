@@ -346,8 +346,8 @@ bool Renderer::CreateNoisePreviewResources()
 bool Renderer::CreateNoiseVolumeResources()
 {
     const UINT sizes[2] = { 128, 64 };
-    // base=R8(실루엣 단일값), detail=RGBA8(Worley 옥타브 4채널)
-    const DXGI_FORMAT formats[2] = { DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM };
+    // base/detail 모두 RGBA8: base는 형태 밴드, detail은 침식 옥타브를 저장한다.
+    const DXGI_FORMAT formats[2] = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM };
     for (size_t i = 0; i < 2; ++i)
     {
         D3D11_TEXTURE3D_DESC td = {};
@@ -384,7 +384,6 @@ void Renderer::GenerateNoiseVolumes()
     m_context->CSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
     m_context->CSSetConstantBuffers(2, 1, m_noiseVolumeGenerationCb.GetAddressOf());
 
-    // base(R8)와 detail(RGBA8)은 UAV 타입이 달라 셰이더/레지스터도 나뉜다.
     // base → CSBase, outputBase(u0) / detail → CSDetail, outputDetail(u2). (u1은 CSSeamTest 전용)
     const UINT sizes[2] = { 128, 64 };
     ID3D11ComputeShader* shaders[2] = { m_noiseVolumeCsBase.Get(), m_noiseVolumeCsDetail.Get() };
@@ -678,12 +677,78 @@ bool Renderer::RunCodeTests()
     const bool volumeLayout =
         baseDesc.Width == 128 && baseDesc.Height == 128 && baseDesc.Depth == 128 &&
         detailDesc.Width == 64 && detailDesc.Height == 64 && detailDesc.Depth == 64 &&
-        baseDesc.Format == DXGI_FORMAT_R8_UNORM &&        // 실루엣 단일값
+        baseDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && // Perlin-Worley + Worley 3밴드
         detailDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && // Worley 옥타브 4채널
-        static_cast<uint64_t>(baseDesc.Width) * baseDesc.Height * baseDesc.Depth * 1 == 2097152ull &&
+        static_cast<uint64_t>(baseDesc.Width) * baseDesc.Height * baseDesc.Depth * 4 == 8388608ull &&
         static_cast<uint64_t>(detailDesc.Width) * detailDesc.Height * detailDesc.Depth * 4 == 1048576ull;
 
-    // Beer-Lambert와 HG의 CPU 기준값. 셰이더와 같은 범위에서 수치 성질을 검사한다.
+    // 실제 base 캐시를 읽어 네 채널이 퇴화하지 않았고 shaped density가 전부 비거나
+    // 포화되지 않는지 검사한다. 화면 비교가 아니라 생성 데이터의 수치 건전성 검사다.
+    bool baseDistribution = false;
+    if (volumeLayout)
+    {
+        D3D11_TEXTURE3D_DESC readDesc = baseDesc;
+        readDesc.Usage = D3D11_USAGE_STAGING;
+        readDesc.BindFlags = 0;
+        readDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        readDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture3D> readback;
+        if (SUCCEEDED(m_device->CreateTexture3D(&readDesc, nullptr, &readback)))
+        {
+            m_context->CopyResource(readback.Get(), m_noiseVolumes[0].Get());
+            D3D11_MAPPED_SUBRESOURCE baseMapped = {};
+            if (SUCCEEDED(m_context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &baseMapped)))
+            {
+                std::array<unsigned char, 4> channelMin = { 255, 255, 255, 255 };
+                std::array<unsigned char, 4> channelMax = { 0, 0, 0, 0 };
+                uint64_t occupied = 0;
+                uint64_t saturated = 0;
+                const uint64_t total = static_cast<uint64_t>(baseDesc.Width) *
+                    baseDesc.Height * baseDesc.Depth;
+                for (UINT z = 0; z < baseDesc.Depth; ++z)
+                for (UINT y = 0; y < baseDesc.Height; ++y)
+                {
+                    const auto* row = static_cast<const unsigned char*>(baseMapped.pData) +
+                        static_cast<size_t>(z) * baseMapped.DepthPitch +
+                        static_cast<size_t>(y) * baseMapped.RowPitch;
+                    const float height01 = (static_cast<float>(y) + 0.5f) / baseDesc.Height;
+                    const float bottom = std::clamp(height01 / (std::max)(m_cloudParams.bottomFade, 0.001f), 0.0f, 1.0f);
+                    const float top = std::clamp((1.0f - height01) / (std::max)(m_cloudParams.topFade, 0.001f), 0.0f, 1.0f);
+                    const float heightMask = bottom * bottom * (3.0f - 2.0f * bottom) *
+                                             top * top * (3.0f - 2.0f * top);
+                    for (UINT x = 0; x < baseDesc.Width; ++x)
+                    {
+                        const auto* texel = row + static_cast<size_t>(x) * 4;
+                        for (size_t c = 0; c < 4; ++c)
+                        {
+                            channelMin[c] = (std::min)(channelMin[c], texel[c]);
+                            channelMax[c] = (std::max)(channelMax[c], texel[c]);
+                        }
+                        const float r = texel[0] / 255.0f;
+                        const float worley = (texel[1] * 0.625f + texel[2] * 0.25f + texel[3] * 0.125f) / 255.0f;
+                        const float threshold = std::clamp(
+                            m_cloudParams.noiseCutoffThreshold +
+                            (0.5f - m_cloudParams.coverage) * 0.70f, 0.0f, 0.99f);
+                        float shaped = std::clamp((r - threshold) / (1.0f - threshold), 0.0f, 1.0f);
+                        shaped = std::clamp(shaped - worley * m_cloudParams.baseErosion, 0.0f, 1.0f);
+                        const float densityValue = shaped * heightMask * m_cloudParams.densityMultiplier;
+                        if (densityValue > 0.01f) ++occupied;
+                        if (densityValue >= 0.99f) ++saturated;
+                    }
+                }
+                m_context->Unmap(readback.Get(), 0);
+                bool channelsVary = true;
+                for (size_t c = 0; c < 4; ++c)
+                    channelsVary = channelsVary && channelMax[c] > channelMin[c] + 8;
+                const float occupiedRatio = static_cast<float>(occupied) / total;
+                const float saturatedRatio = static_cast<float>(saturated) / total;
+                baseDistribution = channelsVary && occupiedRatio > 0.005f &&
+                                   occupiedRatio < 0.90f && saturatedRatio < 0.70f;
+            }
+        }
+    }
+
+    // Beer-Lambert, dual-lobe phase와 다중 산란 근사의 CPU 기준값.
     const float density = 0.8f;
     const float nearT = std::exp(-density * 0.5f);
     const float farT = std::exp(-density * 1.0f);
@@ -691,10 +756,34 @@ bool Renderer::RunCodeTests()
     const auto hg = [g](float cosine)
     {
         const float g2 = g * g;
-        return (1.0f - g2) / std::pow((std::max)(1.0f + g2 - 2.0f * g * cosine, 0.001f), 1.5f);
+        return 0.07957747f * (1.0f - g2) /
+            std::pow((std::max)(1.0f + g2 - 2.0f * g * cosine, 0.001f), 1.5f);
+    };
+    const auto dualLobe = [&hg](float cosine)
+    {
+        constexpr float backwardG = -0.22f;
+        constexpr float backwardG2 = backwardG * backwardG;
+        const float backward = 0.07957747f * (1.0f - backwardG2) /
+            std::pow((std::max)(1.0f + backwardG2 - 2.0f * backwardG * cosine, 0.001f), 1.5f);
+        return backward * 0.18f + hg(cosine) * 0.82f;
+    };
+    const auto multiScatter = [](float visibility)
+    {
+        float energy = 0.0f;
+        float weight = 0.5f;
+        for (int i = 0; i < 3; ++i)
+        {
+            energy += visibility * weight;
+            visibility = std::sqrt(visibility);
+            weight *= 0.5f;
+        }
+        return energy / 0.875f;
     };
     const bool lightingMath = farT <= nearT && nearT <= 1.0f && farT >= 0.0f &&
-                              hg(-1.0f) > 0.0f && hg(1.0f) > hg(0.0f) && hg(0.0f) > hg(-1.0f);
+                              dualLobe(-1.0f) > 0.0f && dualLobe(1.0f) > dualLobe(0.0f) &&
+                              std::isfinite(dualLobe(1.0f)) &&
+                              multiScatter(0.0f) >= 0.0f && multiScatter(1.0f) <= 1.0f &&
+                              std::isfinite(multiScatter(0.35f));
     const bool seamless = maxError <= 1.0e-5f;
     const bool roundTrip = m_noiseCacheManager.RunRoundTripTest(
         m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs, m_noiseVolumes);
@@ -719,5 +808,5 @@ bool Renderer::RunCodeTests()
         }
     }
 #endif
-    return seamless && roundTrip && volumeLayout && lightingMath && debugLayerClean;
+    return seamless && roundTrip && volumeLayout && baseDistribution && lightingMath && debugLayerClean;
 }

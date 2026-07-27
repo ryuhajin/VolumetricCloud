@@ -34,6 +34,16 @@ cbuffer CloudCB : register(b1)
     float ambientIntensity;
     float phaseG;
     float lightAbsorption;
+
+    float coverage;
+    float baseErosion;
+    float powderStrength;
+    float multiScatterStrength;
+
+    float silverLiningStrength;
+    float jitterStrength;
+    int viewSteps;
+    float skyExposure;
 };
 
 Texture3D<float4> baseNoiseTexture : register(t0);
@@ -151,10 +161,20 @@ float EffectiveDetailPeriod()
     return max(1.0, (float)detailPeriod * round(max(noiseWorldScale, 1.0)));
 }
 
-float BaseNoiseAt(float3 tileUVW)
+float4 BaseNoiseChannels(float3 tileUVW)
 {
     float period = EffectiveBasePeriod();
-    return PeriodicPerlinWorley(tileUVW * period, period);
+    float3 p = tileUVW * period;
+    return float4(
+        PeriodicPerlinWorley(p, period),
+        PeriodicWorley3D(p, period),
+        PeriodicWorley3D(p * 2.0, period * 2.0),
+        PeriodicWorley3D(p * 4.0, period * 4.0));
+}
+
+float BaseNoiseAt(float3 tileUVW)
+{
+    return BaseNoiseChannels(tileUVW).r;
 }
 
 float DetailNoiseAt(float3 tileUVW)
@@ -194,15 +214,32 @@ float HeightGradient(float height01)
 {
     float bottom = smoothstep(0.0, max(bottomFade, 0.001), height01);
     float top = 1.0 - smoothstep(1.0 - max(topFade, 0.001), 1.0, height01);
-    return saturate(bottom * top);
+    // 적운은 하단이 좁고 중단에서 부풀며 상단에서 다시 부드럽게 사라진다.
+    float lowerTaper = lerp(0.58, 1.0, smoothstep(0.0, 0.38, height01));
+    return saturate(bottom * top * lowerTaper);
 }
 
-float4 ShapeCloudComponents(float base, float detail, float height)
+float BaseShapeFromChannels(float4 baseChannels, float height01)
 {
-    float shaped = saturate((base - noiseCutoffThreshold) /
-                            max(1.0 - noiseCutoffThreshold, 0.001));
-    shaped = saturate(shaped - detail * erosionStrength * (0.35 + 0.65 * shaped));
-    return float4(base, detail, height, shaped * height);
+    float coverageOffset = (0.5 - saturate(coverage)) * 0.70;
+    // 하단과 꼭대기를 좁히고 중단을 넓혀 수직으로 납작한 안개 모양을 피한다.
+    float profileBias = lerp(0.14, -0.045, smoothstep(0.0, 0.52, height01));
+    profileBias += smoothstep(0.72, 1.0, height01) * 0.12;
+    float threshold = saturate(noiseCutoffThreshold + coverageOffset + profileBias);
+    float shaped = saturate((baseChannels.r - threshold) / max(1.0 - threshold, 0.001));
+
+    float worleyBands = dot(baseChannels.gba, float3(0.625, 0.25, 0.125));
+    float macroBoundary = 1.0 - smoothstep(0.55, 0.95, shaped);
+    return saturate(shaped - worleyBands * baseErosion * macroBoundary);
+}
+
+float4 ShapeCloudComponents(float4 baseChannels, float detail, float height, float height01)
+{
+    float baseShape = BaseShapeFromChannels(baseChannels, height01);
+    // 고주파 detail은 코어가 아니라 경계에 집중해 실루엣을 보존하면서 솜털을 만든다.
+    float boundary = 1.0 - smoothstep(0.45, 0.92, baseShape);
+    float shaped = saturate(baseShape - detail * erosionStrength * boundary);
+    return float4(baseShape, detail, height, shaped * height);
 }
 
 float3 AnimatedUVW(float3 uvw, float sampleTime)
@@ -218,25 +255,41 @@ float4 EvaluateProceduralCloudComponents(float3 uvw, float sampleTime)
 {
     float3 animated = AnimatedUVW(uvw, sampleTime);
     return ShapeCloudComponents(
-        BaseNoiseAt(animated),
+        BaseNoiseChannels(animated),
         DetailNoiseAt(animated),
-        HeightGradient(uvw.y));
+        HeightGradient(uvw.y),
+        uvw.y);
 }
 
 float4 EvaluateCachedCloudComponents(float3 uvw, float sampleTime)
 {
     float3 animated = AnimatedUVW(uvw, sampleTime);
-    float base = baseNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0).r;   // R8: 실루엣
+    float4 baseChannels = baseNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0);
     float4 detailOctaves = detailNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0); // RGBA8: 옥타브
     float detail = DetailErosionFromChannels(detailOctaves);
-    return ShapeCloudComponents(base, detail, HeightGradient(uvw.y));
+    return ShapeCloudComponents(baseChannels, detail, HeightGradient(uvw.y), uvw.y);
 }
 
 float4 EvaluateCloudComponents(float3 uvw, float sampleTime)
 {
+    // 메인 view/light loop는 항상 구운 볼륨을 사용한다. 다중 채널 절차식 Worley를
+    // 이 루프에 인라인하면 fxc 컴파일 시간과 픽셀 비용이 폭증한다.
+    return EvaluateCachedCloudComponents(uvw, sampleTime);
+}
+
+float4 EvaluatePreviewCloudComponents(float3 uvw, float sampleTime)
+{
     return useTextureCache != 0
         ? EvaluateCachedCloudComponents(uvw, sampleTime)
         : EvaluateProceduralCloudComponents(uvw, sampleTime);
+}
+
+float4 EvaluateBaseChannels(float3 uvw, float sampleTime)
+{
+    float3 animated = AnimatedUVW(uvw, sampleTime);
+    return useTextureCache != 0
+        ? baseNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0)
+        : BaseNoiseChannels(animated);
 }
 
 float EvaluateCloudDensity(float3 uvw, float sampleTime)
@@ -246,11 +299,15 @@ float EvaluateCloudDensity(float3 uvw, float sampleTime)
 
 float EvaluatePeriodicSeamError(float3 uvw)
 {
-    float base = BaseNoiseAt(uvw);
+    float4 base = BaseNoiseChannels(uvw);
+    float4 baseX = BaseNoiseChannels(uvw + float3(1, 0, 0));
+    float4 baseZ = BaseNoiseChannels(uvw + float3(0, 0, 1));
     float detail = DetailNoiseAt(uvw);
     float error = 0.0;
-    error = max(error, abs(base - BaseNoiseAt(uvw + float3(1, 0, 0))));
-    error = max(error, abs(base - BaseNoiseAt(uvw + float3(0, 0, 1))));
+    error = max(error, max(max(abs(base.r - baseX.r), abs(base.g - baseX.g)),
+                           max(abs(base.b - baseX.b), abs(base.a - baseX.a))));
+    error = max(error, max(max(abs(base.r - baseZ.r), abs(base.g - baseZ.g)),
+                           max(abs(base.b - baseZ.b), abs(base.a - baseZ.a))));
     error = max(error, abs(detail - DetailNoiseAt(uvw + float3(1, 0, 0))));
     error = max(error, abs(detail - DetailNoiseAt(uvw + float3(0, 0, 1))));
     return error;
@@ -260,7 +317,18 @@ float HenyeyGreenstein(float cosTheta)
 {
     float g = clamp(phaseG, -0.9, 0.9);
     float g2 = g * g;
-    return (1.0 - g2) / max(pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5), 0.001);
+    return 0.07957747 * (1.0 - g2) /
+        max(pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5), 0.001);
+}
+
+float DualLobePhase(float cosTheta)
+{
+    float forward = HenyeyGreenstein(cosTheta);
+    float backwardG = -0.22;
+    float backwardG2 = backwardG * backwardG;
+    float backward = 0.07957747 * (1.0 - backwardG2) /
+        max(pow(1.0 + backwardG2 - 2.0 * backwardG * cosTheta, 1.5), 0.001);
+    return lerp(backward, forward, 0.82);
 }
 
 #endif

@@ -6,7 +6,7 @@
 //    2) 레이와 AABB 박스의 교차 구간 [t0, t1]을 slab 방식으로 구한다.
 //    3) periodic noise 밀도를 적분한다.
 //    4) 태양 방향 light march로 self-shadow를 구한다.
-//    5) HG 위상 함수와 Beer-Lambert 투과율로 single scattering을 합성한다.
+//    5) dual-lobe 위상, 근사 다중 산란과 Beer-Lambert 투과율을 합성한다.
 // ============================================================================
 
 #include "Ray.hlsli"
@@ -59,7 +59,8 @@ float3 SunDirection()
 
 float LightTransmittance(float3 p, float3 sunDir, float3 boxMin, float3 boxMax)
 {
-    float lightT0, lightT1;
+    float lightT0 = 0.0;
+    float lightT1 = 0.0;
     float3 lightOrigin = p + sunDir * 0.002;
     if (!RayBox(lightOrigin, sunDir, boxMin, boxMax, lightT0, lightT1))
         return 1.0;
@@ -81,6 +82,26 @@ float LightTransmittance(float3 p, float3 sunDir, float3 boxMin, float3 boxMax)
         if (visibility < 0.01) break;
     }
     return visibility;
+}
+
+float InterleavedGradientNoise(float2 pixel)
+{
+    return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+
+float MultiScatterVisibility(float visibility)
+{
+    float energy = 0.0;
+    float weight = 0.5;
+    float softenedVisibility = saturate(visibility);
+    [unroll]
+    for (int octave = 0; octave < 3; ++octave)
+    {
+        energy += softenedVisibility * weight;
+        softenedVisibility = sqrt(softenedVisibility);
+        weight *= 0.5;
+    }
+    return energy / 0.875;
 }
 
 float4 main(VSOut input) : SV_TARGET
@@ -119,38 +140,61 @@ float4 main(VSOut input) : SV_TARGET
         return float4(sky, 1.0); // 박스가 카메라 뒤쪽
     }
 
-    // ---- 3) 박스 내부 구간 [t0,t1]을 고정 스텝으로 행진하며 노이즈 밀도 적분 ----
-    const int   STEPS = 64;
-    float       dt    = (t1 - t0) / STEPS;
+    // ---- 3) 빈 공간은 2배 스텝, 밀도 구간은 기본 스텝으로 행진한다. ----
+    int         steps = clamp(viewSteps, 48, 128);
+    float       baseDt = (t1 - t0) / steps;
+    float       rayDistance = t0 + InterleavedGradientNoise(input.pos.xy) * baseDt * saturate(jitterStrength);
     float       transmittance = 1.0; // 투과율 (1=완전 투명, 0=완전 불투명)
     float4      debugMax = 0.0;
     float3      scattering = 0.0;
     float3      sunDir = SunDirection();
-    float       phase = HenyeyGreenstein(dot(rd, sunDir));
+    // rd는 카메라→샘플이고 산란의 view 방향은 샘플→카메라이므로 부호를 뒤집는다.
+    float       phase = DualLobePhase(dot(-rd, sunDir));
+    float       debugLightVisibility = 1.0;
+    float3      debugAmbient = 0.0;
+    float3      debugDirect = 0.0;
+    bool        foundDensity = false;
 
     [loop]
-    for (int i = 0; i < STEPS; ++i)
+    for (int i = 0; i < 128; ++i)
     {
-        // 스텝 구간의 중앙에서 샘플 (3단계 noise에서 p를 밀도장 좌표로 사용)
-        float t = t0 + (i + 0.5) * dt;
-        float3 p = ro + rd * t;
+        if (i >= steps || rayDistance >= t1) break;
+        float3 p = ro + rd * rayDistance;
         float3 uvw = (p - boxMin) / (boxMax - boxMin);
         float4 components = EvaluateCloudComponents(uvw, time);
         float density = components.w * densityMultiplier * densityScale;
         debugMax = max(debugMax, components);
 
-        // ---- 4) 태양 방향 self-shadow + single scattering ----
+        float stepMultiplier = density > 0.001 ? 1.0 : 2.0;
+        float dt = min(baseDt * stepMultiplier, t1 - rayDistance);
+
+        // ---- 4) 태양 방향 self-shadow + 근사 다중 산란 ----
         float stepTransmittance = exp(-density * dt);
         float stepOpacity = 1.0 - stepTransmittance;
         if (density > 0.0001)
         {
+            foundDensity = true;
             float lightVisibility = LightTransmittance(p, sunDir, boxMin, boxMax);
-            float3 ambient = SkyColor(float3(0, 1, 0)) * ambientIntensity;
-            float3 direct = float3(1.0, 0.96, 0.88) * (sunIntensity * lightVisibility * phase);
+            float multiVisibility = MultiScatterVisibility(lightVisibility);
+            float effectiveVisibility = lerp(lightVisibility, multiVisibility, saturate(multiScatterStrength));
+            float3 ambientTint = lerp(float3(0.18, 0.24, 0.34),
+                                      float3(0.46, 0.57, 0.74), saturate(uvw.y));
+            float3 ambient = ambientTint * ambientIntensity;
+            float powder = 1.0 + (1.0 - exp(-density * dt * 2.0)) * 0.75 * powderStrength;
+            float forward = pow(saturate(dot(-rd, sunDir)), 8.0);
+            float thinEdge = 1.0 - smoothstep(0.15, 1.25, density);
+            float silver = forward * thinEdge * silverLiningStrength;
+            float3 sunColor = float3(1.0, 0.92, 0.78);
+            float3 direct = sunColor * sunIntensity *
+                (effectiveVisibility * phase * powder + silver);
             scattering += transmittance * stepOpacity * (ambient + direct);
+            debugLightVisibility = min(debugLightVisibility, lightVisibility);
+            debugAmbient = max(debugAmbient, ambient);
+            debugDirect = max(debugDirect, direct);
         }
         transmittance *= stepTransmittance;
         if (transmittance < 0.01) break;
+        rayDistance += dt;
     }
 
     if (renderMode == 1) return float4(debugMax.www, 1.0);
@@ -172,6 +216,19 @@ float4 main(VSOut input) : SV_TARGET
         float seamError = saturate(EvaluatePeriodicSeamError(midUVW) * 4096.0);
         return float4(seamError, 1.0 - seamError, 0.0, 1.0);
     }
+    if (renderMode >= 8 && renderMode <= 11)
+    {
+        float3 midUVW = (ro + rd * ((t0 + t1) * 0.5) - boxMin) / (boxMax - boxMin);
+        float4 baseChannels = EvaluateBaseChannels(midUVW, time);
+        if (renderMode == 8) return float4(baseChannels.rrr, 1.0);
+        if (renderMode == 9) return float4(baseChannels.ggg, 1.0);
+        if (renderMode == 10) return float4(baseChannels.bbb, 1.0);
+        return float4(baseChannels.aaa, 1.0);
+    }
+    if (renderMode == 12) return float4((foundDensity ? debugLightVisibility : 1.0).xxx, 1.0);
+    if (renderMode == 13) return float4(saturate(phase * 0.18).xxx, 1.0);
+    if (renderMode == 14) return float4(saturate(debugAmbient), 1.0);
+    if (renderMode == 15) return float4(saturate(debugDirect * 0.25), 1.0);
 
     // 진입점이 두 축의 경계에 가까우면 AABB 와이어를 표시한다.
     float3 entryUVW = (ro + rd * t0 - boxMin) / (boxMax - boxMin);
@@ -181,6 +238,6 @@ float4 main(VSOut input) : SV_TARGET
         return float4(1.0, 0.45, 0.08, 1.0);
 
     // ---- 5) 남은 배경 투과율과 산란광 합성 ----
-    float3 color = scattering + sky * transmittance;
+    float3 color = (scattering + sky * transmittance) * max(skyExposure, 0.0);
     return float4(color, 1.0);
 }

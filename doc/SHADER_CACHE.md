@@ -21,7 +21,7 @@ HLSL(`.hlsl`)은 **사람이 읽는 소스 코드**다. GPU는 이걸 바로 실
 | | 런타임 컴파일 | 미리 컴파일된 `.cso` 로드 |
 |---|---|---|
 | 시점 | 첫 실행 / 소스 변경 시 | 두 번째 실행 이후(캐시 히트) |
-| 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 5개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
+| 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 6개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
 | 노이즈 볼륨 | 컴퓨트 셰이더로 128³+64³ 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
 | 대략 비용 | 컴파일 5회(수백 ms) + 굽기(~2 s) ≈ **~3 s** | 컴파일 0회 + 파일 로드 ≈ **~300 ms** |
 
@@ -33,6 +33,8 @@ HLSL(`.hlsl`)은 **사람이 읽는 소스 코드**다. GPU는 이걸 바로 실
 
 > 참고: 이 프로젝트는 빌드 타임에 `fxc`/`dxc`로 미리 컴파일하지 않는다. 대신
 > **"한 번 런타임 컴파일한 결과를 `.cso`로 캐시"**해 두 번째 실행부터 재사용하는 방식이다.
+> PowerShell에서 GUI 실행 파일은 `&` 호출이 즉시 반환할 수 있다. `--build-default-cache` 뒤에
+> 테스트를 이어 실행할 때는 `Start-Process ... -Wait -PassThru`로 캐시 저장 완료를 기다린다.
 
 ---
 
@@ -90,7 +92,7 @@ D3DCompileFromFile(path, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
 ```
 - 엔트리/타겟: `main`(vs_5_0/ps_5_0), `VSMain`/`PSMain`(프리뷰), `CSMain`(cs_5_0).
 - `_DEBUG` 빌드는 `D3DCOMPILE_DEBUG | SKIP_OPTIMIZATION`, 릴리스는 최적화.
-- 컴파일하는 셰이더 5개: `main_vs`, `main_ps`, `preview_vs`, `preview_ps`, `noise_cs`
+- 컴파일하는 셰이더 6개: `main_vs`, `main_ps`, `preview_vs`, `preview_ps`, `noise_cs_base`, `noise_cs_detail`
   (`Renderer::CreateShaders`, 205-227행).
 
 ### 핫리로드 (`Renderer::CheckShaderHotReload`, 287-313행)
@@ -123,7 +125,7 @@ bundle/
   ├ preview_ps.cso      │
   ├ noise_cs_base.cso   │  (base/detail 컴퓨트 분리)
   ├ noise_cs_detail.cso ┘
-  ├ base.vcnoise       ← 128³ R8     (2 MB, 실루엣 단일값)
+  ├ base.vcnoise       ← 128³ RGBA8  (8 MB, Perlin-Worley + Worley 3밴드)
   └ detail.vcnoise     ← 64³  RGBA8  (1 MB, Worley 옥타브 4채널)
 ```
 `.vcnoise`는 헤더(매직/버전/크기/포맷) + 원시 볼륨 바이트. `.cso`는 순수 DXBC 바이트코드.
@@ -188,7 +190,7 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 
 ### Q. Compute Shader를 쓰나? PS/VS랑 뭐가 다른가?
 쓴다. **`NoiseVolumeCS.hlsl`**의 두 엔트리 `CSBase`/`CSDetail`(`cs_5_0`). 노이즈 굽기가 CS의 일이다.
-(base=R8 단일값, detail=RGBA8 옥타브로 형식이 달라 엔트리를 나눴다 — 아래 최적화 항목 참고.)
+(base=RGBA8 형태 밴드, detail=RGBA8 침식 옥타브이며 의미가 달라 엔트리를 나눴다.)
 
 | | VS / PS | Compute Shader |
 |---|---|---|
@@ -210,24 +212,22 @@ GPU 텍스처 ─CopyResource→ STAGING 텍스처 ─Map(READ)→ CPU 버퍼 �
               읽기 가능한 스테이징으로 복사)
 ```
 `VolumeHeader`(매직/버전/크기/포맷) 40바이트 뒤에 복셀 데이터를 그대로 붙인다.
-base = 128³ × 1바이트(R8) = 2 MB, detail = 64³ × 4바이트(RGBA8) = 1 MB.
+base = 128³ × 4바이트(RGBA8) = 8 MB, detail = 64³ × 4바이트(RGBA8) = 1 MB.
 
-### Q. 볼륨 크기/채널 최적화는 어떻게 됐나? (v3에서 적용됨)
-예전엔 두 볼륨 모두 `R8G8B8A8`인데 CS가 `float4(v,v,v,1)`로 같은 값을 네 채널에 복제해 굽고
-셰이더는 `.r`만 읽어 **G·B·A 3채널이 낭비**됐다(8 MB + 1 MB). v3에서 볼륨 성격에 맞게 나눴다:
+### Q. v4에서 base가 다시 RGBA8이 된 이유는?
+v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주파 형태를 렌더 시점에 다시 조합할 수 없어 큰 흐린 덩어리로 보였다. v4는 중복 채널이 아니라 서로 다른 정보를 저장한다.
 
 | 볼륨 | 이전 | 현재 | 효과 |
 |------|------|------|------|
-| base (실루엣 단일값) | 128³ RGBA8 (8 MB) | **128³ R8 (2 MB)** | 손실 0(읽는 `.r` 비트 동일), **4배↓** |
-| detail (침식 Worley) | 64³ RGBA8, 옥타브를 평균해 R에 (1 MB) | 64³ RGBA8, **옥타브 4개를 R/G/B/A에 분리** (1 MB) | 크기 동일, 침식 품질↑ + 렌더 시점 튜닝 |
+| base | R8 Perlin-Worley 1개 (2 MB) | **RGBA8: Perlin-Worley + Worley 3밴드 (8 MB)** | 거시 형태를 재굽기 없이 조합 |
+| detail | RGBA8 Worley 옥타브 (1 MB) | 동일 | 경계 침식 전용 |
 
 - detail은 `DetailNoiseOctaves`가 Worley 옥타브 4개를 채널로 굽고,
   `DetailErosionFromChannels`(가중치 상수)가 렌더 시점에 재합성 → **재굽기 없이 HLSL에서 결 조절**.
 - 기각한 대안: **DDS/DirectXTex** — D3D11은 Texture3D에 **BC 압축 미지원**이라 크기 이득이 없고
   의존성만 늘어 커스텀 포맷을 유지했다. **해상도 축소/디스크 압축**은 각각 디테일 손실/런타임 해제
   비용이 있어 보류.
-- 전체 9 MB → **3 MB**. 관련 코드: `shaders/NoiseVolumeCS.hlsl`, `CloudNoise.hlsli`,
-  `NoiseCacheManager.cpp`(볼륨별 포맷 `kBaseVolumeFormat`/`kDetailVolumeFormat`, `kCacheVersion=3`).
+- 총 볼륨 메모리는 9 MB다. 해상도 증가는 보간 품질보다 메모리·생성비용을 먼저 늘리므로 채널 정보량을 우선했다. 관련 코드는 `NoiseVolumeCS.hlsl`, `CloudNoise.hlsli`, `NoiseCacheManager.cpp`의 `kCacheVersion=4`다.
 
 ### Q. 해시가 꼭 필요한가? 파일 수정 시각(타임스탬프)으로 체크하면 안 되나?
 사실 이 프로젝트는 **둘 다** 쓴다. 용도가 다르다.
@@ -254,4 +254,5 @@ base = 128³ × 1바이트(R8) = 2 MB, detail = 64³ × 4바이트(RGBA8) = 1 MB
 - 볼륨 로드/저장: `src/NoiseCacheManager.cpp` (`LoadVolume` / `SaveVolume`)
 - 번들 로드/저장/해시: `src/NoiseCacheManager.cpp` (`LoadPreferred`/`LoadBundle`/`SaveBundle`/`SourceHash`/`ParameterHash`)
 - 빌드 복사: `CMakeLists.txt:76-86`
-- `.cso`는 git 추적 안 함: `.gitignore` (`*.cso`)
+- 일반 빌드 `.cso`는 추적하지 않지만 재현 가능한 빠른 시작을 위해
+  `assets/noise-cache/bundle/*.cso`만 `.gitignore` 예외로 추적한다.

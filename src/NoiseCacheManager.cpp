@@ -10,9 +10,8 @@ namespace
 {
 constexpr uint32_t kManifestMagic = 0x48434356; // VCCH
 constexpr uint32_t kVolumeMagic = 0x4E434356;   // VCCN
-constexpr uint32_t kCacheVersion = 3;           // v3: base=R8, detail=RGBA8 옥타브 패킹
-// 볼륨별 포맷: base 는 실루엣 단일값(R8), detail 은 Worley 옥타브 4채널(RGBA8)
-constexpr DXGI_FORMAT kBaseVolumeFormat = DXGI_FORMAT_R8_UNORM;
+constexpr uint32_t kCacheVersion = 4; // v4: base/detail 모두 RGBA8 다중 주파수 채널
+constexpr DXGI_FORMAT kBaseVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDetailVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr const char* kShaderNames[] = {
     "main_vs.cso", "main_ps.cso", "preview_vs.cso", "preview_ps.cso",

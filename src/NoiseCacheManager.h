@@ -21,7 +21,7 @@ enum class CachedShader : size_t
     MainPS,
     PreviewVS,
     PreviewPS,
-    NoiseCSBase,   // R8 단일값 굽기 컴퓨트
+    NoiseCSBase,   // RGBA8 base 채널 굽기 컴퓨트
     NoiseCSDetail, // RGBA8 옥타브 굽기 컴퓨트
     Count,
 };

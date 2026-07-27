@@ -106,7 +106,7 @@ private:
 
     ComPtr<ID3D11VertexShader>     m_previewVs;
     ComPtr<ID3D11PixelShader>      m_previewPs;
-    ComPtr<ID3D11ComputeShader>    m_noiseVolumeCsBase;   // R8 단일값 굽기
+    ComPtr<ID3D11ComputeShader>    m_noiseVolumeCsBase;   // RGBA8 base 채널 굽기
     ComPtr<ID3D11ComputeShader>    m_noiseVolumeCsDetail; // RGBA8 옥타브 굽기
     ComPtr<ID3D11SamplerState>     m_noiseSampler;
     ComPtr<ID3D11Buffer>           m_noiseVolumeGenerationCb;
@@ -117,7 +117,7 @@ private:
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2> m_noiseVolumeUavs;
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> m_noiseVolumeSrvs;
 
-    CloudParameters m_cloudParams;
+    CloudParameters m_cloudParams = CumulusShowcaseCloudParameters();
     NoisePreviewSettings m_previewSettings;
     DebugUI m_debugUI;
     bool m_previewDirty = true;

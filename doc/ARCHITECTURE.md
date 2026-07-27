@@ -29,7 +29,7 @@ DirectX 11 풀스크린 픽셀 셰이더에서 AABB 볼륨을 레이마칭한다
 | `volumeCenter`, `densityScale` | `float3`, `float` |
 | `volumeHalfSize`, `_pad` | `float3`, `float` |
 
-### `CloudParameters` / `CloudCB` (`b1`, 96바이트)
+### `CloudParameters` / `CloudCB` (`b1`, 128바이트)
 
 CPU 구조체와 HLSL cbuffer의 16바이트 묶음 순서는 반드시 같다.
 
@@ -41,6 +41,8 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음 순서는 반드시 같다.
 | 3 | `baseOctaves`, `detailOctaves`, `renderMode`, `useTextureCache` |
 | 4 | `showBounds`, `lightSteps`, `sunAzimuth`, `sunElevation` |
 | 5 | `sunIntensity`, `ambientIntensity`, `phaseG`, `lightAbsorption` |
+| 6 | `coverage`, `baseErosion`, `powderStrength`, `multiScatterStrength` |
+| 7 | `silverLiningStrength`, `jitterStrength`, `viewSteps`, `skyExposure` |
 
 ### `NoisePreviewCB` (`b2`, 16바이트)
 
@@ -48,6 +50,8 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음 순서는 반드시 같다.
 
 ## 캐시 일관성
 
+캐시 v4의 base는 128³ RGBA8이며 R에 Perlin–Worley, G/B/A에 저·중·고주파 Worley를 저장한다. detail은 64³ RGBA8의 침식 옥타브다. 메인 view/light loop는 항상 캐시를 사용하고, 고비용 절차식 평가는 Inspector와 1회 차이 진단에만 사용한다.
+
 manifest에는 버전, 전체 셰이더 소스 hash, 노이즈 생성 파라미터 hash, 크기와 DXGI format이 들어간다. 저장은 `bundle.tmp`에 완전한 세트를 만든 뒤 기존 세트를 교체한다. HLSL 컴파일이나 생성이 실패하면 현재 정상 리소스는 바꾸지 않는다. `Save Noise Cache`를 누르기 전 변경은 현재 세션에만 존재한다.
 
-캐시되는 셰이더는 main VS/PS, preview VS/PS, volume CS 다섯 개다. `.cso`는 `D3DReflect`와 실제 shader 생성으로 검증한다.
+캐시되는 셰이더는 main VS/PS, preview VS/PS, base/detail volume CS 여섯 개다. `.cso`는 `D3DReflect`와 실제 shader 생성으로 검증한다.

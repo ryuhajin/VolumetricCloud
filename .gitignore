@@ -17,6 +17,7 @@ cmake_install.cmake
 
 # ---- 컴파일된 셰이더 캐시 ----
 *.cso
+!assets/noise-cache/bundle/*.cso
 *.pdb
 *.ilk
 *.exe
@@ -25,3 +26,6 @@ imgui.ini
 
 # ---- 로컬 전용 AI 도구 설정 ----
 CLAUDE.md
+
+# ---- 로컬 전용 개인 메모 ----
+/notes/interview/
