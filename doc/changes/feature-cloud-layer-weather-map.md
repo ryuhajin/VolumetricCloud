@@ -46,11 +46,12 @@ weather map과 compute shader를 bundle에 추가해 캐시를 v5로 올렸다. 
 최종 검증:
 
 - 직접 fxc `ps_5_0` main과 `cs_5_0` CSWeather 컴파일 성공
-- Debug/Release C++ 빌드 성공
+- 2026-07-27 기준 Debug/Release C++ 빌드 재확인 성공
 - 확장 코드 테스트에서 weather RGBA 분산, periodic seam, slab 교차와 weather hash 검사 통과
 - v5 bundle 생성 성공
-- `VolumetricCloud.CacheSmoke` 5.38초 통과
-- `VolumetricCloud.CodeTests` 54.01초 통과
+- Release `ctest` 2/2 통과
+  - `VolumetricCloud.CacheSmoke` 5.39초
+  - `VolumetricCloud.CodeTests` 52.17초
 - GPU timestamp query UI 구현 완료, 33.3ms 합격값은 사용자 장비에서 확인 대기
 
 시각 관찰:
@@ -58,8 +59,9 @@ weather map과 compute shader를 bundle에 추가해 캐시를 v5로 올렸다. 
 - 날짜: 2026-07-27
 - 프리셋: `Cumulus Wide Showcase`
 - 카메라: 구름층 아래 기본 오빗 카메라
-- 캡처: `cloud-layer-v5-final-candidate-720p.png`
-- 관찰: 박스 경계 없이 구름층이 수평선 전체로 확장되고, weather에 따른 빈 하늘과 밝은 태양측 영역이 생겼다. 기존 단일 AABB보다 범위와 거리 단서는 개선됐지만 목표 화면 대비 개별 구름의 입체감은 사용자가 파라미터 가이드로 최종 조정해야 한다.
+- 실행 구성: Release, 1280×720 렌더 영역
+- 캡처: `cloud-layer-approval-baseline.png`
+- 관찰: 박스 경계 없이 구름층이 수평선 전체로 확장되고, weather에 따른 빈 하늘과 밝은 태양측 영역이 생겼다. 화면 왼쪽은 두꺼운 구름 하단과 내부 음영, 오른쪽은 얇은 투광 영역으로 분리된다. 기존 단일 AABB보다 범위와 거리 단서는 개선됐지만 목표 화면 대비 개별 적운의 수직 발달과 선명한 silver lining은 부족하다. 이 캡처는 다음 브랜치의 회귀 기준이며 심미적 합격 판정은 아니다.
 - 사용자 최종 승인: 대기
 
 ## 9. 남은 문제와 후속 개선
