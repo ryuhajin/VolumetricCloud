@@ -23,6 +23,10 @@ enum class CloudRenderMode : int
     PhaseFunction,
     AmbientLighting,
     DirectLighting,
+    WeatherCoverage,
+    WeatherCloudType,
+    WeatherBaseHeight,
+    WeatherThickness,
 };
 
 enum class NoiseSliceAxis : int
@@ -73,9 +77,24 @@ struct alignas(16) CloudParameters
     float jitterStrength       = 0.80f;
     int   viewSteps            = 96;
     float skyExposure          = 1.0f;
+
+    float cloudBaseHeight      = 2.0f;
+    float cloudThickness       = 3.0f;
+    float cloudNoiseWorldSize  = 14.0f;
+    float maxMarchDistance     = 120.0f;
+
+    float weatherWorldSize         = 100.0f;
+    float weatherCoverageStrength  = 0.85f;
+    float weatherTypeBias          = 0.62f;
+    float heightVariation          = 0.45f;
+
+    float thicknessVariation   = 0.40f;
+    float horizonFadeStart     = 70.0f;
+    float horizonFadeEnd       = 120.0f;
+    float weatherSeed          = 31.0f;
 };
 
-static_assert(sizeof(CloudParameters) == 128, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 176, "CloudParameters must match CloudCB");
 
 struct NoisePreviewSettings
 {
@@ -149,5 +168,34 @@ inline CloudParameters CumulusShowcaseCloudParameters()
     p.lightSteps = 8;
     p.silverLiningStrength = 0.28f;
     p.viewSteps = 96;
+    return p;
+}
+
+inline CloudParameters CumulusWideShowcaseCloudParameters()
+{
+    CloudParameters p = CumulusShowcaseCloudParameters();
+    p.coverage = 0.58f;
+    p.densityMultiplier = 1.85f;
+    p.baseErosion = 0.18f;
+    p.erosionStrength = 0.36f;
+    p.ambientIntensity = 0.72f;
+    p.multiScatterStrength = 0.28f;
+    p.lightAbsorption = 1.15f;
+    p.sunIntensity = 6.8f;
+    p.powderStrength = 0.55f;
+    p.silverLiningStrength = 0.42f;
+    p.viewSteps = 128;
+    p.cloudBaseHeight = 2.0f;
+    p.cloudThickness = 3.8f;
+    p.cloudNoiseWorldSize = 10.0f;
+    p.maxMarchDistance = 96.0f;
+    p.weatherWorldSize = 100.0f;
+    p.weatherCoverageStrength = 0.90f;
+    p.weatherTypeBias = 0.70f;
+    p.heightVariation = 0.45f;
+    p.thicknessVariation = 0.42f;
+    p.horizonFadeStart = 60.0f;
+    p.horizonFadeEnd = 96.0f;
+    p.weatherSeed = 31.0f;
     return p;
 }

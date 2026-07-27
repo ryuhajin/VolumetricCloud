@@ -4,7 +4,7 @@
 VolumetricCloud/
 ├─ CMakeLists.txt
 ├─ README.md / AGENTS.md
-├─ assets/noise-cache/bundle/       # 배포 기본 .cso, manifest, 128³/64³ volume
+├─ assets/noise-cache/bundle/       # 배포 기본 .cso, manifest, 128³/64³ volume, 512² weather
 ├─ doc/
 │  ├─ ARCHITECTURE.md
 │  ├─ RAYMARCHING.md

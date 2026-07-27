@@ -4,14 +4,14 @@
 
 ## 프로젝트
 
-DirectX11 + HLSL로 레이마칭과 볼류메트릭 클라우드를 학습하는 Windows 프로젝트입니다. 현재 periodic noise, RGBA 3D 캐시, 디버그 UI, dual-lobe와 근사 다중 산란 라이팅까지 구현되어 있습니다.
+DirectX11 + HLSL로 레이마칭과 볼류메트릭 클라우드를 학습하는 Windows 프로젝트입니다. 현재 평면 구름층, RGBA weather/3D 캐시, 디버그 UI, dual-lobe와 근사 다중 산란 라이팅까지 구현되어 있습니다.
 
 ## 빠른 사실
 
 - C++17, HLSL shader model 5.0, DirectX 11, Win32
 - 빌드: `cmake -B build -G "Visual Studio 17 2022" -A x64` 후 `cmake --build build --config Debug`
 - 실행: `build/Debug/VolumetricCloud.exe`, F1 디버그 UI
-- 정상 시작은 저장된 `.cso`와 128³/64³ volume cache를 사용
+- 정상 시작은 저장된 `.cso`, 128³/64³ volume과 512² weather cache를 사용
 - 개발 중 HLSL 변경은 첫 Present 뒤 런타임 컴파일·재생성
 - 문서/주석은 한국어, 소스 UTF-8, MSVC `/utf-8`
 

@@ -1,16 +1,18 @@
 # VolumetricCloud
 
-DirectX 11 + HLSL로 periodic 3D noise, 가변 레이마칭과 근사 다중 산란을 구현하는 볼류메트릭 클라우드 학습 프로젝트입니다.
+DirectX 11 + HLSL로 광역 weather map, periodic 3D noise, 가변 레이마칭과 근사 다중 산란을 구현하는 볼류메트릭 클라우드 학습 프로젝트입니다.
 
 ## 현재 기능
 
-- AABB 내부 48~128-step 가변 ray marching, 고정 jitter와 Beer–Lambert 조기 종료
+- 평면 구름층 교차와 최대 거리 제한, 48~128-step 가변 ray marching
+- 512² RGBA weather map: coverage, cloud type, base-height, thickness
 - 심리스 periodic Value/Worley/FBM 및 Perlin–Worley 밀도장
 - 128³ base, 64³ detail RGBA8 Texture3D
 - 128³ base RGBA 형태 밴드와 64³ detail RGBA 침식 옥타브
 - 태양 light march, dual-lobe HG, powder, silver lining과 3-octave 다중 산란 근사
 - F1 Dear ImGui 패널: 노이즈·조명 성분, seam/cache difference, 파라미터와 Showcase 프리셋
-- 검증된 `.cso`와 3D volume 영구 캐시로 빠른 시작
+- 분석적 하늘, 수평선 haze, 태양 glow와 GPU timestamp 계측
+- 검증된 `.cso`, 3D volume, 2D weather map 영구 캐시 v5
 - HLSL 핫 리로드 실패 시 마지막 정상 리소스 유지
 
 ## 빌드
@@ -43,6 +45,6 @@ cmake --build build --config Debug
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-`VolumetricCloud.CacheSmoke`는 정상 캐시 시작에서 컴파일과 noise dispatch가 0회인지 검사합니다. `VolumetricCloud.CodeTests`는 GPU periodic seam, RGBA 채널 분산과 밀도 포화, 캐시 저장/재로드, Beer–Lambert/dual-lobe phase/다중 산란 수치를 검사합니다. 화면 품질 비교는 포함하지 않습니다.
+`VolumetricCloud.CacheSmoke`는 정상 캐시 시작에서 컴파일과 noise dispatch가 0회인지 검사합니다. `VolumetricCloud.CodeTests`는 평면 교차, GPU periodic seam, 3D/weather RGBA 분산, 밀도 포화, 캐시 저장/재로드와 산란 수치를 검사합니다. 화면 품질 비교는 포함하지 않습니다.
 
 자세한 구조와 수식은 [아키텍처](doc/ARCHITECTURE.md), [레이마칭](doc/RAYMARCHING.md), [로드맵](doc/ROADMAP.md)을 참고하세요. 브랜치별 문제 분석과 설계 이유는 [`doc/changes/`](doc/changes/)에 기록합니다.

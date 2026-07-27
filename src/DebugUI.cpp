@@ -77,8 +77,10 @@ static void DrawPreview(const char* label, ID3D11ShaderResourceView* srv)
 bool DebugUI::Draw(CloudParameters& p,
                    NoisePreviewSettings& preview,
                    const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
+                   ID3D11ShaderResourceView* weatherSrv,
                    bool previewDirty,
                    float cpuFrameMs,
+                   float gpuFrameMs,
                    const std::string& cacheStatus,
                    NoiseCacheUiActions& cacheActions)
 {
@@ -97,13 +99,15 @@ bool DebugUI::Draw(CloudParameters& p,
                     "Height Mask", "Transmittance", "Cache Difference", "Seam Difference",
                     "Base R: Perlin-Worley", "Base G: Worley Low",
                     "Base B: Worley Mid", "Base A: Worley High",
-                    "Light Visibility", "Dual-Lobe Phase", "Ambient Lighting", "Direct Lighting"
+                    "Light Visibility", "Dual-Lobe Phase", "Ambient Lighting", "Direct Lighting",
+                    "Weather Coverage", "Weather Cloud Type",
+                    "Weather Base Height", "Weather Thickness"
                 };
                 changed |= ImGui::Combo("Render mode", &p.renderMode, modes, IM_ARRAYSIZE(modes));
                 bool useCache = p.useTextureCache != 0;
                 if (ImGui::Checkbox("Inspector uses 3D cache", &useCache)) { p.useTextureCache = useCache ? 1 : 0; changed = true; }
                 bool showBounds = p.showBounds != 0;
-                if (ImGui::Checkbox("Show AABB bounds", &showBounds)) { p.showBounds = showBounds ? 1 : 0; changed = true; }
+                if (ImGui::Checkbox("Show layer bounds", &showBounds)) { p.showBounds = showBounds ? 1 : 0; changed = true; }
                 changed |= ImGui::Checkbox("Freeze animation", &preview.freeze);
                 if (preview.freeze)
                     changed |= ImGui::SliderFloat("Preview time", &preview.previewTime, 0.0f, 120.0f, "%.2f s");
@@ -126,6 +130,7 @@ bool DebugUI::Draw(CloudParameters& p,
                     ImGui::TableNextColumn(); DrawPreview("Final density", previewSrvs[3]);
                     ImGui::EndTable();
                 }
+                DrawPreview("Weather map (RGBA)", weatherSrv);
                 ImGui::EndTabItem();
             }
 
@@ -163,6 +168,19 @@ bool DebugUI::Draw(CloudParameters& p,
                 ImGui::SeparatorText("Sampling");
                 changed |= ImGui::SliderInt("View steps", &p.viewSteps, 48, 128);
                 changed |= ImGui::SliderFloat("Ray jitter", &p.jitterStrength, 0.0f, 1.0f, "%.2f");
+                ImGui::SeparatorText("Wide cloud layer");
+                changed |= ImGui::SliderFloat("Cloud base height", &p.cloudBaseHeight, -2.0f, 10.0f, "%.2f");
+                changed |= ImGui::SliderFloat("Cloud thickness", &p.cloudThickness, 0.5f, 8.0f, "%.2f");
+                changed |= ImGui::SliderFloat("3D noise world size", &p.cloudNoiseWorldSize, 2.0f, 50.0f, "%.1f");
+                changed |= ImGui::SliderFloat("Max march distance", &p.maxMarchDistance, 20.0f, 250.0f, "%.1f");
+                changed |= ImGui::SliderFloat("Weather world size", &p.weatherWorldSize, 20.0f, 300.0f, "%.1f");
+                changed |= ImGui::SliderFloat("Weather coverage", &p.weatherCoverageStrength, 0.0f, 1.5f, "%.2f");
+                changed |= ImGui::SliderFloat("Weather type bias", &p.weatherTypeBias, 0.0f, 1.0f, "%.2f");
+                changed |= ImGui::SliderFloat("Base height variation", &p.heightVariation, 0.0f, 2.0f, "%.2f");
+                changed |= ImGui::SliderFloat("Thickness variation", &p.thicknessVariation, 0.0f, 0.8f, "%.2f");
+                changed |= ImGui::SliderFloat("Horizon fade start", &p.horizonFadeStart, 10.0f, 200.0f, "%.1f");
+                changed |= ImGui::SliderFloat("Horizon fade end", &p.horizonFadeEnd, 20.0f, 250.0f, "%.1f");
+                changed |= ImGui::InputFloat("Weather seed", &p.weatherSeed, 1.0f, 10.0f, "%.0f");
                 ImGui::SeparatorText("Preset");
                 ImGui::InputText("Name", m_presetName, IM_ARRAYSIZE(m_presetName));
                 if (ImGui::Button("Save"))
@@ -187,6 +205,8 @@ bool DebugUI::Draw(CloudParameters& p,
                 if (ImGui::Button("Stratus")) { p = StratusCloudParameters(); changed = true; }
                 ImGui::SameLine();
                 if (ImGui::Button("Showcase")) { p = CumulusShowcaseCloudParameters(); changed = true; }
+                ImGui::SameLine();
+                if (ImGui::Button("Wide")) { p = CumulusWideShowcaseCloudParameters(); changed = true; }
                 if (!m_status.empty()) ImGui::TextUnformatted(m_status.c_str());
                 ImGui::EndTabItem();
             }
@@ -196,11 +216,14 @@ bool DebugUI::Draw(CloudParameters& p,
                 const ImGuiIO& io = ImGui::GetIO();
                 ImGui::Text("FPS: %.1f", io.Framerate);
                 ImGui::Text("CPU frame: %.3f ms", cpuFrameMs);
+                ImGui::Text("GPU cloud: %.3f ms%s", gpuFrameMs,
+                            gpuFrameMs > 33.3f ? " (over 30 FPS budget)" : "");
                 ImGui::TextUnformatted("Preview: 256 x 256 x 4 MRT");
                 ImGui::Text("Inspector source: %s", p.useTextureCache ? "3D texture cache" : "procedural HLSL");
                 ImGui::TextUnformatted("Main ray march source: 3D texture cache");
                 ImGui::TextUnformatted("Base cache: 128^3 RGBA8 (8.0 MiB, shape bands)");
                 ImGui::TextUnformatted("Detail cache: 64^3 RGBA8 (1.0 MiB)");
+                ImGui::TextUnformatted("Weather cache: 512^2 RGBA8 (1.0 MiB)");
                 ImGui::Text("Marching: %d view / %d light steps", p.viewSteps, p.lightSteps);
                 ImGui::SeparatorText("Persistent cache");
                 ImGui::Text("Status: %s", cacheStatus.c_str());
@@ -282,6 +305,18 @@ void DebugUI::LoadPresets()
         else if (key == "jitterStrength") p.jitterStrength = value;
         else if (key == "viewSteps") p.viewSteps = static_cast<int>(value);
         else if (key == "skyExposure") p.skyExposure = value;
+        else if (key == "cloudBaseHeight") p.cloudBaseHeight = value;
+        else if (key == "cloudThickness") p.cloudThickness = value;
+        else if (key == "cloudNoiseWorldSize") p.cloudNoiseWorldSize = value;
+        else if (key == "maxMarchDistance") p.maxMarchDistance = value;
+        else if (key == "weatherWorldSize") p.weatherWorldSize = value;
+        else if (key == "weatherCoverageStrength") p.weatherCoverageStrength = value;
+        else if (key == "weatherTypeBias") p.weatherTypeBias = value;
+        else if (key == "heightVariation") p.heightVariation = value;
+        else if (key == "thicknessVariation") p.thicknessVariation = value;
+        else if (key == "horizonFadeStart") p.horizonFadeStart = value;
+        else if (key == "horizonFadeEnd") p.horizonFadeEnd = value;
+        else if (key == "weatherSeed") p.weatherSeed = value;
     }
 }
 
@@ -323,7 +358,19 @@ bool DebugUI::SavePreset(const std::string& name, const CloudParameters& p)
              << "silverLiningStrength=" << v.silverLiningStrength << "\n"
              << "jitterStrength=" << v.jitterStrength << "\n"
              << "viewSteps=" << v.viewSteps << "\n"
-             << "skyExposure=" << v.skyExposure << "\n\n";
+             << "skyExposure=" << v.skyExposure << "\n"
+             << "cloudBaseHeight=" << v.cloudBaseHeight << "\n"
+             << "cloudThickness=" << v.cloudThickness << "\n"
+             << "cloudNoiseWorldSize=" << v.cloudNoiseWorldSize << "\n"
+             << "maxMarchDistance=" << v.maxMarchDistance << "\n"
+             << "weatherWorldSize=" << v.weatherWorldSize << "\n"
+             << "weatherCoverageStrength=" << v.weatherCoverageStrength << "\n"
+             << "weatherTypeBias=" << v.weatherTypeBias << "\n"
+             << "heightVariation=" << v.heightVariation << "\n"
+             << "thicknessVariation=" << v.thicknessVariation << "\n"
+             << "horizonFadeStart=" << v.horizonFadeStart << "\n"
+             << "horizonFadeEnd=" << v.horizonFadeEnd << "\n"
+             << "weatherSeed=" << v.weatherSeed << "\n\n";
     }
     return true;
 }
@@ -365,7 +412,19 @@ bool DebugUI::DeletePreset(const std::string& name)
              << "silverLiningStrength=" << v.silverLiningStrength << "\n"
              << "jitterStrength=" << v.jitterStrength << "\n"
              << "viewSteps=" << v.viewSteps << "\n"
-             << "skyExposure=" << v.skyExposure << "\n\n";
+             << "skyExposure=" << v.skyExposure << "\n"
+             << "cloudBaseHeight=" << v.cloudBaseHeight << "\n"
+             << "cloudThickness=" << v.cloudThickness << "\n"
+             << "cloudNoiseWorldSize=" << v.cloudNoiseWorldSize << "\n"
+             << "maxMarchDistance=" << v.maxMarchDistance << "\n"
+             << "weatherWorldSize=" << v.weatherWorldSize << "\n"
+             << "weatherCoverageStrength=" << v.weatherCoverageStrength << "\n"
+             << "weatherTypeBias=" << v.weatherTypeBias << "\n"
+             << "heightVariation=" << v.heightVariation << "\n"
+             << "thicknessVariation=" << v.thicknessVariation << "\n"
+             << "horizonFadeStart=" << v.horizonFadeStart << "\n"
+             << "horizonFadeEnd=" << v.horizonFadeEnd << "\n"
+             << "weatherSeed=" << v.weatherSeed << "\n\n";
     }
     return true;
 }

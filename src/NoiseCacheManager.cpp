@@ -10,12 +10,13 @@ namespace
 {
 constexpr uint32_t kManifestMagic = 0x48434356; // VCCH
 constexpr uint32_t kVolumeMagic = 0x4E434356;   // VCCN
-constexpr uint32_t kCacheVersion = 4; // v4: base/detail 모두 RGBA8 다중 주파수 채널
+constexpr uint32_t kCacheVersion = 5; // v5: RGBA weather map과 176바이트 파라미터
 constexpr DXGI_FORMAT kBaseVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDetailVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+constexpr DXGI_FORMAT kWeatherFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr const char* kShaderNames[] = {
     "main_vs.cso", "main_ps.cso", "preview_vs.cso", "preview_ps.cso",
-    "noise_cs_base.cso", "noise_cs_detail.cso"
+    "noise_cs_base.cso", "noise_cs_detail.cso", "noise_cs_weather.cso"
 };
 
 uint32_t BytesPerTexel(DXGI_FORMAT format)
@@ -38,6 +39,8 @@ struct CacheManifest
     uint32_t detailSize;
     uint32_t baseFormat;   // (구 format) base 볼륨 DXGI_FORMAT
     uint32_t detailFormat; // (구 reserved) detail 볼륨 DXGI_FORMAT
+    uint32_t weatherSize;
+    uint32_t weatherFormat;
     CloudParameters params;
 };
 
@@ -191,6 +194,83 @@ bool SaveVolume(const std::filesystem::path& path,
         file.write(reinterpret_cast<const char*>(&header), sizeof(header)).good() &&
         file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size())).good();
 }
+
+bool LoadWeatherMap(const std::filesystem::path& path,
+                    ID3D11Device* device,
+                    UINT expectedSize,
+                    WeatherMapResources& weather)
+{
+    const uint32_t bpt = BytesPerTexel(kWeatherFormat);
+    std::ifstream file(path, std::ios::binary);
+    VolumeHeader header = {};
+    if (!file.read(reinterpret_cast<char*>(&header), sizeof(header))) return false;
+    if (header.magic != kVolumeMagic || header.version != kCacheVersion ||
+        header.width != expectedSize || header.height != expectedSize || header.depth != 1 ||
+        header.format != static_cast<uint32_t>(kWeatherFormat) ||
+        header.byteSize != static_cast<uint64_t>(expectedSize) * expectedSize * bpt)
+        return false;
+
+    std::vector<unsigned char> data(static_cast<size_t>(header.byteSize));
+    if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()))) return false;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = expectedSize;
+    desc.Height = expectedSize;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = kWeatherFormat;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    D3D11_SUBRESOURCE_DATA initial = { data.data(), expectedSize * bpt, 0 };
+
+    WeatherMapResources loaded;
+    if (FAILED(device->CreateTexture2D(&desc, &initial, &loaded.texture))) return false;
+    if (FAILED(device->CreateUnorderedAccessView(loaded.texture.Get(), nullptr, &loaded.uav))) return false;
+    if (FAILED(device->CreateShaderResourceView(loaded.texture.Get(), nullptr, &loaded.srv))) return false;
+    weather = loaded;
+    return true;
+}
+
+bool SaveWeatherMap(const std::filesystem::path& path,
+                    ID3D11Device* device,
+                    ID3D11DeviceContext* context,
+                    ID3D11Texture2D* texture)
+{
+    if (!texture) return false;
+    D3D11_TEXTURE2D_DESC desc = {};
+    texture->GetDesc(&desc);
+    const uint32_t bpt = BytesPerTexel(desc.Format);
+    if (bpt == 0 || desc.ArraySize != 1 || desc.MipLevels != 1) return false;
+
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(device->CreateTexture2D(&stagingDesc, nullptr, &staging))) return false;
+    context->CopyResource(staging.Get(), texture);
+
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
+    const size_t rowBytes = static_cast<size_t>(desc.Width) * bpt;
+    std::vector<unsigned char> data(rowBytes * desc.Height);
+    for (UINT y = 0; y < desc.Height; ++y)
+    {
+        const auto* source = static_cast<const unsigned char*>(mapped.pData) +
+            static_cast<size_t>(y) * mapped.RowPitch;
+        std::memcpy(data.data() + static_cast<size_t>(y) * rowBytes, source, rowBytes);
+    }
+    context->Unmap(staging.Get(), 0);
+
+    VolumeHeader header = { kVolumeMagic, kCacheVersion, desc.Width, desc.Height, 1,
+                            static_cast<uint32_t>(desc.Format), data.size() };
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    return file &&
+        file.write(reinterpret_cast<const char*>(&header), sizeof(header)).good() &&
+        file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size())).good();
+}
 }
 
 void NoiseCacheManager::Init(const std::filesystem::path& defaultCacheRoot,
@@ -224,6 +304,7 @@ uint64_t NoiseCacheManager::ParameterHash(const CloudParameters& p)
     hash = HashBytes(hash, &p.seed, sizeof(p.seed));
     hash = HashBytes(hash, &p.baseOctaves, sizeof(p.baseOctaves));
     hash = HashBytes(hash, &p.detailOctaves, sizeof(p.detailOctaves));
+    hash = HashBytes(hash, &p.weatherSeed, sizeof(p.weatherSeed));
     return hash;
 }
 
@@ -232,17 +313,19 @@ bool NoiseCacheManager::LoadPreferred(
     std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
     std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
+    WeatherMapResources& weather,
     bool& sourceModified)
 {
-    if (LoadBundle(m_userCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, sourceModified)) return true;
-    return LoadBundle(m_defaultCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, sourceModified);
+    if (LoadBundle(m_userCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, weather, sourceModified)) return true;
+    return LoadBundle(m_defaultCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, weather, sourceModified);
 }
 
 bool NoiseCacheManager::LoadBundle(
     const std::filesystem::path& root, ID3D11Device* device, CloudParameters& params,
     ShaderBlobArray& shaderBlobs, std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
-    std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs, bool& sourceModified)
+    std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
+    WeatherMapResources& weather, bool& sourceModified)
 {
     const auto bundle = root / L"bundle";
     CacheManifest manifest = {};
@@ -250,8 +333,10 @@ bool NoiseCacheManager::LoadBundle(
     if (!file.read(reinterpret_cast<char*>(&manifest), sizeof(manifest))) return false;
     if (manifest.magic != kManifestMagic || manifest.version != kCacheVersion ||
         manifest.baseSize != 128 || manifest.detailSize != 64 ||
+        manifest.weatherSize != 512 ||
         manifest.baseFormat != static_cast<uint32_t>(kBaseVolumeFormat) ||
         manifest.detailFormat != static_cast<uint32_t>(kDetailVolumeFormat) ||
+        manifest.weatherFormat != static_cast<uint32_t>(kWeatherFormat) ||
         manifest.parameterHash != ParameterHash(manifest.params))
         return false;
 
@@ -264,54 +349,62 @@ bool NoiseCacheManager::LoadBundle(
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> loadedSrvs;
     if (!LoadVolume(bundle / L"base.vcnoise", device, 128, kBaseVolumeFormat, loadedVolumes[0], loadedUavs[0], loadedSrvs[0])) return false;
     if (!LoadVolume(bundle / L"detail.vcnoise", device, 64, kDetailVolumeFormat, loadedVolumes[1], loadedUavs[1], loadedSrvs[1])) return false;
+    WeatherMapResources loadedWeather;
+    if (!LoadWeatherMap(bundle / L"weather.vcnoise", device, 512, loadedWeather)) return false;
 
     params = manifest.params;
     shaderBlobs = loadedBlobs;
     volumes = loadedVolumes;
     uavs = loadedUavs;
     srvs = loadedSrvs;
+    weather = loadedWeather;
     sourceModified = manifest.sourceHash != SourceHash();
     return true;
 }
 
 bool NoiseCacheManager::SaveUser(ID3D11Device* device, ID3D11DeviceContext* context,
                                   const CloudParameters& params, const ShaderBlobArray& shaderBlobs,
-                                  const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes)
+                                  const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
+                                  const WeatherMapResources& weather)
 {
-    return SaveBundle(m_userCacheRoot, device, context, params, shaderBlobs, volumes);
+    return SaveBundle(m_userCacheRoot, device, context, params, shaderBlobs, volumes, weather);
 }
 
 bool NoiseCacheManager::SaveDefault(ID3D11Device* device, ID3D11DeviceContext* context,
                                      const CloudParameters& params, const ShaderBlobArray& shaderBlobs,
-                                     const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes)
+                                     const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
+                                     const WeatherMapResources& weather)
 {
-    return SaveBundle(m_defaultCacheRoot, device, context, params, shaderBlobs, volumes);
+    return SaveBundle(m_defaultCacheRoot, device, context, params, shaderBlobs, volumes, weather);
 }
 
 bool NoiseCacheManager::RunRoundTripTest(
     ID3D11Device* device, ID3D11DeviceContext* context, const CloudParameters& params,
-    const ShaderBlobArray& shaderBlobs, const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes)
+    const ShaderBlobArray& shaderBlobs, const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
+    const WeatherMapResources& weather)
 {
     const auto testRoot = std::filesystem::temp_directory_path() / L"VolumetricCloudCacheRoundTrip";
     const auto first = testRoot / L"first";
     const auto second = testRoot / L"second";
     std::error_code ec;
     std::filesystem::remove_all(testRoot, ec);
-    if (!SaveBundle(first, device, context, params, shaderBlobs, volumes)) return false;
+    if (!SaveBundle(first, device, context, params, shaderBlobs, volumes, weather)) return false;
 
     CloudParameters loadedParams;
     ShaderBlobArray loadedBlobs;
     std::array<ComPtr<ID3D11Texture3D>, 2> loadedVolumes;
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2> loadedUavs;
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> loadedSrvs;
+    WeatherMapResources loadedWeather;
     bool modified = false;
-    if (!LoadBundle(first, device, loadedParams, loadedBlobs, loadedVolumes, loadedUavs, loadedSrvs, modified))
+    if (!LoadBundle(first, device, loadedParams, loadedBlobs, loadedVolumes, loadedUavs, loadedSrvs,
+                    loadedWeather, modified))
         return false;
-    if (!SaveBundle(second, device, context, loadedParams, loadedBlobs, loadedVolumes)) return false;
+    if (!SaveBundle(second, device, context, loadedParams, loadedBlobs, loadedVolumes, loadedWeather)) return false;
 
-    const wchar_t* files[] = { L"manifest.bin", L"base.vcnoise", L"detail.vcnoise",
+    const wchar_t* files[] = { L"manifest.bin", L"base.vcnoise", L"detail.vcnoise", L"weather.vcnoise",
         L"main_vs.cso", L"main_ps.cso", L"preview_vs.cso", L"preview_ps.cso",
-        L"noise_cs_base.cso", L"noise_cs_detail.cso" };
+        L"noise_cs_base.cso", L"noise_cs_detail.cso", L"noise_cs_weather.cso" };
     for (const wchar_t* name : files)
     {
         std::vector<unsigned char> a, b;
@@ -332,9 +425,10 @@ bool NoiseCacheManager::RunRoundTripTest(
         std::array<ComPtr<ID3D11Texture3D>, 2> rejectedVolumes;
         std::array<ComPtr<ID3D11UnorderedAccessView>, 2> rejectedUavs;
         std::array<ComPtr<ID3D11ShaderResourceView>, 2> rejectedSrvs;
+        WeatherMapResources rejectedWeather;
         bool rejectedModified = false;
         return !LoadBundle(first, device, rejectedParams, rejectedBlobs,
-                           rejectedVolumes, rejectedUavs, rejectedSrvs, rejectedModified);
+                           rejectedVolumes, rejectedUavs, rejectedSrvs, rejectedWeather, rejectedModified);
     };
     CacheManifest bad = {};
     std::memcpy(&bad, originalManifest.data(), sizeof(bad));
@@ -351,7 +445,7 @@ bool NoiseCacheManager::RunRoundTripTest(
     // 저장 입력이 불완전하면 live bundle을 건드리지 않는다.
     ShaderBlobArray incompleteBlobs = shaderBlobs;
     incompleteBlobs[0].Reset();
-    if (SaveBundle(first, device, context, params, incompleteBlobs, volumes)) return false;
+    if (SaveBundle(first, device, context, params, incompleteBlobs, volumes, weather)) return false;
     std::vector<unsigned char> manifestAfterFailure;
     if (!ReadFile(manifestPath, manifestAfterFailure) || manifestAfterFailure != originalManifest)
         return false;
@@ -362,7 +456,8 @@ bool NoiseCacheManager::RunRoundTripTest(
 bool NoiseCacheManager::SaveBundle(
     const std::filesystem::path& root, ID3D11Device* device, ID3D11DeviceContext* context,
     const CloudParameters& params, const ShaderBlobArray& shaderBlobs,
-    const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes)
+    const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
+    const WeatherMapResources& weather)
 {
     if (!device || !context) return false;
     for (const auto& blob : shaderBlobs) if (!blob) return false;
@@ -380,6 +475,7 @@ bool NoiseCacheManager::SaveBundle(
         if (!WriteFile(temp / kShaderNames[i], shaderBlobs[i]->GetBufferPointer(), shaderBlobs[i]->GetBufferSize())) return false;
     if (!SaveVolume(temp / L"base.vcnoise", device, context, volumes[0].Get())) return false;
     if (!SaveVolume(temp / L"detail.vcnoise", device, context, volumes[1].Get())) return false;
+    if (!SaveWeatherMap(temp / L"weather.vcnoise", device, context, weather.texture.Get())) return false;
 
     CacheManifest manifest = {};
     manifest.magic = kManifestMagic;
@@ -388,8 +484,10 @@ bool NoiseCacheManager::SaveBundle(
     manifest.parameterHash = ParameterHash(params);
     manifest.baseSize = 128;
     manifest.detailSize = 64;
+    manifest.weatherSize = 512;
     manifest.baseFormat = static_cast<uint32_t>(kBaseVolumeFormat);
     manifest.detailFormat = static_cast<uint32_t>(kDetailVolumeFormat);
+    manifest.weatherFormat = static_cast<uint32_t>(kWeatherFormat);
     manifest.params = params;
     if (!WriteFile(temp / L"manifest.bin", &manifest, sizeof(manifest))) return false;
 

@@ -44,10 +44,26 @@ cbuffer CloudCB : register(b1)
     float jitterStrength;
     int viewSteps;
     float skyExposure;
+
+    float cloudBaseHeight;
+    float cloudThickness;
+    float cloudNoiseWorldSize;
+    float maxMarchDistance;
+
+    float weatherWorldSize;
+    float weatherCoverageStrength;
+    float weatherTypeBias;
+    float heightVariation;
+
+    float thicknessVariation;
+    float horizonFadeStart;
+    float horizonFadeEnd;
+    float weatherSeed;
 };
 
 Texture3D<float4> baseNoiseTexture : register(t0);
 Texture3D<float4> detailNoiseTexture : register(t1);
+Texture2D<float4> weatherMapTexture : register(t2);
 SamplerState noiseVolumeSampler : register(s0);
 
 float3 WrapCell(float3 cell, float period)
@@ -219,9 +235,9 @@ float HeightGradient(float height01)
     return saturate(bottom * top * lowerTaper);
 }
 
-float BaseShapeFromChannels(float4 baseChannels, float height01)
+float BaseShapeFromChannels(float4 baseChannels, float height01, float coverageValue)
 {
-    float coverageOffset = (0.5 - saturate(coverage)) * 0.70;
+    float coverageOffset = (0.5 - saturate(coverageValue)) * 0.70;
     // 하단과 꼭대기를 좁히고 중단을 넓혀 수직으로 납작한 안개 모양을 피한다.
     float profileBias = lerp(0.14, -0.045, smoothstep(0.0, 0.52, height01));
     profileBias += smoothstep(0.72, 1.0, height01) * 0.12;
@@ -235,11 +251,93 @@ float BaseShapeFromChannels(float4 baseChannels, float height01)
 
 float4 ShapeCloudComponents(float4 baseChannels, float detail, float height, float height01)
 {
-    float baseShape = BaseShapeFromChannels(baseChannels, height01);
+    float baseShape = BaseShapeFromChannels(baseChannels, height01, coverage);
     // 고주파 detail은 코어가 아니라 경계에 집중해 실루엣을 보존하면서 솜털을 만든다.
     float boundary = 1.0 - smoothstep(0.45, 0.92, baseShape);
     float shaped = saturate(baseShape - detail * erosionStrength * boundary);
     return float4(baseShape, detail, height, shaped * height);
+}
+
+float4 GenerateWeatherMap(float2 uv)
+{
+    float2 p = uv;
+    float low = PeriodicFBM(float3(p * 4.0 + weatherSeed * 0.013, weatherSeed * 0.031), 4, 4.0);
+    float mid = PeriodicFBM(float3(p * 8.0 + float2(7.1, 3.7), weatherSeed * 0.047), 3, 8.0);
+    float type = PeriodicFBM(float3(p * 3.0 + float2(2.9, 5.3), weatherSeed * 0.059), 3, 3.0);
+    float baseHeight = PeriodicValueNoise3D(
+        float3(p * 2.0 + float2(11.0, 17.0), weatherSeed * 0.071), 2.0);
+    float thickness = PeriodicFBM(
+        float3(p * 2.0 + float2(19.0, 13.0), weatherSeed * 0.083), 3, 2.0);
+    float weatherCoverage = smoothstep(0.30, 0.76, low * 0.72 + mid * 0.28);
+    return saturate(float4(weatherCoverage, type, baseHeight, thickness));
+}
+
+float4 SampleWeather(float2 worldXZ)
+{
+    float size = max(weatherWorldSize, 1.0);
+    // Showcase 원점이 충분한 coverage 영역에 오도록 결정적 월드 오프셋을 둔다.
+    return weatherMapTexture.SampleLevel(
+        noiseVolumeSampler, frac(worldXZ / size + float2(0.3125, 0.171875)), 0);
+}
+
+void LocalCloudLayerBounds(float4 weather, out float localBase, out float localTop)
+{
+    localBase = cloudBaseHeight + (weather.b * 2.0 - 1.0) * max(heightVariation, 0.0);
+    float localThickness = max(cloudThickness, 0.1) *
+        max(0.2, 1.0 + (weather.a * 2.0 - 1.0) * saturate(thicknessVariation));
+    localTop = localBase + localThickness;
+}
+
+float WeatherCoverage(float4 weather)
+{
+    return saturate(coverage + (weather.r - 0.5) * weatherCoverageStrength);
+}
+
+float WeatherPotential(float4 weather)
+{
+    return smoothstep(0.28, 0.48, WeatherCoverage(weather));
+}
+
+float3 WorldToLayerUVW(float3 worldPosition, float4 weather)
+{
+    float localBase, localTop;
+    LocalCloudLayerBounds(weather, localBase, localTop);
+    float worldSize = max(cloudNoiseWorldSize, 0.1);
+    return float3(worldPosition.x / worldSize,
+                  saturate((worldPosition.y - localBase) / max(localTop - localBase, 0.1)),
+                  worldPosition.z / worldSize);
+}
+
+float LayerHeightGradient(float height01, float cloudType)
+{
+    float stratus = smoothstep(0.0, max(bottomFade, 0.001), height01) *
+        (1.0 - smoothstep(1.0 - max(topFade, 0.001), 1.0, height01));
+    float cumulus = HeightGradient(height01);
+    float type = saturate(cloudType + weatherTypeBias - 0.5);
+    return lerp(stratus, cumulus, type);
+}
+
+float3 AnimatedUVW(float3 uvw, float sampleTime);
+
+float4 EvaluateLayerCloudComponents(float3 worldPosition, float4 weather, float sampleTime)
+{
+    float localBase, localTop;
+    LocalCloudLayerBounds(weather, localBase, localTop);
+    float height01 = saturate((worldPosition.y - localBase) / max(localTop - localBase, 0.1));
+    float3 uvw = WorldToLayerUVW(worldPosition, weather);
+    float3 animated = AnimatedUVW(uvw, sampleTime);
+    float4 baseChannels = baseNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0);
+    float detail = DetailErosionFromChannels(
+        detailNoiseTexture.SampleLevel(noiseVolumeSampler, animated, 0));
+    float localCoverage = WeatherCoverage(weather);
+    float baseShape = BaseShapeFromChannels(baseChannels, height01, localCoverage);
+    float boundary = 1.0 - smoothstep(0.45, 0.92, baseShape);
+    float shaped = saturate(baseShape - detail * erosionStrength * boundary);
+    float height = LayerHeightGradient(height01, weather.g);
+    float insideLayer = step(localBase, worldPosition.y) * step(worldPosition.y, localTop);
+    float potential = WeatherPotential(weather) * insideLayer;
+    return float4(baseShape * potential, detail * potential, height * potential,
+                  shaped * height * potential);
 }
 
 float3 AnimatedUVW(float3 uvw, float sampleTime)

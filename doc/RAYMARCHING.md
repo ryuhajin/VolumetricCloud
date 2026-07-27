@@ -1,30 +1,38 @@
 # 레이마칭과 구름 밀도
 
-## 레이와 AABB
+## 레이와 평면 구름층
 
-픽셀 UV를 NDC로 바꾸고 `invViewProj`로 근·원 평면 점을 역투영해 `ro`, `rd`를 만든다. `RayBox`의 slab 교차로 박스 내부 구간 `[t0,t1]`을 구한다. 48~128 범위의 view step을 사용하며 빈 공간은 2배 거리로 건너뛴다. 화면 픽셀의 고정 gradient noise로 첫 샘플을 이동해 밴딩을 줄이되 프레임마다 값은 바꾸지 않아 temporal shimmer를 만들지 않는다.
+픽셀 UV를 NDC로 바꾸고 `invViewProj`로 `ro`, `rd`를 만든다. 전역 구름층의 하단·상단 평면과 교차해 `[t0,t1]`을 구하고 `maxMarchDistance`로 수평선 방향을 제한한다. weather coverage가 없는 곳은 4배, 후보 영역은 2배, 실제 밀도는 기본 스텝으로 진행한다. 고정 gradient jitter는 밴딩을 줄이되 temporal shimmer를 만들지 않는다.
+
+## Weather map과 월드 좌표
+
+512² RGBA map은 R=coverage, G=cloud type, B=base-height variation, A=thickness variation이다. XZ 월드 좌표를 `weatherWorldSize`로 나눠 반복 샘플링하고, B/A로 각 지점의 실제 하단과 상단을 만든다. 3D 노이즈는 `worldXZ / cloudNoiseWorldSize`와 지역 높이 비율을 사용하므로 유한 AABB 모서리가 없다.
 
 ## 심리스 periodic 노이즈
 
 Value noise는 lattice cell을 정수 period로 modulo한 뒤 hash한다. Worley는 feature를 만들 cell만 wrap하고, 거리는 원래 이웃 offset으로 계산한다. FBM의 octave마다 좌표 주파수와 period를 함께 두 배로 늘리므로 각 octave의 경계가 일치한다.
 
 ```text
+weather = sampleWeather(worldXZ)
+localCoverage = coverage + (weather.r - 0.5) * weatherCoverageStrength
+localBottom / localTop = weather.b / weather.a로 변형
+height01 = remap(worldY, localBottom, localTop)
 base.r = periodic Perlin-Worley(basePeriod)
 base.gba = low/mid/high periodic Worley bands
 detail = periodic Worley FBM(detailPeriod)
-macro  = remap(base.r, cutoff + coverage + height profile)
+macro  = remap(base.r, cutoff + localCoverage + height profile)
 macro -= dot(base.gba, weights) * baseErosion at boundary
 shape  = macro - detail * erosion at boundary
 density = saturate(shape) * CumulusHeightProfile(y) * densityMultiplier
 ```
 
-`coverage`는 cutoff를 이동해 큰 채움 비율을 조절하고 `baseErosion`은 세 Worley 밴드로 거시 경계를 깎는다. detail은 코어가 아니라 경계에만 적용한다. 높이 프로파일은 하단을 좁히고 중단을 부풀린 뒤 상단을 페이드한다. wind는 X/Z에만 더하고 `frac`로 타일을 순환한다.
+전역 `coverage`는 전체 채움 비율, weather R은 지역별 맑음/흐림을 조절한다. weather G는 층운과 적운 높이 프로파일을 혼합한다. `baseErosion`은 거시 경계를, detail은 코어가 아닌 경계만 깎는다.
 
 ## Beer–Lambert와 근사 다중 산란
 
 각 view step에서 `stepT = exp(-density * dt)`를 계산하고 front-to-back으로 누적한다. 누적 투과율이 0.01 미만이면 조기 종료한다.
 
-밀도가 있는 위치에서는 태양 방향으로 기본 8회(설정 가능, 1~12) light march하여 self-shadow 투과율을 구한다. 위상은 정규화된 전방 HG와 약한 후방 HG를 혼합한다. `rd`가 카메라에서 샘플을 향하므로 산란각은 `dot(-rd, sunDir)`이다.
+밀도가 있는 위치에서는 태양 방향으로 구름층 상단까지 기본 8회 light march하여 self-shadow를 구한다. 위상은 정규화된 전방 HG와 약한 후방 HG를 혼합한다. 최종 하늘과 산란광에는 지수 tone mapping을 적용해 밝은 가장자리 포화를 완화한다.
 
 ```text
 visibility *= exp(-lightDensity * lightStep * lightAbsorption)
@@ -40,4 +48,4 @@ final = scattering + sky * viewT
 
 ## 디버그 모드
 
-기존 모드에 Base R/G/B/A, Light Visibility, Dual-Lobe Phase, Ambient, Direct Lighting을 추가했다. Noise Inspector는 XY/XZ/YZ의 256×256 단면 네 장을 만든다. 이 해상도는 UI 검사 이미지일 뿐 메인 구름 렌더 해상도와 무관하다.
+Base R/G/B/A, Light Visibility, Phase, Ambient, Direct와 Weather Coverage/Type/Base Height/Thickness 모드를 제공한다. Noise Inspector는 3D 단면 네 장과 weather map을 표시한다.

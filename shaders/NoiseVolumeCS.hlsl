@@ -5,6 +5,7 @@
 RWTexture3D<float4> outputBase   : register(u0); // R8G8B8A8_UNORM
 RWStructuredBuffer<uint> seamTestResult : register(u1); // CSSeamTest 전용 (RunCodeTests가 u1에 바인딩)
 RWTexture3D<float4> outputDetail : register(u2); // R8G8B8A8_UNORM (옥타브 R/G/B/A)
+RWTexture2D<float4> outputWeather : register(u3); // R8G8B8A8_UNORM (coverage/type/base/thickness)
 
 cbuffer NoiseVolumeGenerationCB : register(b2)
 {
@@ -31,6 +32,14 @@ void CSDetail(uint3 id : SV_DispatchThreadID)
     outputDetail[id] = DetailNoiseOctaves(uvw);
 }
 
+[numthreads(8, 8, 1)]
+void CSWeather(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= volumeSize)) return;
+    float2 uv = (float2(id.xy) + 0.5) / volumeSize;
+    outputWeather[id.xy] = GenerateWeatherMap(uv);
+}
+
 [numthreads(64, 1, 1)]
 void CSSeamTest(uint3 id : SV_DispatchThreadID)
 {
@@ -51,6 +60,13 @@ void CSSeamTest(uint3 id : SV_DispatchThreadID)
                            PeriodicFBM(basePoint + float3(baseTestPeriod, 0, 0), baseOctaves, baseTestPeriod)));
     error = max(error, abs(PeriodicWorleyFBM(detailPoint, detailOctaves, detailTestPeriod) -
                            PeriodicWorleyFBM(detailPoint + float3(0, 0, detailTestPeriod), detailOctaves, detailTestPeriod)));
+    float4 weather = GenerateWeatherMap(p.xy);
+    float4 weatherX = GenerateWeatherMap(p.xy + float2(1.0, 0.0));
+    float4 weatherY = GenerateWeatherMap(p.xy + float2(0.0, 1.0));
+    error = max(error, max(max(abs(weather.r - weatherX.r), abs(weather.g - weatherX.g)),
+                           max(abs(weather.b - weatherX.b), abs(weather.a - weatherX.a))));
+    error = max(error, max(max(abs(weather.r - weatherY.r), abs(weather.g - weatherY.g)),
+                           max(abs(weather.b - weatherY.b), abs(weather.a - weatherY.a))));
     uint errorBits = asuint(error);
     InterlockedMax(seamTestResult[0], errorBits);
 }

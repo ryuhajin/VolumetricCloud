@@ -21,9 +21,9 @@ HLSL(`.hlsl`)은 **사람이 읽는 소스 코드**다. GPU는 이걸 바로 실
 | | 런타임 컴파일 | 미리 컴파일된 `.cso` 로드 |
 |---|---|---|
 | 시점 | 첫 실행 / 소스 변경 시 | 두 번째 실행 이후(캐시 히트) |
-| 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 6개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
-| 노이즈 볼륨 | 컴퓨트 셰이더로 128³+64³ 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
-| 대략 비용 | 컴파일 5회(수백 ms) + 굽기(~2 s) ≈ **~3 s** | 컴파일 0회 + 파일 로드 ≈ **~300 ms** |
+| 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 7개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
+| 노이즈 리소스 | 컴퓨트 셰이더로 128³+64³+512² 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
+| 비용 성격 | 컴파일 7회 + compute dispatch 3회 | 컴파일·dispatch 0회 |
 
 **미리 컴파일의 이점 정리**
 - **시작 지연 제거**: 매 실행마다 컴파일러(`d3dcompiler`)를 돌리는 비용을 없앤다.
@@ -67,11 +67,8 @@ HLSL(`.hlsl`)은 **사람이 읽는 소스 코드**다. GPU는 이걸 바로 실
 m_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &newPs);
 ```
 
-### 노이즈 3D 볼륨은 경로가 다르다
-셰이더 바이트코드와 달리, 노이즈 볼륨은 **텍스처 초기 데이터**로 올린다.
-`CreateTexture3D` 호출 시 `D3D11_SUBRESOURCE_DATA`(`pSysMem`, `SysMemPitch`,
-`SysMemSlicePitch`)에 CPU 버퍼를 넘기면 **생성과 동시에 GPU VRAM으로 복사**된다.
-별도의 `CopyResource` 없이 한 번에 올라간다 (`NoiseCacheManager.cpp` `LoadVolume`).
+### 노이즈 텍스처는 경로가 다르다
+3D base/detail은 `CreateTexture3D`, 2D weather는 `CreateTexture2D`의 초기 데이터로 GPU에 올린다. weather는 RGBA에 coverage/type/base-height/thickness를 저장한다.
 
 ---
 
@@ -92,7 +89,7 @@ D3DCompileFromFile(path, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
 ```
 - 엔트리/타겟: `main`(vs_5_0/ps_5_0), `VSMain`/`PSMain`(프리뷰), `CSMain`(cs_5_0).
 - `_DEBUG` 빌드는 `D3DCOMPILE_DEBUG | SKIP_OPTIMIZATION`, 릴리스는 최적화.
-- 컴파일하는 셰이더 6개: `main_vs`, `main_ps`, `preview_vs`, `preview_ps`, `noise_cs_base`, `noise_cs_detail`
+- 컴파일하는 셰이더 7개: `main_vs`, `main_ps`, `preview_vs`, `preview_ps`, `noise_cs_base`, `noise_cs_detail`, `noise_cs_weather`
   (`Renderer::CreateShaders`, 205-227행).
 
 ### 핫리로드 (`Renderer::CheckShaderHotReload`, 287-313행)
@@ -121,19 +118,21 @@ bundle/
   ├ manifest.bin       ← 매직/버전/해시/파라미터 (유효성 판정)
   ├ main_vs.cso         ┐
   ├ main_ps.cso         │
-  ├ preview_vs.cso      ├ 셰이더 바이트코드 6개
+  ├ preview_vs.cso      ├ 셰이더 바이트코드 7개
   ├ preview_ps.cso      │
   ├ noise_cs_base.cso   │  (base/detail 컴퓨트 분리)
-  ├ noise_cs_detail.cso ┘
+  ├ noise_cs_detail.cso │
+  ├ noise_cs_weather.cso┘
   ├ base.vcnoise       ← 128³ RGBA8  (8 MB, Perlin-Worley + Worley 3밴드)
-  └ detail.vcnoise     ← 64³  RGBA8  (1 MB, Worley 옥타브 4채널)
+  ├ detail.vcnoise     ← 64³  RGBA8  (1 MB, Worley 옥타브 4채널)
+  └ weather.vcnoise    ← 512² RGBA8  (1 MB, coverage/type/base-height/thickness)
 ```
 `.vcnoise`는 헤더(매직/버전/크기/포맷) + 원시 볼륨 바이트. `.cso`는 순수 DXBC 바이트코드.
 
 ### 캐시 검증 — 두 개의 해시 (FNV-1a)
 `manifest.bin`에는 두 해시가 저장되고, 로드 시(`LoadBundle`, 225-258행) 각각 다르게 쓰인다.
 
-- **ParameterHash** — 노이즈 생성 파라미터(worldScale/period/seed/octaves)의 해시.
+- **ParameterHash** — 노이즈 생성 파라미터(worldScale/period/seed/octaves/weatherSeed)의 해시.
   로드 시 `manifest.parameterHash != ParameterHash(manifest.params)`이면 **캐시를 거부**한다.
   이건 "번들이 손상/변조되지 않았는가"를 확인하는 **무결성 검사**이자, *이 볼륨이 어떤
   파라미터로 구워졌는지*를 기록하는 서명이다. (매직/버전/크기/포맷도 함께 검증)
@@ -169,11 +168,8 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 
 | | 캐시 히트 | 캐시 미스 (첫 실행/소스 변경) |
 |---|---|---|
-| HLSL 컴파일 | 0회 | 5회 (`D3DCompileFromFile`) |
-| 노이즈 굽기 | 0회 (파일 로드) | 컴퓨트 디스패치 2회 (128³+64³) |
-| 대략 시작 시간 | **~300 ms** | **~3 s** |
-
-→ 미리 컴파일 + 노이즈 캐시로 시작 시간을 **약 10배** 단축.
+| HLSL 컴파일 | 0회 | 7회 (`D3DCompileFromFile`) |
+| 노이즈 굽기 | 0회 (파일 로드) | 컴퓨트 디스패치 3회 (128³+64³+512²) |
 
 ---
 
@@ -189,8 +185,7 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 **싼 trilinear 조회 1번**으로 대체한다 = 공간↔시간 트레이드오프. `useTextureCache`로 절차식↔캐시 전환.
 
 ### Q. Compute Shader를 쓰나? PS/VS랑 뭐가 다른가?
-쓴다. **`NoiseVolumeCS.hlsl`**의 두 엔트리 `CSBase`/`CSDetail`(`cs_5_0`). 노이즈 굽기가 CS의 일이다.
-(base=RGBA8 형태 밴드, detail=RGBA8 침식 옥타브이며 의미가 달라 엔트리를 나눴다.)
+쓴다. **`NoiseVolumeCS.hlsl`**의 `CSBase`/`CSDetail`/`CSWeather`(`cs_5_0`)가 각각 3D 형태, 3D 침식, 2D 광역 분포를 굽는다.
 
 | | VS / PS | Compute Shader |
 |---|---|---|
@@ -199,8 +194,7 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 | 출력 | 렌더 타깃의 고정 위치 | **UAV**에 임의 위치 쓰기 (RWTexture3D 등) |
 
 **"스레드 1개 = 복셀 1개"** 구조. `[numthreads(4,4,4)]`, `SV_DispatchThreadID`가 복셀 좌표.
-128³ = 약 210만 복셀을 GPU가 병렬로 계산해 `outputBase[id]`/`outputDetail[id]`에 직접 쓴다.
-CPU는 `Dispatch(32,32,32)`로 부른다 (`Renderer.cpp:368-397`). 요약: **PS는 "화면에 그리고",
+128³ = 약 210만 복셀을 GPU가 병렬로 계산하며, weather는 512² texel을 8×8 thread group으로 채운다. 요약: **PS는 "화면에 그리고",
 CS는 "데이터를 계산해 메모리에 채운다"**.
 
 ### Q. `.vcnoise`는 어떻게 생성되나? 라이브러리를 쓰나?
@@ -212,7 +206,7 @@ GPU 텍스처 ─CopyResource→ STAGING 텍스처 ─Map(READ)→ CPU 버퍼 �
               읽기 가능한 스테이징으로 복사)
 ```
 `VolumeHeader`(매직/버전/크기/포맷) 40바이트 뒤에 복셀 데이터를 그대로 붙인다.
-base = 128³ × 4바이트(RGBA8) = 8 MB, detail = 64³ × 4바이트(RGBA8) = 1 MB.
+base = 128³ × 4바이트 = 8 MB, detail = 64³ × 4바이트 = 1 MB, weather = 512² × 4바이트 = 1 MB다.
 
 ### Q. v4에서 base가 다시 RGBA8이 된 이유는?
 v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주파 형태를 렌더 시점에 다시 조합할 수 없어 큰 흐린 덩어리로 보였다. v4는 중복 채널이 아니라 서로 다른 정보를 저장한다.
@@ -241,7 +235,7 @@ v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주�
   - `ParameterHash`는 애초에 "시각"이 아니라 *어떤 값으로 구웠나*의 서명이라 타임스탬프로 표현 불가.
 
   내용 해시는 **실제 내용 변화만** 잡고, 결정적이며 기계 간 이식 가능하다. 대신 검사 때
-  파일을 읽어 해싱하는 비용이 있지만(셰이더 6개) 무시할 수준이다.
+  파일을 읽어 해싱하는 비용이 있지만(셰이더 7개) 무시할 수준이다.
 
 → 요약: **세션 내 즉각 감지 = 타임스탬프, 영구·이식 캐시 검증 = 해시.** 각자 맞는 자리에 쓰인다.
 

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 using namespace DirectX;
@@ -109,7 +110,7 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool forceRebuildCache)
     m_noiseCacheManager.Init(ResolveDefaultCacheDir(), m_shaderPaths);
     m_cacheLoaded = !forceRebuildCache && m_noiseCacheManager.LoadPreferred(
         m_device.Get(), m_cloudParams, m_shaderBlobs,
-        m_noiseVolumes, m_noiseVolumeUavs, m_noiseVolumeSrvs, m_sourceModified);
+        m_noiseVolumes, m_noiseVolumeUavs, m_noiseVolumeSrvs, m_weatherMap, m_sourceModified);
     if (m_cacheLoaded)
     {
         if (!CreateShadersFromBlobs(m_shaderBlobs)) return false;
@@ -151,6 +152,7 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool forceRebuildCache)
     if (!CreateNoisePreviewResources()) return false;
     if (!m_cacheLoaded && !CreateNoiseVolumeResources()) return false;
     if (!CreateNoiseSampler()) return false;
+    if (!CreateGpuTimerResources()) return false;
     if (!m_debugUI.Init(hwnd, m_device.Get(), m_context.Get()))
     {
         MessageBoxW(hwnd, L"ImGui 디버그 UI 초기화 실패", L"오류", MB_OK | MB_ICONERROR);
@@ -204,7 +206,8 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
 
 bool Renderer::CreateShaders(bool showErrors)
 {
-    ComPtr<ID3DBlob> vsBlob, psBlob, previewVsBlob, previewPsBlob, noiseCsBaseBlob, noiseCsDetailBlob;
+    ComPtr<ID3DBlob> vsBlob, psBlob, previewVsBlob, previewPsBlob;
+    ComPtr<ID3DBlob> noiseCsBaseBlob, noiseCsDetailBlob, noiseCsWeatherBlob;
 
     if (!CompileShaderFromFile(m_vsPath, "main", "vs_5_0", vsBlob, showErrors))
         return false;
@@ -218,6 +221,8 @@ bool Renderer::CreateShaders(bool showErrors)
         return false;
     if (!CompileShaderFromFile(m_noiseVolumeCsPath, "CSDetail", "cs_5_0", noiseCsDetailBlob, showErrors))
         return false;
+    if (!CompileShaderFromFile(m_noiseVolumeCsPath, "CSWeather", "cs_5_0", noiseCsWeatherBlob, showErrors))
+        return false;
 
     ShaderBlobArray blobs;
     blobs[static_cast<size_t>(CachedShader::MainVS)] = vsBlob;
@@ -226,6 +231,7 @@ bool Renderer::CreateShaders(bool showErrors)
     blobs[static_cast<size_t>(CachedShader::PreviewPS)] = previewPsBlob;
     blobs[static_cast<size_t>(CachedShader::NoiseCSBase)] = noiseCsBaseBlob;
     blobs[static_cast<size_t>(CachedShader::NoiseCSDetail)] = noiseCsDetailBlob;
+    blobs[static_cast<size_t>(CachedShader::NoiseCSWeather)] = noiseCsWeatherBlob;
     return CreateShadersFromBlobs(blobs);
 }
 
@@ -237,6 +243,7 @@ bool Renderer::CreateShadersFromBlobs(const ShaderBlobArray& blobs)
     const auto& previewPsBlob = blobs[static_cast<size_t>(CachedShader::PreviewPS)];
     const auto& noiseCsBaseBlob = blobs[static_cast<size_t>(CachedShader::NoiseCSBase)];
     const auto& noiseCsDetailBlob = blobs[static_cast<size_t>(CachedShader::NoiseCSDetail)];
+    const auto& noiseCsWeatherBlob = blobs[static_cast<size_t>(CachedShader::NoiseCSWeather)];
     for (const auto& blob : blobs) if (!blob) return false;
 
     ComPtr<ID3D11VertexShader> newVs;
@@ -245,6 +252,7 @@ bool Renderer::CreateShadersFromBlobs(const ShaderBlobArray& blobs)
     ComPtr<ID3D11PixelShader>  newPreviewPs;
     ComPtr<ID3D11ComputeShader> newNoiseCsBase;
     ComPtr<ID3D11ComputeShader> newNoiseCsDetail;
+    ComPtr<ID3D11ComputeShader> newNoiseCsWeather;
 
     HRESULT hr = m_device->CreateVertexShader(
         vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &newVs);
@@ -269,6 +277,9 @@ bool Renderer::CreateShadersFromBlobs(const ShaderBlobArray& blobs)
     hr = m_device->CreateComputeShader(
         noiseCsDetailBlob->GetBufferPointer(), noiseCsDetailBlob->GetBufferSize(), nullptr, &newNoiseCsDetail);
     if (FAILED(hr)) return false;
+    hr = m_device->CreateComputeShader(
+        noiseCsWeatherBlob->GetBufferPointer(), noiseCsWeatherBlob->GetBufferSize(), nullptr, &newNoiseCsWeather);
+    if (FAILED(hr)) return false;
 
     m_vs = newVs;
     m_ps = newPs;
@@ -276,6 +287,7 @@ bool Renderer::CreateShadersFromBlobs(const ShaderBlobArray& blobs)
     m_previewPs = newPreviewPs;
     m_noiseVolumeCsBase = newNoiseCsBase;
     m_noiseVolumeCsDetail = newNoiseCsDetail;
+    m_noiseWeatherCs = newNoiseCsWeather;
     m_shaderBlobs = blobs;
     m_previewDirty = true;
     m_noiseCacheDirty = true;
@@ -363,6 +375,21 @@ bool Renderer::CreateNoiseVolumeResources()
         if (FAILED(m_device->CreateShaderResourceView(m_noiseVolumes[i].Get(), nullptr, &m_noiseVolumeSrvs[i]))) return false;
     }
 
+    D3D11_TEXTURE2D_DESC weatherDesc = {};
+    weatherDesc.Width = 512;
+    weatherDesc.Height = 512;
+    weatherDesc.MipLevels = 1;
+    weatherDesc.ArraySize = 1;
+    weatherDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    weatherDesc.SampleDesc.Count = 1;
+    weatherDesc.Usage = D3D11_USAGE_DEFAULT;
+    weatherDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    if (FAILED(m_device->CreateTexture2D(&weatherDesc, nullptr, &m_weatherMap.texture))) return false;
+    if (FAILED(m_device->CreateUnorderedAccessView(
+            m_weatherMap.texture.Get(), nullptr, &m_weatherMap.uav))) return false;
+    if (FAILED(m_device->CreateShaderResourceView(
+            m_weatherMap.texture.Get(), nullptr, &m_weatherMap.srv))) return false;
+
     return true;
 }
 
@@ -377,10 +404,67 @@ bool Renderer::CreateNoiseSampler()
     return SUCCEEDED(m_device->CreateSamplerState(&sd, &m_noiseSampler));
 }
 
+bool Renderer::CreateGpuTimerResources()
+{
+    D3D11_QUERY_DESC desc = {};
+    for (size_t i = 0; i < m_gpuDisjointQueries.size(); ++i)
+    {
+        desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+        if (FAILED(m_device->CreateQuery(&desc, &m_gpuDisjointQueries[i]))) return false;
+        desc.Query = D3D11_QUERY_TIMESTAMP;
+        if (FAILED(m_device->CreateQuery(&desc, &m_gpuBeginQueries[i]))) return false;
+        if (FAILED(m_device->CreateQuery(&desc, &m_gpuEndQueries[i]))) return false;
+    }
+    return true;
+}
+
+void Renderer::ResolveGpuTimer()
+{
+    const unsigned int readIndex = m_gpuQueryIndex;
+    if (!m_gpuQueryIssued[readIndex]) return;
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint = {};
+    UINT64 begin = 0;
+    UINT64 end = 0;
+    if (m_context->GetData(m_gpuDisjointQueries[readIndex].Get(), &disjoint, sizeof(disjoint),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+        m_context->GetData(m_gpuBeginQueries[readIndex].Get(), &begin, sizeof(begin),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+        m_context->GetData(m_gpuEndQueries[readIndex].Get(), &end, sizeof(end),
+                           D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK)
+    {
+        if (!disjoint.Disjoint && disjoint.Frequency > 0 && end >= begin)
+            m_gpuFrameMs = static_cast<float>((end - begin) * 1000.0 / disjoint.Frequency);
+        m_gpuQueryIssued[readIndex] = false;
+    }
+}
+
+void Renderer::BeginGpuTimer()
+{
+    ResolveGpuTimer();
+    if (m_gpuQueryIssued[m_gpuQueryIndex])
+    {
+        m_gpuTimerActive = false;
+        return;
+    }
+    m_context->Begin(m_gpuDisjointQueries[m_gpuQueryIndex].Get());
+    m_context->End(m_gpuBeginQueries[m_gpuQueryIndex].Get());
+    m_gpuTimerActive = true;
+}
+
+void Renderer::EndGpuTimer()
+{
+    if (!m_gpuTimerActive) return;
+    m_context->End(m_gpuEndQueries[m_gpuQueryIndex].Get());
+    m_context->End(m_gpuDisjointQueries[m_gpuQueryIndex].Get());
+    m_gpuQueryIssued[m_gpuQueryIndex] = true;
+    m_gpuQueryIndex = (m_gpuQueryIndex + 1) % 2;
+    m_gpuTimerActive = false;
+}
+
 void Renderer::GenerateNoiseVolumes()
 {
-    ID3D11ShaderResourceView* nullSrvs[2] = { nullptr, nullptr };
-    m_context->PSSetShaderResources(0, 2, nullSrvs);
+    ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
+    m_context->PSSetShaderResources(0, 3, nullSrvs);
     m_context->CSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
     m_context->CSSetConstantBuffers(2, 1, m_noiseVolumeGenerationCb.GetAddressOf());
 
@@ -406,6 +490,21 @@ void Renderer::GenerateNoiseVolumes()
         ID3D11UnorderedAccessView* nullUav = nullptr;
         m_context->CSSetUnorderedAccessViews(uavSlots[i], 1, &nullUav, nullptr);
     }
+
+    NoiseVolumeGenerationCB weatherCb = { 512, 2, { 0, 0 } };
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (SUCCEEDED(m_context->Map(m_noiseVolumeGenerationCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        memcpy(mapped.pData, &weatherCb, sizeof(weatherCb));
+        m_context->Unmap(m_noiseVolumeGenerationCb.Get(), 0);
+    }
+    m_context->CSSetShader(m_noiseWeatherCs.Get(), nullptr, 0);
+    ID3D11UnorderedAccessView* weatherUav = m_weatherMap.uav.Get();
+    m_context->CSSetUnorderedAccessViews(3, 1, &weatherUav, nullptr);
+    m_context->Dispatch(64, 64, 1);
+    ++m_noiseDispatchCount;
+    ID3D11UnorderedAccessView* nullWeatherUav = nullptr;
+    m_context->CSSetUnorderedAccessViews(3, 1, &nullWeatherUav, nullptr);
     m_context->CSSetShader(nullptr, nullptr, 0);
     m_noiseCacheDirty = false;
     m_previewDirty = true;
@@ -491,8 +590,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     for (size_t i = 0; i < previewViews.size(); ++i) previewViews[i] = m_previewSrvs[i].Get();
     const CloudParameters previousParams = m_cloudParams;
     NoiseCacheUiActions cacheActions;
-    if (m_debugUI.Draw(m_cloudParams, m_previewSettings, previewViews, m_previewDirty, cpuFrameMs,
-                       m_cacheStatus, cacheActions))
+    if (m_debugUI.Draw(m_cloudParams, m_previewSettings, previewViews, m_weatherMap.srv.Get(),
+                       m_previewDirty, cpuFrameMs, m_gpuFrameMs, m_cacheStatus, cacheActions))
     {
         m_previewDirty = true;
         if (previousParams.noiseWorldScale != m_cloudParams.noiseWorldScale ||
@@ -500,7 +599,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
             previousParams.detailPeriod != m_cloudParams.detailPeriod ||
             previousParams.seed != m_cloudParams.seed ||
             previousParams.baseOctaves != m_cloudParams.baseOctaves ||
-            previousParams.detailOctaves != m_cloudParams.detailOctaves)
+            previousParams.detailOctaves != m_cloudParams.detailOctaves ||
+            previousParams.weatherSeed != m_cloudParams.weatherSeed)
         {
             m_noiseCacheDirty = true;
             m_cacheStatus = "Unsaved";
@@ -520,14 +620,17 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         std::array<ComPtr<ID3D11Texture3D>, 2> loadedVolumes;
         std::array<ComPtr<ID3D11UnorderedAccessView>, 2> loadedUavs;
         std::array<ComPtr<ID3D11ShaderResourceView>, 2> loadedSrvs;
+        WeatherMapResources loadedWeather;
         if (m_noiseCacheManager.LoadPreferred(m_device.Get(), loadedParams, loadedBlobs,
-                                               loadedVolumes, loadedUavs, loadedSrvs, modified) &&
+                                               loadedVolumes, loadedUavs, loadedSrvs,
+                                               loadedWeather, modified) &&
             CreateShadersFromBlobs(loadedBlobs))
         {
             m_cloudParams = loadedParams;
             m_noiseVolumes = loadedVolumes;
             m_noiseVolumeUavs = loadedUavs;
             m_noiseVolumeSrvs = loadedSrvs;
+            m_weatherMap = loadedWeather;
             m_noiseCacheDirty = false;
             m_sourceModified = modified;
             m_cacheStatus = modified ? "Source Modified" : "Saved";
@@ -572,7 +675,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     {
         m_cacheStatus = "Saving";
         m_cacheStatus = m_noiseCacheManager.SaveUser(
-            m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs, m_noiseVolumes)
+            m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
+            m_noiseVolumes, m_weatherMap)
             ? "Saved" : "Error";
     }
     // 패널이 기본 숨김인 동안에는 비싼 4-MRT 절차식 미리보기를 만들지 않는다.
@@ -599,11 +703,15 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     m_context->PSSetShader(m_ps.Get(), nullptr, 0);
     m_context->PSSetConstantBuffers(0, 1, m_cb.GetAddressOf());
     m_context->PSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
-    ID3D11ShaderResourceView* noiseSrvs[2] = { m_noiseVolumeSrvs[0].Get(), m_noiseVolumeSrvs[1].Get() };
-    m_context->PSSetShaderResources(0, 2, noiseSrvs);
+    ID3D11ShaderResourceView* noiseSrvs[3] = {
+        m_noiseVolumeSrvs[0].Get(), m_noiseVolumeSrvs[1].Get(), m_weatherMap.srv.Get()
+    };
+    m_context->PSSetShaderResources(0, 3, noiseSrvs);
     m_context->PSSetSamplers(0, 1, m_noiseSampler.GetAddressOf());
 
+    BeginGpuTimer();
     m_context->Draw(3, 0); // 정점 3개 = 화면을 덮는 삼각형
+    EndGpuTimer();
 
     // 구름 위에 디버그 UI를 합성한 뒤 Present.
     m_debugUI.EndFrame();
@@ -616,7 +724,8 @@ bool Renderer::SaveDefaultNoiseCache()
 {
     if (m_noiseCacheDirty) GenerateNoiseVolumes();
     return m_noiseCacheManager.SaveDefault(
-        m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs, m_noiseVolumes);
+        m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
+        m_noiseVolumes, m_weatherMap);
 }
 
 bool Renderer::RunCodeTests()
@@ -681,6 +790,76 @@ bool Renderer::RunCodeTests()
         detailDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && // Worley 옥타브 4채널
         static_cast<uint64_t>(baseDesc.Width) * baseDesc.Height * baseDesc.Depth * 4 == 8388608ull &&
         static_cast<uint64_t>(detailDesc.Width) * detailDesc.Height * detailDesc.Depth * 4 == 1048576ull;
+
+    D3D11_TEXTURE2D_DESC weatherDesc = {};
+    m_weatherMap.texture->GetDesc(&weatherDesc);
+    const bool weatherLayout =
+        weatherDesc.Width == 512 && weatherDesc.Height == 512 &&
+        weatherDesc.ArraySize == 1 && weatherDesc.MipLevels == 1 &&
+        weatherDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM;
+    bool weatherDistribution = false;
+    if (weatherLayout)
+    {
+        D3D11_TEXTURE2D_DESC readDesc = weatherDesc;
+        readDesc.Usage = D3D11_USAGE_STAGING;
+        readDesc.BindFlags = 0;
+        readDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        readDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture2D> readback;
+        if (SUCCEEDED(m_device->CreateTexture2D(&readDesc, nullptr, &readback)))
+        {
+            m_context->CopyResource(readback.Get(), m_weatherMap.texture.Get());
+            D3D11_MAPPED_SUBRESOURCE weatherMapped = {};
+            if (SUCCEEDED(m_context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &weatherMapped)))
+            {
+                std::array<unsigned char, 4> channelMin = { 255, 255, 255, 255 };
+                std::array<unsigned char, 4> channelMax = { 0, 0, 0, 0 };
+                for (UINT y = 0; y < weatherDesc.Height; ++y)
+                {
+                    const auto* row = static_cast<const unsigned char*>(weatherMapped.pData) +
+                        static_cast<size_t>(y) * weatherMapped.RowPitch;
+                    for (UINT x = 0; x < weatherDesc.Width; ++x)
+                    {
+                        const auto* texel = row + static_cast<size_t>(x) * 4;
+                        for (size_t c = 0; c < 4; ++c)
+                        {
+                            channelMin[c] = (std::min)(channelMin[c], texel[c]);
+                            channelMax[c] = (std::max)(channelMax[c], texel[c]);
+                        }
+                    }
+                }
+                m_context->Unmap(readback.Get(), 0);
+                weatherDistribution = true;
+                for (size_t c = 0; c < 4; ++c)
+                    weatherDistribution = weatherDistribution && channelMax[c] > channelMin[c] + 8;
+            }
+        }
+    }
+
+    const auto layerInterval = [](float originY, float directionY, float bottom, float top, float limit)
+    {
+        if (std::abs(directionY) < 1.0e-5f)
+            return originY >= bottom && originY <= top
+                ? std::pair<float, float>{ 0.0f, limit }
+                : std::pair<float, float>{ 1.0f, 0.0f };
+        const float a = (bottom - originY) / directionY;
+        const float b = (top - originY) / directionY;
+        return std::pair<float, float>{
+            (std::max)((std::min)(a, b), 0.0f),
+            (std::min)((std::max)(a, b), limit) };
+    };
+    const auto upward = layerInterval(0.0f, 1.0f, 2.0f, 5.0f, 120.0f);
+    const auto insideHorizontal = layerInterval(3.0f, 0.0f, 2.0f, 5.0f, 120.0f);
+    const auto outsideHorizontal = layerInterval(0.0f, 0.0f, 2.0f, 5.0f, 120.0f);
+    const bool layerMath = std::abs(upward.first - 2.0f) < 1.0e-5f &&
+                           std::abs(upward.second - 5.0f) < 1.0e-5f &&
+                           insideHorizontal.first == 0.0f && insideHorizontal.second == 120.0f &&
+                           outsideHorizontal.second <= outsideHorizontal.first;
+    CloudParameters changedWeather = m_cloudParams;
+    changedWeather.weatherSeed += 1.0f;
+    const bool weatherHash =
+        NoiseCacheManager::ParameterHash(changedWeather) !=
+        NoiseCacheManager::ParameterHash(m_cloudParams);
 
     // 실제 base 캐시를 읽어 네 채널이 퇴화하지 않았고 shaped density가 전부 비거나
     // 포화되지 않는지 검사한다. 화면 비교가 아니라 생성 데이터의 수치 건전성 검사다.
@@ -786,7 +965,8 @@ bool Renderer::RunCodeTests()
                               std::isfinite(multiScatter(0.35f));
     const bool seamless = maxError <= 1.0e-5f;
     const bool roundTrip = m_noiseCacheManager.RunRoundTripTest(
-        m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs, m_noiseVolumes);
+        m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
+        m_noiseVolumes, m_weatherMap);
     bool debugLayerClean = true;
 #ifdef _DEBUG
     ComPtr<ID3D11InfoQueue> infoQueue;
@@ -808,5 +988,7 @@ bool Renderer::RunCodeTests()
         }
     }
 #endif
-    return seamless && roundTrip && volumeLayout && baseDistribution && lightingMath && debugLayerClean;
+    return seamless && roundTrip && volumeLayout && baseDistribution &&
+           weatherLayout && weatherDistribution && weatherHash && layerMath &&
+           lightingMath && debugLayerClean;
 }

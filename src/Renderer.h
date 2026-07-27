@@ -54,6 +54,10 @@ private:
     bool CreateNoiseSampler();
     void GenerateNoiseVolumes();
     void RenderNoisePreview(float previewTime);
+    bool CreateGpuTimerResources();
+    void BeginGpuTimer();
+    void EndGpuTimer();
+    void ResolveGpuTimer();
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
 
@@ -108,6 +112,7 @@ private:
     ComPtr<ID3D11PixelShader>      m_previewPs;
     ComPtr<ID3D11ComputeShader>    m_noiseVolumeCsBase;   // RGBA8 base 채널 굽기
     ComPtr<ID3D11ComputeShader>    m_noiseVolumeCsDetail; // RGBA8 옥타브 굽기
+    ComPtr<ID3D11ComputeShader>    m_noiseWeatherCs;      // RGBA8 weather map 굽기
     ComPtr<ID3D11SamplerState>     m_noiseSampler;
     ComPtr<ID3D11Buffer>           m_noiseVolumeGenerationCb;
     std::array<ComPtr<ID3D11Texture2D>, 4> m_previewTextures;
@@ -116,8 +121,17 @@ private:
     std::array<ComPtr<ID3D11Texture3D>, 2> m_noiseVolumes;
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2> m_noiseVolumeUavs;
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> m_noiseVolumeSrvs;
+    WeatherMapResources m_weatherMap;
 
-    CloudParameters m_cloudParams = CumulusShowcaseCloudParameters();
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuDisjointQueries;
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuBeginQueries;
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuEndQueries;
+    std::array<bool, 2> m_gpuQueryIssued = { false, false };
+    unsigned int m_gpuQueryIndex = 0;
+    bool m_gpuTimerActive = false;
+    float m_gpuFrameMs = 0.0f;
+
+    CloudParameters m_cloudParams = CumulusWideShowcaseCloudParameters();
     NoisePreviewSettings m_previewSettings;
     DebugUI m_debugUI;
     bool m_previewDirty = true;

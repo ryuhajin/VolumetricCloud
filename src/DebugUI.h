@@ -36,8 +36,10 @@ public:
     bool Draw(CloudParameters& params,
               NoisePreviewSettings& preview,
               const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
+              ID3D11ShaderResourceView* weatherSrv,
               bool previewDirty,
               float cpuFrameMs,
+              float gpuFrameMs,
               const std::string& cacheStatus,
               NoiseCacheUiActions& cacheActions);
     void EndFrame();

@@ -5,11 +5,10 @@ using namespace DirectX;
 
 Camera::Camera()
     : m_yaw(0.0f)
-    , m_pitch(0.2f)
+    , m_pitch(-0.06f)
     , m_distance(8.0f)
-    // 기본 showcase seed의 주 구름 덩어리가 볼륨 하단·왼쪽에 형성되므로
-    // 그 밀도 중심을 화면 중앙에 두는 오빗 타깃을 사용한다.
-    , m_target(-0.25f, -0.45f, 0.0f)
+    // 구름층 아래에서 수평선 위를 올려다보는 광역 showcase 구도.
+    , m_target(0.0f, 2.0f, 0.0f)
     , m_aspect(16.0f / 9.0f)
     , m_fovY(XMConvertToRadians(60.0f))
     , m_nearZ(0.1f)
