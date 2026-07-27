@@ -3,11 +3,13 @@
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -16,10 +18,79 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+namespace
+{
+constexpr size_t kParameterCategoryCount = 6;
+
+struct ParameterCategorySettings
+{
+    std::array<bool, kParameterCategoryCount> open = { true, false, false, false, false, false };
+};
+
+ParameterCategorySettings g_parameterCategories;
+
+void* ParameterSettingsReadOpen(
+    ImGuiContext*, ImGuiSettingsHandler* handler, const char* name)
+{
+    return std::strcmp(name, "Parameters") == 0 ? handler->UserData : nullptr;
+}
+
+void ParameterSettingsReadLine(
+    ImGuiContext*, ImGuiSettingsHandler*, void* entry, const char* line)
+{
+    auto* settings = static_cast<ParameterCategorySettings*>(entry);
+    static const char* keys[kParameterCategoryCount] = {
+        "ShapeNoise", "Animation", "Lighting", "Sampling", "WideCloudLayer", "Presets"
+    };
+    for (size_t i = 0; i < kParameterCategoryCount; ++i)
+    {
+        const std::string prefix = std::string(keys[i]) + "=";
+        if (std::strncmp(line, prefix.c_str(), prefix.size()) == 0)
+        {
+            settings->open[i] = std::atoi(line + prefix.size()) != 0;
+            break;
+        }
+    }
+}
+
+void ParameterSettingsWriteAll(
+    ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* out)
+{
+    const auto* settings = static_cast<const ParameterCategorySettings*>(handler->UserData);
+    static const char* keys[kParameterCategoryCount] = {
+        "ShapeNoise", "Animation", "Lighting", "Sampling", "WideCloudLayer", "Presets"
+    };
+    out->appendf("[CloudDebug][Parameters]\n");
+    for (size_t i = 0; i < kParameterCategoryCount; ++i)
+        out->appendf("%s=%d\n", keys[i], settings->open[i] ? 1 : 0);
+    out->append("\n");
+}
+
+bool BeginParameterCategory(const char* label, size_t index)
+{
+    ImGui::SetNextItemOpen(g_parameterCategories.open[index], ImGuiCond_Always);
+    const bool open = ImGui::CollapsingHeader(label);
+    if (open != g_parameterCategories.open[index])
+    {
+        g_parameterCategories.open[index] = open;
+        ImGui::MarkIniSettingsDirty();
+    }
+    return open;
+}
+}
+
 bool DebugUI::Init(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context)
 {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImGuiSettingsHandler categoryHandler;
+    categoryHandler.TypeName = "CloudDebug";
+    categoryHandler.TypeHash = ImHashStr("CloudDebug");
+    categoryHandler.ReadOpenFn = ParameterSettingsReadOpen;
+    categoryHandler.ReadLineFn = ParameterSettingsReadLine;
+    categoryHandler.WriteAllFn = ParameterSettingsWriteAll;
+    categoryHandler.UserData = &g_parameterCategories;
+    ImGui::AddSettingsHandler(&categoryHandler);
     ImGui::StyleColorsDark();
     if (!ImGui_ImplWin32_Init(hwnd) || !ImGui_ImplDX11_Init(device, context))
         return false;
@@ -80,18 +151,18 @@ bool DebugUI::Draw(CloudParameters& p,
                    const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
                    ID3D11ShaderResourceView* weatherSrv,
                    bool previewDirty,
-                   float frameIntervalMs,
-                   float cpuRenderMs,
-                   float gpuCloudMs,
-                   float gpuTotalMs,
-                   const std::string& cacheStatus,
                    NoiseCacheUiActions& cacheActions)
 {
     if (!m_initialized || !m_visible) return false;
 
     bool changed = false;
     bool presetSelected = false;
-    ImGui::SetNextWindowSize(ImVec2(620, 720), ImGuiCond_FirstUseEver);
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 maxWindowSize(
+        (std::max)(360.0f, viewport->WorkSize.x),
+        (std::max)(280.0f, viewport->WorkSize.y));
+    ImGui::SetNextWindowSize(ImVec2(480, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(360, 280), maxWindowSize);
     if (ImGui::Begin("Cloud Debug", &m_visible))
     {
         if (ImGui::BeginTabBar("CloudDebugTabs"))
@@ -131,7 +202,8 @@ bool DebugUI::Draw(CloudParameters& p,
                 changed |= ImGui::SliderFloat("Slice", &preview.slice, 0.0f, 1.0f, "%.3f");
                 ImGui::Text("Preview: %s", previewDirty ? "updating" : "ready");
 
-                if (ImGui::BeginTable("NoisePreviews", 2))
+                const int columns = ImGui::GetContentRegionAvail().x < 540.0f ? 1 : 2;
+                if (ImGui::BeginTable("NoisePreviews", columns))
                 {
                     ImGui::TableNextColumn(); DrawPreview("Base Perlin-Worley", previewSrvs[0]);
                     ImGui::TableNextColumn(); DrawPreview("Detail Worley", previewSrvs[1]);
@@ -145,105 +217,115 @@ bool DebugUI::Draw(CloudParameters& p,
 
             if (ImGui::BeginTabItem("Parameters"))
             {
-                changed |= ImGui::SliderFloat("Tile repeat", &p.noiseWorldScale, 1.0f, 4.0f, "%.0f");
-                p.noiseWorldScale = std::round(p.noiseWorldScale);
-                changed |= ImGui::SliderInt("Base period", &p.basePeriod, 2, 12);
-                changed |= ImGui::SliderInt("Base octaves", &p.baseOctaves, 1, 5);
-                changed |= ImGui::SliderInt("Detail period", &p.detailPeriod, 4, 32);
-                changed |= ImGui::SliderInt("Detail octaves", &p.detailOctaves, 1, 4);
-                changed |= ImGui::SliderFloat("Noise cutoff threshold", &p.noiseCutoffThreshold,
-                                              0.0f, 0.95f, "%.3f");
-                changed |= ImGui::SliderFloat("Coverage", &p.coverage, 0.05f, 0.95f, "%.3f");
-                changed |= ImGui::SliderFloat("Base erosion", &p.baseErosion, 0.0f, 0.75f, "%.3f");
-                changed |= ImGui::SliderFloat("Density", &p.densityMultiplier, 0.0f, 5.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Erosion", &p.erosionStrength, 0.0f, 1.0f, "%.3f");
-                changed |= ImGui::SliderFloat("Bottom fade", &p.bottomFade, 0.01f, 0.49f, "%.3f");
-                changed |= ImGui::SliderFloat("Top fade", &p.topFade, 0.01f, 0.49f, "%.3f");
-                changed |= ImGui::InputFloat("Seed", &p.seed, 1.0f, 10.0f, "%.0f");
-                changed |= ImGui::SliderFloat2("Wind direction", &p.windDirection.x, -1.0f, 1.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Wind speed", &p.windSpeed, 0.0f, 0.25f, "%.3f");
-                ImGui::SeparatorText("Lighting");
-                changed |= ImGui::SliderFloat("Sun azimuth", &p.sunAzimuth, -180.0f, 180.0f, "%.1f deg");
-                changed |= ImGui::SliderFloat("Sun elevation", &p.sunElevation, -10.0f, 90.0f, "%.1f deg");
-                changed |= ImGui::SliderFloat("Sun intensity", &p.sunIntensity, 0.0f, 12.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Ambient", &p.ambientIntensity, 0.0f, 2.0f, "%.2f");
-                changed |= ImGui::SliderFloat("HG eccentricity", &p.phaseG, -0.9f, 0.9f, "%.2f");
-                changed |= ImGui::SliderFloat("Light absorption", &p.lightAbsorption, 0.1f, 4.0f, "%.2f");
-                changed |= ImGui::SliderInt("Light steps", &p.lightSteps, 1, 12);
-                changed |= ImGui::SliderFloat("Powder", &p.powderStrength, 0.0f, 1.5f, "%.2f");
-                changed |= ImGui::SliderFloat("Multi scattering", &p.multiScatterStrength, 0.0f, 1.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Silver lining", &p.silverLiningStrength, 0.0f, 2.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Sky exposure", &p.skyExposure, 0.25f, 2.5f, "%.2f");
-                ImGui::SeparatorText("Sampling");
-                changed |= ImGui::SliderInt("View steps", &p.viewSteps, 48, 128);
-                changed |= ImGui::SliderFloat("Ray jitter", &p.jitterStrength, 0.0f, 1.0f, "%.2f");
-                ImGui::SeparatorText("Wide cloud layer");
-                changed |= ImGui::SliderFloat("Cloud base height", &p.cloudBaseHeight, -2.0f, 10.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Cloud thickness", &p.cloudThickness, 0.5f, 8.0f, "%.2f");
-                changed |= ImGui::SliderFloat("3D noise world size", &p.cloudNoiseWorldSize, 2.0f, 50.0f, "%.1f");
-                changed |= ImGui::SliderFloat("Max march distance", &p.maxMarchDistance, 20.0f, 250.0f, "%.1f");
-                changed |= ImGui::SliderFloat("Weather world size", &p.weatherWorldSize, 20.0f, 300.0f, "%.1f");
-                changed |= ImGui::SliderFloat("Weather coverage", &p.weatherCoverageStrength, 0.0f, 1.5f, "%.2f");
-                changed |= ImGui::SliderFloat("Weather type bias", &p.weatherTypeBias, 0.0f, 1.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Base height variation", &p.heightVariation, 0.0f, 2.0f, "%.2f");
-                changed |= ImGui::SliderFloat("Thickness variation", &p.thicknessVariation, 0.0f, 0.8f, "%.2f");
-                changed |= ImGui::SliderFloat("Horizon fade start", &p.horizonFadeStart, 10.0f, 200.0f, "%.1f");
-                changed |= ImGui::SliderFloat("Horizon fade end", &p.horizonFadeEnd, 20.0f, 250.0f, "%.1f");
-                changed |= ImGui::InputFloat("Weather seed", &p.weatherSeed, 1.0f, 10.0f, "%.0f");
-                ImGui::SeparatorText("Preset");
-                ImGui::InputText("Name", m_presetName, IM_ARRAYSIZE(m_presetName));
-                if (ImGui::Button("Save"))
+                if (BeginParameterCategory("Shape & Noise", 0))
                 {
-                    m_status = SavePreset(m_presetName, p) ? "saved" : "save failed";
+                    changed |= ImGui::SliderFloat("Tile repeat", &p.noiseWorldScale, 1.0f, 4.0f, "%.0f");
+                    p.noiseWorldScale = std::round(p.noiseWorldScale);
+                    changed |= ImGui::SliderInt("Base period", &p.basePeriod, 2, 12);
+                    changed |= ImGui::SliderInt("Base octaves", &p.baseOctaves, 1, 5);
+                    changed |= ImGui::SliderInt("Detail period", &p.detailPeriod, 4, 32);
+                    changed |= ImGui::SliderInt("Detail octaves", &p.detailOctaves, 1, 4);
+                    changed |= ImGui::SliderFloat("Noise cutoff threshold", &p.noiseCutoffThreshold,
+                                                  0.0f, 0.95f, "%.3f");
+                    changed |= ImGui::SliderFloat("Coverage", &p.coverage, 0.05f, 0.95f, "%.3f");
+                    changed |= ImGui::SliderFloat("Base erosion", &p.baseErosion, 0.0f, 0.75f, "%.3f");
+                    changed |= ImGui::SliderFloat("Density", &p.densityMultiplier, 0.0f, 5.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Erosion", &p.erosionStrength, 0.0f, 1.0f, "%.3f");
+                    changed |= ImGui::SliderFloat("Bottom fade", &p.bottomFade, 0.01f, 0.49f, "%.3f");
+                    changed |= ImGui::SliderFloat("Top fade", &p.topFade, 0.01f, 0.49f, "%.3f");
+                    changed |= ImGui::InputFloat("Seed", &p.seed, 1.0f, 10.0f, "%.0f");
                 }
-                ImGui::SameLine();
-                if (ImGui::Button("Load"))
-                {
-                    auto it = m_userPresets.find(m_presetName);
-                    if (it != m_userPresets.end())
-                    {
-                        p = it->second;
-                        changed = presetSelected = true;
-                        m_activePreset = m_presetName;
-                        m_status = "loaded";
-                    }
-                    else m_status = "preset not found";
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Delete"))
-                    m_status = DeletePreset(m_presetName) ? "deleted" : "delete failed";
 
-                if (ImGui::Button("Default")) { p = DefaultCloudParameters(); changed = presetSelected = true; m_activePreset = "Default"; }
-                ImGui::SameLine();
-                if (ImGui::Button("Cumulus")) { p = CumulusCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus"; }
-                ImGui::SameLine();
-                if (ImGui::Button("Stratus")) { p = StratusCloudParameters(); changed = presetSelected = true; m_activePreset = "Stratus"; }
-                ImGui::SameLine();
-                if (ImGui::Button("Showcase")) { p = CumulusShowcaseCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus Showcase"; }
-                ImGui::SameLine();
-                if (ImGui::Button("Wide")) { p = CumulusWideShowcaseCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus Wide"; }
-                if (!m_status.empty()) ImGui::TextUnformatted(m_status.c_str());
+                if (BeginParameterCategory("Animation", 1))
+                {
+                    changed |= ImGui::SliderFloat2("Wind direction", &p.windDirection.x, -1.0f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Wind speed", &p.windSpeed, 0.0f, 0.25f, "%.3f");
+                }
+
+                if (BeginParameterCategory("Lighting", 2))
+                {
+                    changed |= ImGui::SliderFloat("Sun azimuth", &p.sunAzimuth, -180.0f, 180.0f, "%.1f deg");
+                    changed |= ImGui::SliderFloat("Sun elevation", &p.sunElevation, -10.0f, 90.0f, "%.1f deg");
+                    changed |= ImGui::SliderFloat("Sun intensity", &p.sunIntensity, 0.0f, 12.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Ambient", &p.ambientIntensity, 0.0f, 2.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("HG eccentricity", &p.phaseG, -0.9f, 0.9f, "%.2f");
+                    changed |= ImGui::SliderFloat("Light absorption", &p.lightAbsorption, 0.1f, 4.0f, "%.2f");
+                    changed |= ImGui::SliderInt("Light steps", &p.lightSteps, 1, 12);
+                    changed |= ImGui::SliderFloat("Powder", &p.powderStrength, 0.0f, 1.5f, "%.2f");
+                    changed |= ImGui::SliderFloat("Multi scattering", &p.multiScatterStrength, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Silver lining", &p.silverLiningStrength, 0.0f, 2.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Sky exposure", &p.skyExposure, 0.25f, 2.5f, "%.2f");
+                }
+
+                if (BeginParameterCategory("Sampling", 3))
+                {
+                    changed |= ImGui::SliderInt("View steps", &p.viewSteps, 48, 128);
+                    changed |= ImGui::SliderFloat("Ray jitter", &p.jitterStrength, 0.0f, 1.0f, "%.2f");
+                }
+
+                if (BeginParameterCategory("Wide Cloud Layer", 4))
+                {
+                    changed |= ImGui::SliderFloat("Cloud base height", &p.cloudBaseHeight, -2.0f, 10.0f, "%.2f km");
+                    changed |= ImGui::SliderFloat("Cloud thickness", &p.cloudThickness, 3.0f, 16.0f, "%.2f km");
+                    ImGui::TextWrapped("8 km 초과 시 128 view step의 샘플 간격이 넓어지고, "
+                                       "밀도 구간의 light march가 늘어 GPU 시간이 증가할 수 있습니다.");
+                    changed |= ImGui::SliderFloat("3D noise world size", &p.cloudNoiseWorldSize, 2.0f, 50.0f, "%.1f km");
+                    changed |= ImGui::SliderFloat("Max march distance", &p.maxMarchDistance, 20.0f, 250.0f, "%.1f km");
+                    changed |= ImGui::SliderFloat("Weather world size", &p.weatherWorldSize, 20.0f, 300.0f, "%.1f km");
+                    changed |= ImGui::SliderFloat("Weather coverage", &p.weatherCoverageStrength, 0.0f, 1.5f, "%.2f");
+                    changed |= ImGui::SliderFloat("Weather type bias", &p.weatherTypeBias, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Base height variation", &p.heightVariation, 0.0f, 2.0f, "%.2f km");
+                    changed |= ImGui::SliderFloat("Thickness variation", &p.thicknessVariation, 0.0f, 0.8f, "%.2f");
+                    changed |= ImGui::SliderFloat("Horizon fade start", &p.horizonFadeStart, 10.0f, 200.0f, "%.1f km");
+                    changed |= ImGui::SliderFloat("Horizon fade end", &p.horizonFadeEnd, 20.0f, 250.0f, "%.1f km");
+                    changed |= ImGui::InputFloat("Weather seed", &p.weatherSeed, 1.0f, 10.0f, "%.0f");
+                }
+
+                if (BeginParameterCategory("Presets", 5))
+                {
+                    ImGui::InputText("Name", m_presetName, IM_ARRAYSIZE(m_presetName));
+                    if (ImGui::Button("Save"))
+                        m_status = SavePreset(m_presetName, p) ? "saved" : "save failed";
+                    ImGui::SameLine();
+                    if (ImGui::Button("Load"))
+                    {
+                        auto it = m_userPresets.find(m_presetName);
+                        if (it != m_userPresets.end())
+                        {
+                            p = it->second;
+                            changed = presetSelected = true;
+                            m_activePreset = m_presetName;
+                            m_status = "loaded";
+                        }
+                        else m_status = "preset not found";
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Delete"))
+                        m_status = DeletePreset(m_presetName) ? "deleted" : "delete failed";
+
+                    if (ImGui::Button("Default")) { p = DefaultCloudParameters(); changed = presetSelected = true; m_activePreset = "Default"; }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cumulus")) { p = CumulusCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus"; }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Stratus")) { p = StratusCloudParameters(); changed = presetSelected = true; m_activePreset = "Stratus"; }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Showcase")) { p = CumulusShowcaseCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus Showcase"; }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Wide")) { p = CumulusWideShowcaseCloudParameters(); changed = presetSelected = true; m_activePreset = "Cumulus Wide"; }
+                    if (!m_status.empty()) ImGui::TextUnformatted(m_status.c_str());
+                }
                 ImGui::EndTabItem();
             }
 
             if (ImGui::BeginTabItem("Stats"))
             {
-                const ImGuiIO& io = ImGui::GetIO();
-                ImGui::Text("FPS: %.1f", io.Framerate);
-                ImGui::Text("Frame interval: %.3f ms", frameIntervalMs);
-                ImGui::Text("CPU render: %.3f ms", cpuRenderMs);
-                ImGui::Text("GPU cloud: %.3f ms%s", gpuCloudMs,
-                            gpuCloudMs > 33.3f ? " (over 30 FPS budget)" : "");
-                ImGui::Text("GPU total: %.3f ms", gpuTotalMs);
                 ImGui::TextUnformatted("Preview: 256 x 256 x 4 MRT");
                 ImGui::Text("Inspector source: %s", p.useTextureCache ? "3D texture cache" : "procedural HLSL");
                 ImGui::TextUnformatted("Main ray march source: 3D texture cache");
                 ImGui::TextUnformatted("Base cache: 128^3 RGBA8 (8.0 MiB, shape bands)");
                 ImGui::TextUnformatted("Detail cache: 64^3 RGBA8 (1.0 MiB)");
                 ImGui::TextUnformatted("Weather cache: 512^2 RGBA8 (1.0 MiB)");
-                ImGui::Text("Marching: %d view / %d light steps", p.viewSteps, p.lightSteps);
                 ImGui::SeparatorText("Persistent cache");
-                ImGui::Text("Status: %s", cacheStatus.c_str());
                 if (ImGui::Button("Save Noise Cache")) cacheActions.save = true;
                 ImGui::SameLine();
                 if (ImGui::Button("Revert to Saved")) cacheActions.revert = true;

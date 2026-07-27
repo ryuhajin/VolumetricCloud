@@ -6,6 +6,8 @@
 
 광역 장면의 표시 규칙은 `1 world unit = 1 km`, `+Y=고도`, `+Z=북쪽`, `+X=동쪽`이다. 정규화된 `rd`를 사용하므로 ray parameter `t`도 km로 해석한다. 예를 들어 `cloudBaseHeight=2`, `cloudThickness=3.8`, `maxMarchDistance=96`은 각각 2 km 하단, 3.8 km 기준 두께, 96 km 제한이다. 다만 `densityMultiplier`와 `lightAbsorption`은 실제 대기 측정 단위를 복원한 값이 아니라 화면 품질을 위한 예술적 계수다.
 
+F1은 기준 두께를 3~16 km로 조절하지만 지역 두께는 weather A와 `thicknessVariation`의 영향을 받아 이 범위를 넘을 수 있다. view loop 상한은 128로 고정되어 두께가 커져도 sample 수가 자동으로 늘지 않는다. 따라서 두꺼운 층은 sample 간 물리적 거리가 커져 디테일이 줄 수 있고, 밀도가 있는 sample의 light march가 늘면 GPU 시간도 증가할 수 있다. 128 step 부족이 화면에서 확인되기 전에는 성능 비교를 위해 상한을 유지한다.
+
 ## Weather map과 월드 좌표
 
 512² RGBA map은 R=coverage, G=cloud type, B=base-height variation, A=thickness variation이다. XZ 월드 좌표를 `weatherWorldSize`로 나눠 반복 샘플링하고, B/A로 각 지점의 실제 하단과 상단을 만든다. 3D 노이즈는 `worldXZ / cloudNoiseWorldSize`와 지역 높이 비율을 사용하므로 유한 AABB 모서리가 없다.
@@ -50,4 +52,4 @@ final = scattering + sky * viewT
 
 ## 디버그 모드
 
-Base R/G/B/A, Light Visibility, Phase, Ambient, Direct와 Weather Coverage/Type/Base Height/Thickness 모드를 제공한다. Noise Inspector는 3D 단면 네 장과 weather map을 표시한다.
+Base R/G/B/A, Light Visibility, Phase, Ambient, Direct와 Weather Coverage/Type/Base Height/Thickness 모드를 제공한다. Noise Inspector는 3D 단면 네 장과 weather map을 256×256으로 표시하며, F1 가용 폭에 따라 1열/2열로 전환한다.

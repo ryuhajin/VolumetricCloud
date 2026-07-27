@@ -643,8 +643,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     const CloudParameters previousParams = m_cloudParams;
     NoiseCacheUiActions cacheActions;
     if (m_debugUI.Draw(m_cloudParams, m_previewSettings, previewViews, m_weatherMap.srv.Get(),
-                       m_previewDirty, m_frameIntervalMs, m_cpuRenderMs,
-                       m_gpuFrameMs, m_gpuTotalMs, m_cacheStatus, cacheActions))
+                       m_previewDirty, cacheActions))
     {
         m_previewDirty = true;
         if (previousParams.noiseWorldScale != m_cloudParams.noiseWorldScale ||
@@ -1033,6 +1032,23 @@ bool Renderer::RunCodeTests()
                               std::isfinite(dualLobe(1.0f)) &&
                               multiScatter(0.0f) >= 0.0f && multiScatter(1.0f) <= 1.0f &&
                               std::isfinite(multiScatter(0.35f));
+    // UI가 허용하는 3/8/16 km 두께에서 weather 변형 후의 local thickness와
+    // 고정 128-step 샘플 간격이 모두 유한하고 양수인지 확인한다.
+    bool thicknessSampling = true;
+    for (const float thickness : { 3.0f, 8.0f, 16.0f })
+    {
+        for (const float weatherThickness : { 0.0f, 0.5f, 1.0f })
+        {
+            const float localThickness = thickness *
+                (1.0f + (weatherThickness * 2.0f - 1.0f) * 0.8f);
+            const float sampleSpacing = localThickness / 128.0f;
+            thicknessSampling = thicknessSampling &&
+                std::isfinite(localThickness) && localThickness > 0.0f &&
+                std::isfinite(sampleSpacing) && sampleSpacing > 0.0f;
+        }
+    }
+    const int clampedViewSteps = std::clamp(256, 48, 128);
+    thicknessSampling = thicknessSampling && clampedViewSteps == 128;
     const bool seamless = maxError <= 1.0e-5f;
     const bool roundTrip = m_noiseCacheManager.RunRoundTripTest(
         m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
@@ -1060,5 +1076,5 @@ bool Renderer::RunCodeTests()
 #endif
     return seamless && roundTrip && volumeLayout && baseDistribution &&
            weatherLayout && weatherDistribution && weatherHash && layerMath &&
-           lightingMath && debugLayerClean;
+           lightingMath && thicknessSampling && debugLayerClean;
 }

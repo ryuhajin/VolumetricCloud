@@ -48,11 +48,6 @@ public:
               const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
               ID3D11ShaderResourceView* weatherSrv,
               bool previewDirty,
-              float frameIntervalMs,
-              float cpuRenderMs,
-              float gpuCloudMs,
-              float gpuTotalMs,
-              const std::string& cacheStatus,
               NoiseCacheUiActions& cacheActions);
     void DrawTelemetry(const CloudParameters& params, const TelemetrySnapshot& telemetry);
     void EndFrame();

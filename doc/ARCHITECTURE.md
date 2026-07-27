@@ -9,7 +9,7 @@ DirectX 11 풀스크린 픽셀 셰이더에서 넓은 평면 구름층을 레이
 | `Window` / `Camera` | Win32 메시지, 오빗 카메라, 리사이즈. ImGui가 마우스를 캡처하면 카메라 입력 차단 |
 | `Renderer` | D3D11 리소스, 캐시 로드, HLSL 핫 리로드, 3D/weather 생성, 레이마칭, CPU/GPU 계측, UI 합성 |
 | `NoiseCacheManager` | `.cso`, 128³/64³ RGBA8 볼륨, 512² weather map, manifest 검증과 세대형 원자적 저장 |
-| `DebugUI` | F1 편집기, F2 상시 HUD, 단면 검사, 파라미터·라이팅·프리셋·캐시 명령 |
+| `DebugUI` | 크기 조절·접이식 F1 편집기, F2 상시 HUD, 반응형 단면 검사, 파라미터·라이팅·프리셋·캐시 명령 |
 | `CloudNoise.hlsli` | periodic Value/Worley/FBM, 높이 마스크, 공통 밀도 함수 |
 
 ## 시작 및 프레임 순서

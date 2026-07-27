@@ -1,13 +1,13 @@
 # 프로젝트 현황 & 프레임 흐름
 
 > 복귀 시 현재 구현과 한 프레임의 작업을 빠르게 확인하는 문서.
-> Stage 4 / `feature/cache-telemetry-hud` 기준.
+> Stage 4 / `feature/cloud-thickness-debug-ui` 기준.
 
 ## 현재 구현
 
 | 영역 | 상태 |
 |---|---|
-| 레이마칭 | 평면 구름층 교차, 최대 거리, 48~128 view step, weather 4×/2×/1× 진행 |
+| 레이마칭 | 평면 구름층 교차, 3~16 km 기준 두께, 최대 거리, 48~128 view step, weather 4×/2×/1× 진행 |
 | 광역 분포 | 512² RGBA weather map, coverage/type/base-height/thickness |
 | 형태 | periodic Perlin-Worley + Worley base 3밴드 + detail 4옥타브 |
 | 높이 | 하단이 좁고 중단이 부푸는 Cumulus profile |
@@ -58,8 +58,10 @@ ImGui Begin
 - 형태: Final Density, Base Shape, Detail, Height, Base R/G/B/A, Weather R/G/B/A
 - 조명: Transmittance, Light Visibility, Phase, Ambient, Direct
 - 일관성: Procedural/Cache Difference, Seam Difference
-- 프리셋: Default, Cumulus, Stratus, Cumulus Showcase
-- 통계: frame interval, CPU render, GPU cloud/total, view/light step, cache 상태
+- 파라미터: Shape & Noise만 최초에 열리는 6개 접이식 그룹, 상태는 `imgui.ini`에 보존
+- 프리셋: Default, Cumulus, Stratus, Cumulus Showcase, Cumulus Wide
+- 통계: Inspector/메인 source, base/detail/weather 캐시 규격과 캐시 조작
+- 창: 최초 480×560, 최소 360×280, Inspector는 가용 폭 540 px 기준 1/2열 전환
 - 상시 HUD: 프리셋·모드, FPS, 태양 방위/고도, km 구름층, 마칭과 상세 캐시 오류
 
 ## 남은 우선순위
