@@ -91,5 +91,8 @@ Release 1280×720, 3.8km/128 step 결과:
 - `windSpeed`는 world km/s이므로 제안 범위 0.1~2.0은 100~2,000m/s다. 2.0km/s는 프레임 사이 이동과 history rejection이 지나치게 커지므로 UI는 0~200m/s로 표시하고 기본 showcase 값은 100m/s로 조정한다.
 - 이동 중에는 바람 자체가 시간별 sample phase를 제공하므로 별도 4-frame camera jitter를 끈다. 정지 구름에서는 기존 jitter를 유지해 네 subpixel을 누적하고, animation 상태가 바뀔 때 history를 reset한다.
 - Debug/Release 빌드, Release ctest 2/2, flat v7 cache smoke를 통과했다. Debug code test에서 `animatedJitterDisabled`, `temporalJitterAlignment`, `weatherAdvection`, `debugLayerClean`을 포함한 전 항목이 통과했다.
-- 수정 후 사용자가 이동 중 상·하 경계 안정성을 다시 승인해야 한다.
+- 사용자 검증에서 200m/s도 큰 구름 덩어리는 거의 정지처럼 보이고 내부 noise만 빠르게 보였다. 원인은 동일한 월드 이동을 weather 100km, base 14km, detail 1.5km의 서로 다른 반복 크기로 나누기 때문에 200m/s에서 완전 반복 시간이 각각 약 500초, 70초, 7.5초이기 때문이다.
+- speed 상한을 2,000m/s로 확장하고 UI에 weather/base/detail 반복 시간을 표시한다. 300m/s 초과는 물리적 바람이 아니라 빠른 animation·temporal stress test 용도임을 표시한다.
+- UI 변경 후 Debug/Release 빌드와 Release ctest 2/2를 통과했다. HLSL·상수버퍼·캐시 스키마는 바뀌지 않았다.
+- 수정 후 사용자가 원하는 이동 속도와 이동 중 상·하 경계 안정성을 다시 승인해야 한다.
 - scene depth와의 교차는 아직 없으므로 실제 장면 합성 시 별도 depth rejection 확장이 필요하다.

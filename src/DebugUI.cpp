@@ -286,11 +286,27 @@ bool DebugUI::Draw(CloudParameters& p,
                     changed |= ImGui::SliderFloat2("Wind direction", &p.windDirection.x, -1.0f, 1.0f, "%.2f");
                     float windSpeedMeters = p.windSpeed * 1000.0f;
                     if (ImGui::SliderFloat("Wind speed", &windSpeedMeters,
-                                           0.0f, 200.0f, "%.0f m/s"))
+                                           0.0f, 2000.0f, "%.0f m/s"))
                     {
                         p.windSpeed = windSpeedMeters / 1000.0f;
                         changed = true;
                     }
+                    if (p.windSpeed > 1.0e-5f)
+                    {
+                        ImGui::TextDisabled(
+                            "Full repeat: weather %.1fs | base %.1fs | detail %.1fs",
+                            p.weatherWorldSize / p.windSpeed,
+                            p.cloudNoiseWorldSize / p.windSpeed,
+                            p.detailNoiseWorldSize / p.windSpeed);
+                    }
+                    else
+                    {
+                        ImGui::TextDisabled("Full repeat: stopped");
+                    }
+                    if (windSpeedMeters > 300.0f)
+                        ImGui::TextColored(
+                            ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                            "Artistic/stress-test speed; temporal rejection may increase.");
                 }
 
                 if (BeginParameterCategory("Lighting", 2))

@@ -60,7 +60,7 @@ final = scattering + sky * viewT
 
 beauty 모드는 가로·세로 0.5배의 `R11G11B10_FLOAT` color와 `R16_FLOAT` 첫 유효 구름 거리 MRT에서 raymarch한다. 정지 animation에서는 4-frame jitter로 서로 다른 서브픽셀 위치를 평가한 뒤 full-resolution history color/depth 두 세트를 ping-pong한다. resolve는 jitter NDC를 UV 오프셋으로 역변환해 현재 color/depth를 unjittered 출력 위치에 정렬하므로 toggle이나 history reset 뒤에도 화면 전체가 서브픽셀만큼 흔들리지 않는다.
 
-animation 중에는 weather/base/detail의 월드 이동 자체가 시간별 sample phase를 제공하므로 별도 camera jitter를 0으로 둔다. 두 시간 변화를 동시에 적용해 얇은 상·하 경계가 흔들리는 현상을 피한다. `windSpeed`의 내부 단위는 km/s지만 UI는 m/s로 표시하며 기본값은 100m/s, 편집 범위는 0~200m/s다.
+animation 중에는 weather/base/detail의 월드 이동 자체가 시간별 sample phase를 제공하므로 별도 camera jitter를 0으로 둔다. 두 시간 변화를 동시에 적용해 얇은 상·하 경계가 흔들리는 현상을 피한다. `windSpeed`의 내부 단위는 km/s지만 UI는 m/s로 표시하며 기본값은 100m/s, 편집 범위는 0~2,000m/s다. UI는 `worldSize / windSpeed`로 계산한 weather/base/detail 완전 반복 시간을 함께 표시하며, 300m/s 초과는 물리적 바람보다 animation·temporal stress test 용도다.
 
 현재 첫 구름 위치를 world position으로 복원하고 바람 이동을 더해 이전 view-projection에 투영한다. 이전 UV가 화면 밖이거나 깊이 차이가 `max(0.1km, 5%)`를 넘으면 history를 거부한다. 유효 history는 현재 반해상도 3×3 색 범위로 clamp하고 0.85 가중치로 혼합한다. resize, temporal/reference 전환, 렌더 모드·프리셋·밀도 변경, 1km를 넘는 카메라 이동은 history를 초기화한다.
 
