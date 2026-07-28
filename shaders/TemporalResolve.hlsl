@@ -50,10 +50,13 @@ ResolveOutput main(VSOut input)
     uint halfWidth, halfHeight;
     currentColor.GetDimensions(halfWidth, halfHeight);
     int2 halfSize = int2(halfWidth, halfHeight);
-    int2 halfPixel = clamp(int2(input.uv * halfSize), int2(0, 0), halfSize - 1);
+    // Raymarch jitter를 UV로 역변환해 현재 sample을 unjittered 출력 위치에 맞춘다.
+    float2 jitterUv = float2(rayJitterNdc.x * 0.5, -rayJitterNdc.y * 0.5);
+    float2 currentUv = saturate(input.uv - jitterUv);
+    int2 halfPixel = clamp(int2(currentUv * halfSize), int2(0, 0), halfSize - 1);
     float2 halfUv = (float2(halfPixel) + 0.5) / float2(halfSize);
 
-    float3 current = currentColor.SampleLevel(linearClampSampler, input.uv, 0);
+    float3 current = currentColor.SampleLevel(linearClampSampler, currentUv, 0);
     float depth = currentDepth.Load(int3(halfPixel, 0));
     float3 neighborhoodMin = float3(65504.0, 65504.0, 65504.0);
     float3 neighborhoodMax = 0.0;

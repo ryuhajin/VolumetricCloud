@@ -89,7 +89,7 @@ float LightTransmittance(float3 p, float3 sunDir)
         if (j >= nearSteps) break;
         float lightDistance = (j + 0.5) * nearStepLength;
         float3 lightPosition = lightOrigin + sunDir * lightDistance;
-        float4 weather = SampleWeather(lightPosition.xz);
+        float4 weather = SampleWeather(lightPosition.xz, time);
         float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
             densityMultiplier;
         opticalDepth += lightDensity * nearStepLength * lightAbsorption;
@@ -105,7 +105,7 @@ float LightTransmittance(float3 p, float3 sunDir)
         if (farJ >= farSteps || farDistance <= 0.0) break;
         float lightDistance = nearDistance + (farJ + 0.5) * farStepLength;
         float3 lightPosition = lightOrigin + sunDir * lightDistance;
-        float4 weather = SampleWeather(lightPosition.xz);
+        float4 weather = SampleWeather(lightPosition.xz, time);
         float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
             densityMultiplier;
         opticalDepth += lightDensity * farStepLength * lightAbsorption;
@@ -189,7 +189,7 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     {
         if (rayDistance >= t1) break;
         float3 p = ro + rd * rayDistance;
-        float4 weather = SampleWeather(p.xz);
+        float4 weather = SampleWeather(p.xz, time);
         float4 components = EvaluateLayerCloudComponents(p, weather, time);
         float distanceFade = 1.0 - smoothstep(
             min(horizonFadeStart, horizonFadeEnd - 0.01),
@@ -208,7 +208,7 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
                 if (refine >= refineSteps) break;
                 float refineDistance = (refineEmpty + refineDense) * 0.5;
                 float3 refinePosition = ro + rd * refineDistance;
-                float4 refineWeather = SampleWeather(refinePosition.xz);
+                float4 refineWeather = SampleWeather(refinePosition.xz, time);
                 float refineDensity = EvaluateLayerCloudComponents(
                     refinePosition, refineWeather, time).w * densityMultiplier;
                 if (refineDensity > 0.0001) refineDense = refineDistance;
@@ -216,7 +216,7 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
             }
             rayDistance = refineDense;
             p = ro + rd * rayDistance;
-            weather = SampleWeather(p.xz);
+            weather = SampleWeather(p.xz, time);
             components = EvaluateLayerCloudComponents(p, weather, time);
             distanceFade = 1.0 - smoothstep(
                 min(horizonFadeStart, horizonFadeEnd - 0.01),
@@ -274,8 +274,8 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     }
 
     float3 debugMidPosition = ro + rd * ((t0 + t1) * 0.5);
-    float4 debugMidWeather = SampleWeather(debugMidPosition.xz);
-    float3 debugMidUVW = WorldToLayerUVW(debugMidPosition, debugMidWeather);
+    float4 debugMidWeather = SampleWeather(debugMidPosition.xz, time);
+    float3 debugMidUVW = WorldToLayerUVW(debugMidPosition, debugMidWeather, time);
 
     if (renderMode == 1) return float4(debugMax.www, 1.0);
     if (renderMode == 2) return float4(debugMax.xxx, 1.0);

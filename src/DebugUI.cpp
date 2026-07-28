@@ -216,12 +216,17 @@ bool DebugUI::Draw(CloudParameters& p,
                 ImGui::TextUnformatted(
                     p.renderMode == 0 && temporalEnabled
                         ? "Beauty path: 0.5x raymarch + temporal resolve"
-                        : "Render path: full-resolution reference");
+                        : (p.renderMode == 0
+                            ? "Reference 1.0x: diagnostic path (expected slower)"
+                            : "Debug mode: full-resolution reference"));
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Reference is an A/B correctness path and has no GPU cost while Temporal is enabled.");
                 bool useCache = p.useTextureCache != 0;
                 if (ImGui::Checkbox("Inspector uses 3D cache", &useCache)) { p.useTextureCache = useCache ? 1 : 0; changed = true; }
                 bool showBounds = p.showBounds != 0;
                 if (ImGui::Checkbox("Show layer bounds", &showBounds)) { p.showBounds = showBounds ? 1 : 0; changed = true; }
-                changed |= ImGui::Checkbox("Freeze animation", &preview.freeze);
+                changed |= ImGui::Checkbox("Freeze cloud animation", &preview.freeze);
                 if (preview.freeze)
                     changed |= ImGui::SliderFloat("Preview time", &preview.previewTime, 0.0f, 120.0f, "%.2f s");
                 if (ImGui::Button("Reset defaults"))

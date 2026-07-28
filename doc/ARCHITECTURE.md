@@ -10,7 +10,7 @@ DirectX 11 풀스크린 픽셀 셰이더에서 넓은 평면 구름층을 레이
 | `Renderer` | D3D11 리소스, 캐시 로드, HLSL 핫 리로드, 3D/weather 생성, half-resolution 레이마칭, temporal reconstruction, CPU/GPU 계측, UI 합성 |
 | `NoiseCacheManager` | `.cso`, 128³/128³ RGBA8 볼륨, 512² weather map, manifest 검증과 세대형 원자적 저장 |
 | `DebugUI` | 크기 조절·접이식 F1 편집기, F2 상시 HUD, 반응형 단면 검사, 파라미터·라이팅·프리셋·캐시 명령 |
-| `CloudNoise.hlsli` | periodic Value/Worley/FBM, 높이 마스크, 공통 밀도 함수 |
+| `CloudNoise.hlsli` | periodic Value/Worley/FBM, weather/base/detail 공통 바람 좌표, 높이 마스크, 공통 밀도 함수 |
 
 ## 시작 및 프레임 순서
 

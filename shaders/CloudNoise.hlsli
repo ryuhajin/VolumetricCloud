@@ -287,12 +287,20 @@ float4 GenerateWeatherMap(float2 uv)
     return saturate(float4(weatherCoverage, type, baseHeight, thickness));
 }
 
-float4 SampleWeather(float2 worldXZ)
+float2 WindOffsetWorld(float sampleTime)
+{
+    float2 direction = normalize(windDirection + 0.0001);
+    return direction * (sampleTime * windSpeed);
+}
+
+float4 SampleWeather(float2 worldXZ, float sampleTime)
 {
     float size = max(weatherWorldSize, 1.0);
     // Showcase 원점이 충분한 coverage 영역에 오도록 결정적 월드 오프셋을 둔다.
     return weatherMapTexture.SampleLevel(
-        noiseVolumeSampler, frac(worldXZ / size + float2(0.3125, 0.171875)), 0);
+        noiseVolumeSampler,
+        frac((worldXZ + WindOffsetWorld(sampleTime)) / size + float2(0.3125, 0.171875)),
+        0);
 }
 
 void LocalCloudLayerBounds(float4 weather, out float localBase, out float localTop)
@@ -314,12 +322,6 @@ float WeatherCoverage(float4 weather)
 float WeatherPotential(float4 weather)
 {
     return smoothstep(0.28, 0.48, WeatherCoverage(weather));
-}
-
-float2 WindOffsetWorld(float sampleTime)
-{
-    float2 direction = normalize(windDirection + 0.0001);
-    return direction * (sampleTime * windSpeed);
 }
 
 float3 WorldToBaseUVW(float3 worldPosition, float4 weather, float sampleTime)
@@ -346,9 +348,9 @@ float3 WorldToDetailUVW(float3 worldPosition, float4 weather, float sampleTime)
                        animatedXZ.y / horizontalSize));
 }
 
-float3 WorldToLayerUVW(float3 worldPosition, float4 weather)
+float3 WorldToLayerUVW(float3 worldPosition, float4 weather, float sampleTime)
 {
-    return WorldToBaseUVW(worldPosition, weather, 0.0);
+    return WorldToBaseUVW(worldPosition, weather, sampleTime);
 }
 
 float LayerHeightGradient(float height01, float cloudType)

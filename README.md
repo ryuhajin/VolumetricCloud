@@ -6,6 +6,7 @@ DirectX 11 + HLSL로 광역 weather map, periodic 3D noise, 가변 레이마칭�
 
 - 평면 구름층 교차와 최대 거리 제한, 50m 물리 상한·경계 정제를 갖는 최대 2000회 가변 ray marching
 - 512² RGBA weather map: coverage, cloud type, base-height, thickness
+- weather/base/detail에 공통 적용되는 월드 공간 바람 animation
 - 심리스 periodic Value/Worley/FBM 및 Perlin–Worley 밀도장
 - 128³ base/detail RGBA8 Texture3D와 독립 월드 공간 XYZ 크기
 - 128³ base RGBA 형태 밴드와 128³ detail RGBA 침식 옥타브

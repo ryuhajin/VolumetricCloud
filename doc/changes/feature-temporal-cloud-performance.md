@@ -81,5 +81,11 @@ Release 1280×720, 3.8km/128 step 결과:
 
 ## 9. 남은 문제와 후속 개선
 
-- 사용자가 카메라 회전·줌·reference 비교로 ghosting, shimmer와 경계 깨짐을 승인해야 한다.
+- 2026-07-28 사용자 검증에서 시작 직후와 1~2분 뒤 모두 60 FPS가 유지됐다. reference 전환 시 25~30 FPS, frame 35~40ms로 하락해 자동 진단과 같은 성능 차이를 확인했다.
+- 같은 검증에서 reference를 끈 뒤 temporal을 다시 켜면 구름 상·하 경계가 떨렸고, `Freeze animation`을 꺼도 구름 전체 이동이 보이지 않았다.
+- 떨림 원인은 jittered half-resolution sample을 full-resolution의 같은 UV에 놓아 현재 프레임이 매번 서브픽셀만큼 이동한 채 history와 섞이는 좌표 불일치로 판단했다. resolve에서 jitter를 UV로 역변환해 현재 color/depth와 3×3 범위를 unjittered 출력 위치에 맞춘다.
+- 정지처럼 보인 원인은 base/detail 3D noise만 바람으로 이동하고 구름의 큰 실루엣을 정하는 weather map은 월드에 고정돼 있었기 때문이다. weather와 3D noise에 같은 월드 바람 오프셋을 적용해 분포 전체가 함께 이동하도록 한다.
+- full-resolution은 활성 temporal 경로의 프레임 비용을 증가시키지 않으며, temporal 오류 비교와 debug 채널의 원본 관찰에 필요하므로 진단용으로 유지한다.
+- 수정 후 Debug/Release 빌드와 Release ctest 2/2를 통과했다. Debug code test의 `temporalJitterAlignment`, `weatherAdvection`, `debugLayerClean`을 포함한 전 항목이 통과했고, 갱신한 flat v7 bundle의 cache smoke도 통과했다.
+- 수정 후 사용자가 toggle 직후 경계 안정성과 cloud animation을 다시 승인해야 한다.
 - scene depth와의 교차는 아직 없으므로 실제 장면 합성 시 별도 depth rejection 확장이 필요하다.

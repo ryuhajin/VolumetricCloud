@@ -1422,6 +1422,35 @@ bool Renderer::RunCodeTests()
         historyAccepted(10.2f, 10.0f) &&
         !historyAccepted(10.6f, 10.0f) &&
         historyAccepted(0.05f, 0.1f);
+    bool temporalJitterAlignment = true;
+    const XMFLOAT2 testOutputUv = { 0.37f, 0.61f };
+    for (const XMFLOAT2& jitterPixel : {
+            XMFLOAT2{ -0.25f, -0.25f }, XMFLOAT2{ 0.25f, -0.25f },
+            XMFLOAT2{ -0.25f, 0.25f }, XMFLOAT2{ 0.25f, 0.25f } })
+    {
+        const float jitterNdcX = 2.0f * jitterPixel.x /
+            static_cast<float>((std::max)(1, (m_width + 1) / 2));
+        const float jitterNdcY = -2.0f * jitterPixel.y /
+            static_cast<float>((std::max)(1, (m_height + 1) / 2));
+        const float currentUvX = testOutputUv.x - jitterNdcX * 0.5f;
+        const float currentUvY = testOutputUv.y + jitterNdcY * 0.5f;
+        const float recoveredNdcX = currentUvX * 2.0f - 1.0f + jitterNdcX;
+        const float recoveredNdcY = 1.0f - currentUvY * 2.0f + jitterNdcY;
+        const float expectedNdcX = testOutputUv.x * 2.0f - 1.0f;
+        const float expectedNdcY = 1.0f - testOutputUv.y * 2.0f;
+        temporalJitterAlignment &=
+            std::abs(recoveredNdcX - expectedNdcX) < 1.0e-6f &&
+            std::abs(recoveredNdcY - expectedNdcY) < 1.0e-6f;
+    }
+    const float windLengthForTest = std::sqrt(
+        m_cloudParams.windDirection.x * m_cloudParams.windDirection.x +
+        m_cloudParams.windDirection.y * m_cloudParams.windDirection.y);
+    const float tenSecondWindDistance = windLengthForTest > 1.0e-5f
+        ? 10.0f * m_cloudParams.windSpeed : 0.0f;
+    const bool weatherAdvection =
+        m_cloudParams.windSpeed <= 0.0f ||
+        (windLengthForTest > 1.0e-5f && tenSecondWindDistance > 0.0f &&
+         std::isfinite(tenSecondWindDistance));
     bool hierarchicalEarlyOut = true;
     for (const float potential : { 0.0f, 0.0005f, 0.5f, 1.0f })
     for (const float baseShape : { 0.0f, 0.00005f, 0.25f, 1.0f })
@@ -1542,6 +1571,7 @@ bool Renderer::RunCodeTests()
            weatherLayout && weatherDistribution && weatherHash && layerMath &&
            lightingMath && worldSpaceCoordinates && detailNyquist && cumulusBounds &&
            adaptiveMarching && lightSegments && temporalLayout && temporalRejection &&
+           temporalJitterAlignment && weatherAdvection &&
            hierarchicalEarlyOut && recreatedTemporalResources && historyReset &&
            sizeof(CloudParameters) == 224 &&
            presetRoundTrip && thicknessSampling && debugLayerClean;
@@ -1564,6 +1594,8 @@ bool Renderer::RunCodeTests()
     REPORT_CHECK(lightSegments);
     REPORT_CHECK(temporalLayout);
     REPORT_CHECK(temporalRejection);
+    REPORT_CHECK(temporalJitterAlignment);
+    REPORT_CHECK(weatherAdvection);
     REPORT_CHECK(hierarchicalEarlyOut);
     REPORT_CHECK(recreatedTemporalResources);
     REPORT_CHECK(historyReset);

@@ -8,7 +8,7 @@
 | 영역 | 상태 |
 |---|---|
 | 레이마칭 | 평면 구름층 교차, 3~16 km 기준 두께, 50m fine step 상한, 최대 2000회, weather 4×/2×/1× 진행과 경계 이분 탐색 |
-| 광역 분포 | 512² RGBA weather map, coverage/type/base-height/thickness |
+| 광역 분포 | 512² RGBA weather map, coverage/type/base-height/thickness, base/detail과 동일한 월드 바람 이동 |
 | 형태 | 독립 월드 공간 periodic Perlin-Worley + Worley base 3밴드 + 128³ detail 4옥타브 |
 | 높이 | 하단이 좁고 중단이 부푸는 Cumulus profile, weather type 성장과 anvil |
 | 조명 | 8-step 0.6km 근거리 + 4-step 원거리 self-shadow, 정규화 dual-lobe phase, powder, silver lining |
