@@ -15,12 +15,13 @@ namespace
 {
 constexpr uint32_t kManifestMagic = 0x48434356; // VCCH
 constexpr uint32_t kVolumeMagic = 0x4E434356;   // VCCN
-constexpr uint32_t kCacheVersion = 6; // v6: 128^3 detail과 224바이트 월드 공간 파라미터
+constexpr uint32_t kCacheVersion = 7; // v7: temporal resolve/composite shader bundle
 constexpr DXGI_FORMAT kBaseVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDetailVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kWeatherFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr const char* kShaderNames[] = {
-    "main_vs.cso", "main_ps.cso", "preview_vs.cso", "preview_ps.cso",
+    "main_vs.cso", "main_ps.cso", "temporal_ps.cso", "composite_ps.cso",
+    "preview_vs.cso", "preview_ps.cso",
     "noise_cs_base.cso", "noise_cs_detail.cso", "noise_cs_weather.cso"
 };
 

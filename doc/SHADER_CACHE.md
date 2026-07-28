@@ -21,9 +21,9 @@ HLSL(`.hlsl`)은 **사람이 읽는 소스 코드**다. GPU는 이걸 바로 실
 | | 런타임 컴파일 | 미리 컴파일된 `.cso` 로드 |
 |---|---|---|
 | 시점 | 첫 실행 / 소스 변경 시 | 두 번째 실행 이후(캐시 히트) |
-| 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 7개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
+| 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 9개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
 | 노이즈 리소스 | 컴퓨트 셰이더로 128³+128³+512² 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
-| 비용 성격 | 컴파일 7회 + compute dispatch 3회 | 컴파일·dispatch 0회 |
+| 비용 성격 | 컴파일 9회 + compute dispatch 3회 | 컴파일·dispatch 0회 |
 
 **미리 컴파일의 이점 정리**
 - **시작 지연 제거**: 매 실행마다 컴파일러(`d3dcompiler`)를 돌리는 비용을 없앤다.
@@ -89,7 +89,7 @@ D3DCompileFromFile(path, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
 ```
 - 엔트리/타겟: `main`(vs_5_0/ps_5_0), `VSMain`/`PSMain`(프리뷰), `CSMain`(cs_5_0).
 - `_DEBUG` 빌드는 `D3DCOMPILE_DEBUG | SKIP_OPTIMIZATION`, 릴리스는 최적화.
-- 컴파일하는 셰이더 7개: `main_vs`, `main_ps`, `preview_vs`, `preview_ps`, `noise_cs_base`, `noise_cs_detail`, `noise_cs_weather`
+- 컴파일하는 셰이더 9개: `main_vs`, `main_ps`, `temporal_ps`, `composite_ps`, `preview_vs`, `preview_ps`, `noise_cs_base`, `noise_cs_detail`, `noise_cs_weather`
   (`Renderer::CreateShaders`, 205-227행).
 
 ### 핫리로드 (`Renderer::CheckShaderHotReload`, 287-313행)
@@ -118,7 +118,9 @@ bundle/
   ├ manifest.bin       ← 매직/버전/해시/파라미터 (유효성 판정)
   ├ main_vs.cso         ┐
   ├ main_ps.cso         │
-  ├ preview_vs.cso      ├ 셰이더 바이트코드 7개
+  ├ temporal_ps.cso     │
+  ├ composite_ps.cso    │
+  ├ preview_vs.cso      ├ 셰이더 바이트코드 9개
   ├ preview_ps.cso      │
   ├ noise_cs_base.cso   │  (base/detail 컴퓨트 분리)
   ├ noise_cs_detail.cso │
@@ -157,10 +159,10 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 `SaveBundle`은 활성 디렉터리를 직접 rename하지 않는다.
 
 ```text
-bundle-v6-<generation>.tmp
+bundle-v7-<generation>.tmp
   → 파일 flush
   → manifest/셰이더/볼륨을 실제 D3D 리소스로 재로드 검증
-  → bundle-v6-<generation> 게시
+  → bundle-v7-<generation> 게시
   → active-bundle.tmp 기록
   → active-bundle.txt만 원자적 교체
 ```
@@ -212,7 +214,7 @@ target_link_libraries(VolumetricCloud PRIVATE DirectXTex)
 
 | | 캐시 히트 | 캐시 미스 (첫 실행/소스 변경) |
 |---|---|---|
-| HLSL 컴파일 | 0회 | 7회 (`D3DCompileFromFile`) |
+| HLSL 컴파일 | 0회 | 9회 (`D3DCompileFromFile`) |
 | 노이즈 굽기 | 0회 (파일 로드) | 컴퓨트 디스패치 3회 (128³+128³+512²) |
 
 ---
@@ -279,7 +281,7 @@ v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주�
   - `ParameterHash`는 애초에 "시각"이 아니라 *어떤 값으로 구웠나*의 서명이라 타임스탬프로 표현 불가.
 
   내용 해시는 **실제 내용 변화만** 잡고, 결정적이며 기계 간 이식 가능하다. 대신 검사 때
-  파일을 읽어 해싱하는 비용이 있지만(셰이더 7개) 무시할 수준이다.
+  파일을 읽어 해싱하는 비용이 있지만(셰이더 9개) 무시할 수준이다.
 
 → 요약: **세션 내 즉각 감지 = 타임스탬프, 영구·이식 캐시 검증 = 해시.** 각자 맞는 자리에 쓰인다.
 

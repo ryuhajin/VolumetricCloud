@@ -10,6 +10,8 @@ F1은 기준 두께를 3~16 km로, view step을 48~256으로 조절한다. 지�
 
 ## Weather map과 월드 좌표
 
+밀도 평가는 비용이 싼 weather potential부터 검사한다. potential이 정확히 0이면 base/detail 3D 텍스처를 모두 건너뛴다. base shape·높이·anvil을 합친 macro density가 양수가 될 수 없으면 detail도 건너뛴다. detail은 밀도를 추가하지 않고 침식만 하므로 이 계층형 early-out은 view, light, 경계 정제 경로의 최종 밀도를 보존한다.
+
 512² RGBA map은 R=coverage, G=cloud type, B=base-height variation, A=thickness variation이다. XZ 월드 좌표를 `weatherWorldSize`로 나눠 반복 샘플링하고, B/A로 각 지점의 실제 하단과 기준 두께를 만든다. G가 적운형일수록 `cumulusGrowth`가 실제 상단을 높이고 `anvilStrength`가 상부 형태를 넓힌다.
 
 Base와 detail은 같은 UVW를 공유하지 않는다. Base XZ는 `cloudNoiseWorldSize`, Y는 `baseNoiseVerticalSize`, detail XZ는 `detailNoiseWorldSize`, Y는 `detailNoiseVerticalSize`로 나눈다. Y 좌표는 local base에서의 물리적 km 오프셋을 사용하고 `height01`은 envelope에만 쓰므로 cloud thickness를 바꿔도 노이즈 특징 크기가 늘어나지 않는다. 바람도 월드 km 오프셋을 먼저 계산한 뒤 각 크기로 변환한다.
@@ -52,7 +54,15 @@ viewT *= stepT
 final = scattering + sky * viewT
 ```
 
-3-octave 항은 정확한 다중 산란 적분이 아니라 짙은 그림자가 완전히 죽는 것을 막는 저비용 근사다. temporal reprojection과 반해상도 렌더링은 아직 적용하지 않는다.
+3-octave 항은 정확한 다중 산란 적분이 아니라 짙은 그림자가 완전히 죽는 것을 막는 저비용 근사다.
+
+## 반해상도 raymarch와 temporal reconstruction
+
+beauty 모드는 가로·세로 0.5배의 `R11G11B10_FLOAT` color와 `R16_FLOAT` 첫 유효 구름 거리 MRT에서 raymarch한다. 4-frame jitter로 서로 다른 서브픽셀 위치를 평가한 뒤 full-resolution history color/depth 두 세트를 ping-pong한다.
+
+현재 첫 구름 위치를 world position으로 복원하고 바람 이동을 더해 이전 view-projection에 투영한다. 이전 UV가 화면 밖이거나 깊이 차이가 `max(0.1km, 5%)`를 넘으면 history를 거부한다. 유효 history는 현재 반해상도 3×3 색 범위로 clamp하고 0.85 가중치로 혼합한다. resize, temporal/reference 전환, 렌더 모드·프리셋·밀도 변경, 1km를 넘는 카메라 이동은 history를 초기화한다.
+
+F1의 debug render mode와 reference 선택은 원본 채널을 정확히 관찰하도록 full-resolution 직접 경로를 사용한다.
 
 ## 디버그 모드
 

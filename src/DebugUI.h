@@ -25,7 +25,9 @@ struct TelemetrySnapshot
     float frameIntervalMs = 0.0f;
     float cpuRenderMs = 0.0f;
     float gpuCloudMs = 0.0f;
+    float gpuReconstructionMs = 0.0f;
     float gpuTotalMs = 0.0f;
+    bool temporalActive = false;
     std::string cacheStatus;
 };
 
@@ -49,6 +51,7 @@ public:
               const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
               ID3D11ShaderResourceView* weatherSrv,
               bool previewDirty,
+              bool& temporalEnabled,
               NoiseCacheUiActions& cacheActions);
     void DrawTelemetry(const CloudParameters& params, const TelemetrySnapshot& telemetry);
     void EndFrame();

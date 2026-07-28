@@ -19,6 +19,8 @@ enum class CachedShader : size_t
 {
     MainVS = 0,
     MainPS,
+    TemporalPS,
+    CompositePS,
     PreviewVS,
     PreviewPS,
     NoiseCSBase,   // RGBA8 base 채널 굽기 컴퓨트

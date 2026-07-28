@@ -17,10 +17,8 @@ cbuffer cbCamera : register(b0)
     float4x4 invViewProj;  // 역 뷰-투영 행렬 (C++에서 transpose 후 업로드)
     float3   cameraPos;    // 카메라 월드 위치 = 레이 원점
     float    time;         // 경과 시간 (현재 미사용, 추후 애니메이션용)
-    float3   volumeCenter; // 박스 볼륨 중심
-    float    densityScale; // 밀도 (클수록 불투명)
-    float3   volumeHalfSize; // 박스 볼륨 절반 크기
-    float    _pad;         // 16바이트 정렬용 패딩
+    float2   rayJitterNdc;
+    float2   renderSize;
 };
 
 struct VSOut
@@ -93,7 +91,7 @@ float LightTransmittance(float3 p, float3 sunDir)
         float3 lightPosition = lightOrigin + sunDir * lightDistance;
         float4 weather = SampleWeather(lightPosition.xz);
         float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
-            densityMultiplier * densityScale;
+            densityMultiplier;
         opticalDepth += lightDensity * nearStepLength * lightAbsorption;
         if (opticalDepth > 4.60517) return 0.01;
     }
@@ -109,7 +107,7 @@ float LightTransmittance(float3 p, float3 sunDir)
         float3 lightPosition = lightOrigin + sunDir * lightDistance;
         float4 weather = SampleWeather(lightPosition.xz);
         float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
-            densityMultiplier * densityScale;
+            densityMultiplier;
         opticalDepth += lightDensity * farStepLength * lightAbsorption;
         if (opticalDepth > 4.60517) return 0.01;
     }
@@ -136,11 +134,12 @@ float MultiScatterVisibility(float visibility)
     return energy / 0.875;
 }
 
-float4 main(VSOut input) : SV_TARGET
+float4 RenderCloud(VSOut input, out float firstCloudDistance)
 {
+    firstCloudDistance = 0.0;
     // ---- 1) 픽셀 -> NDC -> 월드 레이 ----
     // uv(0,0)=좌상단 이므로 y를 뒤집어 NDC로 변환 (NDC 우하단 (1,-1), UV 우하단 (1,1))
-    float2 ndc = float2(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0);
+    float2 ndc = float2(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0) + rayJitterNdc;
 
     // 근/원 평면 점을 역투영해서 레이 방향을 만든다.
     // (C++에서 transpose 했으므로 mul(vector, matrix) 사용)
@@ -195,7 +194,7 @@ float4 main(VSOut input) : SV_TARGET
         float distanceFade = 1.0 - smoothstep(
             min(horizonFadeStart, horizonFadeEnd - 0.01),
             max(horizonFadeEnd, horizonFadeStart + 0.01), rayDistance);
-        float density = components.w * densityMultiplier * densityScale * distanceFade;
+        float density = components.w * densityMultiplier * distanceFade;
 
         if (density > 0.0001 && previousDensity <= 0.0001 &&
             rayDistance > previousRayDistance + 1e-5)
@@ -211,7 +210,7 @@ float4 main(VSOut input) : SV_TARGET
                 float3 refinePosition = ro + rd * refineDistance;
                 float4 refineWeather = SampleWeather(refinePosition.xz);
                 float refineDensity = EvaluateLayerCloudComponents(
-                    refinePosition, refineWeather, time).w * densityMultiplier * densityScale;
+                    refinePosition, refineWeather, time).w * densityMultiplier;
                 if (refineDensity > 0.0001) refineDense = refineDistance;
                 else refineEmpty = refineDistance;
             }
@@ -222,7 +221,7 @@ float4 main(VSOut input) : SV_TARGET
             distanceFade = 1.0 - smoothstep(
                 min(horizonFadeStart, horizonFadeEnd - 0.01),
                 max(horizonFadeEnd, horizonFadeStart + 0.01), rayDistance);
-            density = components.w * densityMultiplier * densityScale * distanceFade;
+            density = components.w * densityMultiplier * distanceFade;
         }
 
         debugMax = max(debugMax, components);
@@ -240,6 +239,8 @@ float4 main(VSOut input) : SV_TARGET
         float stepOpacity = 1.0 - stepTransmittance;
         if (density > 0.0001)
         {
+            if (!foundDensity)
+                firstCloudDistance = rayDistance;
             foundDensity = true;
             if ((denseSampleIndex & 1) == 0)
                 cachedLightVisibility = LightTransmittance(p, sunDir);
@@ -319,4 +320,17 @@ float4 main(VSOut input) : SV_TARGET
     // ---- 5) 남은 배경 투과율과 산란광 합성 ----
     float3 color = (scattering + sky * transmittance) * max(skyExposure, 0.0);
     return float4(ToneMap(color), 1.0);
+}
+
+struct CloudOutput
+{
+    float4 color : SV_TARGET0;
+    float depth : SV_TARGET1;
+};
+
+CloudOutput main(VSOut input)
+{
+    CloudOutput output;
+    output.color = RenderCloud(input, output.depth);
+    return output;
 }

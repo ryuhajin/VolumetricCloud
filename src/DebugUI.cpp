@@ -182,6 +182,7 @@ bool DebugUI::Draw(CloudParameters& p,
                    const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
                    ID3D11ShaderResourceView* weatherSrv,
                    bool previewDirty,
+                   bool& temporalEnabled,
                    NoiseCacheUiActions& cacheActions)
 {
     if (!m_initialized || !m_visible) return false;
@@ -210,6 +211,12 @@ bool DebugUI::Draw(CloudParameters& p,
                     "Weather Base Height", "Weather Thickness"
                 };
                 changed |= ImGui::Combo("Render mode", &p.renderMode, modes, IM_ARRAYSIZE(modes));
+                if (ImGui::Checkbox("Temporal half-resolution", &temporalEnabled))
+                    changed = true;
+                ImGui::TextUnformatted(
+                    p.renderMode == 0 && temporalEnabled
+                        ? "Beauty path: 0.5x raymarch + temporal resolve"
+                        : "Render path: full-resolution reference");
                 bool useCache = p.useTextureCache != 0;
                 if (ImGui::Checkbox("Inspector uses 3D cache", &useCache)) { p.useTextureCache = useCache ? 1 : 0; changed = true; }
                 bool showBounds = p.showBounds != 0;
@@ -424,8 +431,8 @@ void DebugUI::DrawTelemetry(const CloudParameters& p, const TelemetrySnapshot& t
     lines[0] = text;
     std::snprintf(text, sizeof(text), "FPS %.0f | Frame %.1f ms", io.Framerate, t.frameIntervalMs);
     lines[1] = text;
-    std::snprintf(text, sizeof(text), "CPU %.2f ms | GPU %.2f ms (cloud %.2f)",
-                  t.cpuRenderMs, t.gpuTotalMs, t.gpuCloudMs);
+    std::snprintf(text, sizeof(text), "CPU %.2f | GPU %.2f (ray %.2f + resolve %.2f)",
+                  t.cpuRenderMs, t.gpuTotalMs, t.gpuCloudMs, t.gpuReconstructionMs);
     lines[2] = text;
     std::snprintf(text, sizeof(text), "Sun %s | Az %03.0f deg | El %.0f deg",
                   directions[directionIndex], compassAzimuth, p.sunElevation);
@@ -433,8 +440,9 @@ void DebugUI::DrawTelemetry(const CloudParameters& p, const TelemetrySnapshot& t
     std::snprintf(text, sizeof(text), "Cloud %.1f-%.1f km | Coverage %.2f",
                   layerBottom, layerTop, p.coverage);
     lines[4] = text;
-    std::snprintf(text, sizeof(text), "March V%d L%d+%d | Max %.0f km",
-                  p.viewSteps, p.lightSteps, p.farLightSteps, p.maxMarchDistance);
+    std::snprintf(text, sizeof(text), "%s | March V%d L%d+%d",
+                  t.temporalActive ? "Temporal 0.5x" : "Reference 1.0x",
+                  p.viewSteps, p.lightSteps, p.farLightSteps);
     lines[5] = text;
     lines[6] = "Cache " + t.cacheStatus;
     lines[7] = "F1 editor | F2 HUD";

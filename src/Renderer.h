@@ -26,6 +26,7 @@ class Camera;
 struct BenchmarkFrameSample
 {
     float gpuCloudMs = 0.0f;
+    float gpuReconstructionMs = 0.0f;
     float gpuTotalMs = 0.0f;
     float cpuRenderMs = 0.0f;
 };
@@ -45,12 +46,21 @@ public:
     bool SaveDefaultNoiseCache();
     bool RunCodeTests();
     void SetBenchmarkMode(bool enabled);
+    void SetTemporalEnabled(bool enabled);
+    bool TemporalEnabled() const { return m_temporalEnabled; }
     void ConfigureViewStepBenchmark(int viewSteps, float cloudThickness);
     void BeginBenchmarkCollection();
     void EndBenchmarkCollection();
     const std::vector<BenchmarkFrameSample>& BenchmarkSamples() const { return m_benchmarkSamples; }
     unsigned int RuntimeCompileCount() const { return m_runtimeCompileCount; }
     unsigned int NoiseDispatchCount() const { return m_noiseDispatchCount; }
+    float FrameIntervalMs() const { return m_frameIntervalMs; }
+    float CpuRenderMs() const { return m_cpuRenderMs; }
+    float PresentWaitMs() const { return m_presentWaitMs; }
+    float GpuCloudMs() const { return m_gpuFrameMs; }
+    float GpuReconstructionMs() const { return m_gpuReconstructionMs; }
+    float GpuTotalMs() const { return m_gpuTotalMs; }
+    const std::string& CacheStatus() const { return m_cacheStatus; }
 
 private:
     // HLSL 파일을 런타임 컴파일 (showErrors=true면 실패 시 메시지박스 + false)
@@ -65,27 +75,40 @@ private:
     bool CreateNoisePreviewResources();
     bool CreateNoiseVolumeResources();
     bool CreateNoiseSampler();
+    bool CreateTemporalResources();
+    void ResetTemporalHistory();
+    void RenderFullscreenTriangle();
     void GenerateNoiseVolumes();
     void RenderNoisePreview(float previewTime);
     bool CreateGpuTimerResources();
     void BeginGpuTimer();
     void EndGpuTimer();
+    void BeginReconstructionTimer();
+    void EndReconstructionTimer();
     void BeginGpuTotalTimer();
     void EndGpuTotalTimer();
     void ResolveGpuTotalTimer();
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
 
-    // 셰이더 상수버퍼 — HLSL cbCamera 와 레이아웃이 정확히 일치해야 함 (112 바이트)
+    // HLSL cbCamera와 정확히 일치하는 96바이트 상수 버퍼.
     struct CameraCB
     {
-        DirectX::XMFLOAT4X4 invViewProj;  // 64
-        DirectX::XMFLOAT3   cameraPos;    // 12
-        float               time;         //  4
-        DirectX::XMFLOAT3   volumeCenter; // 12
-        float               densityScale; //  4
-        DirectX::XMFLOAT3   volumeHalfSize;// 12
-        float               _pad;         //  4
+        DirectX::XMFLOAT4X4 invViewProj;
+        DirectX::XMFLOAT3 cameraPos;
+        float time;
+        DirectX::XMFLOAT2 rayJitterNdc;
+        DirectX::XMFLOAT2 renderSize;
+    };
+
+    struct TemporalCB
+    {
+        DirectX::XMFLOAT4X4 previousViewProj;
+        DirectX::XMFLOAT3 previousCameraPos;
+        float previousTime;
+        DirectX::XMFLOAT2 windDeltaWorld;
+        float historyWeight;
+        unsigned int historyValid;
     };
 
     struct NoisePreviewCB
@@ -105,6 +128,8 @@ private:
 
     static_assert(sizeof(NoisePreviewCB) == 16);
     static_assert(sizeof(NoiseVolumeGenerationCB) == 16);
+    static_assert(sizeof(CameraCB) == 96);
+    static_assert(sizeof(TemporalCB) == 96);
 
     template <typename T>
     using ComPtr = Microsoft::WRL::ComPtr<T>;
@@ -119,8 +144,11 @@ private:
 
     ComPtr<ID3D11VertexShader>     m_vs;
     ComPtr<ID3D11PixelShader>      m_ps;
+    ComPtr<ID3D11PixelShader>      m_temporalPs;
+    ComPtr<ID3D11PixelShader>      m_compositePs;
     ComPtr<ID3D11Buffer>           m_cb;
     ComPtr<ID3D11Buffer>           m_cloudCb;
+    ComPtr<ID3D11Buffer>           m_temporalCb;
     ComPtr<ID3D11Buffer>           m_previewCb;
 
     ComPtr<ID3D11VertexShader>     m_previewVs;
@@ -129,6 +157,7 @@ private:
     ComPtr<ID3D11ComputeShader>    m_noiseVolumeCsDetail; // RGBA8 옥타브 굽기
     ComPtr<ID3D11ComputeShader>    m_noiseWeatherCs;      // RGBA8 weather map 굽기
     ComPtr<ID3D11SamplerState>     m_noiseSampler;
+    ComPtr<ID3D11SamplerState>     m_linearClampSampler;
     ComPtr<ID3D11Buffer>           m_noiseVolumeGenerationCb;
     std::array<ComPtr<ID3D11Texture2D>, 4> m_previewTextures;
     std::array<ComPtr<ID3D11RenderTargetView>, 4> m_previewRtvs;
@@ -138,10 +167,27 @@ private:
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> m_noiseVolumeSrvs;
     WeatherMapResources m_weatherMap;
 
+    ComPtr<ID3D11Texture2D> m_halfCloudColor;
+    ComPtr<ID3D11RenderTargetView> m_halfCloudColorRtv;
+    ComPtr<ID3D11ShaderResourceView> m_halfCloudColorSrv;
+    ComPtr<ID3D11Texture2D> m_halfCloudDepth;
+    ComPtr<ID3D11RenderTargetView> m_halfCloudDepthRtv;
+    ComPtr<ID3D11ShaderResourceView> m_halfCloudDepthSrv;
+    std::array<ComPtr<ID3D11Texture2D>, 2> m_historyColor;
+    std::array<ComPtr<ID3D11RenderTargetView>, 2> m_historyColorRtv;
+    std::array<ComPtr<ID3D11ShaderResourceView>, 2> m_historyColorSrv;
+    std::array<ComPtr<ID3D11Texture2D>, 2> m_historyDepth;
+    std::array<ComPtr<ID3D11RenderTargetView>, 2> m_historyDepthRtv;
+    std::array<ComPtr<ID3D11ShaderResourceView>, 2> m_historyDepthSrv;
+
     std::array<ComPtr<ID3D11Query>, 2> m_gpuBeginQueries;
     std::array<ComPtr<ID3D11Query>, 2> m_gpuEndQueries;
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuReconstructionBeginQueries;
+    std::array<ComPtr<ID3D11Query>, 2> m_gpuReconstructionEndQueries;
     bool m_gpuTimerActive = false;
+    bool m_gpuReconstructionTimerActive = false;
     float m_gpuFrameMs = 0.0f;
+    float m_gpuReconstructionMs = 0.0f;
     std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalDisjointQueries;
     std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalBeginQueries;
     std::array<ComPtr<ID3D11Query>, 2> m_gpuTotalEndQueries;
@@ -153,6 +199,7 @@ private:
     bool m_gpuTotalTimerActive = false;
     float m_gpuTotalMs = 0.0f;
     float m_cpuRenderMs = 0.0f;
+    float m_presentWaitMs = 0.0f;
     float m_frameIntervalMs = 0.0f;
     bool m_benchmarkMode = false;
     bool m_benchmarkCollecting = false;
@@ -166,6 +213,13 @@ private:
     bool m_cacheLoaded = false;
     bool m_sourceModified = false;
     bool m_hasPresented = false;
+    bool m_temporalEnabled = true;
+    bool m_historyValid = false;
+    unsigned int m_historyIndex = 0;
+    unsigned int m_temporalFrameIndex = 0;
+    DirectX::XMFLOAT4X4 m_previousViewProj = {};
+    DirectX::XMFLOAT3 m_previousCameraPos = {};
+    float m_previousCloudTime = 0.0f;
     unsigned int m_runtimeCompileCount = 0;
     unsigned int m_noiseDispatchCount = 0;
     float m_lastFrameTime = 0.0f;
@@ -180,6 +234,8 @@ private:
     std::wstring m_cloudNoisePath;
     std::wstring m_previewPath;
     std::wstring m_noiseVolumeCsPath;
+    std::wstring m_temporalPath;
+    std::wstring m_compositePath;
     std::vector<std::wstring> m_shaderPaths;
     std::vector<std::filesystem::file_time_type> m_shaderWriteTimes;
 };

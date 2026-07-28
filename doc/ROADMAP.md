@@ -20,13 +20,15 @@
 - [x] 128³ detail, 독립 base/detail 월드 좌표와 cache v6
 - [x] 50m view step 상한, 밀도 경계 정제와 2000회 안전 상한
 - [x] weather type 수직 성장·anvil과 근거리/원거리 light march
+- [x] 계층형 density early-out과 0.5배 축 temporal reconstruction
+- [x] 120초 startup CSV 및 raymarch/reconstruction/Present 분리 계측
+- [x] cache v7: temporal/composite를 포함한 셰이더 9개
 
 ## 다음 통합 단계
 
 - [ ] 사용자의 실제 화면 평가에 따른 Showcase 프리셋 최종 승인
-- [ ] 사용자 GPU에서 1280×720 33.3ms 이하 최종 확인
+- [ ] 사용자의 카메라 회전·줌·reference 비교로 ghosting과 shimmer 최종 승인
 - [ ] 깊이 버퍼 통합과 장면 오브젝트 교차
-- [ ] 반해상도 렌더링 + temporal reprojection
 - [ ] 구형 대기층과 지구 곡률
 
 현재 코드 완료 기준은 광역 분포, 다중 주파수 형태, 근사 다중 산란, 안정적 샘플링, 영구 캐시와 자동 검사다. 시각적 품질과 성능 목표 승인은 실제 사용자 장비에서 별도로 수행한다.

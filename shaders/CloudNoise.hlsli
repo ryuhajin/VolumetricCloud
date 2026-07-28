@@ -367,11 +367,13 @@ float4 EvaluateLayerCloudComponents(float3 worldPosition, float4 weather, float 
     float localBase, localTop;
     LocalCloudLayerBounds(weather, localBase, localTop);
     float height01 = saturate((worldPosition.y - localBase) / max(localTop - localBase, 0.1));
+    float insideLayer = step(localBase, worldPosition.y) * step(worldPosition.y, localTop);
+    float potential = WeatherPotential(weather) * insideLayer;
+    if (potential <= 0.0)
+        return 0.0;
+
     float3 baseUVW = WorldToBaseUVW(worldPosition, weather, sampleTime);
-    float3 detailUVW = WorldToDetailUVW(worldPosition, weather, sampleTime);
     float4 baseChannels = baseNoiseTexture.SampleLevel(noiseVolumeSampler, baseUVW, 0);
-    float detail = DetailErosionFromChannels(
-        detailNoiseTexture.SampleLevel(noiseVolumeSampler, detailUVW, 0));
     float localCoverage = WeatherCoverage(weather);
     float baseShape = BaseShapeFromChannels(baseChannels, height01, localCoverage);
     float cloudType = smoothstep(
@@ -380,12 +382,17 @@ float4 EvaluateLayerCloudComponents(float3 worldPosition, float4 weather, float 
         (1.0 - smoothstep(0.90, 1.0, height01));
     baseShape = saturate(baseShape +
         anvilBand * cloudType * saturate(anvilStrength) * (1.0 - baseShape) * 0.45);
+    float height = LayerHeightGradient(height01, weather.g);
+    float macroDensity = baseShape * height * potential;
+    if (macroDensity <= 0.0)
+        return float4(baseShape * potential, 0.0, height * potential, 0.0);
+
+    float3 detailUVW = WorldToDetailUVW(worldPosition, weather, sampleTime);
+    float detail = DetailErosionFromChannels(
+        detailNoiseTexture.SampleLevel(noiseVolumeSampler, detailUVW, 0));
     float erosionStart = saturate(1.0 - max(detailErosionWidth, 0.05));
     float boundary = 1.0 - smoothstep(erosionStart, 0.95, baseShape);
     float shaped = saturate(baseShape - detail * erosionStrength * boundary);
-    float height = LayerHeightGradient(height01, weather.g);
-    float insideLayer = step(localBase, worldPosition.y) * step(worldPosition.y, localTop);
-    float potential = WeatherPotential(weather) * insideLayer;
     return float4(baseShape * potential, detail * potential, height * potential,
                   shaped * height * potential);
 }

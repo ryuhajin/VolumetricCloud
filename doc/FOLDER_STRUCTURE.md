@@ -24,6 +24,8 @@ VolumetricCloud/
 ├─ shaders/
 │  ├─ Fullscreen.hlsl
 │  ├─ VolumetricClouds.hlsl
+│  ├─ TemporalResolve.hlsl
+│  ├─ Composite.hlsl
 │  ├─ NoisePreview.hlsl
 │  ├─ NoiseVolumeCS.hlsl
 │  ├─ CloudNoise.hlsli
