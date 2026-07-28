@@ -50,7 +50,7 @@ struct alignas(16) CloudParameters
     float topFade          = 0.25f;
 
     DirectX::XMFLOAT2 windDirection = { 1.0f, 0.2f };
-    float windSpeed        = 0.03f;
+    float windSpeed        = 0.10f; // km/s (UI에서는 m/s로 표시)
     float seed             = 17.0f;
 
     int baseOctaves        = 4;

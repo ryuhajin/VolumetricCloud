@@ -44,7 +44,7 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음 순서는 반드시 같다.
 |---|---|
 | 0 | `noiseWorldScale`, `basePeriod`, `detailPeriod`, `densityMultiplier` |
 | 1 | `noiseCutoffThreshold`, `erosionStrength`, `bottomFade`, `topFade` |
-| 2 | `windDirection(float2)`, `windSpeed`, `seed` |
+| 2 | `windDirection(float2)`, `windSpeed`(km/s, UI는 m/s), `seed` |
 | 3 | `baseOctaves`, `detailOctaves`, `renderMode`, `useTextureCache` |
 | 4 | `showBounds`, `lightSteps`, `sunAzimuth`, `sunElevation` |
 | 5 | `sunIntensity`, `ambientIntensity`, `phaseG`, `lightAbsorption` |

@@ -13,7 +13,7 @@
 | 높이 | 하단이 좁고 중단이 부푸는 Cumulus profile, weather type 성장과 anvil |
 | 조명 | 8-step 0.6km 근거리 + 4-step 원거리 self-shadow, 정규화 dual-lobe phase, powder, silver lining |
 | 다중 산란 | light visibility의 3-octave 저비용 근사 |
-| 화면 복원 | beauty 0.5배 축 raymarch, 4-frame jitter, full-resolution temporal reprojection·depth rejection·neighborhood clamp |
+| 화면 복원 | beauty 0.5배 축 raymarch, 정지 시 4-frame jitter, 이동 시 wind phase, full-resolution temporal reprojection·depth rejection·neighborhood clamp |
 | 캐시 | v7 불변 세대 + active 포인터, `.cso` 9개 + 128³ base/detail + 512² weather |
 | 진단 | 20개 렌더 모드, 4-MRT Inspector, temporal/reference 전환, raymarch/reconstruction/total 및 startup CSV |
 | 검증 | 기존 수치 검사 + density early-out 동등성, temporal 행렬·깊이 rejection, history reset, 리소스 규격·resize |

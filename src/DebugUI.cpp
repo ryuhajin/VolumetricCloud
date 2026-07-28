@@ -284,7 +284,13 @@ bool DebugUI::Draw(CloudParameters& p,
                 if (BeginParameterCategory("Animation", 1))
                 {
                     changed |= ImGui::SliderFloat2("Wind direction", &p.windDirection.x, -1.0f, 1.0f, "%.2f");
-                    changed |= ImGui::SliderFloat("Wind speed", &p.windSpeed, 0.0f, 0.25f, "%.3f");
+                    float windSpeedMeters = p.windSpeed * 1000.0f;
+                    if (ImGui::SliderFloat("Wind speed", &windSpeedMeters,
+                                           0.0f, 200.0f, "%.0f m/s"))
+                    {
+                        p.windSpeed = windSpeedMeters / 1000.0f;
+                        changed = true;
+                    }
                 }
 
                 if (BeginParameterCategory("Lighting", 2))

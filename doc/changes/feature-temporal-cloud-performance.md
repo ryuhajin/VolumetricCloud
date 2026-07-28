@@ -87,5 +87,9 @@ Release 1280×720, 3.8km/128 step 결과:
 - 정지처럼 보인 원인은 base/detail 3D noise만 바람으로 이동하고 구름의 큰 실루엣을 정하는 weather map은 월드에 고정돼 있었기 때문이다. weather와 3D noise에 같은 월드 바람 오프셋을 적용해 분포 전체가 함께 이동하도록 한다.
 - full-resolution은 활성 temporal 경로의 프레임 비용을 증가시키지 않으며, temporal 오류 비교와 debug 채널의 원본 관찰에 필요하므로 진단용으로 유지한다.
 - 수정 후 Debug/Release 빌드와 Release ctest 2/2를 통과했다. Debug code test의 `temporalJitterAlignment`, `weatherAdvection`, `debugLayerClean`을 포함한 전 항목이 통과했고, 갱신한 flat v7 bundle의 cache smoke도 통과했다.
-- 수정 후 사용자가 toggle 직후 경계 안정성과 cloud animation을 다시 승인해야 한다.
+- 사용자 재검증에서 temporal toggle 직후 떨림은 사라졌다. weather를 포함한 구름 이동은 `windSpeed=0.1km/s`부터 명확히 보였지만 이동 중 상·하 경계 떨림이 남았다.
+- `windSpeed`는 world km/s이므로 제안 범위 0.1~2.0은 100~2,000m/s다. 2.0km/s는 프레임 사이 이동과 history rejection이 지나치게 커지므로 UI는 0~200m/s로 표시하고 기본 showcase 값은 100m/s로 조정한다.
+- 이동 중에는 바람 자체가 시간별 sample phase를 제공하므로 별도 4-frame camera jitter를 끈다. 정지 구름에서는 기존 jitter를 유지해 네 subpixel을 누적하고, animation 상태가 바뀔 때 history를 reset한다.
+- Debug/Release 빌드, Release ctest 2/2, flat v7 cache smoke를 통과했다. Debug code test에서 `animatedJitterDisabled`, `temporalJitterAlignment`, `weatherAdvection`, `debugLayerClean`을 포함한 전 항목이 통과했다.
+- 수정 후 사용자가 이동 중 상·하 경계 안정성을 다시 승인해야 한다.
 - scene depth와의 교차는 아직 없으므로 실제 장면 합성 시 별도 depth rejection 확장이 필요하다.

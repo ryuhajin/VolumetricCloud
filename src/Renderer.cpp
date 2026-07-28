@@ -909,7 +909,9 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         { -0.25f, -0.25f }, { 0.25f, -0.25f },
         { -0.25f, 0.25f }, { 0.25f, 0.25f }
     };
-    if (temporalActive)
+    // 움직이는 밀도장은 자체적으로 시간별 sample phase를 제공한다. 이때 camera jitter까지
+    // 중첩하면 얇은 상·하 경계가 두 좌표 변화 사이를 오가므로 정지 animation에서만 jitter한다.
+    if (temporalActive && m_previewSettings.freeze)
     {
         const XMFLOAT2 jitter = jitterPixels[m_temporalFrameIndex & 3u];
         cb.rayJitterNdc = XMFLOAT2(
@@ -1451,6 +1453,14 @@ bool Renderer::RunCodeTests()
         m_cloudParams.windSpeed <= 0.0f ||
         (windLengthForTest > 1.0e-5f && tenSecondWindDistance > 0.0f &&
          std::isfinite(tenSecondWindDistance));
+    const auto explicitJitterEnabled = [](bool temporalActive, bool animationFrozen)
+    {
+        return temporalActive && animationFrozen;
+    };
+    const bool animatedJitterDisabled =
+        explicitJitterEnabled(true, true) &&
+        !explicitJitterEnabled(true, false) &&
+        !explicitJitterEnabled(false, true);
     bool hierarchicalEarlyOut = true;
     for (const float potential : { 0.0f, 0.0005f, 0.5f, 1.0f })
     for (const float baseShape : { 0.0f, 0.00005f, 0.25f, 1.0f })
@@ -1571,7 +1581,7 @@ bool Renderer::RunCodeTests()
            weatherLayout && weatherDistribution && weatherHash && layerMath &&
            lightingMath && worldSpaceCoordinates && detailNyquist && cumulusBounds &&
            adaptiveMarching && lightSegments && temporalLayout && temporalRejection &&
-           temporalJitterAlignment && weatherAdvection &&
+           temporalJitterAlignment && weatherAdvection && animatedJitterDisabled &&
            hierarchicalEarlyOut && recreatedTemporalResources && historyReset &&
            sizeof(CloudParameters) == 224 &&
            presetRoundTrip && thicknessSampling && debugLayerClean;
@@ -1596,6 +1606,7 @@ bool Renderer::RunCodeTests()
     REPORT_CHECK(temporalRejection);
     REPORT_CHECK(temporalJitterAlignment);
     REPORT_CHECK(weatherAdvection);
+    REPORT_CHECK(animatedJitterDisabled);
     REPORT_CHECK(hierarchicalEarlyOut);
     REPORT_CHECK(recreatedTemporalResources);
     REPORT_CHECK(historyReset);
