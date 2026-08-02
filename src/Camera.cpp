@@ -34,6 +34,15 @@ void Camera::Zoom(float wheelDelta)
     m_distance = std::clamp(m_distance * factor, 1.5f, 100.0f);
 }
 
+void Camera::SetOrbit(float yaw, float pitch, float distance,
+                      const XMFLOAT3& target)
+{
+    m_yaw = yaw;
+    m_pitch = std::clamp(pitch, -XM_PIDIV2 + 0.01f, XM_PIDIV2 - 0.01f);
+    m_distance = std::clamp(distance, 1.5f, 100.0f);
+    m_target = target;
+}
+
 DirectX::XMFLOAT3 Camera::GetPosition() const
 {
     // 구면 좌표 → 데카르트 좌표 (타깃 기준 오프셋)

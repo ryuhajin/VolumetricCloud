@@ -6,7 +6,8 @@
 
 static const wchar_t* kClassName = L"VolumetricCloudWindowClass";
 
-Window::Window(HINSTANCE hInstance, int width, int height, const wchar_t* title)
+Window::Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
+               bool showWindow)
     : m_width(width), m_height(height)
 {
     // ---- 윈도우 클래스 등록 ----
@@ -30,8 +31,11 @@ Window::Window(HINSTANCE hInstance, int width, int height, const wchar_t* title)
         rect.right - rect.left, rect.bottom - rect.top,
         nullptr, nullptr, hInstance, this); // 마지막 인자로 this 전달
 
-    ShowWindow(m_hwnd, SW_SHOW);
-    UpdateWindow(m_hwnd);
+    if (showWindow)
+    {
+        ShowWindow(m_hwnd, SW_SHOW);
+        UpdateWindow(m_hwnd);
+    }
 }
 
 Window::~Window()
@@ -119,6 +123,29 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (m_camera)
             m_camera->Zoom(static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)));
         return 0;
+
+    case WM_KEYDOWN:
+        if (m_renderer && wParam >= '0' && wParam <= '4')
+        {
+            m_renderer->SetDebugMode(
+                static_cast<CloudDebugMode>(static_cast<int>(wParam - '0')));
+            return 0;
+        }
+        if (m_camera && wParam == VK_F5)
+        {
+            m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
+            return 0;
+        }
+        if (m_camera && wParam == VK_F6)
+        {
+            m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
+            return 0;
+        }
+        if (m_camera && wParam == VK_F7)
+        {
+            m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
+            return 0;
+        }
     }
 
     return DefWindowProc(hwnd, msg, wParam, lParam);

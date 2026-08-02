@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  1단계: noise/light 없는 반투명 안개 구(sphere) 렌더링
+#  재구축 단계 0: 불투명 진단 장면, 깊이 복원과 풀스크린 합성 기반
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -49,6 +49,21 @@ target_compile_definitions(VolumetricCloud PRIVATE
 if (MSVC)
     target_compile_options(VolumetricCloud PRIVATE /utf-8)
 endif()
+
+# 카메라 역투영 수학은 GPU 렌더와 별도로 빠르게 회귀 검사한다.
+enable_testing()
+add_executable(VolumetricCloud.FoundationTests
+    tests/FoundationTests.cpp
+    src/Camera.cpp
+)
+target_include_directories(VolumetricCloud.FoundationTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.FoundationTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.FoundationMath
+         COMMAND VolumetricCloud.FoundationTests)
+add_test(NAME VolumetricCloud.FoundationSmoke
+         COMMAND VolumetricCloud --foundation-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

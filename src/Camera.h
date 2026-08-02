@@ -17,6 +17,8 @@ public:
     // 입력 → 카메라 상태 갱신
     void Rotate(float dxPixels, float dyPixels); // 마우스 드래그
     void Zoom(float wheelDelta);                 // 마우스 휠
+    void SetOrbit(float yaw, float pitch, float distance,
+                  const DirectX::XMFLOAT3& target);
 
     void SetAspect(float aspect) { m_aspect = aspect; }
 
@@ -24,6 +26,8 @@ public:
     DirectX::XMMATRIX GetViewProj() const;
     DirectX::XMMATRIX GetInvViewProj() const;    // 셰이더 레이 생성용
     DirectX::XMFLOAT3 GetPosition() const;       // 레이 원점
+    float GetNearPlane() const { return m_nearZ; }
+    float GetFarPlane() const { return m_farZ; }
 
 private:
     // 궤도 파라미터

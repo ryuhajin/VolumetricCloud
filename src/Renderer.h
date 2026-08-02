@@ -1,9 +1,5 @@
 // ============================================================================
-//  Renderer.h  —  Direct3D 11 렌더러
-// ----------------------------------------------------------------------------
-//  device / context / swapchain / render target view 를 만들고,
-//  런타임에 HLSL 셰이더를 컴파일한 뒤, 매 프레임 풀스크린 삼각형 1개를 그려
-//  픽셀 셰이더로 박스 볼륨을 레이마칭한다.
+//  Renderer.h - Direct3D 11 단계 0 렌더링 기반
 // ============================================================================
 #pragma once
 
@@ -11,11 +7,22 @@
 #include <Windows.h>
 #include <d3d11.h>
 #include <DirectXMath.h>
-#include <wrl/client.h> // Microsoft::WRL::ComPtr
+#include <wrl/client.h>
+
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
+#include "CloudParameters.h"
+
 class Camera;
+
+struct DiagnosticSceneVertex
+{
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT3 color;
+};
 
 class Renderer
 {
@@ -23,54 +30,86 @@ public:
     bool Init(HWND hwnd, int width, int height);
     void Resize(int width, int height);
     void Render(const Camera& camera, float timeSeconds);
+    void SetDebugMode(CloudDebugMode mode);
+    CloudDebugMode DebugMode() const;
+    bool HasDebugLayerErrors() const;
 
 private:
-    // HLSL 파일을 런타임 컴파일 (showErrors=true면 실패 시 메시지박스 + false)
-    bool CompileShaderFromFile(const std::wstring& path,
-                               const char* entryPoint,
-                               const char* target,
-                               Microsoft::WRL::ComPtr<ID3DBlob>& outBlob,
-                               bool showErrors);
-    bool CreateShaders(bool showErrors);
-    bool CreateRenderTarget();
-    void CheckShaderHotReload();
-    void UpdateShaderWriteTimes();
-    bool GetShaderWriteTimes(std::filesystem::file_time_type& vsTime,
-                             std::filesystem::file_time_type& psTime,
-                             std::filesystem::file_time_type& rayLibTime) const;
-
-    // 셰이더 상수버퍼 — HLSL cbCamera 와 레이아웃이 정확히 일치해야 함 (112 바이트)
-    struct CameraCB
-    {
-        DirectX::XMFLOAT4X4 invViewProj;  // 64
-        DirectX::XMFLOAT3   cameraPos;    // 12
-        float               time;         //  4
-        DirectX::XMFLOAT3   volumeCenter; // 12
-        float               densityScale; //  4
-        DirectX::XMFLOAT3   volumeHalfSize;// 12
-        float               _pad;         //  4
-    };
-
     template <typename T>
     using ComPtr = Microsoft::WRL::ComPtr<T>;
 
-    int m_width  = 0;
+    struct CameraCB
+    {
+        DirectX::XMFLOAT4X4 invViewProj;
+        DirectX::XMFLOAT3 cameraPos;
+        float time;
+        DirectX::XMFLOAT2 renderSize;
+        float nearPlane;
+        float farPlane;
+    };
+
+    struct SceneCB
+    {
+        DirectX::XMFLOAT4X4 viewProj;
+    };
+
+    static_assert(sizeof(CameraCB) == 96, "CameraCB must match cbCamera");
+    static_assert(sizeof(SceneCB) == 64, "SceneCB must match cbScene");
+
+    bool CompileShaderFromFile(const std::wstring& path,
+                               const char* entryPoint,
+                               const char* target,
+                               ComPtr<ID3DBlob>& outBlob,
+                               bool showErrors);
+    bool CreateShaders(bool showErrors);
+    bool CreateBackBufferTarget();
+    bool CreateSceneTargets();
+    bool CreateDiagnosticScene();
+    bool CreatePipelineStates();
+    bool CreateConstantBuffers();
+    void ReleaseSizeDependentResources();
+    void RenderDiagnosticScene(const Camera& camera);
+    void RenderFoundationPass(const Camera& camera, float timeSeconds);
+    void CheckShaderHotReload();
+    void UpdateShaderWriteTimes();
+    bool GetShaderWriteTimes(
+        std::array<std::filesystem::file_time_type, 3>& writeTimes) const;
+
+    int m_width = 0;
     int m_height = 0;
 
-    ComPtr<ID3D11Device>           m_device;
-    ComPtr<ID3D11DeviceContext>    m_context;
-    ComPtr<IDXGISwapChain>         m_swapChain;
-    ComPtr<ID3D11RenderTargetView> m_rtv;
+    ComPtr<ID3D11Device> m_device;
+    ComPtr<ID3D11DeviceContext> m_context;
+    ComPtr<IDXGISwapChain> m_swapChain;
+    ComPtr<ID3D11RenderTargetView> m_backBufferRtv;
 
-    ComPtr<ID3D11VertexShader>     m_vs;
-    ComPtr<ID3D11PixelShader>      m_ps;
-    ComPtr<ID3D11Buffer>           m_cb;
+    ComPtr<ID3D11Texture2D> m_sceneColor;
+    ComPtr<ID3D11RenderTargetView> m_sceneColorRtv;
+    ComPtr<ID3D11ShaderResourceView> m_sceneColorSrv;
+    ComPtr<ID3D11Texture2D> m_sceneDepth;
+    ComPtr<ID3D11DepthStencilView> m_sceneDepthDsv;
+    ComPtr<ID3D11ShaderResourceView> m_sceneDepthSrv;
 
-    std::wstring m_shaderDir; // 개발 중 소스 shaders/ 우선, 없으면 실행 파일 옆 shaders/ 경로
-    std::wstring m_vsPath;
-    std::wstring m_psPath;
-    std::wstring m_rayLibPath;
-    std::filesystem::file_time_type m_vsWriteTime = {};
-    std::filesystem::file_time_type m_psWriteTime = {};
-    std::filesystem::file_time_type m_rayLibWriteTime = {};
+    ComPtr<ID3D11VertexShader> m_fullscreenVs;
+    ComPtr<ID3D11PixelShader> m_foundationPs;
+    ComPtr<ID3D11VertexShader> m_sceneVs;
+    ComPtr<ID3D11PixelShader> m_scenePs;
+    ComPtr<ID3D11InputLayout> m_sceneInputLayout;
+
+    ComPtr<ID3D11Buffer> m_cameraCb;
+    ComPtr<ID3D11Buffer> m_cloudCb;
+    ComPtr<ID3D11Buffer> m_sceneCb;
+    ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
+    ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
+    std::uint32_t m_sceneIndexCount = 0;
+
+    ComPtr<ID3D11DepthStencilState> m_depthState;
+    ComPtr<ID3D11RasterizerState> m_rasterizerState;
+    ComPtr<ID3D11SamplerState> m_pointClampSampler;
+
+    CloudParameters m_cloudParameters;
+
+    std::wstring m_shaderDir;
+    std::array<std::wstring, 3> m_shaderPaths;
+    std::array<std::filesystem::file_time_type, 3> m_shaderWriteTimes = {};
 };
