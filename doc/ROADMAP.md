@@ -23,11 +23,18 @@
 - [x] 계층형 density early-out과 0.5배 축 temporal reconstruction
 - [x] 120초 startup CSV 및 raymarch/reconstruction/Present 분리 계측
 - [x] cache v7: temporal/composite를 포함한 셰이더 9개
+- [x] cloud scattering/transmittance 분리와 depth/transmittance-aware temporal 복원
+- [x] 5+1 cone/macro light march, 감쇠 다중 산란 octave와 sky ambient occlusion
+- [x] 높이별 적운 base/detail shaping과 cache v8
+- [x] cluster weather와 512² cellular placement 기반 개별 중심·반경·높이, cache v9
+- [x] placement 속성 연속 혼합과 texel 기반 자동 edge AA, cache v10
 
 ## 다음 통합 단계
 
 - [ ] 사용자의 실제 화면 평가에 따른 Showcase 프리셋 최종 승인
 - [ ] 사용자의 카메라 회전·줌·reference 비교로 ghosting과 shimmer 최종 승인
+- [ ] Beer shadow map과 ground contribution
+- [ ] curl/domain warp 형상 연구
 - [ ] 깊이 버퍼 통합과 장면 오브젝트 교차
 - [ ] 구형 대기층과 지구 곡률
 

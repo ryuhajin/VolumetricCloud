@@ -39,6 +39,8 @@ struct WeatherMapResources
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
 };
 
+using PlacementMapResources = WeatherMapResources;
+
 class NoiseCacheManager
 {
 public:
@@ -53,6 +55,7 @@ public:
         std::array<Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
         std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
         WeatherMapResources& weather,
+        PlacementMapResources& placement,
         bool& sourceModified);
 
     bool SaveUser(
@@ -61,7 +64,8 @@ public:
         const CloudParameters& params,
         const ShaderBlobArray& shaderBlobs,
         const std::array<Microsoft::WRL::ComPtr<ID3D11Texture3D>, 2>& volumes,
-        const WeatherMapResources& weather);
+        const WeatherMapResources& weather,
+        const PlacementMapResources& placement);
 
     bool SaveDefault(
         ID3D11Device* device,
@@ -69,7 +73,8 @@ public:
         const CloudParameters& params,
         const ShaderBlobArray& shaderBlobs,
         const std::array<Microsoft::WRL::ComPtr<ID3D11Texture3D>, 2>& volumes,
-        const WeatherMapResources& weather);
+        const WeatherMapResources& weather,
+        const PlacementMapResources& placement);
 
     bool RunRoundTripTest(
         ID3D11Device* device,
@@ -77,7 +82,8 @@ public:
         const CloudParameters& params,
         const ShaderBlobArray& shaderBlobs,
         const std::array<Microsoft::WRL::ComPtr<ID3D11Texture3D>, 2>& volumes,
-        const WeatherMapResources& weather);
+        const WeatherMapResources& weather,
+        const PlacementMapResources& placement);
 
     uint64_t SourceHash() const;
     static uint64_t ParameterHash(const CloudParameters& params);
@@ -94,6 +100,7 @@ private:
         std::array<Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
         std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
         WeatherMapResources& weather,
+        PlacementMapResources& placement,
         bool& sourceModified);
     bool LoadBundleDirectory(
         const std::filesystem::path& bundle,
@@ -104,6 +111,7 @@ private:
         std::array<Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
         std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
         WeatherMapResources& weather,
+        PlacementMapResources& placement,
         bool& sourceModified);
     std::filesystem::path ResolveBundleDirectory(const std::filesystem::path& root) const;
     bool SaveBundle(
@@ -113,7 +121,8 @@ private:
         const CloudParameters& params,
         const ShaderBlobArray& shaderBlobs,
         const std::array<Microsoft::WRL::ComPtr<ID3D11Texture3D>, 2>& volumes,
-        const WeatherMapResources& weather);
+        const WeatherMapResources& weather,
+        const PlacementMapResources& placement);
 
     std::filesystem::path m_defaultCacheRoot;
     std::filesystem::path m_userCacheRoot;

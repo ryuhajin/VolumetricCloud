@@ -27,6 +27,12 @@ enum class CloudRenderMode : int
     WeatherCloudType,
     WeatherBaseHeight,
     WeatherThickness,
+    AmbientOcclusion,
+    ResolvedOpacity,
+    TemporalHistoryConfidence,
+    PlacementSupport,
+    PlacementRadius,
+    PlacementHeight,
 };
 
 enum class NoiseSliceAxis : int
@@ -36,7 +42,7 @@ enum class NoiseSliceAxis : int
     YZ,
 };
 
-// HLSL CloudCB(b1)와 정확히 같은 224바이트 레이아웃을 사용한다.
+// HLSL CloudCB(b1)와 정확히 같은 272바이트 레이아웃을 사용한다.
 struct alignas(16) CloudParameters
 {
     float noiseWorldScale  = 1.0f; // 한 볼륨 안에서 반복되는 타일 수(정수로 사용)
@@ -59,7 +65,7 @@ struct alignas(16) CloudParameters
     int useTextureCache    = 1;
 
     int showBounds         = 0;
-    int lightSteps         = 8;
+    int lightSteps         = 5;
     float sunAzimuth       = 45.0f;
     float sunElevation     = 35.0f;
 
@@ -103,13 +109,28 @@ struct alignas(16) CloudParameters
     float anvilStrength       = 0.35f;
     float detailErosionWidth  = 0.65f;
 
-    int farLightSteps       = 4;
+    int farLightSteps       = 1;
     int boundaryRefineSteps = 3;
     float _cloudPad0        = 0.0f;
     float _cloudPad1        = 0.0f;
+
+    float lightConeRadius                      = 0.15f; // km, 태양 cone sample의 최대 반경
+    float ambientOcclusionStrength             = 0.55f;
+    float multiScatterExtinctionAttenuation    = 0.50f;
+    float multiScatterEccentricityAttenuation  = 0.50f;
+
+    int   placementCellCount = 16;
+    float placementDensity   = 0.62f;
+    float placementRadiusMin = 0.35f;
+    float placementRadiusMax = 0.85f;
+
+    float placementHeightVariation = 0.35f;
+    float placementTopShrink       = 0.55f;
+    float placementEdgeSoftness    = 0.15f;
+    float placementStrength        = 1.0f;
 };
 
-static_assert(sizeof(CloudParameters) == 224, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 272, "CloudParameters must match CloudCB");
 
 struct NoisePreviewSettings
 {
@@ -180,7 +201,8 @@ inline CloudParameters CumulusShowcaseCloudParameters()
     p.ambientIntensity = 0.88f;
     p.phaseG = 0.62f;
     p.lightAbsorption = 1.25f;
-    p.lightSteps = 8;
+    p.lightSteps = 5;
+    p.farLightSteps = 1;
     p.silverLiningStrength = 0.28f;
     p.viewSteps = 96;
     return p;
@@ -218,9 +240,14 @@ inline CloudParameters CumulusWideShowcaseCloudParameters()
     p.maxViewStepLength = 0.05f;
     p.localLightDistance = 0.60f;
     p.cumulusGrowth = 1.35f;
-    p.anvilStrength = 0.35f;
+    p.anvilStrength = 0.08f;
     p.detailErosionWidth = 0.65f;
-    p.farLightSteps = 4;
+    p.lightSteps = 5;
+    p.farLightSteps = 1;
     p.boundaryRefineSteps = 3;
+    p.lightConeRadius = 0.15f;
+    p.ambientOcclusionStrength = 0.55f;
+    p.multiScatterExtinctionAttenuation = 0.50f;
+    p.multiScatterEccentricityAttenuation = 0.50f;
     return p;
 }

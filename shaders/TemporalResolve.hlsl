@@ -1,4 +1,4 @@
-// Half-resolution 구름 결과를 full-resolution history와 결합한다.
+// Half-resolution cloud scattering/metadata를 외곽 보존 복원 후 full-resolution history와 결합한다.
 
 struct VSOut
 {
@@ -13,6 +13,8 @@ cbuffer cbCamera : register(b0)
     float time;
     float2 rayJitterNdc;
     float2 renderSize;
+    uint temporalOutput;
+    uint3 _cameraPad;
 };
 
 cbuffer TemporalCB : register(b2)
@@ -23,18 +25,20 @@ cbuffer TemporalCB : register(b2)
     float2 windDeltaWorld;
     float historyWeight;
     uint historyValid;
+    uint temporalDebugMode;
+    uint3 _temporalPad;
 };
 
-Texture2D<float3> currentColor : register(t0);
-Texture2D<float> currentDepth : register(t1);
-Texture2D<float3> previousColor : register(t2);
-Texture2D<float> previousDepth : register(t3);
+Texture2D<float3> currentScattering : register(t0);
+Texture2D<float2> currentMetadata : register(t1);
+Texture2D<float3> previousScattering : register(t2);
+Texture2D<float2> previousMetadata : register(t3);
 SamplerState linearClampSampler : register(s0);
 
 struct ResolveOutput
 {
-    float4 color : SV_TARGET0;
-    float depth : SV_TARGET1;
+    float4 scattering : SV_TARGET0;
+    float2 metadata : SV_TARGET1;
 };
 
 float3 CurrentRay(float2 uv)
@@ -45,19 +49,77 @@ float3 CurrentRay(float2 uv)
     return normalize(farH.xyz / farH.w - nearH.xyz / nearH.w);
 }
 
+void ReconstructCurrent(float2 uv, out float3 scattering, out float2 metadata, out int2 anchorPixel)
+{
+    uint width, height;
+    currentScattering.GetDimensions(width, height);
+    int2 size = int2(width, height);
+    float2 texelPosition = uv * float2(size) - 0.5;
+    int2 basePixel = int2(floor(texelPosition));
+    float2 fraction = frac(texelPosition);
+    anchorPixel = clamp(int2(round(texelPosition)), int2(0, 0), size - 1);
+    float2 anchorMetadata = currentMetadata.Load(int3(anchorPixel, 0));
+    float anchorOpacity = 1.0 - anchorMetadata.y;
+
+    scattering = 0.0;
+    metadata = 0.0;
+    float totalWeight = 0.0;
+    [unroll]
+    for (int y = 0; y < 2; ++y)
+    {
+        [unroll]
+        for (int x = 0; x < 2; ++x)
+        {
+            int2 pixel = clamp(basePixel + int2(x, y), int2(0, 0), size - 1);
+            float2 sampleMetadata = currentMetadata.Load(int3(pixel, 0));
+            float sampleOpacity = 1.0 - sampleMetadata.y;
+            float2 axisWeight = 1.0 - abs(float2(x, y) - fraction);
+            float weight = axisWeight.x * axisWeight.y;
+            weight *= exp(-abs(sampleOpacity - anchorOpacity) * 32.0);
+
+            bool anchorCloud = anchorMetadata.x > 0.0;
+            bool sampleCloud = sampleMetadata.x > 0.0;
+            if (anchorCloud != sampleCloud)
+                weight *= 0.001;
+            else if (anchorCloud)
+            {
+                float tolerance = max(0.1, anchorMetadata.x * 0.05);
+                weight *= exp(-abs(sampleMetadata.x - anchorMetadata.x) /
+                              max(tolerance, 1.0e-4) * 4.0);
+            }
+
+            scattering += currentScattering.Load(int3(pixel, 0)) * weight;
+            metadata += sampleMetadata * weight;
+            totalWeight += weight;
+        }
+    }
+
+    if (totalWeight <= 1.0e-5)
+    {
+        scattering = currentScattering.Load(int3(anchorPixel, 0));
+        metadata = anchorMetadata;
+    }
+    else
+    {
+        scattering /= totalWeight;
+        metadata /= totalWeight;
+    }
+}
+
 ResolveOutput main(VSOut input)
 {
-    uint halfWidth, halfHeight;
-    currentColor.GetDimensions(halfWidth, halfHeight);
-    int2 halfSize = int2(halfWidth, halfHeight);
-    // Raymarch jitter를 UV로 역변환해 현재 sample을 unjittered 출력 위치에 맞춘다.
     float2 jitterUv = float2(rayJitterNdc.x * 0.5, -rayJitterNdc.y * 0.5);
     float2 currentUv = saturate(input.uv - jitterUv);
-    int2 halfPixel = clamp(int2(currentUv * halfSize), int2(0, 0), halfSize - 1);
-    float2 halfUv = (float2(halfPixel) + 0.5) / float2(halfSize);
+    float3 current;
+    float2 metadata;
+    int2 halfPixel;
+    ReconstructCurrent(currentUv, current, metadata, halfPixel);
+    float depth = metadata.x;
 
-    float3 current = currentColor.SampleLevel(linearClampSampler, currentUv, 0);
-    float depth = currentDepth.Load(int3(halfPixel, 0));
+    uint halfWidth, halfHeight;
+    currentScattering.GetDimensions(halfWidth, halfHeight);
+    int2 halfSize = int2(halfWidth, halfHeight);
+    float2 halfUv = (float2(halfPixel) + 0.5) / float2(halfSize);
     float3 neighborhoodMin = float3(65504.0, 65504.0, 65504.0);
     float3 neighborhoodMax = 0.0;
     [unroll]
@@ -67,14 +129,13 @@ ResolveOutput main(VSOut input)
         for (int x = -1; x <= 1; ++x)
         {
             int2 samplePixel = clamp(halfPixel + int2(x, y), int2(0, 0), halfSize - 1);
-            float3 sampleColor = currentColor.Load(int3(samplePixel, 0));
+            float3 sampleColor = currentScattering.Load(int3(samplePixel, 0));
             neighborhoodMin = min(neighborhoodMin, sampleColor);
             neighborhoodMax = max(neighborhoodMax, sampleColor);
         }
     }
 
     float valid = historyValid != 0 && depth > 0.0 ? 1.0 : 0.0;
-    // depth는 half pixel의 jittered ray에서 기록됐으므로 같은 ray로 위치를 복원한다.
     float3 worldPoint = cameraPos + CurrentRay(halfUv) * depth;
     worldPoint.xz += windDeltaWorld;
     float4 previousClip = mul(float4(worldPoint, 1.0), previousViewProj);
@@ -85,18 +146,24 @@ ResolveOutput main(VSOut input)
     valid *= step(0.0, previousUv.y) * step(previousUv.y, 1.0);
 
     uint historyWidth, historyHeight;
-    previousDepth.GetDimensions(historyWidth, historyHeight);
+    previousMetadata.GetDimensions(historyWidth, historyHeight);
     int2 historySize = int2(historyWidth, historyHeight);
     int2 historyPixel = clamp(int2(previousUv * historySize), int2(0, 0), historySize - 1);
-    float storedDepth = previousDepth.Load(int3(historyPixel, 0));
+    float2 storedMetadata = previousMetadata.Load(int3(historyPixel, 0));
     float expectedDepth = length(worldPoint - previousCameraPos);
     float depthTolerance = max(0.1, expectedDepth * 0.05);
-    valid *= step(abs(storedDepth - expectedDepth), depthTolerance);
+    valid *= step(abs(storedMetadata.x - expectedDepth), depthTolerance);
 
-    float3 history = previousColor.SampleLevel(linearClampSampler, previousUv, 0);
+    float opacityDelta = abs(metadata.y - storedMetadata.y);
+    float confidence = valid * saturate(1.0 - opacityDelta * 4.0);
+    float blendWeight = saturate(historyWeight) * confidence;
+    float3 history = previousScattering.SampleLevel(linearClampSampler, previousUv, 0);
     history = clamp(history, neighborhoodMin, neighborhoodMax);
+
     ResolveOutput output;
-    output.color = float4(lerp(current, history, saturate(historyWeight) * valid), 1.0);
-    output.depth = depth;
+    output.scattering = float4(lerp(current, history, blendWeight), 1.0);
+    if (temporalDebugMode == 22)
+        output.scattering = float4(confidence.xxx, 1.0);
+    output.metadata = float2(depth, lerp(metadata.y, storedMetadata.y, blendWeight));
     return output;
 }

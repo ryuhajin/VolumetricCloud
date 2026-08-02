@@ -4,14 +4,16 @@
 VolumetricCloud/
 ├─ CMakeLists.txt
 ├─ README.md / AGENTS.md
-├─ assets/noise-cache/bundle/       # 배포 기본 .cso, manifest, 128³/128³ volume, 512² weather
+├─ assets/noise-cache/bundle/       # 배포 기본 .cso, manifest, 128³/128³ volume, 512² weather/placement
 ├─ doc/
 │  ├─ ARCHITECTURE.md
 │  ├─ RAYMARCHING.md
+│  ├─ CLOUD_PLACEMENT_AND_VERTICAL_SHAPING.md
 │  ├─ FOLDER_STRUCTURE.md
 │  ├─ ROADMAP.md
 │  ├─ changes/                     # 브랜치별 설계 판단·구현·검증 개발 기록
-│  │  └─ TEMPLATE.md
+│  │  ├─ TEMPLATE.md
+│  │  └─ fix-placement-boundary-artifacts.md
 │  └─ CONTRIBUTING.md
 ├─ notes/interview/                 # 개인 면접 메모(로컬 전용, Git 제외)
 ├─ src/
@@ -29,6 +31,7 @@ VolumetricCloud/
 │  ├─ NoisePreview.hlsl
 │  ├─ NoiseVolumeCS.hlsl
 │  ├─ CloudNoise.hlsli
+│  ├─ CloudAtmosphere.hlsli
 │  └─ Ray.hlsli
 └─ third_party/imgui/               # Dear ImGui Git submodule + Win32/DX11 backend
 ```

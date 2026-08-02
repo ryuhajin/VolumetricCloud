@@ -50,6 +50,7 @@ public:
               NoisePreviewSettings& preview,
               const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
               ID3D11ShaderResourceView* weatherSrv,
+              ID3D11ShaderResourceView* placementSrv,
               bool previewDirty,
               bool& temporalEnabled,
               NoiseCacheUiActions& cacheActions);

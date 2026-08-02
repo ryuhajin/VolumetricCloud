@@ -20,11 +20,13 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 
 namespace
 {
-constexpr size_t kParameterCategoryCount = 6;
+constexpr size_t kParameterCategoryCount = 7;
 
 struct ParameterCategorySettings
 {
-    std::array<bool, kParameterCategoryCount> open = { true, false, false, false, false, false };
+    std::array<bool, kParameterCategoryCount> open = {
+        true, false, false, false, false, false, false
+    };
 };
 
 ParameterCategorySettings g_parameterCategories;
@@ -42,6 +44,18 @@ bool ApplyWorldSpacePresetValue(
     else if (key == "detailErosionWidth") p.detailErosionWidth = value;
     else if (key == "farLightSteps") p.farLightSteps = static_cast<int>(value);
     else if (key == "boundaryRefineSteps") p.boundaryRefineSteps = static_cast<int>(value);
+    else if (key == "lightConeRadius") p.lightConeRadius = value;
+    else if (key == "ambientOcclusionStrength") p.ambientOcclusionStrength = value;
+    else if (key == "multiScatterExtinctionAttenuation") p.multiScatterExtinctionAttenuation = value;
+    else if (key == "multiScatterEccentricityAttenuation") p.multiScatterEccentricityAttenuation = value;
+    else if (key == "placementCellCount") p.placementCellCount = static_cast<int>(value);
+    else if (key == "placementDensity") p.placementDensity = value;
+    else if (key == "placementRadiusMin") p.placementRadiusMin = value;
+    else if (key == "placementRadiusMax") p.placementRadiusMax = value;
+    else if (key == "placementHeightVariation") p.placementHeightVariation = value;
+    else if (key == "placementTopShrink") p.placementTopShrink = value;
+    else if (key == "placementEdgeSoftness") p.placementEdgeSoftness = value;
+    else if (key == "placementStrength") p.placementStrength = value;
     else return false;
     return true;
 }
@@ -57,7 +71,19 @@ void WriteWorldSpacePresetValues(std::ostream& output, const CloudParameters& p)
            << "anvilStrength=" << p.anvilStrength << "\n"
            << "detailErosionWidth=" << p.detailErosionWidth << "\n"
            << "farLightSteps=" << p.farLightSteps << "\n"
-           << "boundaryRefineSteps=" << p.boundaryRefineSteps << "\n";
+           << "boundaryRefineSteps=" << p.boundaryRefineSteps << "\n"
+           << "lightConeRadius=" << p.lightConeRadius << "\n"
+           << "ambientOcclusionStrength=" << p.ambientOcclusionStrength << "\n"
+           << "multiScatterExtinctionAttenuation=" << p.multiScatterExtinctionAttenuation << "\n"
+           << "multiScatterEccentricityAttenuation=" << p.multiScatterEccentricityAttenuation << "\n";
+    output << "placementCellCount=" << p.placementCellCount << "\n"
+           << "placementDensity=" << p.placementDensity << "\n"
+           << "placementRadiusMin=" << p.placementRadiusMin << "\n"
+           << "placementRadiusMax=" << p.placementRadiusMax << "\n"
+           << "placementHeightVariation=" << p.placementHeightVariation << "\n"
+           << "placementTopShrink=" << p.placementTopShrink << "\n"
+           << "placementEdgeSoftness=" << p.placementEdgeSoftness << "\n"
+           << "placementStrength=" << p.placementStrength << "\n";
 }
 
 void* ParameterSettingsReadOpen(
@@ -71,7 +97,8 @@ void ParameterSettingsReadLine(
 {
     auto* settings = static_cast<ParameterCategorySettings*>(entry);
     static const char* keys[kParameterCategoryCount] = {
-        "ShapeNoise", "Animation", "Lighting", "Sampling", "WideCloudLayer", "Presets"
+        "ShapeNoise", "Animation", "Lighting", "Sampling",
+        "WideCloudLayer", "Placement", "Presets"
     };
     for (size_t i = 0; i < kParameterCategoryCount; ++i)
     {
@@ -181,6 +208,7 @@ bool DebugUI::Draw(CloudParameters& p,
                    NoisePreviewSettings& preview,
                    const std::array<ID3D11ShaderResourceView*, 4>& previewSrvs,
                    ID3D11ShaderResourceView* weatherSrv,
+                   ID3D11ShaderResourceView* placementSrv,
                    bool previewDirty,
                    bool& temporalEnabled,
                    NoiseCacheUiActions& cacheActions)
@@ -208,13 +236,18 @@ bool DebugUI::Draw(CloudParameters& p,
                     "Base B: Worley Mid", "Base A: Worley High",
                     "Light Visibility", "Dual-Lobe Phase", "Ambient Lighting", "Direct Lighting",
                     "Weather Coverage", "Weather Cloud Type",
-                    "Weather Base Height", "Weather Thickness"
+                    "Weather Base Height", "Weather Thickness",
+                    "Ambient Occlusion", "Resolved Opacity", "Temporal History Confidence",
+                    "Placement Support", "Placement Radius", "Placement Height"
                 };
                 changed |= ImGui::Combo("Render mode", &p.renderMode, modes, IM_ARRAYSIZE(modes));
                 if (ImGui::Checkbox("Temporal half-resolution", &temporalEnabled))
                     changed = true;
                 ImGui::TextUnformatted(
-                    p.renderMode == 0 && temporalEnabled
+                    (p.renderMode == 0 ||
+                     p.renderMode == static_cast<int>(CloudRenderMode::ResolvedOpacity) ||
+                     p.renderMode == static_cast<int>(CloudRenderMode::TemporalHistoryConfidence)) &&
+                        temporalEnabled
                         ? "Beauty path: 0.5x raymarch + temporal resolve"
                         : (p.renderMode == 0
                             ? "Reference 1.0x: diagnostic path (expected slower)"
@@ -255,6 +288,7 @@ bool DebugUI::Draw(CloudParameters& p,
                     ImGui::EndTable();
                 }
                 DrawPreview("Weather map (RGBA)", weatherSrv);
+                DrawPreview("Placement map (RGBA)", placementSrv);
                 ImGui::EndTabItem();
             }
 
@@ -317,12 +351,23 @@ bool DebugUI::Draw(CloudParameters& p,
                     changed |= ImGui::SliderFloat("Ambient", &p.ambientIntensity, 0.0f, 2.0f, "%.2f");
                     changed |= ImGui::SliderFloat("HG eccentricity", &p.phaseG, -0.9f, 0.9f, "%.2f");
                     changed |= ImGui::SliderFloat("Light absorption", &p.lightAbsorption, 0.1f, 4.0f, "%.2f");
-                    changed |= ImGui::SliderInt("Local light steps", &p.lightSteps, 1, 12);
+                    changed |= ImGui::SliderInt("Local cone samples", &p.lightSteps, 1, 5);
                     changed |= ImGui::SliderFloat("Local light distance", &p.localLightDistance,
                                                   0.1f, 2.0f, "%.2f km");
-                    changed |= ImGui::SliderInt("Far light steps", &p.farLightSteps, 0, 8);
+                    changed |= ImGui::SliderFloat("Light cone radius", &p.lightConeRadius,
+                                                  0.0f, 0.5f, "%.3f km");
+                    changed |= ImGui::SliderInt("Far macro sample", &p.farLightSteps, 0, 1);
                     changed |= ImGui::SliderFloat("Powder", &p.powderStrength, 0.0f, 1.5f, "%.2f");
                     changed |= ImGui::SliderFloat("Multi scattering", &p.multiScatterStrength, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("MS extinction attenuation",
+                                                  &p.multiScatterExtinctionAttenuation,
+                                                  0.05f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("MS eccentricity attenuation",
+                                                  &p.multiScatterEccentricityAttenuation,
+                                                  0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("Ambient occlusion",
+                                                  &p.ambientOcclusionStrength,
+                                                  0.0f, 1.0f, "%.2f");
                     changed |= ImGui::SliderFloat("Silver lining", &p.silverLiningStrength, 0.0f, 2.0f, "%.2f");
                     changed |= ImGui::SliderFloat("Sky exposure", &p.skyExposure, 0.25f, 2.5f, "%.2f");
                 }
@@ -369,7 +414,43 @@ bool DebugUI::Draw(CloudParameters& p,
                     changed |= ImGui::InputFloat("Weather seed", &p.weatherSeed, 1.0f, 10.0f, "%.0f");
                 }
 
-                if (BeginParameterCategory("Presets", 5))
+                if (BeginParameterCategory("Placement", 5))
+                {
+                    changed |= ImGui::SliderInt(
+                        "Cell count", &p.placementCellCount, 8, 48);
+                    changed |= ImGui::SliderFloat(
+                        "Placement density", &p.placementDensity, 0.15f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat(
+                        "Radius min", &p.placementRadiusMin, 0.20f, 0.80f, "%.2f");
+                    changed |= ImGui::SliderFloat(
+                        "Radius max", &p.placementRadiusMax, 0.30f, 1.00f, "%.2f");
+                    p.placementRadiusMin =
+                        std::clamp(p.placementRadiusMin, 0.20f, 1.0f);
+                    p.placementRadiusMax =
+                        std::clamp(p.placementRadiusMax, p.placementRadiusMin, 1.0f);
+                    changed |= ImGui::SliderFloat(
+                        "Height variation", &p.placementHeightVariation,
+                        0.0f, 0.75f, "%.2f");
+                    changed |= ImGui::SliderFloat(
+                        "Top shrink", &p.placementTopShrink, 0.0f, 0.75f, "%.2f");
+                    changed |= ImGui::SliderFloat(
+                        "Edge softness (0 = Auto AA)",
+                        &p.placementEdgeSoftness, 0.0f, 0.35f, "%.2f");
+                    const float minimumRadiusTexels =
+                        p.placementRadiusMin * 512.0f /
+                        static_cast<float>((std::max)(p.placementCellCount, 1));
+                    if (minimumRadiusTexels < 4.0f)
+                    {
+                        ImGui::TextColored(
+                            ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                            "Minimum radius is %.1f texels; use fewer cells or a larger radius.",
+                            minimumRadiusTexels);
+                    }
+                    changed |= ImGui::SliderFloat(
+                        "Placement strength", &p.placementStrength, 0.0f, 1.0f, "%.2f");
+                }
+
+                if (BeginParameterCategory("Presets", 6))
                 {
                     ImGui::InputText("Name", m_presetName, IM_ARRAYSIZE(m_presetName));
                     if (ImGui::Button("Save"))
@@ -413,6 +494,7 @@ bool DebugUI::Draw(CloudParameters& p,
                 ImGui::TextUnformatted("Base cache: 128^3 RGBA8 (8.0 MiB, shape bands)");
                 ImGui::TextUnformatted("Detail cache: 128^3 RGBA8 (8.0 MiB)");
                 ImGui::TextUnformatted("Weather cache: 512^2 RGBA8 (1.0 MiB)");
+                ImGui::TextUnformatted("Placement cache: 512^2 RGBA8 (1.0 MiB)");
                 ImGui::SeparatorText("Persistent cache");
                 if (ImGui::Button("Save Noise Cache")) cacheActions.save = true;
                 ImGui::SameLine();
@@ -437,7 +519,9 @@ void DebugUI::DrawTelemetry(const CloudParameters& p, const TelemetrySnapshot& t
         "Lit", "Density", "Base Shape", "Detail", "Height", "Transmittance",
         "Cache Diff", "Seam Diff", "Base R", "Base G", "Base B", "Base A",
         "Light Visibility", "Phase", "Ambient", "Direct",
-        "Weather Coverage", "Weather Type", "Weather Base", "Weather Thickness"
+        "Weather Coverage", "Weather Type", "Weather Base", "Weather Thickness",
+        "Ambient Occlusion", "Resolved Opacity", "Temporal Confidence",
+        "Placement Support", "Placement Radius", "Placement Height"
     };
     const int modeCount = static_cast<int>(IM_ARRAYSIZE(modeNames));
     const char* mode = p.renderMode >= 0 && p.renderMode < modeCount ? modeNames[p.renderMode] : "Unknown";
@@ -449,7 +533,8 @@ void DebugUI::DrawTelemetry(const CloudParameters& p, const TelemetrySnapshot& t
     const float layerTop = p.cloudBaseHeight + (std::max)(p.heightVariation, 0.0f) +
         (std::max)(p.cloudThickness, 0.1f) *
         (1.0f + (std::clamp)(p.thicknessVariation, 0.0f, 1.0f)) *
-        (std::max)(p.cumulusGrowth, 1.0f);
+        (std::max)(p.cumulusGrowth, 1.0f) *
+        (1.0f + (std::clamp)(p.placementHeightVariation, 0.0f, 1.0f));
 
     const ImGuiIO& io = ImGui::GetIO();
     std::array<std::string, 8> lines;
@@ -588,9 +673,25 @@ void DebugUI::LoadPresets()
         p.detailPeriod = std::clamp(p.detailPeriod, 2, 8);
         p.detailOctaves = std::clamp(p.detailOctaves, 1, 4);
         p.viewSteps = std::clamp(p.viewSteps, 48, 256);
-        p.lightSteps = std::clamp(p.lightSteps, 1, 12);
-        p.farLightSteps = std::clamp(p.farLightSteps, 0, 8);
+        p.lightSteps = std::clamp(p.lightSteps, 1, 5);
+        p.farLightSteps = std::clamp(p.farLightSteps, 0, 1);
         p.boundaryRefineSteps = std::clamp(p.boundaryRefineSteps, 0, 5);
+        p.lightConeRadius = std::clamp(p.lightConeRadius, 0.0f, 0.5f);
+        p.ambientOcclusionStrength = std::clamp(p.ambientOcclusionStrength, 0.0f, 1.0f);
+        p.multiScatterExtinctionAttenuation =
+            std::clamp(p.multiScatterExtinctionAttenuation, 0.05f, 1.0f);
+        p.multiScatterEccentricityAttenuation =
+            std::clamp(p.multiScatterEccentricityAttenuation, 0.0f, 1.0f);
+        p.placementCellCount = std::clamp(p.placementCellCount, 8, 48);
+        p.placementDensity = std::clamp(p.placementDensity, 0.15f, 1.0f);
+        p.placementRadiusMin = std::clamp(p.placementRadiusMin, 0.20f, 1.0f);
+        p.placementRadiusMax =
+            std::clamp(p.placementRadiusMax, p.placementRadiusMin, 1.0f);
+        p.placementHeightVariation =
+            std::clamp(p.placementHeightVariation, 0.0f, 0.75f);
+        p.placementTopShrink = std::clamp(p.placementTopShrink, 0.0f, 0.75f);
+        p.placementEdgeSoftness = std::clamp(p.placementEdgeSoftness, 0.0f, 0.35f);
+        p.placementStrength = std::clamp(p.placementStrength, 0.0f, 1.0f);
     }
 }
 
@@ -605,8 +706,20 @@ bool DebugUI::RunWorldSpacePresetRoundTripTest()
     expected.cumulusGrowth = 1.6f;
     expected.anvilStrength = 0.45f;
     expected.detailErosionWidth = 0.7f;
-    expected.farLightSteps = 3;
+    expected.farLightSteps = 1;
     expected.boundaryRefineSteps = 4;
+    expected.lightConeRadius = 0.22f;
+    expected.ambientOcclusionStrength = 0.65f;
+    expected.multiScatterExtinctionAttenuation = 0.42f;
+    expected.multiScatterEccentricityAttenuation = 0.36f;
+    expected.placementCellCount = 24;
+    expected.placementDensity = 0.71f;
+    expected.placementRadiusMin = 0.42f;
+    expected.placementRadiusMax = 0.92f;
+    expected.placementHeightVariation = 0.48f;
+    expected.placementTopShrink = 0.63f;
+    expected.placementEdgeSoftness = 0.0f;
+    expected.placementStrength = 0.84f;
 
     std::ostringstream output;
     output << std::setprecision(9);
@@ -626,7 +739,7 @@ bool DebugUI::RunWorldSpacePresetRoundTripTest()
         ++applied;
     }
     const auto same = [](float a, float b) { return std::abs(a - b) < 1.0e-6f; };
-    return applied == 10 &&
+    return applied == 22 &&
         same(actual.detailNoiseWorldSize, expected.detailNoiseWorldSize) &&
         same(actual.baseNoiseVerticalSize, expected.baseNoiseVerticalSize) &&
         same(actual.detailNoiseVerticalSize, expected.detailNoiseVerticalSize) &&
@@ -636,7 +749,21 @@ bool DebugUI::RunWorldSpacePresetRoundTripTest()
         same(actual.anvilStrength, expected.anvilStrength) &&
         same(actual.detailErosionWidth, expected.detailErosionWidth) &&
         actual.farLightSteps == expected.farLightSteps &&
-        actual.boundaryRefineSteps == expected.boundaryRefineSteps;
+        actual.boundaryRefineSteps == expected.boundaryRefineSteps &&
+        same(actual.lightConeRadius, expected.lightConeRadius) &&
+        same(actual.ambientOcclusionStrength, expected.ambientOcclusionStrength) &&
+        same(actual.multiScatterExtinctionAttenuation,
+             expected.multiScatterExtinctionAttenuation) &&
+        same(actual.multiScatterEccentricityAttenuation,
+             expected.multiScatterEccentricityAttenuation) &&
+        actual.placementCellCount == expected.placementCellCount &&
+        same(actual.placementDensity, expected.placementDensity) &&
+        same(actual.placementRadiusMin, expected.placementRadiusMin) &&
+        same(actual.placementRadiusMax, expected.placementRadiusMax) &&
+        same(actual.placementHeightVariation, expected.placementHeightVariation) &&
+        same(actual.placementTopShrink, expected.placementTopShrink) &&
+        same(actual.placementEdgeSoftness, expected.placementEdgeSoftness) &&
+        same(actual.placementStrength, expected.placementStrength);
 }
 
 bool DebugUI::SavePreset(const std::string& name, const CloudParameters& p)

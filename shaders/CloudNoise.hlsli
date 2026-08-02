@@ -74,11 +74,27 @@ cbuffer CloudCB : register(b1)
     int boundaryRefineSteps;
     float _cloudPad0;
     float _cloudPad1;
+
+    float lightConeRadius;
+    float ambientOcclusionStrength;
+    float multiScatterExtinctionAttenuation;
+    float multiScatterEccentricityAttenuation;
+
+    int placementCellCount;
+    float placementDensity;
+    float placementRadiusMin;
+    float placementRadiusMax;
+
+    float placementHeightVariation;
+    float placementTopShrink;
+    float placementEdgeSoftness;
+    float placementStrength;
 };
 
 Texture3D<float4> baseNoiseTexture : register(t0);
 Texture3D<float4> detailNoiseTexture : register(t1);
 Texture2D<float4> weatherMapTexture : register(t2);
+Texture2D<float4> placementMapTexture : register(t3);
 SamplerState noiseVolumeSampler : register(s0);
 
 float3 WrapCell(float3 cell, float period)
@@ -259,7 +275,13 @@ float BaseShapeFromChannels(float4 baseChannels, float height01, float coverageV
     float threshold = saturate(noiseCutoffThreshold + coverageOffset + profileBias);
     float shaped = saturate((baseChannels.r - threshold) / max(1.0 - threshold, 0.001));
 
-    float worleyBands = dot(baseChannels.gba, float3(0.625, 0.25, 0.125));
+    // 하단은 연결된 저주파 덩어리를 유지하고, 중·상단은 중·고주파 Worley 비중을
+    // 높여 둥근 billow가 겹치는 적운 실루엣을 만든다.
+    float billowHeight = smoothstep(0.22, 0.82, height01);
+    float3 lowerWeights = float3(0.76, 0.18, 0.06);
+    float3 upperWeights = float3(0.48, 0.34, 0.18);
+    float3 worleyWeights = lerp(lowerWeights, upperWeights, billowHeight);
+    float worleyBands = dot(baseChannels.gba, worleyWeights);
     float macroBoundary = 1.0 - smoothstep(0.55, 0.95, shaped);
     return saturate(shaped - worleyBands * baseErosion * macroBoundary);
 }
@@ -267,24 +289,98 @@ float BaseShapeFromChannels(float4 baseChannels, float height01, float coverageV
 float4 ShapeCloudComponents(float4 baseChannels, float detail, float height, float height01)
 {
     float baseShape = BaseShapeFromChannels(baseChannels, height01, coverage);
-    // 고주파 detail은 코어가 아니라 경계에 집중해 실루엣을 보존하면서 솜털을 만든다.
+    // 하단에서는 Worley를 일부 반전해 가는 wispy breakup을 만들고, 중·상단에서는
+    // 일반 Worley 침식으로 cauliflower 모양의 둥근 경계를 만든다.
+    float lowerWispy = (1.0 - smoothstep(0.10, 0.34, height01)) * 0.55;
+    float erosionDetail = lerp(detail, 1.0 - detail, lowerWispy);
     float boundary = 1.0 - smoothstep(0.45, 0.92, baseShape);
-    float shaped = saturate(baseShape - detail * erosionStrength * boundary);
+    float shaped = saturate(baseShape - erosionDetail * erosionStrength * boundary);
     return float4(baseShape, detail, height, shaped * height);
 }
 
 float4 GenerateWeatherMap(float2 uv)
 {
     float2 p = uv;
-    float low = PeriodicFBM(float3(p * 4.0 + weatherSeed * 0.013, weatherSeed * 0.031), 4, 4.0);
-    float mid = PeriodicFBM(float3(p * 8.0 + float2(7.1, 3.7), weatherSeed * 0.047), 3, 8.0);
+    float cluster = PeriodicFBM(
+        float3(p * 3.0 + weatherSeed * 0.013, weatherSeed * 0.031), 4, 3.0);
+    float variation = PeriodicFBM(
+        float3(p * 8.0 + float2(7.1, 3.7), weatherSeed * 0.047), 3, 8.0);
     float type = PeriodicFBM(float3(p * 3.0 + float2(2.9, 5.3), weatherSeed * 0.059), 3, 3.0);
     float baseHeight = PeriodicValueNoise3D(
         float3(p * 2.0 + float2(11.0, 17.0), weatherSeed * 0.071), 2.0);
     float thickness = PeriodicFBM(
         float3(p * 2.0 + float2(19.0, 13.0), weatherSeed * 0.083), 3, 2.0);
-    float weatherCoverage = smoothstep(0.30, 0.76, low * 0.72 + mid * 0.28);
+    float clusterMask = smoothstep(0.34, 0.72, cluster);
+    float weatherCoverage = clusterMask * smoothstep(0.22, 0.82, variation);
     return saturate(float4(weatherCoverage, type, baseHeight, thickness));
+}
+
+float PlacementHash(float2 cell, float salt)
+{
+    float count = max((float)placementCellCount, 1.0);
+    float2 wrapped = cell - floor(cell / count) * count;
+    float3 p = float3(wrapped, weatherSeed * 0.173 + salt);
+    p = frac(p * float3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yzx + 33.33);
+    return frac((p.x + p.y) * p.z);
+}
+
+float4 GeneratePlacementMap(float2 uv)
+{
+    float cellCount = clamp((float)placementCellCount, 8.0, 48.0);
+    float2 gridPosition = frac(uv) * cellCount;
+    float2 baseCell = floor(gridPosition);
+    float2 local = frac(gridPosition);
+    float maximumProximity = 0.0;
+    float3 weightedAttributes = 0.0;
+    float attributeWeightSum = 0.0;
+
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    [unroll]
+    for (int x = -1; x <= 1; ++x)
+    {
+        float2 offset = float2(x, y);
+        float2 cell = baseCell + offset;
+        float2 jitter = lerp(
+            0.18, 0.82,
+            float2(PlacementHash(cell, 1.7), PlacementHash(cell, 9.2)));
+        float2 centerUv = frac((cell + jitter) / cellCount);
+        // 전체 weather RGBA를 후보마다 다시 만들지 않고 cluster FBM의 첫 octave만
+        // 같은 좌표로 평가한다. 중심 활성과 광역 군집의 상관관계는 유지된다.
+        float centerCluster = PeriodicValueNoise3D(
+            float3(centerUv * 3.0 + weatherSeed * 0.013, weatherSeed * 0.031), 3.0);
+        float centerCoverage = smoothstep(0.34, 0.72, centerCluster);
+        float activation = placementDensity *
+            lerp(0.32, 1.0, smoothstep(0.18, 0.78, centerCoverage));
+        if (PlacementHash(cell, 17.1) > activation)
+            continue;
+
+        float radiusVariation = PlacementHash(cell, 23.7);
+        float radius = clamp(
+            lerp(placementRadiusMin, placementRadiusMax, radiusVariation), 0.05, 1.0);
+        float normalizedDistance = length(offset + jitter - local) / radius;
+        float candidateProximity = saturate(1.0 - normalizedDistance);
+        float attributeProximity = saturate(1.15 - normalizedDistance);
+        if (attributeProximity > 0.0)
+        {
+            float attributeWeight = smoothstep(0.0, 1.0, attributeProximity);
+            float3 candidateAttributes = float3(
+                radiusVariation,
+                PlacementHash(cell, 31.9),
+                PlacementHash(cell, 43.1));
+            weightedAttributes += candidateAttributes * attributeWeight;
+            attributeWeightSum += attributeWeight;
+        }
+        maximumProximity = max(maximumProximity, candidateProximity);
+    }
+
+    if (maximumProximity < (1.0 / 255.0))
+        return 0.0;
+    float3 blendedAttributes = attributeWeightSum > 0.0
+        ? weightedAttributes / attributeWeightSum
+        : 0.0;
+    return float4(maximumProximity, blendedAttributes);
 }
 
 float2 WindOffsetWorld(float sampleTime)
@@ -303,6 +399,20 @@ float4 SampleWeather(float2 worldXZ, float sampleTime)
         0);
 }
 
+float4 SamplePlacement(float2 worldXZ, float sampleTime)
+{
+    float size = max(weatherWorldSize, 1.0);
+    return placementMapTexture.SampleLevel(
+        noiseVolumeSampler,
+        frac((worldXZ + WindOffsetWorld(sampleTime)) / size + float2(0.3125, 0.171875)),
+        0);
+}
+
+float PlacementCoarsePotential(float4 placement)
+{
+    return lerp(1.0, step(0.00001, placement.r), saturate(placementStrength));
+}
+
 void LocalCloudLayerBounds(float4 weather, out float localBase, out float localTop)
 {
     localBase = cloudBaseHeight + (weather.b * 2.0 - 1.0) * max(heightVariation, 0.0);
@@ -312,6 +422,38 @@ void LocalCloudLayerBounds(float4 weather, out float localBase, out float localT
         0.35, 0.75, saturate(weather.g + weatherTypeBias - 0.5));
     localThickness *= lerp(1.0, max(cumulusGrowth, 1.0), cloudType);
     localTop = localBase + localThickness;
+}
+
+void LocalCloudLayerBounds(
+    float4 weather, float4 placement, out float localBase, out float localTop)
+{
+    LocalCloudLayerBounds(weather, localBase, localTop);
+    float localThickness = localTop - localBase;
+    float placementHeightScale = max(
+        0.25,
+        1.0 + (placement.b * 2.0 - 1.0) * saturate(placementHeightVariation));
+    float heightScale = lerp(
+        1.0, placementHeightScale, saturate(placementStrength));
+    localTop = localBase + localThickness * heightScale;
+}
+
+float PlacementHeightSupport(float4 placement, float height01)
+{
+    float upper = smoothstep(0.45, 1.0, saturate(height01));
+    float profile = lerp(0.85, 1.15, placement.a);
+    float radiusScale = max(
+        0.25,
+        1.0 - upper * saturate(placementTopShrink) * profile);
+    float normalizedDistance = 1.0 - saturate(placement.r);
+    float radius = lerp(
+        placementRadiusMin, placementRadiusMax, saturate(placement.g));
+    float texelWidth = max((float)placementCellCount, 1.0) /
+        (512.0 * max(radius, 0.05));
+    float automaticEdge = min(0.35, 1.5 * texelWidth);
+    float edge = clamp(max(placementEdgeSoftness, automaticEdge), 0.001, 0.49);
+    float placedSupport = 1.0 - smoothstep(
+        max(radiusScale - edge, 0.0), radiusScale, normalizedDistance);
+    return lerp(1.0, placedSupport, saturate(placementStrength));
 }
 
 float WeatherCoverage(float4 weather)
@@ -364,13 +506,15 @@ float LayerHeightGradient(float height01, float cloudType)
 
 float3 AnimatedUVW(float3 uvw, float sampleTime);
 
-float4 EvaluateLayerCloudComponents(float3 worldPosition, float4 weather, float sampleTime)
+float4 EvaluateLayerCloudComponents(
+    float3 worldPosition, float4 weather, float4 placement, float sampleTime)
 {
     float localBase, localTop;
-    LocalCloudLayerBounds(weather, localBase, localTop);
+    LocalCloudLayerBounds(weather, placement, localBase, localTop);
     float height01 = saturate((worldPosition.y - localBase) / max(localTop - localBase, 0.1));
     float insideLayer = step(localBase, worldPosition.y) * step(worldPosition.y, localTop);
-    float potential = WeatherPotential(weather) * insideLayer;
+    float placementSupport = PlacementHeightSupport(placement, height01);
+    float potential = WeatherPotential(weather) * placementSupport * insideLayer;
     if (potential <= 0.0)
         return 0.0;
 
@@ -392,11 +536,38 @@ float4 EvaluateLayerCloudComponents(float3 worldPosition, float4 weather, float 
     float3 detailUVW = WorldToDetailUVW(worldPosition, weather, sampleTime);
     float detail = DetailErosionFromChannels(
         detailNoiseTexture.SampleLevel(noiseVolumeSampler, detailUVW, 0));
+    float lowerWispy = (1.0 - smoothstep(0.10, 0.34, height01)) * 0.55;
+    float erosionDetail = lerp(detail, 1.0 - detail, lowerWispy);
     float erosionStart = saturate(1.0 - max(detailErosionWidth, 0.05));
     float boundary = 1.0 - smoothstep(erosionStart, 0.95, baseShape);
-    float shaped = saturate(baseShape - detail * erosionStrength * boundary);
+    float shaped = saturate(baseShape - erosionDetail * erosionStrength * boundary);
     return float4(baseShape * potential, detail * potential, height * potential,
                   shaped * height * potential);
+}
+
+// 원거리 광선과 ambient occlusion에서 detail texture를 생략하는 보수적인 macro 밀도.
+// view ray의 최종 density에는 사용하지 않아 실루엣 정보는 그대로 보존한다.
+float EvaluateLayerCloudMacroDensity(
+    float3 worldPosition, float4 weather, float4 placement, float sampleTime)
+{
+    float localBase, localTop;
+    LocalCloudLayerBounds(weather, placement, localBase, localTop);
+    float insideLayer = step(localBase, worldPosition.y) * step(worldPosition.y, localTop);
+    float height01 = saturate((worldPosition.y - localBase) / max(localTop - localBase, 0.1));
+    float potential =
+        WeatherPotential(weather) * PlacementHeightSupport(placement, height01) * insideLayer;
+    if (potential <= 0.0)
+        return 0.0;
+    float4 baseChannels = baseNoiseTexture.SampleLevel(
+        noiseVolumeSampler, WorldToBaseUVW(worldPosition, weather, sampleTime), 0);
+    float baseShape = BaseShapeFromChannels(baseChannels, height01, WeatherCoverage(weather));
+    float cloudType = smoothstep(
+        0.35, 0.75, saturate(weather.g + weatherTypeBias - 0.5));
+    float anvilBand = smoothstep(0.52, 0.76, height01) *
+        (1.0 - smoothstep(0.90, 1.0, height01));
+    baseShape = saturate(baseShape +
+        anvilBand * cloudType * saturate(anvilStrength) * (1.0 - baseShape) * 0.45);
+    return baseShape * LayerHeightGradient(height01, weather.g) * potential;
 }
 
 float3 AnimatedUVW(float3 uvw, float sampleTime)
@@ -470,22 +641,32 @@ float EvaluatePeriodicSeamError(float3 uvw)
     return error;
 }
 
-float HenyeyGreenstein(float cosTheta)
+float HenyeyGreensteinWithG(float cosTheta, float eccentricity)
 {
-    float g = clamp(phaseG, -0.9, 0.9);
+    float g = clamp(eccentricity, -0.9, 0.9);
     float g2 = g * g;
     return 0.07957747 * (1.0 - g2) /
         max(pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5), 0.001);
 }
 
-float DualLobePhase(float cosTheta)
+float DualLobePhaseWithG(float cosTheta, float eccentricity)
 {
-    float forward = HenyeyGreenstein(cosTheta);
+    float forward = HenyeyGreensteinWithG(cosTheta, eccentricity);
     float backwardG = -0.22;
     float backwardG2 = backwardG * backwardG;
     float backward = 0.07957747 * (1.0 - backwardG2) /
         max(pow(1.0 + backwardG2 - 2.0 * backwardG * cosTheta, 1.5), 0.001);
     return lerp(backward, forward, 0.82);
+}
+
+float HenyeyGreenstein(float cosTheta)
+{
+    return HenyeyGreensteinWithG(cosTheta, phaseG);
+}
+
+float DualLobePhase(float cosTheta)
+{
+    return DualLobePhaseWithG(cosTheta, phaseG);
 }
 
 #endif

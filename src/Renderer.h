@@ -91,7 +91,7 @@ private:
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
 
-    // HLSL cbCamera와 정확히 일치하는 96바이트 상수 버퍼.
+    // HLSL cbCamera와 정확히 일치하는 112바이트 상수 버퍼.
     struct CameraCB
     {
         DirectX::XMFLOAT4X4 invViewProj;
@@ -99,6 +99,8 @@ private:
         float time;
         DirectX::XMFLOAT2 rayJitterNdc;
         DirectX::XMFLOAT2 renderSize;
+        unsigned int temporalOutput;
+        unsigned int _pad[3];
     };
 
     struct TemporalCB
@@ -109,6 +111,8 @@ private:
         DirectX::XMFLOAT2 windDeltaWorld;
         float historyWeight;
         unsigned int historyValid;
+        unsigned int temporalDebugMode;
+        unsigned int _pad[3];
     };
 
     struct NoisePreviewCB
@@ -128,8 +132,8 @@ private:
 
     static_assert(sizeof(NoisePreviewCB) == 16);
     static_assert(sizeof(NoiseVolumeGenerationCB) == 16);
-    static_assert(sizeof(CameraCB) == 96);
-    static_assert(sizeof(TemporalCB) == 96);
+    static_assert(sizeof(CameraCB) == 112);
+    static_assert(sizeof(TemporalCB) == 112);
 
     template <typename T>
     using ComPtr = Microsoft::WRL::ComPtr<T>;
@@ -166,6 +170,7 @@ private:
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2> m_noiseVolumeUavs;
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> m_noiseVolumeSrvs;
     WeatherMapResources m_weatherMap;
+    PlacementMapResources m_placementMap;
 
     ComPtr<ID3D11Texture2D> m_halfCloudColor;
     ComPtr<ID3D11RenderTargetView> m_halfCloudColorRtv;
@@ -232,6 +237,7 @@ private:
     std::wstring m_psPath;
     std::wstring m_rayLibPath;
     std::wstring m_cloudNoisePath;
+    std::wstring m_cloudAtmospherePath;
     std::wstring m_previewPath;
     std::wstring m_noiseVolumeCsPath;
     std::wstring m_temporalPath;

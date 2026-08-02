@@ -22,7 +22,7 @@ HLSL(`.hlsl`)은 **사람이 읽는 소스 코드**다. GPU는 이걸 바로 실
 |---|---|---|
 | 시점 | 첫 실행 / 소스 변경 시 | 두 번째 실행 이후(캐시 히트) |
 | 하는 일 | `D3DCompileFromFile`로 HLSL을 그 자리에서 컴파일 (셰이더 9개) | 파일에서 바이트코드를 읽어 바로 셰이더 객체 생성 |
-| 노이즈 리소스 | 컴퓨트 셰이더로 128³+128³+512² 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
+| 노이즈 리소스 | 컴퓨트 셰이더로 128³+128³+512² weather/placement 새로 굽기 | 디스크(`.vcnoise`)에서 읽어 바로 업로드 |
 | 비용 성격 | 컴파일 9회 + compute dispatch 3회 | 컴파일·dispatch 0회 |
 
 **미리 컴파일의 이점 정리**
@@ -68,7 +68,7 @@ m_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(),
 ```
 
 ### 노이즈 텍스처는 경로가 다르다
-3D base/detail은 `CreateTexture3D`, 2D weather는 `CreateTexture2D`의 초기 데이터로 GPU에 올린다. weather는 RGBA에 coverage/type/base-height/thickness를 저장한다.
+3D base/detail은 `CreateTexture3D`, 2D weather/placement는 `CreateTexture2D`의 초기 데이터로 GPU에 올린다. weather는 coverage/type/base-height/thickness, placement는 support/radius/height/profile을 RGBA에 저장한다.
 
 ---
 
@@ -113,6 +113,9 @@ D3DCompileFromFile(path, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
 `LoadPreferred`가 사용자 캐시를 먼저 시도하고, 없거나 무효면 기본 캐시로 폴백한다.
 
 ### 번들 구성
+
+현재 호환 버전은 v10이다. 272바이트 `CloudCB`, 중심 support union과 혼합 속성을 저장하는 512² RGBA8 placement map, 공통 `CloudAtmosphere.hlsli`, scattering/transmittance temporal 경로의 source hash와 함께 배포한다. v9 이하 manifest는 거부하고 새 bundle을 생성한다.
+
 ```
 bundle/
   ├ manifest.bin       ← 매직/버전/해시/파라미터 (유효성 판정)
@@ -127,14 +130,15 @@ bundle/
   ├ noise_cs_weather.cso┘
   ├ base.vcnoise       ← 128³ RGBA8  (8 MB, Perlin-Worley + Worley 3밴드)
   ├ detail.vcnoise     ← 128³ RGBA8  (8 MB, Worley 옥타브 4채널)
-  └ weather.vcnoise    ← 512² RGBA8  (1 MB, coverage/type/base-height/thickness)
+  ├ weather.vcnoise    ← 512² RGBA8  (1 MB, coverage/type/base-height/thickness)
+  └ placement.vcnoise  ← 512² RGBA8  (1 MB, support union/blended radius-height-profile)
 ```
 `.vcnoise`는 헤더(매직/버전/크기/포맷) + 원시 볼륨 바이트. `.cso`는 순수 DXBC 바이트코드.
 
 ### 캐시 검증 — 두 개의 해시 (FNV-1a)
 `manifest.bin`에는 두 해시가 저장되고, 로드 시(`LoadBundle`, 225-258행) 각각 다르게 쓰인다.
 
-- **ParameterHash** — 노이즈 생성 파라미터(worldScale/period/seed/octaves/weatherSeed)의 해시.
+- **ParameterHash** — 노이즈 생성 파라미터(worldScale/period/seed/octaves/weatherSeed와 placement cell/density/radius)의 해시. placement height/taper/edge/strength는 runtime 값이라 제외한다.
   로드 시 `manifest.parameterHash != ParameterHash(manifest.params)`이면 **캐시를 거부**한다.
   이건 "번들이 손상/변조되지 않았는가"를 확인하는 **무결성 검사**이자, *이 볼륨이 어떤
   파라미터로 구워졌는지*를 기록하는 서명이다. (매직/버전/크기/포맷도 함께 검증)
@@ -159,10 +163,10 @@ GPU 텍스처 ──CopyResource──▶ STAGING 텍스처 ──Map(READ)─�
 `SaveBundle`은 활성 디렉터리를 직접 rename하지 않는다.
 
 ```text
-bundle-v7-<generation>.tmp
+bundle-v10-<generation>.tmp
   → 파일 flush
   → manifest/셰이더/볼륨을 실제 D3D 리소스로 재로드 검증
-  → bundle-v7-<generation> 게시
+  → bundle-v10-<generation> 게시
   → active-bundle.tmp 기록
   → active-bundle.txt만 원자적 교체
 ```
@@ -215,7 +219,7 @@ target_link_libraries(VolumetricCloud PRIVATE DirectXTex)
 | | 캐시 히트 | 캐시 미스 (첫 실행/소스 변경) |
 |---|---|---|
 | HLSL 컴파일 | 0회 | 9회 (`D3DCompileFromFile`) |
-| 노이즈 굽기 | 0회 (파일 로드) | 컴퓨트 디스패치 3회 (128³+128³+512²) |
+| 노이즈 굽기 | 0회 (파일 로드) | 컴퓨트 디스패치 3회 (128³+128³+512² weather/placement 동시 출력) |
 
 ---
 
@@ -231,7 +235,7 @@ target_link_libraries(VolumetricCloud PRIVATE DirectXTex)
 **싼 trilinear 조회 1번**으로 대체한다 = 공간↔시간 트레이드오프. `useTextureCache`로 절차식↔캐시 전환.
 
 ### Q. Compute Shader를 쓰나? PS/VS랑 뭐가 다른가?
-쓴다. **`NoiseVolumeCS.hlsl`**의 `CSBase`/`CSDetail`/`CSWeather`(`cs_5_0`)가 각각 3D 형태, 3D 침식, 2D 광역 분포를 굽는다.
+쓴다. **`NoiseVolumeCS.hlsl`**의 `CSBase`/`CSDetail`/`CSWeather`(`cs_5_0`)가 각각 3D 형태, 3D 침식, 2D weather와 placement를 굽는다.
 
 | | VS / PS | Compute Shader |
 |---|---|---|
@@ -240,7 +244,7 @@ target_link_libraries(VolumetricCloud PRIVATE DirectXTex)
 | 출력 | 렌더 타깃의 고정 위치 | **UAV**에 임의 위치 쓰기 (RWTexture3D 등) |
 
 **"스레드 1개 = 복셀 1개"** 구조. `[numthreads(4,4,4)]`, `SV_DispatchThreadID`가 복셀 좌표.
-128³ = 약 210만 복셀을 GPU가 병렬로 계산하며, weather는 512² texel을 8×8 thread group으로 채운다. 요약: **PS는 "화면에 그리고",
+128³ = 약 210만 복셀을 GPU가 병렬로 계산하며, weather와 placement는 같은 512² dispatch에서 8×8 thread group으로 채운다. 요약: **PS는 "화면에 그리고",
 CS는 "데이터를 계산해 메모리에 채운다"**.
 
 ### Q. `.vcnoise`는 어떻게 생성되나? 라이브러리를 쓰나?
@@ -252,7 +256,7 @@ GPU 텍스처 ─CopyResource→ STAGING 텍스처 ─Map(READ)→ CPU 버퍼 �
               읽기 가능한 스테이징으로 복사)
 ```
 `VolumeHeader`(매직/버전/크기/포맷) 40바이트 뒤에 복셀 데이터를 그대로 붙인다.
-base = 128³ × 4바이트 = 8 MB, detail = 128³ × 4바이트 = 8 MB, weather = 512² × 4바이트 = 1 MB다.
+base = 128³ × 4바이트 = 8 MB, detail = 128³ × 4바이트 = 8 MB, weather와 placement는 각각 512² × 4바이트 = 1 MB다.
 
 ### Q. v4에서 base가 다시 RGBA8이 된 이유는?
 v3의 base R8은 단일 실루엣에는 효율적이었지만 저·중·고주파 형태를 렌더 시점에 다시 조합할 수 없어 큰 흐린 덩어리로 보였다. v4는 중복 채널이 아니라 서로 다른 정보를 저장한다.

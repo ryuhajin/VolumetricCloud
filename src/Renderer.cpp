@@ -87,11 +87,12 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool forceRebuildCache)
     m_psPath = m_shaderDir + L"VolumetricClouds.hlsl";
     m_rayLibPath = m_shaderDir + L"Ray.hlsli";
     m_cloudNoisePath = m_shaderDir + L"CloudNoise.hlsli";
+    m_cloudAtmospherePath = m_shaderDir + L"CloudAtmosphere.hlsli";
     m_previewPath = m_shaderDir + L"NoisePreview.hlsl";
     m_noiseVolumeCsPath = m_shaderDir + L"NoiseVolumeCS.hlsl";
     m_temporalPath = m_shaderDir + L"TemporalResolve.hlsl";
     m_compositePath = m_shaderDir + L"Composite.hlsl";
-    m_shaderPaths = { m_vsPath, m_psPath, m_rayLibPath, m_cloudNoisePath,
+    m_shaderPaths = { m_vsPath, m_psPath, m_rayLibPath, m_cloudNoisePath, m_cloudAtmospherePath,
                       m_previewPath, m_noiseVolumeCsPath, m_temporalPath, m_compositePath };
 
     // ---- 스왑체인 + 디바이스 + 컨텍스트 생성 ----
@@ -128,7 +129,8 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool forceRebuildCache)
     m_noiseCacheManager.Init(ResolveDefaultCacheDir(), m_shaderPaths);
     m_cacheLoaded = !forceRebuildCache && m_noiseCacheManager.LoadPreferred(
         m_device.Get(), m_cloudParams, m_shaderBlobs,
-        m_noiseVolumes, m_noiseVolumeUavs, m_noiseVolumeSrvs, m_weatherMap, m_sourceModified);
+        m_noiseVolumes, m_noiseVolumeUavs, m_noiseVolumeSrvs,
+        m_weatherMap, m_placementMap, m_sourceModified);
     if (m_cacheLoaded)
     {
         if (!CreateShadersFromBlobs(m_shaderBlobs)) return false;
@@ -430,6 +432,12 @@ bool Renderer::CreateNoiseVolumeResources()
             m_weatherMap.texture.Get(), nullptr, &m_weatherMap.uav))) return false;
     if (FAILED(m_device->CreateShaderResourceView(
             m_weatherMap.texture.Get(), nullptr, &m_weatherMap.srv))) return false;
+    if (FAILED(m_device->CreateTexture2D(
+            &weatherDesc, nullptr, &m_placementMap.texture))) return false;
+    if (FAILED(m_device->CreateUnorderedAccessView(
+            m_placementMap.texture.Get(), nullptr, &m_placementMap.uav))) return false;
+    if (FAILED(m_device->CreateShaderResourceView(
+            m_placementMap.texture.Get(), nullptr, &m_placementMap.srv))) return false;
 
     return true;
 }
@@ -491,14 +499,14 @@ bool Renderer::CreateTemporalResources()
     const UINT halfHeight = (std::max)(1, (m_height + 1) / 2);
     if (!createTarget(halfWidth, halfHeight, DXGI_FORMAT_R11G11B10_FLOAT,
                       m_halfCloudColor, m_halfCloudColorRtv, m_halfCloudColorSrv) ||
-        !createTarget(halfWidth, halfHeight, DXGI_FORMAT_R16_FLOAT,
+        !createTarget(halfWidth, halfHeight, DXGI_FORMAT_R16G16_FLOAT,
                       m_halfCloudDepth, m_halfCloudDepthRtv, m_halfCloudDepthSrv))
         return false;
     for (size_t i = 0; i < 2; ++i)
     {
         if (!createTarget(m_width, m_height, DXGI_FORMAT_R11G11B10_FLOAT,
                           m_historyColor[i], m_historyColorRtv[i], m_historyColorSrv[i]) ||
-            !createTarget(m_width, m_height, DXGI_FORMAT_R16_FLOAT,
+            !createTarget(m_width, m_height, DXGI_FORMAT_R16G16_FLOAT,
                           m_historyDepth[i], m_historyDepthRtv[i], m_historyDepthSrv[i]))
             return false;
     }
@@ -661,8 +669,8 @@ void Renderer::EndGpuTotalTimer()
 
 void Renderer::GenerateNoiseVolumes()
 {
-    ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
-    m_context->PSSetShaderResources(0, 3, nullSrvs);
+    ID3D11ShaderResourceView* nullSrvs[4] = {};
+    m_context->PSSetShaderResources(0, 4, nullSrvs);
     m_context->CSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
     m_context->CSSetConstantBuffers(2, 1, m_noiseVolumeGenerationCb.GetAddressOf());
 
@@ -697,12 +705,14 @@ void Renderer::GenerateNoiseVolumes()
         m_context->Unmap(m_noiseVolumeGenerationCb.Get(), 0);
     }
     m_context->CSSetShader(m_noiseWeatherCs.Get(), nullptr, 0);
-    ID3D11UnorderedAccessView* weatherUav = m_weatherMap.uav.Get();
-    m_context->CSSetUnorderedAccessViews(3, 1, &weatherUav, nullptr);
+    ID3D11UnorderedAccessView* fieldUavs[2] = {
+        m_weatherMap.uav.Get(), m_placementMap.uav.Get()
+    };
+    m_context->CSSetUnorderedAccessViews(3, 2, fieldUavs, nullptr);
     m_context->Dispatch(64, 64, 1);
     ++m_noiseDispatchCount;
-    ID3D11UnorderedAccessView* nullWeatherUav = nullptr;
-    m_context->CSSetUnorderedAccessViews(3, 1, &nullWeatherUav, nullptr);
+    ID3D11UnorderedAccessView* nullFieldUavs[2] = {};
+    m_context->CSSetUnorderedAccessViews(3, 2, nullFieldUavs, nullptr);
     m_context->CSSetShader(nullptr, nullptr, 0);
     m_noiseCacheDirty = false;
     m_previewDirty = true;
@@ -834,8 +844,10 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     const CloudParameters previousParams = m_cloudParams;
     const bool previousTemporalEnabled = m_temporalEnabled;
     NoiseCacheUiActions cacheActions;
-    if (m_debugUI.Draw(m_cloudParams, m_previewSettings, previewViews, m_weatherMap.srv.Get(),
-                       m_previewDirty, m_temporalEnabled, cacheActions))
+    if (m_debugUI.Draw(
+            m_cloudParams, m_previewSettings, previewViews,
+            m_weatherMap.srv.Get(), m_placementMap.srv.Get(),
+            m_previewDirty, m_temporalEnabled, cacheActions))
     {
         m_previewDirty = true;
         ResetTemporalHistory();
@@ -845,7 +857,11 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
             previousParams.seed != m_cloudParams.seed ||
             previousParams.baseOctaves != m_cloudParams.baseOctaves ||
             previousParams.detailOctaves != m_cloudParams.detailOctaves ||
-            previousParams.weatherSeed != m_cloudParams.weatherSeed)
+            previousParams.weatherSeed != m_cloudParams.weatherSeed ||
+            previousParams.placementCellCount != m_cloudParams.placementCellCount ||
+            previousParams.placementDensity != m_cloudParams.placementDensity ||
+            previousParams.placementRadiusMin != m_cloudParams.placementRadiusMin ||
+            previousParams.placementRadiusMax != m_cloudParams.placementRadiusMax)
         {
             m_noiseCacheDirty = true;
             m_cacheStatus = "Unsaved";
@@ -868,9 +884,10 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         std::array<ComPtr<ID3D11UnorderedAccessView>, 2> loadedUavs;
         std::array<ComPtr<ID3D11ShaderResourceView>, 2> loadedSrvs;
         WeatherMapResources loadedWeather;
+        PlacementMapResources loadedPlacement;
         if (m_noiseCacheManager.LoadPreferred(m_device.Get(), loadedParams, loadedBlobs,
                                                loadedVolumes, loadedUavs, loadedSrvs,
-                                               loadedWeather, modified) &&
+                                               loadedWeather, loadedPlacement, modified) &&
             CreateShadersFromBlobs(loadedBlobs))
         {
             m_cloudParams = loadedParams;
@@ -878,6 +895,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
             m_noiseVolumeUavs = loadedUavs;
             m_noiseVolumeSrvs = loadedSrvs;
             m_weatherMap = loadedWeather;
+            m_placementMap = loadedPlacement;
             m_noiseCacheDirty = false;
             m_sourceModified = modified;
             m_cacheStatus = modified ? "Source Modified" : "Saved";
@@ -892,7 +910,11 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
 
     const float cloudTime = m_previewSettings.freeze ? m_previewSettings.previewTime : timeSeconds;
     if (!m_previewSettings.freeze) m_previewDirty = true;
-    const bool temporalActive = m_temporalEnabled && m_cloudParams.renderMode == 0;
+    const bool temporalDebug =
+        m_cloudParams.renderMode == static_cast<int>(CloudRenderMode::ResolvedOpacity) ||
+        m_cloudParams.renderMode == static_cast<int>(CloudRenderMode::TemporalHistoryConfidence);
+    const bool temporalActive = m_temporalEnabled &&
+        (m_cloudParams.renderMode == 0 || temporalDebug);
     const int halfWidth = (std::max)(1, (m_width + 1) / 2);
     const int halfHeight = (std::max)(1, (m_height + 1) / 2);
 
@@ -905,6 +927,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     cb.renderSize = XMFLOAT2(
         static_cast<float>(temporalActive ? halfWidth : m_width),
         static_cast<float>(temporalActive ? halfHeight : m_height));
+    cb.temporalOutput = temporalActive ? 1u : 0u;
     static constexpr XMFLOAT2 jitterPixels[4] = {
         { -0.25f, -0.25f }, { 0.25f, -0.25f },
         { -0.25f, 0.25f }, { 0.25f, 0.25f }
@@ -955,6 +978,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         m_cloudParams.windDirection.y * windScale);
     temporalCb.historyWeight = 0.85f;
     temporalCb.historyValid = m_historyValid ? 1u : 0u;
+    temporalCb.temporalDebugMode = temporalDebug
+        ? static_cast<unsigned int>(m_cloudParams.renderMode) : 0u;
     if (SUCCEEDED(m_context->Map(m_temporalCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
     {
         memcpy(mapped.pData, &temporalCb, sizeof(temporalCb));
@@ -972,7 +997,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         m_cacheStatus = "Saving";
         const bool saved = m_noiseCacheManager.SaveUser(
             m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
-            m_noiseVolumes, m_weatherMap);
+            m_noiseVolumes, m_weatherMap, m_placementMap);
         m_cacheStatus = saved ? "Saved" : "Error: " + m_noiseCacheManager.LastError();
     }
     // 패널이 기본 숨김인 동안에는 비싼 4-MRT 절차식 미리보기를 만들지 않는다.
@@ -987,10 +1012,11 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     m_context->PSSetShader(m_ps.Get(), nullptr, 0);
     m_context->PSSetConstantBuffers(0, 1, m_cb.GetAddressOf());
     m_context->PSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
-    ID3D11ShaderResourceView* noiseSrvs[3] = {
-        m_noiseVolumeSrvs[0].Get(), m_noiseVolumeSrvs[1].Get(), m_weatherMap.srv.Get()
+    ID3D11ShaderResourceView* noiseSrvs[4] = {
+        m_noiseVolumeSrvs[0].Get(), m_noiseVolumeSrvs[1].Get(),
+        m_weatherMap.srv.Get(), m_placementMap.srv.Get()
     };
-    m_context->PSSetShaderResources(0, 3, noiseSrvs);
+    m_context->PSSetShaderResources(0, 4, noiseSrvs);
     m_context->PSSetSamplers(0, 1, m_noiseSampler.GetAddressOf());
     D3D11_VIEWPORT vp = {};
     vp.MaxDepth = 1.0f;
@@ -1039,12 +1065,17 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         m_context->PSSetShaderResources(0, 4, nullSrvs);
         m_context->OMSetRenderTargets(1, m_rtv.GetAddressOf(), nullptr);
         m_context->PSSetShader(m_compositePs.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* resolved = m_historyColorSrv[currentHistory].Get();
-        m_context->PSSetShaderResources(0, 1, &resolved);
+        m_context->PSSetConstantBuffers(0, 1, m_cb.GetAddressOf());
+        m_context->PSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
+        ID3D11ShaderResourceView* resolved[2] = {
+            m_historyColorSrv[currentHistory].Get(), m_historyDepthSrv[currentHistory].Get()
+        };
+        m_context->PSSetShaderResources(4, 2, resolved);
         m_context->PSSetSamplers(0, 1, m_linearClampSampler.GetAddressOf());
         RenderFullscreenTriangle();
         EndReconstructionTimer();
-        m_context->PSSetShaderResources(0, 4, nullSrvs);
+        ID3D11ShaderResourceView* nullCompositeSrvs[2] = {};
+        m_context->PSSetShaderResources(4, 2, nullCompositeSrvs);
         m_historyValid = true;
         m_historyIndex = previousHistory;
         ++m_temporalFrameIndex;
@@ -1099,7 +1130,7 @@ bool Renderer::SaveDefaultNoiseCache()
     if (m_noiseCacheDirty) GenerateNoiseVolumes();
     return m_noiseCacheManager.SaveDefault(
         m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
-        m_noiseVolumes, m_weatherMap);
+        m_noiseVolumes, m_weatherMap, m_placementMap);
 }
 
 bool Renderer::RunCodeTests()
@@ -1251,6 +1282,249 @@ bool Renderer::RunCodeTests()
         }
     }
 
+    D3D11_TEXTURE2D_DESC placementDesc = {};
+    m_placementMap.texture->GetDesc(&placementDesc);
+    const bool placementLayout =
+        placementDesc.Width == 512 && placementDesc.Height == 512 &&
+        placementDesc.ArraySize == 1 && placementDesc.MipLevels == 1 &&
+        placementDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM &&
+        m_placementMap.srv && m_placementMap.uav;
+    bool placementDistribution = false;
+    bool placementChannelsFinite = false;
+    std::vector<unsigned char> placementBytesA;
+    if (placementLayout)
+    {
+        D3D11_TEXTURE2D_DESC readDesc = placementDesc;
+        readDesc.Usage = D3D11_USAGE_STAGING;
+        readDesc.BindFlags = 0;
+        readDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        readDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture2D> readback;
+        if (SUCCEEDED(m_device->CreateTexture2D(&readDesc, nullptr, &readback)))
+        {
+            m_context->CopyResource(readback.Get(), m_placementMap.texture.Get());
+            D3D11_MAPPED_SUBRESOURCE placementMapped = {};
+            if (SUCCEEDED(m_context->Map(
+                    readback.Get(), 0, D3D11_MAP_READ, 0, &placementMapped)))
+            {
+                std::array<unsigned char, 4> channelMin = { 255, 255, 255, 255 };
+                std::array<unsigned char, 4> channelMax = { 0, 0, 0, 0 };
+                uint64_t emptyTexels = 0;
+                uint64_t supportedTexels = 0;
+                placementBytesA.resize(
+                    static_cast<size_t>(placementDesc.Width) * placementDesc.Height * 4);
+                for (UINT y = 0; y < placementDesc.Height; ++y)
+                {
+                    const auto* row =
+                        static_cast<const unsigned char*>(placementMapped.pData) +
+                        static_cast<size_t>(y) * placementMapped.RowPitch;
+                    std::memcpy(
+                        placementBytesA.data() +
+                            static_cast<size_t>(y) * placementDesc.Width * 4,
+                        row, static_cast<size_t>(placementDesc.Width) * 4);
+                    for (UINT x = 0; x < placementDesc.Width; ++x)
+                    {
+                        const auto* texel = row + static_cast<size_t>(x) * 4;
+                        for (size_t c = 0; c < 4; ++c)
+                        {
+                            channelMin[c] = (std::min)(channelMin[c], texel[c]);
+                            channelMax[c] = (std::max)(channelMax[c], texel[c]);
+                        }
+                        emptyTexels += texel[0] == 0;
+                        supportedTexels += texel[0] > 0;
+                    }
+                }
+                m_context->Unmap(readback.Get(), 0);
+                const uint64_t texelCount =
+                    static_cast<uint64_t>(placementDesc.Width) * placementDesc.Height;
+                placementChannelsFinite = true; // UNORM readback guarantees finite [0, 1].
+                placementDistribution =
+                    emptyTexels > texelCount / 20 &&
+                    supportedTexels > texelCount / 20 &&
+                    channelMax[0] >= 240 && channelMin[0] == 0 &&
+                    channelMax[1] > channelMin[1] + 8 &&
+                    channelMax[2] > channelMin[2] + 8 &&
+                    channelMax[3] > channelMin[3] + 8;
+            }
+        }
+    }
+    bool placementDeterministic = false;
+    if (!placementBytesA.empty())
+    {
+        NoiseVolumeGenerationCB fieldCb = { 512, 2, { 0, 0 } };
+        D3D11_MAPPED_SUBRESOURCE fieldMapped = {};
+        if (SUCCEEDED(m_context->Map(
+                m_noiseVolumeGenerationCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &fieldMapped)))
+        {
+            std::memcpy(fieldMapped.pData, &fieldCb, sizeof(fieldCb));
+            m_context->Unmap(m_noiseVolumeGenerationCb.Get(), 0);
+            m_context->CSSetShader(m_noiseWeatherCs.Get(), nullptr, 0);
+            m_context->CSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
+            m_context->CSSetConstantBuffers(
+                2, 1, m_noiseVolumeGenerationCb.GetAddressOf());
+            ID3D11UnorderedAccessView* fieldUavs[2] = {
+                m_weatherMap.uav.Get(), m_placementMap.uav.Get()
+            };
+            m_context->CSSetUnorderedAccessViews(3, 2, fieldUavs, nullptr);
+            m_context->Dispatch(64, 64, 1);
+            ID3D11UnorderedAccessView* nullFieldUavs[2] = {};
+            m_context->CSSetUnorderedAccessViews(3, 2, nullFieldUavs, nullptr);
+            m_context->CSSetShader(nullptr, nullptr, 0);
+
+            D3D11_TEXTURE2D_DESC readDesc = placementDesc;
+            readDesc.Usage = D3D11_USAGE_STAGING;
+            readDesc.BindFlags = 0;
+            readDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            readDesc.MiscFlags = 0;
+            ComPtr<ID3D11Texture2D> readback;
+            if (SUCCEEDED(m_device->CreateTexture2D(&readDesc, nullptr, &readback)))
+            {
+                m_context->CopyResource(readback.Get(), m_placementMap.texture.Get());
+                D3D11_MAPPED_SUBRESOURCE mappedPlacement = {};
+                if (SUCCEEDED(m_context->Map(
+                        readback.Get(), 0, D3D11_MAP_READ, 0, &mappedPlacement)))
+                {
+                    placementDeterministic = true;
+                    for (UINT y = 0; y < placementDesc.Height && placementDeterministic; ++y)
+                    {
+                        const auto* row =
+                            static_cast<const unsigned char*>(mappedPlacement.pData) +
+                            static_cast<size_t>(y) * mappedPlacement.RowPitch;
+                        placementDeterministic =
+                            std::memcmp(
+                                row,
+                                placementBytesA.data() +
+                                    static_cast<size_t>(y) * placementDesc.Width * 4,
+                                static_cast<size_t>(placementDesc.Width) * 4) == 0;
+                    }
+                    m_context->Unmap(readback.Get(), 0);
+                }
+            }
+        }
+    }
+
+    const auto uploadCloudParameters = [&](const CloudParameters& parameters)
+    {
+        D3D11_MAPPED_SUBRESOURCE cloudMapped = {};
+        if (FAILED(m_context->Map(
+                m_cloudCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &cloudMapped)))
+            return false;
+        std::memcpy(cloudMapped.pData, &parameters, sizeof(parameters));
+        m_context->Unmap(m_cloudCb.Get(), 0);
+        return true;
+    };
+    const auto dispatchFields = [&]()
+    {
+        NoiseVolumeGenerationCB fieldCb = { 512, 2, { 0, 0 } };
+        D3D11_MAPPED_SUBRESOURCE fieldMapped = {};
+        if (FAILED(m_context->Map(
+                m_noiseVolumeGenerationCb.Get(), 0,
+                D3D11_MAP_WRITE_DISCARD, 0, &fieldMapped)))
+            return false;
+        std::memcpy(fieldMapped.pData, &fieldCb, sizeof(fieldCb));
+        m_context->Unmap(m_noiseVolumeGenerationCb.Get(), 0);
+        m_context->CSSetShader(m_noiseWeatherCs.Get(), nullptr, 0);
+        m_context->CSSetConstantBuffers(1, 1, m_cloudCb.GetAddressOf());
+        m_context->CSSetConstantBuffers(
+            2, 1, m_noiseVolumeGenerationCb.GetAddressOf());
+        ID3D11UnorderedAccessView* fieldUavs[2] = {
+            m_weatherMap.uav.Get(), m_placementMap.uav.Get()
+        };
+        m_context->CSSetUnorderedAccessViews(3, 2, fieldUavs, nullptr);
+        m_context->Dispatch(64, 64, 1);
+        ID3D11UnorderedAccessView* nullFieldUavs[2] = {};
+        m_context->CSSetUnorderedAccessViews(3, 2, nullFieldUavs, nullptr);
+        m_context->CSSetShader(nullptr, nullptr, 0);
+        return true;
+    };
+    const auto readPlacementBytes = [&](std::vector<unsigned char>& bytes)
+    {
+        D3D11_TEXTURE2D_DESC readDesc = placementDesc;
+        readDesc.Usage = D3D11_USAGE_STAGING;
+        readDesc.BindFlags = 0;
+        readDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        readDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture2D> readback;
+        if (FAILED(m_device->CreateTexture2D(&readDesc, nullptr, &readback)))
+            return false;
+        m_context->CopyResource(readback.Get(), m_placementMap.texture.Get());
+        D3D11_MAPPED_SUBRESOURCE mappedPlacement = {};
+        if (FAILED(m_context->Map(
+                readback.Get(), 0, D3D11_MAP_READ, 0, &mappedPlacement)))
+            return false;
+        bytes.resize(static_cast<size_t>(placementDesc.Width) * placementDesc.Height * 4);
+        for (UINT y = 0; y < placementDesc.Height; ++y)
+        {
+            const auto* row =
+                static_cast<const unsigned char*>(mappedPlacement.pData) +
+                static_cast<size_t>(y) * mappedPlacement.RowPitch;
+            std::memcpy(
+                bytes.data() + static_cast<size_t>(y) * placementDesc.Width * 4,
+                row, static_cast<size_t>(placementDesc.Width) * 4);
+        }
+        m_context->Unmap(readback.Get(), 0);
+        return true;
+    };
+
+    bool placementEmptyAttributes = true;
+    bool placementDensityOneContinuity = false;
+    int maximumPlacementAttributeJump = 0;
+    UINT maximumPlacementJumpX = 0;
+    UINT maximumPlacementJumpY = 0;
+    std::array<unsigned char, 8> maximumPlacementJumpValues = {};
+    CloudParameters densityOneParameters = m_cloudParams;
+    densityOneParameters.placementDensity = 1.0f;
+    std::vector<unsigned char> densityOnePlacement;
+    if (placementLayout &&
+        uploadCloudParameters(densityOneParameters) &&
+        dispatchFields() &&
+        readPlacementBytes(densityOnePlacement))
+    {
+        placementDensityOneContinuity = true;
+        constexpr int maximumAttributeJump = 89; // 0.35 * 255 rounded up.
+        const auto texelAt = [&](UINT x, UINT y)
+        {
+            return densityOnePlacement.data() +
+                (static_cast<size_t>(y) * placementDesc.Width + x) * 4;
+        };
+        for (UINT y = 0; y < placementDesc.Height; ++y)
+        for (UINT x = 0; x < placementDesc.Width; ++x)
+        {
+            const auto* current = texelAt(x, y);
+            if (current[0] == 0)
+                placementEmptyAttributes &= current[1] == 0 &&
+                    current[2] == 0 && current[3] == 0;
+            const auto checkNeighbor = [&](const unsigned char* neighbor)
+            {
+                if (current[0] < 51 || neighbor[0] < 51)
+                    return true;
+                const int heightJump =
+                    std::abs(static_cast<int>(current[2]) - neighbor[2]);
+                const int profileJump =
+                    std::abs(static_cast<int>(current[3]) - neighbor[3]);
+                const int jump = (std::max)(heightJump, profileJump);
+                if (jump > maximumPlacementAttributeJump)
+                {
+                    maximumPlacementAttributeJump = jump;
+                    maximumPlacementJumpX = x;
+                    maximumPlacementJumpY = y;
+                    for (size_t channel = 0; channel < 4; ++channel)
+                    {
+                        maximumPlacementJumpValues[channel] = current[channel];
+                        maximumPlacementJumpValues[channel + 4] = neighbor[channel];
+                    }
+                }
+                return heightJump <= maximumAttributeJump &&
+                       profileJump <= maximumAttributeJump;
+            };
+            placementDensityOneContinuity &=
+                checkNeighbor(texelAt((x + 1) % placementDesc.Width, y)) &&
+                checkNeighbor(texelAt(x, (y + 1) % placementDesc.Height));
+        }
+    }
+    const bool placementFieldsRestored =
+        uploadCloudParameters(m_cloudParams) && dispatchFields();
+
     const auto layerInterval = [](float originY, float directionY, float bottom, float top, float limit)
     {
         if (std::abs(directionY) < 1.0e-5f)
@@ -1274,6 +1548,16 @@ bool Renderer::RunCodeTests()
     changedWeather.weatherSeed += 1.0f;
     const bool weatherHash =
         NoiseCacheManager::ParameterHash(changedWeather) !=
+        NoiseCacheManager::ParameterHash(m_cloudParams);
+    CloudParameters changedPlacement = m_cloudParams;
+    changedPlacement.placementCellCount += 1;
+    const bool placementHash =
+        NoiseCacheManager::ParameterHash(changedPlacement) !=
+        NoiseCacheManager::ParameterHash(m_cloudParams);
+    CloudParameters runtimePlacement = m_cloudParams;
+    runtimePlacement.placementTopShrink += 0.1f;
+    const bool placementRuntimeHashStable =
+        NoiseCacheManager::ParameterHash(runtimePlacement) ==
         NoiseCacheManager::ParameterHash(m_cloudParams);
 
     // 실제 base 캐시를 읽어 네 채널이 퇴화하지 않았고 shaped density가 전부 비거나
@@ -1361,23 +1645,35 @@ bool Renderer::RunCodeTests()
             std::pow((std::max)(1.0f + backwardG2 - 2.0f * backwardG * cosine, 0.001f), 1.5f);
         return backward * 0.18f + hg(cosine) * 0.82f;
     };
-    const auto multiScatter = [](float visibility)
+    const auto secondScatterVisibility = [&](float opticalDepth)
     {
-        float energy = 0.0f;
-        float weight = 0.5f;
-        for (int i = 0; i < 3; ++i)
-        {
-            energy += visibility * weight;
-            visibility = std::sqrt(visibility);
-            weight *= 0.5f;
-        }
-        return energy / 0.875f;
+        return std::exp(-opticalDepth *
+            std::clamp(m_cloudParams.multiScatterExtinctionAttenuation, 0.0f, 1.0f));
     };
     const bool lightingMath = farT <= nearT && nearT <= 1.0f && farT >= 0.0f &&
                               dualLobe(-1.0f) > 0.0f && dualLobe(1.0f) > dualLobe(0.0f) &&
                               std::isfinite(dualLobe(1.0f)) &&
-                              multiScatter(0.0f) >= 0.0f && multiScatter(1.0f) <= 1.0f &&
-                              std::isfinite(multiScatter(0.35f));
+                              secondScatterVisibility(0.0f) == 1.0f &&
+                              secondScatterVisibility(2.0f) <= 1.0f &&
+                              std::isfinite(secondScatterVisibility(2.0f));
+    const float singlePhaseTest = dualLobe(0.35f);
+    const float attenuatedPhaseTest = dualLobe(
+        0.35f * std::clamp(m_cloudParams.multiScatterEccentricityAttenuation, 0.0f, 1.0f));
+    const float combinedScatterTest =
+        nearT * singlePhaseTest +
+        secondScatterVisibility(density * 0.5f) * attenuatedPhaseTest *
+            0.5f * std::clamp(m_cloudParams.multiScatterStrength, 0.0f, 1.0f);
+    const float scatterEnergyUpperBound =
+        singlePhaseTest + attenuatedPhaseTest * 0.5f;
+    const bool multiScatterEnergyBound =
+        std::isfinite(combinedScatterTest) && combinedScatterTest >= 0.0f &&
+        combinedScatterTest <= scatterEnergyUpperBound + 1.0e-6f;
+    const float ambientVisibility = std::exp(-density * 1.0f * m_cloudParams.lightAbsorption);
+    const bool ambientOcclusionRange =
+        std::isfinite(ambientVisibility) && ambientVisibility >= 0.0f &&
+        ambientVisibility <= 1.0f &&
+        m_cloudParams.ambientOcclusionStrength >= 0.0f &&
+        m_cloudParams.ambientOcclusionStrength <= 1.0f;
 
     const float baseOffsetY = 1.25f;
     const float baseUvYThin = baseOffsetY / m_cloudParams.baseNoiseVerticalSize;
@@ -1408,13 +1704,13 @@ bool Renderer::RunCodeTests()
         halfColorDesc.Format == DXGI_FORMAT_R11G11B10_FLOAT &&
         halfDepthDesc.Width == halfColorDesc.Width &&
         halfDepthDesc.Height == halfColorDesc.Height &&
-        halfDepthDesc.Format == DXGI_FORMAT_R16_FLOAT &&
+        halfDepthDesc.Format == DXGI_FORMAT_R16G16_FLOAT &&
         historyColorDesc.Width == static_cast<UINT>(m_width) &&
         historyColorDesc.Height == static_cast<UINT>(m_height) &&
         historyColorDesc.Format == DXGI_FORMAT_R11G11B10_FLOAT &&
         historyDepthDesc.Width == static_cast<UINT>(m_width) &&
         historyDepthDesc.Height == static_cast<UINT>(m_height) &&
-        historyDepthDesc.Format == DXGI_FORMAT_R16_FLOAT;
+        historyDepthDesc.Format == DXGI_FORMAT_R16G16_FLOAT;
     const auto historyAccepted = [](float storedDepth, float expectedDepth)
     {
         const float tolerance = (std::max)(0.1f, expectedDepth * 0.05f);
@@ -1424,6 +1720,25 @@ bool Renderer::RunCodeTests()
         historyAccepted(10.2f, 10.0f) &&
         !historyAccepted(10.6f, 10.0f) &&
         historyAccepted(0.05f, 0.1f);
+    const float cloudNeighborWeight = std::exp(-std::abs(0.80f - 0.75f) * 32.0f);
+    const float skyNeighborWeight = std::exp(-std::abs(0.80f - 0.0f) * 32.0f) * 0.001f;
+    const float stableConfidence = std::clamp(1.0f - std::abs(0.80f - 0.78f) * 4.0f, 0.0f, 1.0f);
+    const float changedConfidence = std::clamp(1.0f - std::abs(0.80f - 0.20f) * 4.0f, 0.0f, 1.0f);
+    const bool temporalEdgeWeights =
+        cloudNeighborWeight > skyNeighborWeight &&
+        stableConfidence > changedConfidence &&
+        stableConfidence >= 0.0f && stableConfidence <= 1.0f;
+    const float uniformSample = 0.42f;
+    const float uniformWeights[] = { 0.12f, 0.18f, 0.28f, 0.42f };
+    float uniformWeightedSum = 0.0f;
+    float uniformWeightSum = 0.0f;
+    for (const float weight : uniformWeights)
+    {
+        uniformWeightedSum += uniformSample * weight;
+        uniformWeightSum += weight;
+    }
+    const bool temporalUniformReconstruction =
+        std::abs(uniformWeightedSum / uniformWeightSum - uniformSample) < 1.0e-6f;
     bool temporalJitterAlignment = true;
     const XMFLOAT2 testOutputUv = { 0.37f, 0.61f };
     for (const XMFLOAT2& jitterPixel : {
@@ -1496,6 +1811,124 @@ bool Renderer::RunCodeTests()
         std::isfinite(highTypeThickness) && lowTypeThickness > 0.0f &&
         highTypeThickness >= lowTypeThickness;
 
+    const auto effectivePlacementEdge = [](
+        int cellCount, float radiusMin, float radiusMax,
+        float radiusVariation, float userEdge)
+    {
+        const float radius = radiusMin +
+            (radiusMax - radiusMin) * std::clamp(radiusVariation, 0.0f, 1.0f);
+        const float texelWidth = static_cast<float>((std::max)(cellCount, 1)) /
+            (512.0f * (std::max)(radius, 0.05f));
+        const float automaticEdge = (std::min)(0.35f, 1.5f * texelWidth);
+        return std::clamp((std::max)(userEdge, automaticEdge), 0.001f, 0.49f);
+    };
+    const auto placementSupport = [&](float proximity, float profile, float height01,
+                                      float strength)
+    {
+        const float t = std::clamp(
+            (height01 - 0.45f) / (1.0f - 0.45f), 0.0f, 1.0f);
+        const float upper = t * t * (3.0f - 2.0f * t);
+        const float profileScale = 0.85f + 0.30f * profile;
+        const float radiusScale = (std::max)(
+            0.25f,
+            1.0f - upper * std::clamp(m_cloudParams.placementTopShrink, 0.0f, 1.0f) *
+                profileScale);
+        const float distance = 1.0f - std::clamp(proximity, 0.0f, 1.0f);
+        const float edge = effectivePlacementEdge(
+            m_cloudParams.placementCellCount,
+            m_cloudParams.placementRadiusMin,
+            m_cloudParams.placementRadiusMax,
+            0.5f,
+            m_cloudParams.placementEdgeSoftness);
+        const float lo = (std::max)(radiusScale - edge, 0.0f);
+        const float edgeT = std::clamp(
+            (distance - lo) / (std::max)(radiusScale - lo, 1.0e-6f), 0.0f, 1.0f);
+        const float placed = 1.0f - edgeT * edgeT * (3.0f - 2.0f * edgeT);
+        return 1.0f + (placed - 1.0f) * std::clamp(strength, 0.0f, 1.0f);
+    };
+    bool placementTopMonotonic = true;
+    float previousSupport = placementSupport(0.55f, 0.5f, 0.45f, 1.0f);
+    for (const float height01 : { 0.55f, 0.70f, 0.85f, 1.0f })
+    {
+        const float support = placementSupport(0.55f, 0.5f, height01, 1.0f);
+        placementTopMonotonic &= support <= previousSupport + 1.0e-6f;
+        previousSupport = support;
+    }
+    const bool placementDensityRules =
+        std::abs(placementSupport(0.0f, 0.5f, 0.2f, 0.0f) - 1.0f) < 1.0e-6f &&
+        placementSupport(0.0f, 0.5f, 0.2f, 1.0f) == 0.0f &&
+        placementSupport(1.0f, 0.5f, 1.0f, 1.0f) > 0.99f &&
+        placementSupport(0.55f, 0.5f, 0.2f, 1.0f) > 0.99f;
+    const float defaultRadius =
+        (m_cloudParams.placementRadiusMin + m_cloudParams.placementRadiusMax) * 0.5f;
+    const float defaultTexelWidth =
+        static_cast<float>(m_cloudParams.placementCellCount) /
+        (512.0f * (std::max)(defaultRadius, 0.05f));
+    const float automaticDefaultEdge = effectivePlacementEdge(
+        m_cloudParams.placementCellCount,
+        m_cloudParams.placementRadiusMin,
+        m_cloudParams.placementRadiusMax,
+        0.5f, 0.0f);
+    const float explicitEdge = effectivePlacementEdge(
+        m_cloudParams.placementCellCount,
+        m_cloudParams.placementRadiusMin,
+        m_cloudParams.placementRadiusMax,
+        0.5f, 0.2f);
+    const float moreCellsEdge = effectivePlacementEdge(
+        m_cloudParams.placementCellCount * 2,
+        m_cloudParams.placementRadiusMin,
+        m_cloudParams.placementRadiusMax,
+        0.5f, 0.0f);
+    const float smallerRadiusEdge = effectivePlacementEdge(
+        m_cloudParams.placementCellCount,
+        m_cloudParams.placementRadiusMin,
+        m_cloudParams.placementRadiusMax,
+        0.0f, 0.0f);
+    const bool placementAutomaticEdge =
+        automaticDefaultEdge + 1.0e-6f >= 1.5f * defaultTexelWidth &&
+        explicitEdge + 1.0e-6f >= 0.2f &&
+        moreCellsEdge + 1.0e-6f >= automaticDefaultEdge &&
+        smallerRadiusEdge + 1.0e-6f >= automaticDefaultEdge;
+
+    const auto blendAttributes = [](float distanceA, float attributeA,
+                                    float distanceB, float attributeB)
+    {
+        const auto weightFor = [](float normalizedDistance)
+        {
+            const float p = std::clamp(
+                1.15f - normalizedDistance, 0.0f, 1.0f);
+            const float smooth = p * p * (3.0f - 2.0f * p);
+            return smooth;
+        };
+        const float weightA = weightFor(distanceA);
+        const float weightB = weightFor(distanceB);
+        const float sum = weightA + weightB;
+        return sum > 0.0f
+            ? (attributeA * weightA + attributeB * weightB) / sum
+            : 0.0f;
+    };
+    const float blendLeft = blendAttributes(0.495f, 0.1f, 0.505f, 0.9f);
+    const float blendCenter = blendAttributes(0.5f, 0.1f, 0.5f, 0.9f);
+    const float blendRight = blendAttributes(0.505f, 0.1f, 0.495f, 0.9f);
+    const bool placementBlendMath =
+        std::isfinite(blendLeft) && std::isfinite(blendCenter) &&
+        std::isfinite(blendRight) &&
+        std::abs(blendCenter - 0.5f) < 1.0e-6f &&
+        std::abs(blendCenter - blendLeft) < 0.03f &&
+        std::abs(blendRight - blendCenter) < 0.03f &&
+        (std::max)(0.6f, 0.4f) == 0.6f;
+    const float minimumHeightScale =
+        1.0f - std::clamp(m_cloudParams.placementHeightVariation, 0.0f, 1.0f);
+    const float maximumHeightScale =
+        1.0f + std::clamp(m_cloudParams.placementHeightVariation, 0.0f, 1.0f);
+    const float placementEnvelopeThickness =
+        highTypeThickness * maximumHeightScale;
+    const bool placementBounds =
+        std::isfinite(minimumHeightScale) && minimumHeightScale >= 0.25f &&
+        std::isfinite(placementEnvelopeThickness) &&
+        placementEnvelopeThickness >= highTypeThickness &&
+        placementEnvelopeThickness > highTypeThickness * minimumHeightScale;
+
     const float fineStep = (std::min)(
         96.0f / static_cast<float>((std::max)(m_cloudParams.viewSteps, 48)),
         (std::max)(m_cloudParams.maxViewStepLength, 0.001f));
@@ -1526,10 +1959,19 @@ bool Renderer::RunCodeTests()
     const float testVisibility = std::exp(-density * coveredLightDistance *
                                          m_cloudParams.lightAbsorption);
     const bool lightSegments = localSegment > 0.0f && farSegment >= 0.0f &&
-        m_cloudParams.lightSteps >= 1 && m_cloudParams.lightSteps <= 12 &&
-        m_cloudParams.farLightSteps >= 0 && m_cloudParams.farLightSteps <= 8 &&
+        m_cloudParams.lightSteps >= 1 && m_cloudParams.lightSteps <= 5 &&
+        m_cloudParams.farLightSteps >= 0 && m_cloudParams.farLightSteps <= 1 &&
         std::abs(coveredLightDistance - lightExitDistance) < 1.0e-5f &&
         std::isfinite(testVisibility) && testVisibility >= 0.0f && testVisibility <= 1.0f;
+    bool coneSampleRange = m_cloudParams.lightConeRadius >= 0.0f;
+    for (int sample = 0; sample < 5; ++sample)
+    {
+        const float normalizedDistance = (sample + 0.5f) / 5.0f;
+        const float radius = m_cloudParams.lightConeRadius *
+            normalizedDistance * normalizedDistance;
+        coneSampleRange = coneSampleRange && std::isfinite(radius) &&
+            radius >= 0.0f && radius <= m_cloudParams.lightConeRadius + 1.0e-6f;
+    }
     const bool presetRoundTrip = DebugUI::RunWorldSpacePresetRoundTripTest();
     // 벤치마크 두께와 48~256 view-step 범위에서 weather 변형 후의
     // local thickness와 샘플 간격이 모두 유한하고 양수인지 확인한다.
@@ -1554,7 +1996,7 @@ bool Renderer::RunCodeTests()
     const bool seamless = maxError <= 1.0e-5f;
     const bool roundTrip = m_noiseCacheManager.RunRoundTripTest(
         m_device.Get(), m_context.Get(), m_cloudParams, m_shaderBlobs,
-        m_noiseVolumes, m_weatherMap);
+        m_noiseVolumes, m_weatherMap, m_placementMap);
     bool debugLayerClean = true;
 #ifdef _DEBUG
     ComPtr<ID3D11InfoQueue> infoQueue;
@@ -1578,12 +2020,22 @@ bool Renderer::RunCodeTests()
 #endif
     const bool passed =
            seamless && roundTrip && volumeLayout && baseDistribution && detailDistribution &&
-           weatherLayout && weatherDistribution && weatherHash && layerMath &&
-           lightingMath && worldSpaceCoordinates && detailNyquist && cumulusBounds &&
+           weatherLayout && weatherDistribution && weatherHash &&
+           placementLayout && placementDistribution && placementChannelsFinite &&
+           placementDeterministic && placementEmptyAttributes &&
+           placementDensityOneContinuity && placementFieldsRestored &&
+           placementHash && placementRuntimeHashStable &&
+           placementTopMonotonic && placementDensityRules &&
+           placementAutomaticEdge && placementBlendMath &&
+           placementBounds && layerMath &&
+           lightingMath && multiScatterEnergyBound && ambientOcclusionRange && worldSpaceCoordinates &&
+           detailNyquist && cumulusBounds &&
            adaptiveMarching && lightSegments && temporalLayout && temporalRejection &&
-           temporalJitterAlignment && weatherAdvection && animatedJitterDisabled &&
+           temporalEdgeWeights && temporalUniformReconstruction &&
+           temporalJitterAlignment && weatherAdvection &&
+           animatedJitterDisabled && coneSampleRange &&
            hierarchicalEarlyOut && recreatedTemporalResources && historyReset &&
-           sizeof(CloudParameters) == 224 &&
+           sizeof(CloudParameters) == 272 &&
            presetRoundTrip && thicknessSampling && debugLayerClean;
     std::ostringstream report;
 #define REPORT_CHECK(name) report << #name << '=' << ((name) ? "pass" : "FAIL") << '\n'
@@ -1595,8 +2047,32 @@ bool Renderer::RunCodeTests()
     REPORT_CHECK(weatherLayout);
     REPORT_CHECK(weatherDistribution);
     REPORT_CHECK(weatherHash);
+    REPORT_CHECK(placementLayout);
+    REPORT_CHECK(placementDistribution);
+    REPORT_CHECK(placementChannelsFinite);
+    REPORT_CHECK(placementDeterministic);
+    REPORT_CHECK(placementEmptyAttributes);
+    REPORT_CHECK(placementDensityOneContinuity);
+    report << "maximumPlacementAttributeJump=" <<
+        maximumPlacementAttributeJump << '\n';
+    report << "maximumPlacementJumpLocation=" << maximumPlacementJumpX << ',' <<
+        maximumPlacementJumpY << '\n';
+    report << "maximumPlacementJumpValues=";
+    for (const unsigned char value : maximumPlacementJumpValues)
+        report << static_cast<int>(value) << ',';
+    report << '\n';
+    REPORT_CHECK(placementFieldsRestored);
+    REPORT_CHECK(placementHash);
+    REPORT_CHECK(placementRuntimeHashStable);
+    REPORT_CHECK(placementTopMonotonic);
+    REPORT_CHECK(placementDensityRules);
+    REPORT_CHECK(placementAutomaticEdge);
+    REPORT_CHECK(placementBlendMath);
+    REPORT_CHECK(placementBounds);
     REPORT_CHECK(layerMath);
     REPORT_CHECK(lightingMath);
+    REPORT_CHECK(multiScatterEnergyBound);
+    REPORT_CHECK(ambientOcclusionRange);
     REPORT_CHECK(worldSpaceCoordinates);
     REPORT_CHECK(detailNyquist);
     REPORT_CHECK(cumulusBounds);
@@ -1604,9 +2080,12 @@ bool Renderer::RunCodeTests()
     REPORT_CHECK(lightSegments);
     REPORT_CHECK(temporalLayout);
     REPORT_CHECK(temporalRejection);
+    REPORT_CHECK(temporalEdgeWeights);
+    REPORT_CHECK(temporalUniformReconstruction);
     REPORT_CHECK(temporalJitterAlignment);
     REPORT_CHECK(weatherAdvection);
     REPORT_CHECK(animatedJitterDisabled);
+    REPORT_CHECK(coneSampleRange);
     REPORT_CHECK(hierarchicalEarlyOut);
     REPORT_CHECK(recreatedTemporalResources);
     REPORT_CHECK(historyReset);

@@ -15,10 +15,11 @@ namespace
 {
 constexpr uint32_t kManifestMagic = 0x48434356; // VCCH
 constexpr uint32_t kVolumeMagic = 0x4E434356;   // VCCN
-constexpr uint32_t kCacheVersion = 7; // v7: temporal resolve/composite shader bundle
+constexpr uint32_t kCacheVersion = 10; // v10: blended placement attributes + automatic edge AA
 constexpr DXGI_FORMAT kBaseVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDetailVolumeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kWeatherFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+constexpr DXGI_FORMAT kPlacementFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr const char* kShaderNames[] = {
     "main_vs.cso", "main_ps.cso", "temporal_ps.cso", "composite_ps.cso",
     "preview_vs.cso", "preview_ps.cso",
@@ -47,6 +48,8 @@ struct CacheManifest
     uint32_t detailFormat; // (구 reserved) detail 볼륨 DXGI_FORMAT
     uint32_t weatherSize;
     uint32_t weatherFormat;
+    uint32_t placementSize;
+    uint32_t placementFormat;
     CloudParameters params;
 };
 
@@ -353,6 +356,10 @@ uint64_t NoiseCacheManager::ParameterHash(const CloudParameters& p)
     hash = HashBytes(hash, &p.baseOctaves, sizeof(p.baseOctaves));
     hash = HashBytes(hash, &p.detailOctaves, sizeof(p.detailOctaves));
     hash = HashBytes(hash, &p.weatherSeed, sizeof(p.weatherSeed));
+    hash = HashBytes(hash, &p.placementCellCount, sizeof(p.placementCellCount));
+    hash = HashBytes(hash, &p.placementDensity, sizeof(p.placementDensity));
+    hash = HashBytes(hash, &p.placementRadiusMin, sizeof(p.placementRadiusMin));
+    hash = HashBytes(hash, &p.placementRadiusMax, sizeof(p.placementRadiusMax));
     return hash;
 }
 
@@ -362,11 +369,14 @@ bool NoiseCacheManager::LoadPreferred(
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
     std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
     WeatherMapResources& weather,
+    PlacementMapResources& placement,
     bool& sourceModified)
 {
     m_lastError.clear();
-    if (LoadBundle(m_userCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, weather, sourceModified)) return true;
-    return LoadBundle(m_defaultCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs, weather, sourceModified);
+    if (LoadBundle(m_userCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs,
+                   weather, placement, sourceModified)) return true;
+    return LoadBundle(m_defaultCacheRoot, device, params, shaderBlobs, volumes, uavs, srvs,
+                      weather, placement, sourceModified);
 }
 
 bool NoiseCacheManager::LoadBundle(
@@ -374,10 +384,10 @@ bool NoiseCacheManager::LoadBundle(
     ShaderBlobArray& shaderBlobs, std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
     std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
-    WeatherMapResources& weather, bool& sourceModified)
+    WeatherMapResources& weather, PlacementMapResources& placement, bool& sourceModified)
 {
     return LoadBundleDirectory(ResolveBundleDirectory(root), device, params, shaderBlobs,
-                               volumes, uavs, srvs, weather, sourceModified);
+                               volumes, uavs, srvs, weather, placement, sourceModified);
 }
 
 std::filesystem::path NoiseCacheManager::ResolveBundleDirectory(
@@ -398,17 +408,18 @@ bool NoiseCacheManager::LoadBundleDirectory(
     ShaderBlobArray& shaderBlobs, std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2>& uavs,
     std::array<ComPtr<ID3D11ShaderResourceView>, 2>& srvs,
-    WeatherMapResources& weather, bool& sourceModified)
+    WeatherMapResources& weather, PlacementMapResources& placement, bool& sourceModified)
 {
     CacheManifest manifest = {};
     std::ifstream file(bundle / L"manifest.bin", std::ios::binary);
     if (!file.read(reinterpret_cast<char*>(&manifest), sizeof(manifest))) return false;
     if (manifest.magic != kManifestMagic || manifest.version != kCacheVersion ||
         manifest.baseSize != 128 || manifest.detailSize != 128 ||
-        manifest.weatherSize != 512 ||
+        manifest.weatherSize != 512 || manifest.placementSize != 512 ||
         manifest.baseFormat != static_cast<uint32_t>(kBaseVolumeFormat) ||
         manifest.detailFormat != static_cast<uint32_t>(kDetailVolumeFormat) ||
         manifest.weatherFormat != static_cast<uint32_t>(kWeatherFormat) ||
+        manifest.placementFormat != static_cast<uint32_t>(kPlacementFormat) ||
         manifest.parameterHash != ParameterHash(manifest.params))
         return false;
 
@@ -423,6 +434,8 @@ bool NoiseCacheManager::LoadBundleDirectory(
     if (!LoadVolume(bundle / L"detail.vcnoise", device, 128, kDetailVolumeFormat, loadedVolumes[1], loadedUavs[1], loadedSrvs[1])) return false;
     WeatherMapResources loadedWeather;
     if (!LoadWeatherMap(bundle / L"weather.vcnoise", device, 512, loadedWeather)) return false;
+    PlacementMapResources loadedPlacement;
+    if (!LoadWeatherMap(bundle / L"placement.vcnoise", device, 512, loadedPlacement)) return false;
 
     params = manifest.params;
     shaderBlobs = loadedBlobs;
@@ -430,6 +443,7 @@ bool NoiseCacheManager::LoadBundleDirectory(
     uavs = loadedUavs;
     srvs = loadedSrvs;
     weather = loadedWeather;
+    placement = loadedPlacement;
     sourceModified = manifest.sourceHash != SourceHash();
     return true;
 }
@@ -437,30 +451,35 @@ bool NoiseCacheManager::LoadBundleDirectory(
 bool NoiseCacheManager::SaveUser(ID3D11Device* device, ID3D11DeviceContext* context,
                                   const CloudParameters& params, const ShaderBlobArray& shaderBlobs,
                                   const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
-                                  const WeatherMapResources& weather)
+                                  const WeatherMapResources& weather,
+                                  const PlacementMapResources& placement)
 {
-    return SaveBundle(m_userCacheRoot, device, context, params, shaderBlobs, volumes, weather);
+    return SaveBundle(
+        m_userCacheRoot, device, context, params, shaderBlobs, volumes, weather, placement);
 }
 
 bool NoiseCacheManager::SaveDefault(ID3D11Device* device, ID3D11DeviceContext* context,
                                      const CloudParameters& params, const ShaderBlobArray& shaderBlobs,
                                      const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
-                                     const WeatherMapResources& weather)
+                                     const WeatherMapResources& weather,
+                                     const PlacementMapResources& placement)
 {
-    return SaveBundle(m_defaultCacheRoot, device, context, params, shaderBlobs, volumes, weather);
+    return SaveBundle(
+        m_defaultCacheRoot, device, context, params, shaderBlobs, volumes, weather, placement);
 }
 
 bool NoiseCacheManager::RunRoundTripTest(
     ID3D11Device* device, ID3D11DeviceContext* context, const CloudParameters& params,
     const ShaderBlobArray& shaderBlobs, const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
-    const WeatherMapResources& weather)
+    const WeatherMapResources& weather, const PlacementMapResources& placement)
 {
     const auto testRoot = std::filesystem::temp_directory_path() / L"VolumetricCloudCacheRoundTrip";
     const auto first = testRoot / L"first";
     const auto second = testRoot / L"second";
     std::error_code ec;
     std::filesystem::remove_all(testRoot, ec);
-    if (!SaveBundle(first, device, context, params, shaderBlobs, volumes, weather)) return false;
+    if (!SaveBundle(first, device, context, params, shaderBlobs, volumes, weather, placement))
+        return false;
     std::vector<unsigned char> originalPointer;
     if (!ReadFile(first / L"active-bundle.txt", originalPointer) || originalPointer.empty())
         return false;
@@ -471,13 +490,16 @@ bool NoiseCacheManager::RunRoundTripTest(
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2> loadedUavs;
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> loadedSrvs;
     WeatherMapResources loadedWeather;
+    PlacementMapResources loadedPlacement;
     bool modified = false;
     if (!LoadBundle(first, device, loadedParams, loadedBlobs, loadedVolumes, loadedUavs, loadedSrvs,
-                    loadedWeather, modified))
+                    loadedWeather, loadedPlacement, modified))
         return false;
-    if (!SaveBundle(second, device, context, loadedParams, loadedBlobs, loadedVolumes, loadedWeather)) return false;
+    if (!SaveBundle(second, device, context, loadedParams, loadedBlobs, loadedVolumes,
+                    loadedWeather, loadedPlacement)) return false;
 
-    const wchar_t* files[] = { L"manifest.bin", L"base.vcnoise", L"detail.vcnoise", L"weather.vcnoise",
+    const wchar_t* files[] = { L"manifest.bin", L"base.vcnoise", L"detail.vcnoise",
+        L"weather.vcnoise", L"placement.vcnoise",
         L"main_vs.cso", L"main_ps.cso", L"preview_vs.cso", L"preview_ps.cso",
         L"noise_cs_base.cso", L"noise_cs_detail.cso", L"noise_cs_weather.cso" };
     const auto firstBundle = ResolveBundleDirectory(first);
@@ -503,13 +525,15 @@ bool NoiseCacheManager::RunRoundTripTest(
         std::array<ComPtr<ID3D11UnorderedAccessView>, 2> rejectedUavs;
         std::array<ComPtr<ID3D11ShaderResourceView>, 2> rejectedSrvs;
         WeatherMapResources rejectedWeather;
+        PlacementMapResources rejectedPlacement;
         bool rejectedModified = false;
         return !LoadBundle(first, device, rejectedParams, rejectedBlobs,
-                           rejectedVolumes, rejectedUavs, rejectedSrvs, rejectedWeather, rejectedModified);
+                           rejectedVolumes, rejectedUavs, rejectedSrvs,
+                           rejectedWeather, rejectedPlacement, rejectedModified);
     };
     CacheManifest bad = {};
     std::memcpy(&bad, originalManifest.data(), sizeof(bad));
-    bad.version = 5;
+    bad.version = 9;
     if (!rejectsManifest(bad)) return false;
     std::memcpy(&bad, originalManifest.data(), sizeof(bad));
     ++bad.parameterHash;
@@ -517,12 +541,42 @@ bool NoiseCacheManager::RunRoundTripTest(
     std::memcpy(&bad, originalManifest.data(), sizeof(bad));
     bad.baseFormat = static_cast<uint32_t>(DXGI_FORMAT_UNKNOWN);
     if (!rejectsManifest(bad)) return false;
+    std::memcpy(&bad, originalManifest.data(), sizeof(bad));
+    bad.placementFormat = static_cast<uint32_t>(DXGI_FORMAT_UNKNOWN);
+    if (!rejectsManifest(bad)) return false;
     if (!WriteFile(manifestPath, originalManifest.data(), originalManifest.size())) return false;
+
+    const auto placementPath = firstBundle / L"placement.vcnoise";
+    std::vector<unsigned char> originalPlacement;
+    if (!ReadFile(placementPath, originalPlacement) || originalPlacement.size() <= sizeof(VolumeHeader))
+        return false;
+    const auto currentBundleRejected = [&]()
+    {
+        CloudParameters rejectedParams;
+        ShaderBlobArray rejectedBlobs;
+        std::array<ComPtr<ID3D11Texture3D>, 2> rejectedVolumes;
+        std::array<ComPtr<ID3D11UnorderedAccessView>, 2> rejectedUavs;
+        std::array<ComPtr<ID3D11ShaderResourceView>, 2> rejectedSrvs;
+        WeatherMapResources rejectedWeather;
+        PlacementMapResources rejectedPlacement;
+        bool rejectedModified = false;
+        return !LoadBundle(first, device, rejectedParams, rejectedBlobs,
+                           rejectedVolumes, rejectedUavs, rejectedSrvs,
+                           rejectedWeather, rejectedPlacement, rejectedModified);
+    };
+    std::filesystem::remove(placementPath, ec);
+    if (!currentBundleRejected()) return false;
+    if (!WriteFile(placementPath, originalPlacement.data(), originalPlacement.size())) return false;
+    if (!WriteFile(placementPath, originalPlacement.data(), sizeof(VolumeHeader) + 7))
+        return false;
+    if (!currentBundleRejected()) return false;
+    if (!WriteFile(placementPath, originalPlacement.data(), originalPlacement.size())) return false;
 
     // 저장 입력이 불완전하면 live bundle을 건드리지 않는다.
     ShaderBlobArray incompleteBlobs = shaderBlobs;
     incompleteBlobs[0].Reset();
-    if (SaveBundle(first, device, context, params, incompleteBlobs, volumes, weather)) return false;
+    if (SaveBundle(first, device, context, params, incompleteBlobs, volumes, weather, placement))
+        return false;
     std::vector<unsigned char> manifestAfterFailure;
     if (!ReadFile(manifestPath, manifestAfterFailure) || manifestAfterFailure != originalManifest)
         return false;
@@ -538,7 +592,7 @@ bool NoiseCacheManager::SaveBundle(
     const std::filesystem::path& root, ID3D11Device* device, ID3D11DeviceContext* context,
     const CloudParameters& params, const ShaderBlobArray& shaderBlobs,
     const std::array<ComPtr<ID3D11Texture3D>, 2>& volumes,
-    const WeatherMapResources& weather)
+    const WeatherMapResources& weather, const PlacementMapResources& placement)
 {
     m_lastError.clear();
     const auto fail = [&](const char* stage, const std::string& detail = {})
@@ -577,6 +631,8 @@ bool NoiseCacheManager::SaveBundle(
         return fail("GPU readback", "detail volume");
     if (!SaveWeatherMap(temp / L"weather.vcnoise", device, context, weather.texture.Get()))
         return fail("GPU readback", "weather map");
+    if (!SaveWeatherMap(temp / L"placement.vcnoise", device, context, placement.texture.Get()))
+        return fail("GPU readback", "placement map");
 
     CacheManifest manifest = {};
     manifest.magic = kManifestMagic;
@@ -586,9 +642,11 @@ bool NoiseCacheManager::SaveBundle(
     manifest.baseSize = 128;
     manifest.detailSize = 128;
     manifest.weatherSize = 512;
+    manifest.placementSize = 512;
     manifest.baseFormat = static_cast<uint32_t>(kBaseVolumeFormat);
     manifest.detailFormat = static_cast<uint32_t>(kDetailVolumeFormat);
     manifest.weatherFormat = static_cast<uint32_t>(kWeatherFormat);
+    manifest.placementFormat = static_cast<uint32_t>(kPlacementFormat);
     manifest.params = params;
     if (!WriteFile(temp / L"manifest.bin", &manifest, sizeof(manifest)))
         return fail("Writing manifest");
@@ -600,9 +658,11 @@ bool NoiseCacheManager::SaveBundle(
     std::array<ComPtr<ID3D11UnorderedAccessView>, 2> verifiedUavs;
     std::array<ComPtr<ID3D11ShaderResourceView>, 2> verifiedSrvs;
     WeatherMapResources verifiedWeather;
+    PlacementMapResources verifiedPlacement;
     bool verifiedModified = false;
     if (!LoadBundleDirectory(temp, device, verifiedParams, verifiedBlobs, verifiedVolumes,
-                             verifiedUavs, verifiedSrvs, verifiedWeather, verifiedModified))
+                             verifiedUavs, verifiedSrvs, verifiedWeather,
+                             verifiedPlacement, verifiedModified))
         return fail("Verifying", "saved bundle reload failed");
 
     std::string moveError;

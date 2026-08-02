@@ -11,6 +11,7 @@
 
 #include "Ray.hlsli"
 #include "CloudNoise.hlsli"
+#include "CloudAtmosphere.hlsli"
 
 cbuffer cbCamera : register(b0)
 {
@@ -19,6 +20,8 @@ cbuffer cbCamera : register(b0)
     float    time;         // 경과 시간 (현재 미사용, 추후 애니메이션용)
     float2   rayJitterNdc;
     float2   renderSize;
+    uint     temporalOutput;
+    uint3    _cameraPad;
 };
 
 struct VSOut
@@ -27,32 +30,9 @@ struct VSOut
     float2 uv  : TEXCOORD0;
 };
 
-float3 SkyColor(float3 rd, float3 sunDir)
-{
-    float up = saturate(rd.y);
-    float horizonFactor = exp(-up * 5.5);
-    float3 zenith = float3(0.12, 0.30, 0.58);
-    float3 horizon = float3(0.58, 0.75, 0.92);
-    float3 sky = lerp(zenith, horizon, horizonFactor);
-    float sunAmount = saturate(dot(rd, sunDir));
-    float glow = pow(sunAmount, 64.0) * 0.65 + pow(sunAmount, 1024.0) * 8.0;
-    return sky + float3(1.0, 0.78, 0.52) * glow;
-}
-
-float3 ToneMap(float3 color)
-{
-    return 1.0 - exp(-max(color, 0.0));
-}
-
 float3 SunDirection()
 {
-    float azimuth = radians(sunAzimuth);
-    float elevation = radians(sunElevation);
-    float cosElevation = cos(elevation);
-    return normalize(float3(
-        cosElevation * cos(azimuth),
-        sin(elevation),
-        cosElevation * sin(azimuth)));
+    return CloudSunDirection(sunAzimuth, sunElevation);
 }
 
 float2 CloudLayerInterval(float3 ro, float3 rd)
@@ -60,7 +40,7 @@ float2 CloudLayerInterval(float3 ro, float3 rd)
     float envelopeBottom = cloudBaseHeight - max(heightVariation, 0.0);
     float envelopeTop = cloudBaseHeight + max(heightVariation, 0.0) +
         max(cloudThickness, 0.1) * (1.0 + saturate(thicknessVariation)) *
-        max(cumulusGrowth, 1.0);
+        max(cumulusGrowth, 1.0) * (1.0 + saturate(placementHeightVariation));
     float distanceLimit = max(maxMarchDistance, 1.0);
     float horizontal = 1.0 - step(1e-5, abs(rd.y));
     float safeY = lerp(rd.y, rd.y >= 0.0 ? 1e-5 : -1e-5, horizontal);
@@ -72,46 +52,83 @@ float2 CloudLayerInterval(float3 ro, float3 rd)
     return lerp(regular, horizontalInterval, horizontal);
 }
 
-float LightTransmittance(float3 p, float3 sunDir)
+void BuildConeBasis(float3 direction, out float3 tangent, out float3 bitangent)
+{
+    float3 helper = abs(direction.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    tangent = normalize(cross(helper, direction));
+    bitangent = cross(direction, tangent);
+}
+
+float LightTransmittance(float3 p, float3 sunDir, out float opticalDepth)
 {
     float3 lightOrigin = p + sunDir * 0.002;
     float2 lightInterval = CloudLayerInterval(lightOrigin, sunDir);
     float validInterval = step(lightInterval.x + 1e-5, lightInterval.y);
     float distanceToExit = max(lightInterval.y, 0.0) * validInterval;
     float nearDistance = min(distanceToExit, max(localLightDistance, 0.01));
-    int nearSteps = clamp(lightSteps, 1, 12);
+    int nearSteps = clamp(lightSteps, 1, 5);
     float nearStepLength = nearDistance / nearSteps;
-    float opticalDepth = 0.0;
+    opticalDepth = 0.0;
+    float3 tangent, bitangent;
+    BuildConeBasis(sunDir, tangent, bitangent);
 
     [loop]
-    for (int j = 0; j < 12; ++j)
+    for (int j = 0; j < 5; ++j)
     {
         if (j >= nearSteps) break;
-        float lightDistance = (j + 0.5) * nearStepLength;
-        float3 lightPosition = lightOrigin + sunDir * lightDistance;
+        float normalizedDistance = (j + 0.5) / nearSteps;
+        float lightDistance = normalizedDistance * nearDistance;
+        float angle = (j * 2.39996323) + dot(p.xz, float2(0.73, 1.37));
+        float radius = max(lightConeRadius, 0.0) * normalizedDistance * normalizedDistance;
+        float3 coneOffset = (cos(angle) * tangent + sin(angle) * bitangent) * radius;
+        float3 lightPosition = lightOrigin + sunDir * lightDistance + coneOffset;
+        float4 placement = SamplePlacement(lightPosition.xz, time);
+        if (PlacementCoarsePotential(placement) <= 0.0)
+            continue;
         float4 weather = SampleWeather(lightPosition.xz, time);
-        float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
+        float lightDensity =
+            EvaluateLayerCloudComponents(lightPosition, weather, placement, time).w *
             densityMultiplier;
         opticalDepth += lightDensity * nearStepLength * lightAbsorption;
         if (opticalDepth > 4.60517) return 0.01;
     }
 
     float farDistance = max(distanceToExit - nearDistance, 0.0);
-    int farSteps = clamp(farLightSteps, 0, 8);
-    float farStepLength = farSteps > 0 ? farDistance / farSteps : 0.0;
-    [loop]
-    for (int farJ = 0; farJ < 8; ++farJ)
+    if (farLightSteps > 0 && farDistance > 0.0)
     {
-        if (farJ >= farSteps || farDistance <= 0.0) break;
-        float lightDistance = nearDistance + (farJ + 0.5) * farStepLength;
+        float lightDistance = nearDistance + farDistance * 0.5;
         float3 lightPosition = lightOrigin + sunDir * lightDistance;
-        float4 weather = SampleWeather(lightPosition.xz, time);
-        float lightDensity = EvaluateLayerCloudComponents(lightPosition, weather, time).w *
-            densityMultiplier;
-        opticalDepth += lightDensity * farStepLength * lightAbsorption;
-        if (opticalDepth > 4.60517) return 0.01;
+        float4 placement = SamplePlacement(lightPosition.xz, time);
+        if (PlacementCoarsePotential(placement) > 0.0)
+        {
+            float4 weather = SampleWeather(lightPosition.xz, time);
+            float lightDensity =
+                EvaluateLayerCloudMacroDensity(lightPosition, weather, placement, time) *
+                densityMultiplier;
+            opticalDepth += lightDensity * farDistance * lightAbsorption;
+        }
     }
     return lerp(1.0, exp(-opticalDepth), validInterval);
+}
+
+float SkyAmbientVisibility(float3 p)
+{
+    float segmentLength = max(localLightDistance, 0.1) * 0.5;
+    float opticalDepth = 0.0;
+    [unroll]
+    for (int j = 0; j < 2; ++j)
+    {
+        float3 samplePosition = p + float3(0.0, (j + 0.5) * segmentLength, 0.0);
+        float4 placement = SamplePlacement(samplePosition.xz, time);
+        if (PlacementCoarsePotential(placement) > 0.0)
+        {
+            float4 weather = SampleWeather(samplePosition.xz, time);
+            opticalDepth +=
+                EvaluateLayerCloudMacroDensity(samplePosition, weather, placement, time) *
+                densityMultiplier * segmentLength * lightAbsorption;
+        }
+    }
+    return exp(-opticalDepth);
 }
 
 float InterleavedGradientNoise(float2 pixel)
@@ -119,24 +136,10 @@ float InterleavedGradientNoise(float2 pixel)
     return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
 }
 
-float MultiScatterVisibility(float visibility)
-{
-    float energy = 0.0;
-    float weight = 0.5;
-    float softenedVisibility = saturate(visibility);
-    [unroll]
-    for (int octave = 0; octave < 3; ++octave)
-    {
-        energy += softenedVisibility * weight;
-        softenedVisibility = sqrt(softenedVisibility);
-        weight *= 0.5;
-    }
-    return energy / 0.875;
-}
-
-float4 RenderCloud(VSOut input, out float firstCloudDistance)
+float4 RenderCloud(VSOut input, out float firstCloudDistance, out float finalTransmittance)
 {
     firstCloudDistance = 0.0;
+    finalTransmittance = 1.0;
     // ---- 1) 픽셀 -> NDC -> 월드 레이 ----
     // uv(0,0)=좌상단 이므로 y를 뒤집어 NDC로 변환 (NDC 우하단 (1,-1), UV 우하단 (1,1))
     float2 ndc = float2(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0) + rayJitterNdc;
@@ -153,7 +156,7 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     float3 rd = normalize(farP - nearP); // ray direction = 레이가 진행할 방향
 
     float3 sunDir = SunDirection();
-    float3 sky = SkyColor(rd, sunDir);
+    float3 sky = CloudSkyColor(rd, sunDir);
 
     // ---- 2) 광역 평면 구름층 교차 ----
     float2 cloudInterval = CloudLayerInterval(ro, rd);
@@ -161,7 +164,9 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     float t1 = cloudInterval.y;
     if (t1 <= t0)
     {
-        return float4(ToneMap(sky * max(skyExposure, 0.0)), 1.0);
+        if (temporalOutput != 0)
+            return 0.0;
+        return float4(CloudToneMap(sky * max(skyExposure, 0.0)), 1.0);
     }
 
     // ---- 3) 빈 공간은 2배 스텝, 밀도 구간은 기본 스텝으로 행진한다. ----
@@ -180,8 +185,12 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     float3      debugAmbient = 0.0;
     float3      debugDirect = 0.0;
     float4      debugWeather = 0.0;
+    float       debugPlacementSupport = 0.0;
+    float2      debugPlacementAttributes = 0.0;
     bool        foundDensity = false;
     float       cachedLightVisibility = 1.0;
+    float       cachedLightOpticalDepth = 0.0;
+    float       cachedAmbientVisibility = 1.0;
     int         denseSampleIndex = 0;
 
     [loop]
@@ -189,8 +198,14 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     {
         if (rayDistance >= t1) break;
         float3 p = ro + rd * rayDistance;
-        float4 weather = SampleWeather(p.xz, time);
-        float4 components = EvaluateLayerCloudComponents(p, weather, time);
+        float4 placement = SamplePlacement(p.xz, time);
+        float4 weather = 0.0;
+        float4 components = 0.0;
+        if (PlacementCoarsePotential(placement) > 0.0)
+        {
+            weather = SampleWeather(p.xz, time);
+            components = EvaluateLayerCloudComponents(p, weather, placement, time);
+        }
         float distanceFade = 1.0 - smoothstep(
             min(horizonFadeStart, horizonFadeEnd - 0.01),
             max(horizonFadeEnd, horizonFadeStart + 0.01), rayDistance);
@@ -208,16 +223,23 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
                 if (refine >= refineSteps) break;
                 float refineDistance = (refineEmpty + refineDense) * 0.5;
                 float3 refinePosition = ro + rd * refineDistance;
-                float4 refineWeather = SampleWeather(refinePosition.xz, time);
-                float refineDensity = EvaluateLayerCloudComponents(
-                    refinePosition, refineWeather, time).w * densityMultiplier;
+                float4 refinePlacement = SamplePlacement(refinePosition.xz, time);
+                float refineDensity = 0.0;
+                if (PlacementCoarsePotential(refinePlacement) > 0.0)
+                {
+                    float4 refineWeather = SampleWeather(refinePosition.xz, time);
+                    refineDensity = EvaluateLayerCloudComponents(
+                        refinePosition, refineWeather, refinePlacement, time).w *
+                        densityMultiplier;
+                }
                 if (refineDensity > 0.0001) refineDense = refineDistance;
                 else refineEmpty = refineDistance;
             }
             rayDistance = refineDense;
             p = ro + rd * rayDistance;
+            placement = SamplePlacement(p.xz, time);
             weather = SampleWeather(p.xz, time);
-            components = EvaluateLayerCloudComponents(p, weather, time);
+            components = EvaluateLayerCloudComponents(p, weather, placement, time);
             distanceFade = 1.0 - smoothstep(
                 min(horizonFadeStart, horizonFadeEnd - 0.01),
                 max(horizonFadeEnd, horizonFadeStart + 0.01), rayDistance);
@@ -226,8 +248,20 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
 
         debugMax = max(debugMax, components);
         debugWeather = max(debugWeather, weather);
+        float localBase, localTop;
+        LocalCloudLayerBounds(weather, placement, localBase, localTop);
+        float placementHeight01 =
+            saturate((p.y - localBase) / max(localTop - localBase, 0.1));
+        float currentPlacementSupport =
+            PlacementHeightSupport(placement, placementHeight01);
+        if (currentPlacementSupport > debugPlacementSupport)
+        {
+            debugPlacementSupport = currentPlacementSupport;
+            debugPlacementAttributes = placement.gb;
+        }
 
-        float potential = WeatherPotential(weather);
+        float potential =
+            WeatherPotential(weather) * PlacementCoarsePotential(placement);
         float weatherSkip = min(max(targetDt * 4.0, fineDt * 4.0), 1.6);
         float candidateSkip = min(max(targetDt * 2.0, fineDt * 2.0), 0.4);
         float adaptiveDt = density > 0.001 ? fineDt :
@@ -243,24 +277,38 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
                 firstCloudDistance = rayDistance;
             foundDensity = true;
             if ((denseSampleIndex & 1) == 0)
-                cachedLightVisibility = LightTransmittance(p, sunDir);
+            {
+                cachedLightVisibility = LightTransmittance(
+                    p, sunDir, cachedLightOpticalDepth);
+                cachedAmbientVisibility = SkyAmbientVisibility(p);
+            }
             float lightVisibility = cachedLightVisibility;
             ++denseSampleIndex;
-            float multiVisibility = MultiScatterVisibility(lightVisibility);
-            float effectiveVisibility = lerp(lightVisibility, multiVisibility, saturate(multiScatterStrength));
-            float localBase, localTop;
-            LocalCloudLayerBounds(weather, localBase, localTop);
+            LocalCloudLayerBounds(weather, placement, localBase, localTop);
             float height01 = saturate((p.y - localBase) / max(localTop - localBase, 0.1));
             float3 ambientTint = lerp(float3(0.08, 0.12, 0.20),
                                       float3(0.38, 0.52, 0.72), height01);
-            float3 ambient = ambientTint * ambientIntensity;
-            float powder = 1.0 + (1.0 - exp(-density * dt * 2.0)) * 0.75 * powderStrength;
-            float forward = pow(saturate(dot(-rd, sunDir)), 8.0);
-            float thinEdge = 1.0 - smoothstep(0.15, 1.25, density);
+            float ambientOcclusion = lerp(
+                1.0, cachedAmbientVisibility, saturate(ambientOcclusionStrength));
+            float3 ambient = ambientTint * ambientIntensity * ambientOcclusion;
+            float cosTheta = dot(-rd, sunDir);
+            float singlePhase = DualLobePhaseWithG(cosTheta, phaseG);
+            float secondPhase = DualLobePhaseWithG(
+                cosTheta, phaseG * saturate(multiScatterEccentricityAttenuation));
+            float secondVisibility = exp(
+                -cachedLightOpticalDepth * saturate(multiScatterExtinctionAttenuation));
+            float directScatter = lightVisibility * singlePhase +
+                secondVisibility * secondPhase * 0.5 * saturate(multiScatterStrength);
+            float viewAwayFromSun = 1.0 - saturate(cosTheta * 0.5 + 0.5);
+            float powderDepth = 1.0 - exp(-cachedLightOpticalDepth * 1.5);
+            float powder = 1.0 + powderDepth * viewAwayFromSun * powderStrength;
+            float forward = pow(saturate(cosTheta), 8.0);
+            float thinEdge = (1.0 - smoothstep(0.12, 1.10, density)) *
+                saturate(lightVisibility * 1.5);
             float silver = forward * thinEdge * silverLiningStrength;
             float3 sunColor = float3(1.0, 0.92, 0.78);
             float3 direct = sunColor * sunIntensity *
-                (effectiveVisibility * phase * powder + silver);
+                (directScatter * powder + silver);
             scattering += transmittance * stepOpacity * (ambient + direct);
             debugLightVisibility = min(debugLightVisibility, lightVisibility);
             debugAmbient = max(debugAmbient, ambient);
@@ -272,6 +320,7 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
         previousDensity = density;
         rayDistance += dt;
     }
+    finalTransmittance = transmittance;
 
     float3 debugMidPosition = ro + rd * ((t0 + t1) * 0.5);
     float4 debugMidWeather = SampleWeather(debugMidPosition.xz, time);
@@ -310,6 +359,11 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     if (renderMode == 17) return float4(debugWeather.ggg, 1.0);
     if (renderMode == 18) return float4(debugWeather.bbb, 1.0);
     if (renderMode == 19) return float4(debugWeather.aaa, 1.0);
+    if (renderMode == 20)
+        return float4((foundDensity ? cachedAmbientVisibility : 1.0).xxx, 1.0);
+    if (renderMode == 23) return float4(debugPlacementSupport.xxx, 1.0);
+    if (renderMode == 24) return float4(debugPlacementAttributes.xxx, 1.0);
+    if (renderMode == 25) return float4(debugPlacementAttributes.yyy, 1.0);
     if (showBounds != 0)
     {
         float2 grid = abs(frac((ro + rd * t0).xz / 10.0) - 0.5);
@@ -318,19 +372,21 @@ float4 RenderCloud(VSOut input, out float firstCloudDistance)
     }
 
     // ---- 5) 남은 배경 투과율과 산란광 합성 ----
+    if (temporalOutput != 0)
+        return float4(scattering * max(skyExposure, 0.0), 1.0);
     float3 color = (scattering + sky * transmittance) * max(skyExposure, 0.0);
-    return float4(ToneMap(color), 1.0);
+    return float4(CloudToneMap(color), 1.0);
 }
 
 struct CloudOutput
 {
     float4 color : SV_TARGET0;
-    float depth : SV_TARGET1;
+    float2 metadata : SV_TARGET1;
 };
 
 CloudOutput main(VSOut input)
 {
     CloudOutput output;
-    output.color = RenderCloud(input, output.depth);
+    output.color = RenderCloud(input, output.metadata.x, output.metadata.y);
     return output;
 }

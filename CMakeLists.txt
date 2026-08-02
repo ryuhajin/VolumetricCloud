@@ -95,5 +95,6 @@ if (BUILD_TESTING)
 
     add_test(NAME VolumetricCloud.CodeTests
         COMMAND $<TARGET_FILE:VolumetricCloud> --run-code-tests)
-    set_tests_properties(VolumetricCloud.CodeTests PROPERTIES TIMEOUT 180)
+    # GPU readback 기반 v9 bundle byte round-trip은 저속 WARP/CI 환경에서 3분을 넘길 수 있다.
+    set_tests_properties(VolumetricCloud.CodeTests PROPERTIES TIMEOUT 300)
 endif()
