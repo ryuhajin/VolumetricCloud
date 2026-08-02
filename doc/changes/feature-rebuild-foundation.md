@@ -3,7 +3,8 @@
 ## 1. 목표와 배경
 
 - 복잡하게 결합된 기존 구름 구현을 보존 브랜치에 격리하고, 단계별 계획의 단계 0부터 다시 구축한다.
-- 이번 단계는 구름 자체가 아니라 월드 레이, Scene Depth, 월드 위치와 별도 합성 패스를 독립 검증한다.
+- 단계 0의 월드 레이, Scene Depth, 월드 위치와 별도 합성 패스는 사용자 승인을 받았다.
+- 단계 1은 상수 밀도 AABB의 교차·폐색·Beer-Lambert 적분을 독립 검증한다.
 
 ## 2. 기존 구현과 관찰된 문제
 
@@ -33,6 +34,10 @@
 - `CloudParameters` 48바이트 구조와 `CloudResult` HLSL 인터페이스를 추가했다.
 - 숫자 0~4 디버그 출력과 F5~F7 고정 카메라 프리셋을 추가했다.
 - CPU 역투영 회귀 테스트와 숨김 창 D3D11 smoke test를 추가했다.
+- 단계 1에서 평행축을 나누지 않는 slab 교차와 Scene Depth 제한을 추가했다.
+- 전체 교차 구간을 다시 나눈 상수 밀도 레이 마칭과 고정 산란색을 추가했다.
+- 숫자 5~9, F8, Q/W/E/R/T 검증 입력과 현재 상태를 보여 주는 창 제목을 추가했다.
+- `Stage1VolumeMath`와 모드 0~9 `Stage1Smoke` 회귀 검사를 추가했다.
 
 ## 7. 캐시·호환성·성능 영향
 
@@ -47,7 +52,14 @@
 - Debug D3D11 smoke: 성공, error/corruption 메시지 없음
 - HLSL 컴파일: Fullscreen VS, Foundation PS, Diagnostic Scene VS/PS 모두 성공
 - 사용자 렌더 승인: 2026-08-02 수동 검증 체크리스트 전체 통과
+- 단계 1 Debug/Release 빌드: 성공
+- Release CTest: 4/4 성공 (`FoundationMath`, `FoundationSmoke`, `Stage1VolumeMath`, `Stage1Smoke`)
+- 단계 1 HLSL: Fullscreen VS, Cloud PS, Diagnostic Scene VS/PS `fxc` 경고 없이 성공
+- Debug D3D11: Foundation/Stage1 smoke 반환 코드 0, error/corruption 없음
+- 단계 1 사용자 렌더 승인: 2026-08-02 수동 검증 전체 통과
 
 ## 9. 남은 문제와 후속 개선
 
-- 단계 0은 사용자 승인 완료 후 커밋·푸시하고, 단계 1에서 AABB 교차와 상수 밀도 레이 마칭을 구현한다.
+- 단계 0은 `c94825b`로 커밋되어 원격 `feature/rebuild-foundation`에 보존됐다.
+- 단계 1은 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
+- 3D noise, 태양광, phase function과 early exit는 이후 단계로 남긴다.

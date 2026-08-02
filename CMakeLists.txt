@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 0: 불투명 진단 장면, 깊이 복원과 풀스크린 합성 기반
+#  재구축 단계 1: 상수 밀도 AABB, Scene Depth 제한과 Beer-Lambert 적분
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -64,6 +64,19 @@ add_test(NAME VolumetricCloud.FoundationMath
          COMMAND VolumetricCloud.FoundationTests)
 add_test(NAME VolumetricCloud.FoundationSmoke
          COMMAND VolumetricCloud --foundation-smoke-test)
+
+# 단계 1의 slab 교차와 상수 밀도 적분을 GPU와 독립된 수치 기준으로 검사한다.
+add_executable(VolumetricCloud.Stage1VolumeMathTests
+    tests/Stage1VolumeMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage1VolumeMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage1VolumeMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage1VolumeMath
+         COMMAND VolumetricCloud.Stage1VolumeMathTests)
+add_test(NAME VolumetricCloud.Stage1Smoke
+         COMMAND VolumetricCloud --stage1-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

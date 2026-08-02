@@ -2,7 +2,7 @@
 //  main.cpp  —  진입점 (WinMain)
 // ----------------------------------------------------------------------------
 //  창(Window) · 카메라(Camera) · 렌더러(Renderer)를 생성·연결하고,
-//  메인 루프에서 진단 장면과 단계 0 풀스크린 패스를 그린다.
+//  메인 루프에서 진단 장면과 단계 1 상수 밀도 AABB 패스를 그린다.
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -18,10 +18,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     const bool smokeTest = commandLine &&
         wcsstr(commandLine, L"--foundation-smoke-test") != nullptr;
+    const bool stage1SmokeTest = commandLine &&
+        wcsstr(commandLine, L"--stage1-smoke-test") != nullptr;
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Rebuild Stage 0", !smokeTest);
+                    L"VolumetricCloud - Stage 1 | 0 합성 | Q 기본 볼륨 | 외부 기본(F5)",
+                    !smokeTest && !stage1SmokeTest);
     Camera   camera;
     Renderer renderer;
 
@@ -38,6 +41,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     {
         for (int frame = 0; frame < 3; ++frame)
             renderer.Render(camera, static_cast<float>(frame) / 60.0f);
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
+    if (stage1SmokeTest)
+    {
+        // 단계 1의 모든 분기 셰이더가 실제 D3D11 draw에서 오류 없이 실행되는지 검사한다.
+        for (int mode = 0; mode <= 9; ++mode)
+        {
+            renderer.SetDebugMode(static_cast<CloudDebugMode>(mode));
+            renderer.Render(camera, static_cast<float>(mode) / 60.0f);
+        }
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 

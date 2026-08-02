@@ -91,6 +91,7 @@ bool Renderer::Init(HWND hwnd, int width, int height)
         m_shaderDir + L"Fullscreen.hlsl",
         m_shaderDir + L"VolumetricClouds.hlsl",
         m_shaderDir + L"DiagnosticScene.hlsl",
+        m_shaderDir + L"Ray.hlsli",
     };
 
     DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
@@ -124,7 +125,7 @@ bool Renderer::Init(HWND hwnd, int width, int height)
         !CreateShaders(true) || !CreateDiagnosticScene() ||
         !CreatePipelineStates() || !CreateConstantBuffers())
     {
-        MessageBoxW(hwnd, L"단계 0 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 1 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -398,7 +399,7 @@ void Renderer::RenderDiagnosticScene(const Camera& camera)
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
-void Renderer::RenderFoundationPass(const Camera& camera, float timeSeconds)
+void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
 {
     CameraCB cameraData = {};
     XMStoreFloat4x4(&cameraData.invViewProj, XMMatrixTranspose(camera.GetInvViewProj()));
@@ -458,7 +459,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     m_context->RSSetViewports(1, &viewport);
 
     RenderDiagnosticScene(camera);
-    RenderFoundationPass(camera, timeSeconds);
+    RenderCloudPass(camera, timeSeconds);
     m_swapChain->Present(1, 0);
 }
 
@@ -470,6 +471,45 @@ void Renderer::SetDebugMode(CloudDebugMode mode)
 CloudDebugMode Renderer::DebugMode() const
 {
     return static_cast<CloudDebugMode>(m_cloudParameters.debugMode);
+}
+
+void Renderer::ApplyStage1ValidationPreset(Stage1ValidationPreset preset)
+{
+    // 각 키는 다른 키의 잔여 상태가 결과를 흐리지 않도록 단계 1 기본값에서 시작한다.
+    m_cloudParameters.cloudBoundsMin = { -2.0f, -1.0f, -2.0f };
+    m_cloudParameters.cloudBoundsMax = { 2.0f, 2.0f, 2.0f };
+    m_cloudParameters.cloudDensity = 0.35f;
+    m_cloudParameters.stepSize = 0.10f;
+    m_cloudParameters.maxViewSteps = 128;
+    m_cloudParameters.extinctionCoefficient = 1.0f;
+    m_cloudParameters.transmittanceThreshold = 0.01f;
+
+    switch (preset)
+    {
+    case Stage1ValidationPreset::ThinVolume:
+        m_cloudParameters.cloudBoundsMin.z = -0.5f;
+        m_cloudParameters.cloudBoundsMax.z = 0.5f;
+        break;
+    case Stage1ValidationPreset::ThickVolume:
+        m_cloudParameters.cloudBoundsMin.z = -4.0f;
+        m_cloudParameters.cloudBoundsMax.z = 4.0f;
+        break;
+    case Stage1ValidationPreset::FineStep:
+        m_cloudParameters.stepSize = 0.025f;
+        break;
+    case Stage1ValidationPreset::CoarseStep:
+        m_cloudParameters.stepSize = 0.5f;
+        break;
+    case Stage1ValidationPreset::DefaultVolume:
+    default:
+        break;
+    }
+    m_validationPreset = preset;
+}
+
+Stage1ValidationPreset Renderer::ValidationPreset() const
+{
+    return m_validationPreset;
 }
 
 bool Renderer::HasDebugLayerErrors() const
@@ -497,7 +537,7 @@ bool Renderer::HasDebugLayerErrors() const
 }
 
 bool Renderer::GetShaderWriteTimes(
-    std::array<std::filesystem::file_time_type, 3>& writeTimes) const
+    std::array<std::filesystem::file_time_type, 4>& writeTimes) const
 {
     std::error_code error;
     for (size_t i = 0; i < m_shaderPaths.size(); ++i)
@@ -516,7 +556,7 @@ void Renderer::UpdateShaderWriteTimes()
 
 void Renderer::CheckShaderHotReload()
 {
-    std::array<std::filesystem::file_time_type, 3> currentTimes = {};
+    std::array<std::filesystem::file_time_type, 4> currentTimes = {};
     if (!GetShaderWriteTimes(currentTimes) || currentTimes == m_shaderWriteTimes)
         return;
 
