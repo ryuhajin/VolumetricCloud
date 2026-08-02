@@ -24,3 +24,9 @@ cmake_install.cmake
 
 # ---- 로컬 전용 AI 도구 설정 ----
 CLAUDE.md
+
+# AI 에이전트 전용 로컬 계획서
+/doc/Volumetric Cloud 프로젝트 단계별 구현 계획서.pdf
+
+# 단계별 학습·사용자 검증·개인 면접 자료 (로컬 전용)
+/notes/

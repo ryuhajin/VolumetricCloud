@@ -1,89 +1,61 @@
 # 아키텍처
 
-이 문서는 모듈 구조, 렌더 파이프라인, 데이터 흐름(특히 상수버퍼)을 설명합니다.
-코드 동작을 바꾸면 이 문서도 함께 갱신하세요. (→ [CONTRIBUTING.md](CONTRIBUTING.md))
+현재는 재구축 단계 0이다. 구름 밀도나 레이 마칭보다 먼저 불투명 장면, 깊이 복원과 구름 전용 풀스크린 합성 경로를 검증한다.
 
-## 1. 전체 구조
+## 모듈과 책임
 
-이 프로젝트는 "정점 버퍼 없이 화면 전체를 덮는 삼각형 1개를 그리고, 픽셀 셰이더에서
-레이마칭으로 볼륨을 그린다"는 **풀스크린 포스트프로세스 형태**의 렌더러입니다.
-지오메트리(메시)는 없습니다 — 박스 볼륨은 픽셀 셰이더 안에서 수학적으로만 존재합니다.
+| 모듈 | 책임 |
+|---|---|
+| `Window` / `Camera` | Win32 입력, 오빗 카메라, 고정 검증 시점, view/projection 제공 |
+| `Renderer` | D3D11 장치, 진단 장면, 색상·깊이 타깃, 풀스크린 단계 0 패스와 합성 |
+| `CloudParameters` | 이후 단계까지 확장할 CPU 구름 설정과 디버그 모드 |
+| `DiagnosticScene.hlsl` | 평면·박스의 불투명 색상과 장치 깊이 출력 |
+| `VolumetricClouds.hlsl` | 카메라 레이·월드 위치 복원, 디버그 출력과 중립적인 구름 합성 인터페이스 |
 
-```
-┌─────────────┐   입력(마우스)    ┌──────────┐
-│   Window    │ ───────────────► │  Camera   │
-│ (Win32)     │                   │ (오빗)    │
-└─────┬───────┘   리사이즈        └────┬─────┘
-      │                                │ view/proj/invViewProj
-      │ WM_SIZE                        │
-      ▼                                ▼
-┌──────────────────────────────────────────────┐
-│                  Renderer (D3D11)              │
-│  device · context · swapchain · RTV            │
-│  상수버퍼(cbCamera) 업데이트 → Draw(3)         │
-└───────────────────────┬────────────────────────┘
-                        │ 파이프라인
-                        ▼
-       Fullscreen.hlsl (VS)  →  VolumetricClouds.hlsl (PS)
-                               ↳ Ray.hlsli
-       화면 덮는 삼각형         픽셀마다 레이마칭 → 색
-```
+## 프레임 순서
 
-## 2. 모듈 책임
+1. `Renderer`가 진단 장면을 `R16G16B16A16_FLOAT` 색상 타깃과 `D32_FLOAT` 깊이에 렌더링한다.
+2. 깊이 타깃을 DSV에서 해제하고 `R32_FLOAT` SRV로 전환한다.
+3. 풀스크린 삼각형이 장면 색상과 깊이를 읽어 월드 레이, 월드 위치와 장면 거리를 복원한다.
+4. 최종 모드는 단계 0 진단 결과를 배경에 합성하고, 디버그 모드는 선택한 값을 직접 출력한다.
+5. SRV를 해제하고 백버퍼를 Present한다.
 
-| 모듈 | 파일 | 책임 |
-|------|------|------|
-| 진입점 | `src/main.cpp` | 객체 생성·연결, 타이머, 메인 루프 |
-| 윈도우 | `src/Window.*` | Win32 창 생성, 메시지 펌프, 마우스 입력 → Camera, 리사이즈 → Renderer |
-| 카메라 | `src/Camera.*` | yaw/pitch/distance 궤도 → view·proj·invViewProj, 카메라 위치 |
-| 렌더러 | `src/Renderer.*` | D3D11 초기화, HLSL 런타임 컴파일/핫-리로드, 상수버퍼 갱신, 드로우/Present |
-| VS | `shaders/Fullscreen.hlsl` | `SV_VertexID`로 풀스크린 삼각형 생성, uv 전달 |
-| PS | `shaders/VolumetricClouds.hlsl` | uv→레이, ray-box(AABB) 교차, 밀도 적분, 합성 |
-| HLSL include | `shaders/Ray.hlsli` | `RaySphere`, `RayBox` 등 레이 교차 함수 보관 |
+## 상수버퍼
 
-## 3. 렌더 파이프라인 (한 프레임)
-
-1. `main` 루프: 경과 시간 계산, 종횡비 갱신.
-2. `Renderer::Render(camera, time)`:
-   - HLSL 파일 수정 시각을 확인하고, 변경되었으면 VS/PS를 다시 컴파일한다.
-   - 새 셰이더 생성이 모두 성공한 경우에만 기존 셰이더를 교체한다.
-   - `camera`에서 `invViewProj`·위치를 받아 **상수버퍼(cbCamera)** 를 채운다.
-   - DirectXMath 행렬을 `XMMatrixTranspose` 후 업로드 (HLSL `mul(vector,matrix)` 규약).
-   - 백버퍼 클리어 → VS/PS/상수버퍼 바인딩 → `Draw(3, 0)` → `Present`.
-3. GPU: VS가 삼각형 3정점을 만들고, PS가 픽셀마다 레이마칭을 수행.
-
-## 4. 데이터 흐름 — 상수버퍼 `cbCamera`
-
-CPU(`Renderer::CameraCB`)와 GPU(`cbCamera`)의 메모리 레이아웃은 **정확히 일치**해야 합니다.
-HLSL은 16바이트 단위로 패킹되므로 순서/패딩에 주의하세요. (총 112바이트)
+### `CameraCB` / `cbCamera` (`b0`, 96바이트)
 
 | 필드 | 타입 | 의미 |
-|------|------|------|
-| `invViewProj` | float4x4 | 역 뷰-투영. 픽셀→월드 레이 생성 (transpose 업로드) |
-| `cameraPos` | float3 | 레이 원점 (카메라 월드 위치) |
-| `time` | float | 경과 시간 (현재 미사용, 추후 애니메이션) |
-| `volumeCenter` | float3 | 박스 볼륨 중심 |
-| `densityScale` | float | 밀도(불투명도) |
-| `volumeHalfSize` | float3 | 박스 볼륨 절반 크기 |
-| `_pad` | float | 16바이트 정렬 패딩 |
+|---|---|---|
+| `invViewProj` | `float4x4` | 화면 좌표와 장치 깊이를 월드 좌표로 복원 |
+| `cameraPos`, `time` | `float3`, `float` | 월드 레이 원점과 경과 시간 |
+| `renderSize` | `float2` | 픽셀 크기와 화면 종횡비 계산 |
+| `nearPlane`, `farPlane` | `float`, `float` | meter 단위 카메라 절두체 범위 |
 
-> **주의:** 이 구조를 바꾸면 `Renderer.h`의 `CameraCB`와 `VolumetricClouds.hlsl`의
-> `cbCamera`를 **동시에** 수정하고, 위 표도 갱신하세요.
+### `CloudParameters` / `CloudCB` (`b1`, 48바이트)
 
-## 5. 셰이더 컴파일 전략
+CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경한다.
 
-- 셰이더는 **런타임에** `D3DCompileFromFile`로 컴파일합니다 (오프라인 .cso 아님).
-- 개발 중에는 CMake가 정의한 소스 트리 `shaders/`를 우선 읽고, 없으면 exe 옆 `shaders/`로 폴백합니다.
-- `shaders/` 폴더 전체를 복사하므로 `.hlsli` include 파일도 실행 파일 옆에 함께 배치됩니다.
-- `Renderer::Render`는 `Fullscreen.hlsl`, `VolumetricClouds.hlsl`, `Ray.hlsli`의 수정 시각을
-  매 프레임 확인합니다.
-  변경이 있으면 실행 중 자동 재컴파일하고, 성공한 경우에만 기존 VS/PS를 교체합니다.
-- 초기 컴파일 실패 시에는 MessageBox로 에러를 표시하고 시작을 중단합니다. 핫-리로드 중 컴파일 실패 시에는
-  기존 정상 셰이더를 유지하고 디버그 출력으로 에러를 남깁니다.
+| 묶음 | 필드 |
+|---|---|
+| 0 | `cloudBoundsMin(float3)`, `cloudDensity` |
+| 1 | `cloudBoundsMax(float3)`, `stepSize` |
+| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` |
 
-## 6. 의도적으로 생략한 것 (현재 2단계)
+단계 0에서는 경계·밀도·스텝 필드를 사용하지 않는다. 인터페이스를 먼저 고정하고 단계 1에서 활성화한다.
 
-- noise(밀도 변조), light(산란/그림자), 깊이 버퍼, ImGui UI, 알파 블렌드 스테이트.
-- 합성은 셰이더 내부에서 절차적 하늘 위에 직접 수행하므로 하드웨어 블렌딩이 필요 없습니다.
+## 디버그 입력
 
-다음 단계는 [ROADMAP.md](ROADMAP.md)를 참고하세요.
+| 키 | 출력 |
+|---|---|
+| `0` | 장면과 단계 0 반투명 진단 원판 합성 |
+| `1` | 월드 레이 방향 RGB |
+| `2` | Scene Depth에서 복원한 월드 거리 |
+| `3` | 복원한 월드 위치의 반복 색상 밴드 |
+| `4` | 화면 UV |
+| `F5`~`F7` | 고정 검증 카메라 프리셋 |
+
+## 의도적으로 제외한 기능
+
+- AABB/구형 셸 교차, 밀도와 레이 마칭
+- 3D noise, weather map, 태양광과 shadow
+- 저해상도, temporal reconstruction, 영구 캐시와 프리셋

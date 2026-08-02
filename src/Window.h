@@ -15,7 +15,8 @@ class Renderer;
 class Window
 {
 public:
-    Window(HINSTANCE hInstance, int width, int height, const wchar_t* title);
+    Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
+           bool showWindow = true);
     ~Window();
 
     // 입력을 받을 대상 연결
