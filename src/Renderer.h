@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 0 렌더링 기반
+//  Renderer.h - Direct3D 11 단계 1 상수 밀도 AABB 렌더링
 // ============================================================================
 #pragma once
 
@@ -32,6 +32,8 @@ public:
     void Render(const Camera& camera, float timeSeconds);
     void SetDebugMode(CloudDebugMode mode);
     CloudDebugMode DebugMode() const;
+    void ApplyStage1ValidationPreset(Stage1ValidationPreset preset);
+    Stage1ValidationPreset ValidationPreset() const;
     bool HasDebugLayerErrors() const;
 
 private:
@@ -69,11 +71,11 @@ private:
     bool CreateConstantBuffers();
     void ReleaseSizeDependentResources();
     void RenderDiagnosticScene(const Camera& camera);
-    void RenderFoundationPass(const Camera& camera, float timeSeconds);
+    void RenderCloudPass(const Camera& camera, float timeSeconds);
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
     bool GetShaderWriteTimes(
-        std::array<std::filesystem::file_time_type, 3>& writeTimes) const;
+        std::array<std::filesystem::file_time_type, 4>& writeTimes) const;
 
     int m_width = 0;
     int m_height = 0;
@@ -108,8 +110,9 @@ private:
     ComPtr<ID3D11SamplerState> m_pointClampSampler;
 
     CloudParameters m_cloudParameters;
+    Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::DefaultVolume;
 
     std::wstring m_shaderDir;
-    std::array<std::wstring, 3> m_shaderPaths;
-    std::array<std::filesystem::file_time_type, 3> m_shaderWriteTimes = {};
+    std::array<std::wstring, 4> m_shaderPaths;
+    std::array<std::filesystem::file_time_type, 4> m_shaderWriteTimes = {};
 };

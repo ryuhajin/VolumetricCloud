@@ -4,6 +4,8 @@
 
 #include <windowsx.h> // GET_X_LPARAM / GET_Y_LPARAM
 
+#include <cwchar>
+
 static const wchar_t* kClassName = L"VolumetricCloudWindowClass";
 
 Window::Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
@@ -55,6 +57,29 @@ bool Window::ProcessMessages()
         DispatchMessage(&msg);
     }
     return true;
+}
+
+void Window::UpdateStage1Title()
+{
+    if (!m_renderer || !m_hwnd)
+        return;
+
+    static const wchar_t* debugNames[] = {
+        L"0 합성", L"1 월드 레이", L"2 Scene Depth", L"3 월드 위치", L"4 화면 UV",
+        L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 상수 밀도"
+    };
+    static const wchar_t* presetNames[] = {
+        L"Q 기본 볼륨", L"W 얇은 Z", L"E 두꺼운 Z", L"R Fine 0.025m", L"T Coarse 0.5m"
+    };
+
+    const int debugIndex = static_cast<int>(m_renderer->DebugMode());
+    const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
+    wchar_t title[256] = {};
+    swprintf_s(title, L"VolumetricCloud - Stage 1 | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 9) ? debugIndex : 0],
+               presetNames[(presetIndex >= 0 && presetIndex <= 4) ? presetIndex : 0],
+               m_cameraPresetName);
+    SetWindowTextW(m_hwnd, title);
 }
 
 // 정적 콜백: GWLP_USERDATA 에 저장한 인스턴스로 라우팅
@@ -125,25 +150,71 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_KEYDOWN:
-        if (m_renderer && wParam >= '0' && wParam <= '4')
+        if (m_renderer && wParam >= '0' && wParam <= '9')
         {
             m_renderer->SetDebugMode(
                 static_cast<CloudDebugMode>(static_cast<int>(wParam - '0')));
+            UpdateStage1Title();
             return 0;
         }
         if (m_camera && wParam == VK_F5)
         {
             m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
+            m_cameraPresetName = L"외부 기본(F5)";
+            UpdateStage1Title();
             return 0;
         }
         if (m_camera && wParam == VK_F6)
         {
             m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
+            m_cameraPresetName = L"낮은 외부(F6)";
+            UpdateStage1Title();
             return 0;
         }
         if (m_camera && wParam == VK_F7)
         {
             m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
+            m_cameraPresetName = L"높은 외부(F7)";
+            UpdateStage1Title();
+            return 0;
+        }
+        if (m_camera && wParam == VK_F8)
+        {
+            // orbit의 눈 위치가 원점이 되도록 target을 -Z로 옮긴다. 따라서 얇은 W
+            // 프리셋에서도 카메라는 AABB 내부이고 raw tNear가 음수인 경로를 검증한다.
+            m_camera->SetOrbit(0.0f, 0.0f, 1.5f, { 0.0f, 0.0f, -1.5f });
+            m_cameraPresetName = L"AABB 내부(F8)";
+            UpdateStage1Title();
+            return 0;
+        }
+        if (m_renderer && wParam == 'Q')
+        {
+            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::DefaultVolume);
+            UpdateStage1Title();
+            return 0;
+        }
+        if (m_renderer && wParam == 'W')
+        {
+            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::ThinVolume);
+            UpdateStage1Title();
+            return 0;
+        }
+        if (m_renderer && wParam == 'E')
+        {
+            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::ThickVolume);
+            UpdateStage1Title();
+            return 0;
+        }
+        if (m_renderer && wParam == 'R')
+        {
+            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::FineStep);
+            UpdateStage1Title();
+            return 0;
+        }
+        if (m_renderer && wParam == 'T')
+        {
+            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::CoarseStep);
+            UpdateStage1Title();
             return 0;
         }
     }
