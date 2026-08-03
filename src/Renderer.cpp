@@ -3,7 +3,9 @@
 
 #include <d3dcompiler.h>
 
+#include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <vector>
 
 using namespace DirectX;
@@ -38,8 +40,24 @@ bool DirectoryExists(const std::wstring& path)
            (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+std::string CurrentLocalTimeText()
+{
+    SYSTEMTIME time = {};
+    GetLocalTime(&time);
+    char text[16] = {};
+    sprintf_s(text, "%02u:%02u:%02u", time.wHour, time.wMinute, time.wSecond);
+    return text;
+}
+
 std::wstring ResolveShaderDir()
 {
+    wchar_t overrideDirectory[32768] = {};
+    const DWORD overrideLength = GetEnvironmentVariableW(
+        L"VCLOUD_SHADER_OVERRIDE_DIR", overrideDirectory,
+        static_cast<DWORD>(std::size(overrideDirectory)));
+    if (overrideLength > 0 && overrideLength < std::size(overrideDirectory) &&
+        DirectoryExists(overrideDirectory))
+        return std::wstring(overrideDirectory) + L"\\";
 #ifdef VCLOUD_SHADER_SOURCE_DIR
     const std::wstring sourceDir = WidenUtf8(VCLOUD_SHADER_SOURCE_DIR);
     if (DirectoryExists(sourceDir))
@@ -82,17 +100,20 @@ void AppendBox(std::vector<DiagnosticSceneVertex>& vertices,
 }
 }
 
+Renderer::~Renderer()
+{
+    m_noiseLab.Shutdown();
+}
+
 bool Renderer::Init(HWND hwnd, int width, int height)
 {
     m_width = width;
     m_height = height;
     m_shaderDir = ResolveShaderDir();
-    m_shaderPaths = {
-        m_shaderDir + L"Fullscreen.hlsl",
-        m_shaderDir + L"VolumetricClouds.hlsl",
-        m_shaderDir + L"DiagnosticScene.hlsl",
-        m_shaderDir + L"Ray.hlsli",
-    };
+    m_fullscreenShaderPath = m_shaderDir + L"Fullscreen.hlsl";
+    m_cloudShaderPath = m_shaderDir + L"VolumetricClouds.hlsl";
+    m_noiseLabShaderPath = m_shaderDir + L"NoiseLab.hlsl";
+    m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
 
     DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
     swapChainDesc.BufferCount = 2;
@@ -123,9 +144,10 @@ bool Renderer::Init(HWND hwnd, int width, int height)
 
     if (!CreateBackBufferTarget() || !CreateSceneTargets() ||
         !CreateShaders(true) || !CreateDiagnosticScene() ||
-        !CreatePipelineStates() || !CreateConstantBuffers())
+        !CreatePipelineStates() || !CreateConstantBuffers() ||
+        !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
     {
-        MessageBoxW(hwnd, L"단계 1 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 2 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -202,6 +224,7 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     std::string message = "셰이더 컴파일 실패:\n";
     if (errors)
         message += static_cast<const char*>(errors->GetBufferPointer());
+    m_shaderError = message;
     if (showErrors)
         MessageBoxA(nullptr, message.c_str(), "HLSL Error", MB_OK | MB_ICONERROR);
     else
@@ -211,18 +234,25 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
 
 bool Renderer::CreateShaders(bool showErrors)
 {
+    m_shaderError.clear();
     ComPtr<ID3DBlob> fullscreenVsBlob;
-    ComPtr<ID3DBlob> foundationPsBlob;
+    ComPtr<ID3DBlob> cloudPsBlob;
+    ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
-    if (!CompileShaderFromFile(m_shaderPaths[0], "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
-        !CompileShaderFromFile(m_shaderPaths[1], "main", "ps_5_0", foundationPsBlob, showErrors) ||
-        !CompileShaderFromFile(m_shaderPaths[2], "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
-        !CompileShaderFromFile(m_shaderPaths[2], "PSMain", "ps_5_0", scenePsBlob, showErrors))
+    if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "main", "ps_5_0", cloudPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
+        !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors))
+    {
+        m_shaderStatus = "Reload failed; previous generation kept";
         return false;
+    }
 
     ComPtr<ID3D11VertexShader> fullscreenVs;
-    ComPtr<ID3D11PixelShader> foundationPs;
+    ComPtr<ID3D11PixelShader> cloudPs;
+    ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
     ComPtr<ID3D11InputLayout> inputLayout;
@@ -231,15 +261,22 @@ bool Renderer::CreateShaders(bool showErrors)
             fullscreenVsBlob->GetBufferPointer(), fullscreenVsBlob->GetBufferSize(),
             nullptr, &fullscreenVs)) ||
         FAILED(m_device->CreatePixelShader(
-            foundationPsBlob->GetBufferPointer(), foundationPsBlob->GetBufferSize(),
-            nullptr, &foundationPs)) ||
+            cloudPsBlob->GetBufferPointer(), cloudPsBlob->GetBufferSize(),
+            nullptr, &cloudPs)) ||
+        FAILED(m_device->CreatePixelShader(
+            noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
+            nullptr, &noiseLabPs)) ||
         FAILED(m_device->CreateVertexShader(
             sceneVsBlob->GetBufferPointer(), sceneVsBlob->GetBufferSize(),
             nullptr, &sceneVs)) ||
         FAILED(m_device->CreatePixelShader(
             scenePsBlob->GetBufferPointer(), scenePsBlob->GetBufferSize(),
             nullptr, &scenePs)))
+    {
+        m_shaderError = "D3D11 shader object creation failed";
+        m_shaderStatus = "Reload failed; previous generation kept";
         return false;
+    }
 
     const D3D11_INPUT_ELEMENT_DESC elements[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
@@ -251,13 +288,21 @@ bool Renderer::CreateShaders(bool showErrors)
             elements, static_cast<UINT>(std::size(elements)),
             sceneVsBlob->GetBufferPointer(), sceneVsBlob->GetBufferSize(),
             &inputLayout)))
+    {
+        m_shaderError = "Diagnostic scene input layout creation failed";
+        m_shaderStatus = "Reload failed; previous generation kept";
         return false;
+    }
 
     m_fullscreenVs = fullscreenVs;
-    m_foundationPs = foundationPs;
+    m_cloudPs = cloudPs;
+    m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
     m_sceneInputLayout = inputLayout;
+    ++m_shaderGeneration;
+    m_shaderStatus = "Reload succeeded @ " + CurrentLocalTimeText();
+    m_shaderError.clear();
     return true;
 }
 
@@ -432,7 +477,7 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
     m_context->IASetInputLayout(nullptr);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    m_context->PSSetShader(m_foundationPs.Get(), nullptr, 0);
+    m_context->PSSetShader(m_cloudPs.Get(), nullptr, 0);
     ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
     ID3D11ShaderResourceView* resources[2] = {
@@ -452,6 +497,11 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         return;
 
     CheckShaderHotReload();
+    m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
+                          m_shaderGeneration, m_shaderStatus, m_shaderError);
+    if (m_noiseLab.ConsumeParametersChanged())
+        m_noisePreset = Stage2NoisePreset::Custom;
+    const float effectiveTime = m_noiseLab.EffectiveTime();
     D3D11_VIEWPORT viewport = {};
     viewport.Width = static_cast<float>(m_width);
     viewport.Height = static_cast<float>(m_height);
@@ -459,8 +509,55 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     m_context->RSSetViewports(1, &viewport);
 
     RenderDiagnosticScene(camera);
-    RenderCloudPass(camera, timeSeconds);
+    RenderCloudPass(camera, effectiveTime);
+    if (m_captureFrameHashes)
+        CaptureCloudFrameHash();
+    m_noiseLab.RenderPreviews(
+        m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get());
+    if (m_noiseLab.ConsumeExportRequest())
+    {
+        std::filesystem::path shaderDirectory(m_shaderDir);
+        if (shaderDirectory.filename().empty())
+            shaderDirectory = shaderDirectory.parent_path();
+        m_noiseLab.ExportSnapshot(shaderDirectory.parent_path() / L"captures" / L"noise-lab",
+                                  m_cloudParameters,
+                                  shaderDirectory / L"Noise.hlsli");
+    }
+    m_noiseLab.EndFrame(m_backBufferRtv.Get());
     m_swapChain->Present(1, 0);
+}
+
+void Renderer::CaptureCloudFrameHash()
+{
+    ComPtr<ID3D11Texture2D> backBuffer;
+    if (FAILED(m_swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
+        return;
+    D3D11_TEXTURE2D_DESC desc = {};
+    backBuffer->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &staging)))
+        return;
+    m_context->CopyResource(staging.Get(), backBuffer.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return;
+    std::uint64_t hash = 1469598103934665603ull;
+    for (UINT y = 0; y < desc.Height; ++y)
+    {
+        const auto* row = static_cast<const unsigned char*>(mapped.pData) +
+                          static_cast<size_t>(y) * mapped.RowPitch;
+        for (UINT x = 0; x < desc.Width * 4; ++x)
+        {
+            hash ^= row[x];
+            hash *= 1099511628211ull;
+        }
+    }
+    m_context->Unmap(staging.Get(), 0);
+    m_lastCloudFrameHash = hash;
 }
 
 void Renderer::SetDebugMode(CloudDebugMode mode)
@@ -478,7 +575,7 @@ void Renderer::ApplyStage1ValidationPreset(Stage1ValidationPreset preset)
     // 각 키는 다른 키의 잔여 상태가 결과를 흐리지 않도록 단계 1 기본값에서 시작한다.
     m_cloudParameters.cloudBoundsMin = { -2.0f, -1.0f, -2.0f };
     m_cloudParameters.cloudBoundsMax = { 2.0f, 2.0f, 2.0f };
-    m_cloudParameters.cloudDensity = 0.35f;
+    m_cloudParameters.densityMultiplier = 1.0f;
     m_cloudParameters.stepSize = 0.10f;
     m_cloudParameters.maxViewSteps = 128;
     m_cloudParameters.extinctionCoefficient = 1.0f;
@@ -512,6 +609,52 @@ Stage1ValidationPreset Renderer::ValidationPreset() const
     return m_validationPreset;
 }
 
+void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
+{
+    // 프리셋을 누르는 순서와 무관하게 비교할 수 있도록 noise 관련 값만 기본화한다.
+    // AABB와 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
+    m_cloudParameters.baseNoiseScale = 0.35f;
+    m_cloudParameters.coverage = 0.55f;
+    m_cloudParameters.densityMultiplier = 1.0f;
+    m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
+    m_cloudParameters.windSpeed = 0.25f;
+    m_cloudParameters.noiseOffset = 0.0f;
+
+    switch (preset)
+    {
+    case Stage2NoisePreset::SparseCoverage:
+        m_cloudParameters.coverage = 0.35f;
+        break;
+    case Stage2NoisePreset::DenseCoverage:
+        m_cloudParameters.coverage = 0.75f;
+        break;
+    case Stage2NoisePreset::LargeBlobs:
+        m_cloudParameters.baseNoiseScale = 0.18f;
+        break;
+    case Stage2NoisePreset::SmallBlobs:
+        m_cloudParameters.baseNoiseScale = 0.70f;
+        break;
+    case Stage2NoisePreset::StoppedWind:
+        m_cloudParameters.windSpeed = 0.0f;
+        break;
+    case Stage2NoisePreset::FastWind:
+        m_cloudParameters.windSpeed = 0.8f;
+        break;
+    case Stage2NoisePreset::OffsetNoise:
+        m_cloudParameters.noiseOffset = 0.73f;
+        break;
+    case Stage2NoisePreset::DefaultNoise:
+    default:
+        break;
+    }
+    m_noisePreset = preset;
+}
+
+Stage2NoisePreset Renderer::NoisePreset() const
+{
+    return m_noisePreset;
+}
+
 bool Renderer::HasDebugLayerErrors() const
 {
 #ifdef _DEBUG
@@ -537,16 +680,30 @@ bool Renderer::HasDebugLayerErrors() const
 }
 
 bool Renderer::GetShaderWriteTimes(
-    std::array<std::filesystem::file_time_type, 4>& writeTimes) const
+    std::map<std::wstring, std::filesystem::file_time_type>& writeTimes) const
 {
+    writeTimes.clear();
     std::error_code error;
-    for (size_t i = 0; i < m_shaderPaths.size(); ++i)
+    const std::filesystem::path root(m_shaderDir);
+    std::filesystem::recursive_directory_iterator iterator(root, error);
+    const std::filesystem::recursive_directory_iterator end;
+    if (error)
+        return false;
+    for (; iterator != end; iterator.increment(error))
     {
-        writeTimes[i] = std::filesystem::last_write_time(m_shaderPaths[i], error);
         if (error)
             return false;
+        if (!iterator->is_regular_file(error) || error)
+            continue;
+        const std::wstring extension = iterator->path().extension().wstring();
+        if (extension != L".hlsl" && extension != L".hlsli")
+            continue;
+        const auto time = std::filesystem::last_write_time(iterator->path(), error);
+        if (error)
+            return false;
+        writeTimes.emplace(iterator->path().wstring(), time);
     }
-    return true;
+    return !writeTimes.empty();
 }
 
 void Renderer::UpdateShaderWriteTimes()
@@ -556,10 +713,60 @@ void Renderer::UpdateShaderWriteTimes()
 
 void Renderer::CheckShaderHotReload()
 {
-    std::array<std::filesystem::file_time_type, 4> currentTimes = {};
+    std::map<std::wstring, std::filesystem::file_time_type> currentTimes;
     if (!GetShaderWriteTimes(currentTimes) || currentTimes == m_shaderWriteTimes)
         return;
 
-    CreateShaders(false);
+    std::ostringstream changed;
+    bool first = true;
+    for (const auto& [path, time] : currentTimes)
+    {
+        const auto previous = m_shaderWriteTimes.find(path);
+        if (previous == m_shaderWriteTimes.end() || previous->second != time)
+        {
+            if (!first)
+                changed << ", ";
+            changed << std::filesystem::path(path).filename().string();
+            first = false;
+        }
+    }
+    for (const auto& [path, time] : m_shaderWriteTimes)
+    {
+        if (currentTimes.find(path) == currentTimes.end())
+        {
+            if (!first)
+                changed << ", ";
+            changed << std::filesystem::path(path).filename().string() << " (removed)";
+            first = false;
+        }
+    }
+    const bool succeeded = CreateShaders(false);
+    if (succeeded)
+        m_shaderStatus = "Reloaded: " + changed.str() + " @ " + CurrentLocalTimeText();
+    else
+        m_shaderStatus = "Reload failed: " + changed.str();
     m_shaderWriteTimes = currentTimes;
+}
+
+bool Renderer::HandleWindowMessage(
+    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    return m_noiseLab.HandleWindowMessage(hwnd, message, wParam, lParam);
+}
+
+bool Renderer::ValidateNoiseLabPreviews()
+{
+    return m_noiseLab.ValidatePreviewData();
+}
+
+bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
+{
+    return m_noiseLab.ExportSnapshot(
+        root, m_cloudParameters,
+        std::filesystem::path(m_shaderDir) / L"Noise.hlsli");
+}
+
+std::uint64_t Renderer::NoiseLabPreviewHash(std::size_t targetIndex)
+{
+    return m_noiseLab.PreviewHash(targetIndex);
 }

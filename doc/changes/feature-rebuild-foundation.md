@@ -38,11 +38,20 @@
 - 전체 교차 구간을 다시 나눈 상수 밀도 레이 마칭과 고정 산란색을 추가했다.
 - 숫자 5~9, F8, Q/W/E/R/T 검증 입력과 현재 상태를 보여 주는 창 제목을 추가했다.
 - `Stage1VolumeMath`와 모드 0~9 `Stage1Smoke` 회귀 검사를 추가했다.
+- 단계 2에서 월드 위치 기반 단일 절차적 3D value noise와 부드러운 8-corner 보간을 추가했다.
+- coverage threshold, density multiplier, wind direction/speed와 noise offset을 80바이트 `CloudParameters`에 추가했다.
+- Z/X/C/V noise 디버그와 N/A/S/D/F/G/H/K 비교 프리셋을 추가했다.
+- `Stage2NoiseMath`와 단계 2 프리셋·디버그를 순회하는 `Stage2Smoke`를 추가했다.
+- `CloudParameters.hlsli`와 `Noise.hlsli`로 GPU 설정·noise 함수를 분리해 구름과 Noise Lab이 같은 구현을 사용한다.
+- Dear ImGui Win32/DX11 UI에서 XY/XZ/YZ 단면, crosshair, raw/threshold/final과 공유 파라미터·시간을 조절한다.
+- 512×512 단면 PNG 세 장과 파라미터·noise source hash JSON을 WIC로 내보낸다. PNG는 런타임 밀도 입력으로 읽지 않는다.
+- 모든 HLSL/HLSLI를 재귀 감시하고 전체 셰이더가 성공한 경우에만 generation 단위로 교체하는 원자적 핫리로드를 추가했다.
 
 ## 7. 캐시·호환성·성능 영향
 
 - 기존 noise cache와 프리셋을 읽지 않는다.
 - 단계 0은 full-resolution 장면 색상과 32비트 깊이 타깃을 각각 하나 사용한다.
+- Noise Lab은 `R8G8B8A8_UNORM` 512² render target/SRV/staging texture를 축별로 한 벌씩 사용하며 F1으로 UI를 숨길 수 있다.
 
 ## 8. 테스트 및 실행 결과
 
@@ -57,9 +66,17 @@
 - 단계 1 HLSL: Fullscreen VS, Cloud PS, Diagnostic Scene VS/PS `fxc` 경고 없이 성공
 - Debug D3D11: Foundation/Stage1 smoke 반환 코드 0, error/corruption 없음
 - 단계 1 사용자 렌더 승인: 2026-08-02 수동 검증 전체 통과
+- 단계 2 Debug/Release 빌드: 성공
+- Noise Lab 통합 후 Debug/Release CTest: 8/8 성공, 이전 단계 회귀와 `NoiseLabSmoke`/`ShaderHotReloadSmoke` 포함
+- 단계 2 HLSL: Fullscreen VS, Cloud PS, Diagnostic VS/PS `fxc /Od` 경고 없이 성공
+- Debug D3D11: Foundation/Stage1/Stage2 smoke 반환 코드 0, error/corruption 없음
+- NoiseLabSmoke: raw/threshold/final 세 출력의 XY/XZ/YZ GPU readback과 512² PNG 3장·JSON 생성 통과
+- ShaderHotReloadSmoke: 임시 `Noise.hlsli` 변경 시 Lab/Cloud 동시 변화, 문법 오류 시 이전 generation 유지, 복구 후 원상 복귀 통과
+- 단계 2 사용자 렌더 승인: 2026-08-03 수동 검증 전체 통과
 
 ## 9. 남은 문제와 후속 개선
 
 - 단계 0은 `c94825b`로 커밋되어 원격 `feature/rebuild-foundation`에 보존됐다.
 - 단계 1은 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
-- 3D noise, 태양광, phase function과 early exit는 이후 단계로 남긴다.
+- 단계 2는 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
+- 높이 profile, detail noise, weather map, 태양광과 early exit는 이후 단계로 남긴다.

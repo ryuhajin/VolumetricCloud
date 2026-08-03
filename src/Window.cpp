@@ -59,25 +59,33 @@ bool Window::ProcessMessages()
     return true;
 }
 
-void Window::UpdateStage1Title()
+void Window::UpdateDebugTitle()
 {
     if (!m_renderer || !m_hwnd)
         return;
 
     static const wchar_t* debugNames[] = {
         L"0 합성", L"1 월드 레이", L"2 Scene Depth", L"3 월드 위치", L"4 화면 UV",
-        L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 상수 밀도"
+        L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
+        L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW"
     };
     static const wchar_t* presetNames[] = {
         L"Q 기본 볼륨", L"W 얇은 Z", L"E 두꺼운 Z", L"R Fine 0.025m", L"T Coarse 0.5m"
     };
+    static const wchar_t* noisePresetNames[] = {
+        L"N 기본 Noise", L"A Sparse", L"S Dense", L"D 큰 덩어리",
+        L"F 작은 덩어리", L"G 바람 정지", L"H 빠른 바람", L"K Noise Offset",
+        L"UI Custom"
+    };
 
     const int debugIndex = static_cast<int>(m_renderer->DebugMode());
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
+    const int noisePresetIndex = static_cast<int>(m_renderer->NoisePreset());
     wchar_t title[256] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 1 | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 9) ? debugIndex : 0],
+    swprintf_s(title, L"VolumetricCloud - Stage 2 | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 13) ? debugIndex : 0],
                presetNames[(presetIndex >= 0 && presetIndex <= 4) ? presetIndex : 0],
+               noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
 }
@@ -104,6 +112,9 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (m_renderer && m_renderer->HandleWindowMessage(hwnd, msg, wParam, lParam))
+        return 0;
+
     switch (msg)
     {
     case WM_DESTROY:
@@ -154,28 +165,52 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             m_renderer->SetDebugMode(
                 static_cast<CloudDebugMode>(static_cast<int>(wParam - '0')));
-            UpdateStage1Title();
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'Z')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::RawNoise);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'X')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::ThresholdDensity);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'C')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::FinalDensity);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'V')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::NoiseUvw);
+            UpdateDebugTitle();
             return 0;
         }
         if (m_camera && wParam == VK_F5)
         {
             m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
             m_cameraPresetName = L"외부 기본(F5)";
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_camera && wParam == VK_F6)
         {
             m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
             m_cameraPresetName = L"낮은 외부(F6)";
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_camera && wParam == VK_F7)
         {
             m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
             m_cameraPresetName = L"높은 외부(F7)";
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_camera && wParam == VK_F8)
@@ -184,37 +219,85 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // 프리셋에서도 카메라는 AABB 내부이고 raw tNear가 음수인 경로를 검증한다.
             m_camera->SetOrbit(0.0f, 0.0f, 1.5f, { 0.0f, 0.0f, -1.5f });
             m_cameraPresetName = L"AABB 내부(F8)";
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_renderer && wParam == 'Q')
         {
             m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::DefaultVolume);
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_renderer && wParam == 'W')
         {
             m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::ThinVolume);
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_renderer && wParam == 'E')
         {
             m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::ThickVolume);
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_renderer && wParam == 'R')
         {
             m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::FineStep);
-            UpdateStage1Title();
+            UpdateDebugTitle();
             return 0;
         }
         if (m_renderer && wParam == 'T')
         {
             m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::CoarseStep);
-            UpdateStage1Title();
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'N')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::DefaultNoise);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'A')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::SparseCoverage);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'S')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::DenseCoverage);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'D')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::LargeBlobs);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'F')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::SmallBlobs);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'G')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::StoppedWind);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'H')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::FastWind);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'K')
+        {
+            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::OffsetNoise);
+            UpdateDebugTitle();
             return 0;
         }
     }

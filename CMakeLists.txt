@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 1: 상수 밀도 AABB, Scene Depth 제한과 Beer-Lambert 적분
+#  재구축 단계 2: 월드 공간 단일 3D 노이즈와 coverage 밀도장
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -20,10 +20,20 @@ add_executable(VolumetricCloud WIN32
     src/main.cpp
     src/Window.cpp
     src/Renderer.cpp
+    src/NoiseLab.cpp
     src/Camera.cpp
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_win32.cpp
+    third_party/imgui/backends/imgui_impl_dx11.cpp
 )
 
-target_include_directories(VolumetricCloud PRIVATE src)
+target_include_directories(VolumetricCloud PRIVATE
+    src
+    third_party/imgui
+)
 
 # ----------------------------------------------------------------------------
 #  DirectX11 관련 라이브러리 링크
@@ -35,6 +45,7 @@ target_link_libraries(VolumetricCloud PRIVATE
     d3d11
     dxgi
     d3dcompiler
+    windowscodecs
 )
 
 # 유니코드 윈도우 API 사용
@@ -42,6 +53,7 @@ target_link_libraries(VolumetricCloud PRIVATE
 target_compile_definitions(VolumetricCloud PRIVATE
     UNICODE
     _UNICODE
+    NOMINMAX
     VCLOUD_SHADER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/shaders"
 )
 
@@ -77,6 +89,23 @@ add_test(NAME VolumetricCloud.Stage1VolumeMath
          COMMAND VolumetricCloud.Stage1VolumeMathTests)
 add_test(NAME VolumetricCloud.Stage1Smoke
          COMMAND VolumetricCloud --stage1-smoke-test)
+
+# 단계 2의 절차적 value noise, coverage remap과 바람 좌표를 CPU에서 검사한다.
+add_executable(VolumetricCloud.Stage2NoiseMathTests
+    tests/Stage2NoiseMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage2NoiseMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage2NoiseMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage2NoiseMath
+         COMMAND VolumetricCloud.Stage2NoiseMathTests)
+add_test(NAME VolumetricCloud.Stage2Smoke
+         COMMAND VolumetricCloud --stage2-smoke-test)
+add_test(NAME VolumetricCloud.NoiseLabSmoke
+         COMMAND VolumetricCloud --noise-lab-smoke-test)
+add_test(NAME VolumetricCloud.ShaderHotReloadSmoke
+         COMMAND VolumetricCloud --shader-hot-reload-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

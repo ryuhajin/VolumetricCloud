@@ -6,14 +6,14 @@
 ## 이 프로젝트가 무엇인가
 
 DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류메트릭 클라우드**를 렌더링하는
-학습 프로젝트입니다. 현재는 **재구축 단계 1**을 진행하며, 안전한 AABB 교차,
-Scene Depth 제한과 상수 밀도 Beer-Lambert 적분을 검증합니다.
+학습 프로젝트입니다. 현재는 **재구축 단계 2**를 진행하며, 월드 공간 단일 3D value noise,
+coverage 밀도와 바람 이동을 검증합니다.
 
 ## 빠른 사실 (Quick Facts)
 
 - **언어/환경:** C++17, HLSL(shader model 5.0), DirectX 11, Win32, Windows
 - **빌드:** CMake (`cmake -B build -G "Visual Studio 17 2022" -A x64` → `cmake --build build --config Debug`)
-- **실행:** `build/Debug/VolumetricCloud.exe` (드래그/휠, 숫자 0~9, F5~F8, Q/W/E/R/T)
+- **실행:** `build/Debug/VolumetricCloud.exe` (숫자 0~9, Z/X/C/V, F5~F8, Q/W/E/R/T, N/A/S/D/F/G/H/K)
 - **셰이더:** 런타임 컴파일(`D3DCompileFromFile`) + 실행 중 핫-리로드.
   개발 중에는 소스 `shaders/`를 우선 읽고, 없으면 exe 옆 `shaders/`로 폴백
 - **렌더 방식:** 정점 버퍼 없이 풀스크린 삼각형 1개를 그리고, 픽셀 셰이더에서 레이마칭
@@ -28,12 +28,15 @@ Scene Depth 제한과 상수 밀도 Beer-Lambert 적분을 검증합니다.
 | 윈도우/입력 | `src/Window.*` | Win32 창, 마우스 → Camera, 리사이즈 → Renderer |
 | 카메라 | `src/Camera.*` | 오빗 카메라 → view/proj/invViewProj |
 | 렌더러 | `src/Renderer.*` | D3D11 초기화, 진단 장면, 깊이 SRV, 합성 패스 |
-| 구름 설정 | `src/CloudParameters.h` | CPU/HLSL 공유 파라미터와 디버그 모드 |
+| 노이즈 도구 | `src/NoiseLab.*` | ImGui 3축 단면, 파라미터 조절, PNG/JSON 내보내기 |
+| 구름 설정 | `src/CloudParameters.h` | 80바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
 | Ray | `shaders/Ray.hlsli` | 평행축을 안전하게 처리하는 slab AABB 교차 |
-| PS | `shaders/VolumetricClouds.hlsl` | 깊이 제한, 상수 밀도 레이 마칭과 합성 |
+| PS | `shaders/VolumetricClouds.hlsl` | noise 밀도 적분과 합성 |
+| Noise | `shaders/Noise.hlsli` | 구름·Noise Lab 공용 월드 3D value noise와 coverage 밀도 |
 | 수치 기준 | `src/Stage1VolumeMath.h` | 단계 1 CPU 회귀 검사용 교차·적분 |
+| Noise 기준 | `src/Stage2NoiseMath.h` | 단계 2 CPU 회귀 검사용 noise·밀도·바람 좌표 |
 
 ## 반드시 지킬 규칙
 
@@ -42,7 +45,7 @@ Scene Depth 제한과 상수 밀도 Beer-Lambert 적분을 검증합니다.
    **세 곳을 동시에** 맞춥니다.
 2. **브랜치/커밋 규칙**을 따릅니다 → [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md)
 3. **빌드가 깨지지 않게** 유지합니다. 변경 후 위 빌드 명령으로 확인하세요.
-4. 현재 단계 1 범위 밖(noise, light, phase, early exit, temporal)은 다음 단계로 분리합니다.
+4. 현재 단계 2 범위 밖(height profile, detail noise, weather, light, early exit, temporal)은 다음 단계로 분리합니다.
 
 ## 로컬 단계별 구현 문서 규칙
 

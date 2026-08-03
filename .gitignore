@@ -30,3 +30,7 @@ CLAUDE.md
 
 # 단계별 학습·사용자 검증·개인 면접 자료 (로컬 전용)
 /notes/
+
+# Noise Lab 로컬 출력과 ImGui 창 배치
+/captures/
+/imgui.ini
