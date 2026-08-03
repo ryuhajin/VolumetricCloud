@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudParameters.h - 단계 2 단일 3D 노이즈에서 CPU/GPU가 공유하는 설정
+//  CloudParameters.h - 단계 4 Base Shape/Detail Erosion CPU/GPU 공유 설정
 // ============================================================================
 #pragma once
 
@@ -22,11 +22,18 @@ enum class CloudDebugMode : std::int32_t
     ThresholdDensity = 11,
     FinalDensity = 12,
     NoiseUvw = 13,
+    HeightFraction = 14,
+    HeightProfile = 15,
+    BaseDensity = 16,
+    DetailNoise = 17,
+    Erosion = 18,
+    DetailSampleMask = 19,
 };
 
 enum class Stage1ValidationPreset : std::int32_t
 {
     DefaultVolume,
+    WideVolume,
     ThinVolume,
     ThickVolume,
     FineStep,
@@ -46,13 +53,22 @@ enum class Stage2NoisePreset : std::int32_t
     Custom,
 };
 
+enum class Stage4DetailPreset : std::int32_t
+{
+    DetailOff,
+    DefaultDetail,
+    FineDetail,
+    StrongErosion,
+    Custom,
+};
+
 // HLSL CloudCB와 16바이트 묶음 순서가 정확히 일치해야 한다.
 struct alignas(16) CloudParameters
 {
-    DirectX::XMFLOAT3 cloudBoundsMin = { -2.0f, -1.0f, -2.0f };
+    DirectX::XMFLOAT3 cloudBoundsMin = { -8.0f, -1.0f, -8.0f };
     float densityMultiplier = 1.0f;
 
-    DirectX::XMFLOAT3 cloudBoundsMax = { 2.0f, 2.0f, 2.0f };
+    DirectX::XMFLOAT3 cloudBoundsMax = { 8.0f, 2.0f, 8.0f };
     float stepSize = 0.1f;
 
     std::uint32_t maxViewSteps = 128;
@@ -66,7 +82,15 @@ struct alignas(16) CloudParameters
     float noiseOffset = 0.0f;
 
     DirectX::XMFLOAT3 windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    float padding = 0.0f;
+    float bottomFadeEnd = 0.20f;
+
+    float topFadeStart = 0.80f;
+    float heightProfilePadding[3] = {};
+
+    float detailNoiseScale = 2.5f;
+    float detailErosionStrength = 0.25f;
+    float detailWindSpeed = 0.45f;
+    float detailNoiseOffset = 17.3f;
 };
 
-static_assert(sizeof(CloudParameters) == 80, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 112, "CloudParameters must match CloudCB");

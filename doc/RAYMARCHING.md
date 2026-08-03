@@ -43,6 +43,12 @@ stepCount = min(maxViewSteps, ceil(segmentLength / stepSize))
 actualStepLength = segmentLength / stepCount
 ```
 
+실행 기본 `Y` 넓은 볼륨은 X/Z가 `±8m`이므로 비스듬한 레이의 구간이
+`maxViewSteps × stepSize = 12.8m`보다 길 수 있다. 이 경우 구간을 잘라 버리지
+않고 128개로 다시 나누므로 `actualStepLength`가 `0.10m`보다 커진다. `Q`의
+X/Z `±2m` 볼륨은 기존 수치·step 회귀 기준으로 남겨 둔다. 빈 공간 건너뛰기와
+원거리 step 최적화는 단계 9 범위다.
+
 각 샘플 위치는 구간 중앙이다.
 
 ```text
@@ -120,3 +126,59 @@ coverage가 0이면 별도 분기로 밀도를 0으로 만든다. coverage가 �
 ImGui의 scale·coverage·density·offset·wind 값은 CPU `CloudParameters`를 바꾸므로 재컴파일 없이 단면과 구름에 같은 프레임에 반영된다. hash와 보간 코드는 `Noise.hlsli` 하나에 있고, 저장 시 Noise Lab PS와 Cloud PS를 함께 컴파일·교체한다.
 
 내보낸 `xy.png`, `xz.png`, `yz.png`는 선택 시점의 2D 단면 기록이다. Z축 전체를 담지 않으므로 구름 셰이더가 다시 읽는 밀도 texture가 아니다. 향후 2D Weather Map은 PNG를 사용할 수 있지만, 3D noise를 굽는 기능은 Texture3D 또는 여러 단면 atlas가 필요하다.
+
+## 단계 3: 상·하단 높이 프로파일
+
+단계 2의 noise는 AABB 경계까지 그대로 남으므로 구름의 바닥과 천장이 평평하게 잘려 보인다. 단계 3은 X/Z 덩어리 위치는 유지하고 월드 Y 높이에 따른 마스크만 곱한다.
+
+```text
+cloudThickness = cloudBoundsMax.y - cloudBoundsMin.y
+heightFraction = saturate((worldPosition.y - cloudBoundsMin.y) / cloudThickness)
+```
+
+`heightFraction`은 바닥에서 0, 천장에서 1이다. `cloudThickness <= 1e-6`인 퇴화·역전 AABB는 나누지 않고 height fraction과 profile을 모두 0으로 반환한다.
+
+```text
+safeBottomEnd = clamp(bottomFadeEnd, 0.01, 0.99)
+safeTopStart = clamp(topFadeStart, 0.01, 0.99)
+bottomFade = smoothstep(0, safeBottomEnd, heightFraction)
+topFade = 1 - smoothstep(safeTopStart, 1, heightFraction)
+heightProfile = saturate(bottomFade × topFade)
+```
+
+기본값 `0.20/0.80`은 아래 20%에서 밀도가 올라오고 위 20%에서 사라지며 중앙 60%는 1을 유지한다. 두 경계는 독립적이다. `bottomFadeEnd > topFadeStart`도 유효하지만 두 fade가 겹쳐 중앙의 완전한 밀도 구간이 사라진다.
+
+최종 적분 밀도는 다음과 같다.
+
+```text
+finalDensity = saturate(thresholdDensity × heightProfile × densityMultiplier)
+```
+
+Noise Lab과 구름 PS는 모두 `Noise.hlsli`의 `EvaluateHeightFraction`, `EvaluateHeightProfileFromFraction`과 `SampleCloudDensity`를 호출한다. B/M 화면 디버그는 레이 교차 구간의 중간 대표 위치를 보여 주고, 정확한 수직 분포는 Noise Lab 단면을 사용한다. XY와 YZ는 월드 Y가 세로축이라 변화하며, XZ는 Y를 고정하므로 높이 전용 출력이 단색인 것이 정상이다.
+
+## 단계 4: Base Shape와 Detail Erosion
+
+Base Density는 단계 2 noise와 단계 3 높이를 합친 큰 형태다. Detail 설정은 이 값을 만들 때 관여하지 않는다.
+
+```text
+baseDensity = saturate(thresholdDensity × heightProfile × densityMultiplier)
+```
+
+Detail은 같은 Value Noise 수학을 별도 고주파 좌표에서 평가한다. 바람 방향은 공유하지만 속도·scale·offset은 독립적이다.
+
+```text
+detailStationaryWorld = worldPosition - windDirection × detailWindSpeed × time
+detailUVW = detailStationaryWorld × detailNoiseScale + detailNoiseOffset
+detailNoise = SampleDetailErosionNoise(detailUVW)
+```
+
+Detail을 Base에 더하면 빈 공간에 새 구름이 생겨 큰 실루엣과 작은 표면의 역할이 섞인다. 따라서 오직 빼는 침식으로 사용한다.
+
+```text
+erosion = detailNoise × detailErosionStrength
+finalDensity = saturate(baseDensity - erosion)
+```
+
+`sampleDetail=false`, `baseDensity<=0`, `detailErosionStrength<=0`이면 Detail 함수 자체를 호출하지 않고 `finalDensity=baseDensity`를 반환한다. 이는 한 밀도 평가 안의 필수 분기이며 큰 step, adaptive stepping과 같은 단계 9 최적화는 아니다.
+
+`SampleValueNoise3D`는 공통 수학, `SampleBaseShapeNoise`는 큰 형태, `SampleDetailErosionNoise`는 표면 전략을 담당한다. 이후 Detail을 fBm이나 Worley로 교체할 때 마지막 함수의 내부만 바꾸고 레이마칭과 `CloudDensitySample`은 유지한다.

@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 2: 월드 공간 단일 3D 노이즈와 coverage 밀도장
+#  재구축 단계 4: Base Shape와 단일 Value Noise Detail Erosion 분리
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -106,6 +106,32 @@ add_test(NAME VolumetricCloud.NoiseLabSmoke
          COMMAND VolumetricCloud --noise-lab-smoke-test)
 add_test(NAME VolumetricCloud.ShaderHotReloadSmoke
          COMMAND VolumetricCloud --shader-hot-reload-smoke-test)
+
+# 단계 3의 정규화 높이, 상·하단 smoothstep과 최종 밀도 결합을 CPU에서 검사한다.
+add_executable(VolumetricCloud.Stage3HeightMathTests
+    tests/Stage3HeightMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage3HeightMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage3HeightMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage3HeightMath
+         COMMAND VolumetricCloud.Stage3HeightMathTests)
+add_test(NAME VolumetricCloud.Stage3Smoke
+         COMMAND VolumetricCloud --stage3-smoke-test)
+
+# 단계 4의 독립 Detail 좌표, subtractive erosion과 빈 Base sample skip을 검사한다.
+add_executable(VolumetricCloud.Stage4DetailMathTests
+    tests/Stage4DetailMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage4DetailMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage4DetailMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage4DetailMath
+         COMMAND VolumetricCloud.Stage4DetailMathTests)
+add_test(NAME VolumetricCloud.Stage4Smoke
+         COMMAND VolumetricCloud --stage4-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

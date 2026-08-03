@@ -67,25 +67,34 @@ void Window::UpdateDebugTitle()
     static const wchar_t* debugNames[] = {
         L"0 합성", L"1 월드 레이", L"2 Scene Depth", L"3 월드 위치", L"4 화면 UV",
         L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
-        L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW"
+        L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW",
+        L"B 높이 비율", L"M 높이 Profile", L"J Base 밀도", L"L Detail Noise",
+        L"P Erosion", L"U Detail Sample"
     };
     static const wchar_t* presetNames[] = {
-        L"Q 기본 볼륨", L"W 얇은 Z", L"E 두꺼운 Z", L"R Fine 0.025m", L"T Coarse 0.5m"
+        L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
+        L"R Fine 0.025m", L"T Coarse 0.5m"
     };
     static const wchar_t* noisePresetNames[] = {
         L"N 기본 Noise", L"A Sparse", L"S Dense", L"D 큰 덩어리",
         L"F 작은 덩어리", L"G 바람 정지", L"H 빠른 바람", L"K Noise Offset",
         L"UI Custom"
     };
+    static const wchar_t* detailPresetNames[] = {
+        L"F9 Detail Off", L"F10 기본 Detail", L"F11 Fine Detail",
+        L"F12 Strong Erosion", L"UI Custom Detail"
+    };
 
     const int debugIndex = static_cast<int>(m_renderer->DebugMode());
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
     const int noisePresetIndex = static_cast<int>(m_renderer->NoisePreset());
-    wchar_t title[256] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 2 | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 13) ? debugIndex : 0],
-               presetNames[(presetIndex >= 0 && presetIndex <= 4) ? presetIndex : 0],
+    const int detailPresetIndex = static_cast<int>(m_renderer->DetailPreset());
+    wchar_t title[384] = {};
+    swprintf_s(title, L"VolumetricCloud - Stage 4 | %ls | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 19) ? debugIndex : 0],
+               presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
+               detailPresetNames[(detailPresetIndex >= 0 && detailPresetIndex <= 4) ? detailPresetIndex : 1],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
 }
@@ -112,6 +121,51 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Noise Lab은 기본으로 열려 있고 ImGui가 키보드를 캡처할 수 있다. F5~F12는
+    // 텍스트 편집에 쓰이지 않는 전역 검증 단축키이므로 UI보다 먼저 처리한다.
+    // 특히 F9~F12가 ImGui에 막히면 Detail 프리셋을 다시 선택할 수 없다.
+    // Windows는 F10을 메뉴 활성화 키로 취급해 WM_SYSKEYDOWN으로 보낼 수
+    // 있으므로 일반 키와 시스템 키 경로를 모두 받는다.
+    if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) &&
+        wParam >= VK_F5 && wParam <= VK_F12)
+    {
+        if (m_camera && wParam == VK_F5)
+        {
+            m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
+            m_cameraPresetName = L"외부 기본(F5)";
+        }
+        else if (m_camera && wParam == VK_F6)
+        {
+            m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
+            m_cameraPresetName = L"낮은 외부(F6)";
+        }
+        else if (m_camera && wParam == VK_F7)
+        {
+            m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
+            m_cameraPresetName = L"높은 외부(F7)";
+        }
+        else if (m_camera && wParam == VK_F8)
+        {
+            // orbit의 눈 위치가 원점이 되도록 target을 -Z로 옮긴다. 따라서 얇은 W
+            // 프리셋에서도 카메라는 AABB 내부이고 raw tNear가 음수인 경로를 검증한다.
+            m_camera->SetOrbit(0.0f, 0.0f, 1.5f, { 0.0f, 0.0f, -1.5f });
+            m_cameraPresetName = L"AABB 내부(F8)";
+        }
+        else if (m_renderer && wParam == VK_F9)
+            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::DetailOff);
+        else if (m_renderer && wParam == VK_F10)
+            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::DefaultDetail);
+        else if (m_renderer && wParam == VK_F11)
+            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::FineDetail);
+        else if (m_renderer && wParam == VK_F12)
+            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::StrongErosion);
+        else
+            return 0;
+
+        UpdateDebugTitle();
+        return 0;
+    }
+
     if (m_renderer && m_renderer->HandleWindowMessage(hwnd, msg, wParam, lParam))
         return 0;
 
@@ -192,39 +246,51 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             UpdateDebugTitle();
             return 0;
         }
-        if (m_camera && wParam == VK_F5)
+        if (m_renderer && wParam == 'B')
         {
-            m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
-            m_cameraPresetName = L"외부 기본(F5)";
+            m_renderer->SetDebugMode(CloudDebugMode::HeightFraction);
             UpdateDebugTitle();
             return 0;
         }
-        if (m_camera && wParam == VK_F6)
+        if (m_renderer && wParam == 'M')
         {
-            m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"낮은 외부(F6)";
+            m_renderer->SetDebugMode(CloudDebugMode::HeightProfile);
             UpdateDebugTitle();
             return 0;
         }
-        if (m_camera && wParam == VK_F7)
+        if (m_renderer && wParam == 'J')
         {
-            m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"높은 외부(F7)";
+            m_renderer->SetDebugMode(CloudDebugMode::BaseDensity);
             UpdateDebugTitle();
             return 0;
         }
-        if (m_camera && wParam == VK_F8)
+        if (m_renderer && wParam == 'L')
         {
-            // orbit의 눈 위치가 원점이 되도록 target을 -Z로 옮긴다. 따라서 얇은 W
-            // 프리셋에서도 카메라는 AABB 내부이고 raw tNear가 음수인 경로를 검증한다.
-            m_camera->SetOrbit(0.0f, 0.0f, 1.5f, { 0.0f, 0.0f, -1.5f });
-            m_cameraPresetName = L"AABB 내부(F8)";
+            m_renderer->SetDebugMode(CloudDebugMode::DetailNoise);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'P')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::Erosion);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'U')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::DetailSampleMask);
             UpdateDebugTitle();
             return 0;
         }
         if (m_renderer && wParam == 'Q')
         {
             m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::DefaultVolume);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'Y')
+        {
+            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
             UpdateDebugTitle();
             return 0;
         }

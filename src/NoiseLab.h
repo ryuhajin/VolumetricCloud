@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.h - 단계 2 절차적 3D noise의 세 축 단면과 개발용 ImGui UI
+//  NoiseLab.h - 단계 4 Base/Detail Erosion 단면과 개발용 ImGui UI
 // ============================================================================
 #pragma once
 
@@ -28,6 +28,12 @@ enum class NoiseOutputMode : std::uint32_t
     RawNoise = 0,
     ThresholdDensity = 1,
     FinalDensity = 2,
+    HeightFraction = 3,
+    HeightProfile = 4,
+    BaseDensity = 5,
+    DetailNoise = 6,
+    Erosion = 7,
+    DetailSampleMask = 8,
 };
 
 struct alignas(16) NoiseLabParameters
@@ -71,10 +77,12 @@ public:
     {
         m_parameters.outputMode = static_cast<std::uint32_t>(mode);
     }
+    // 현재 출력 모드의 축 특성까지 고려해 GPU readback이 유효한지 검사한다.
     bool ValidatePreviewData();
     std::uint64_t PreviewHash(std::size_t targetIndex);
     bool ExportSnapshot(const std::filesystem::path& root,
                         const CloudParameters& cloudParameters,
+                        Stage4DetailPreset detailPreset,
                         const std::filesystem::path& noiseSourcePath);
     bool ConsumeExportRequest();
     const std::string& LastExportStatus() const { return m_exportStatus; }
@@ -105,6 +113,7 @@ private:
     std::uint64_t HashFile(const std::filesystem::path& path) const;
     bool WriteMetadata(const std::filesystem::path& path,
                        const CloudParameters& cloudParameters,
+                       Stage4DetailPreset detailPreset,
                        const std::filesystem::path& noiseSourcePath) const;
 
     HWND m_hwnd = nullptr;
