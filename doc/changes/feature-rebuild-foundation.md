@@ -46,12 +46,19 @@
 - Dear ImGui Win32/DX11 UI에서 XY/XZ/YZ 단면, crosshair, raw/threshold/final과 공유 파라미터·시간을 조절한다.
 - 512×512 단면 PNG 세 장과 파라미터·noise source hash JSON을 WIC로 내보낸다. PNG는 런타임 밀도 입력으로 읽지 않는다.
 - 모든 HLSL/HLSLI를 재귀 감시하고 전체 셰이더가 성공한 경우에만 generation 단위로 교체하는 원자적 핫리로드를 추가했다.
+- 단계 3에서 AABB 월드 Y를 0~1 높이로 바꾸고 독립적인 하단·상단 smoothstep을 곱한다.
+- `CloudParameters`를 96바이트로 확장하고 `bottomFadeEnd=0.20`, `topFadeStart=0.80`을 추가했다.
+- B/M 대표 샘플 디버그와 Noise Lab Height Fraction/Profile 단면·64표본 곡선을 추가했다.
+- Noise Lab JSON schema 2에 높이 경계를 기록하고 겹친 fade는 허용하되 UI 경고를 표시한다.
+- 실행 기본 AABB를 X/Z `±8m`로 넓히고 `Y` 넓은 볼륨 프리셋을 추가했다. `Q`의
+  X/Z `±2m` 볼륨은 단계 1 수치 검증 기준으로 보존한다.
 
 ## 7. 캐시·호환성·성능 영향
 
 - 기존 noise cache와 프리셋을 읽지 않는다.
 - 단계 0은 full-resolution 장면 색상과 32비트 깊이 타깃을 각각 하나 사용한다.
 - Noise Lab은 `R8G8B8A8_UNORM` 512² render target/SRV/staging texture를 축별로 한 벌씩 사용하며 F1으로 UI를 숨길 수 있다.
+- 단계 3은 새 texture를 만들지 않고 기존 CloudCB를 16바이트 늘리며 기존 Noise Lab 타깃을 재사용한다.
 
 ## 8. 테스트 및 실행 결과
 
@@ -73,10 +80,17 @@
 - NoiseLabSmoke: raw/threshold/final 세 출력의 XY/XZ/YZ GPU readback과 512² PNG 3장·JSON 생성 통과
 - ShaderHotReloadSmoke: 임시 `Noise.hlsli` 변경 시 Lab/Cloud 동시 변화, 문법 오류 시 이전 generation 유지, 복구 후 원상 복귀 통과
 - 단계 2 사용자 렌더 승인: 2026-08-03 수동 검증 전체 통과
+- 단계 3 Debug/Release 빌드 및 양 구성 CTest: 각각 10/10 성공, `Stage3HeightMath`와 `Stage3Smoke` 포함
+- 단계 3 HLSL: Fullscreen/Cloud/Noise Lab/Diagnostic VS·PS 5개 엔트리 포인트 `fxc /Od` 경고 없이 성공
+- 단계 3 D3D11: 기존 회귀와 B/M·fade 조합 smoke에서 error/corruption 없음
+- 넓은 볼륨 추가 후 Debug/Release 빌드와 양 구성 CTest 10/10 통과. 확장된
+  Stage1Smoke가 `Q/Y/W/E/R/T` 여섯 프리셋의 모드 0~9 draw를 모두 통과했다.
+- 단계 3 사용자 렌더 승인: 2026-08-03 높이 프로파일과 Q↔Y 넓은 볼륨 검증 전체 통과
 
 ## 9. 남은 문제와 후속 개선
 
 - 단계 0은 `c94825b`로 커밋되어 원격 `feature/rebuild-foundation`에 보존됐다.
 - 단계 1은 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
 - 단계 2는 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
-- 높이 profile, detail noise, weather map, 태양광과 early exit는 이후 단계로 남긴다.
+- 단계 3은 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
+- detail noise는 단계 4에서 분리하고 weather map, 태양광과 early exit는 이후 단계로 남긴다.

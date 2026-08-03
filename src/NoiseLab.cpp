@@ -12,6 +12,7 @@
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
+#include "Stage3HeightMath.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -237,9 +238,12 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::PopTextWrapPos();
     }
 
-    const char* outputs[] = { "Raw Noise", "Threshold Density", "Final Density" };
+    const char* outputs[] = {
+        "Raw Noise", "Threshold Density", "Final Density",
+        "Height Fraction", "Height Profile"
+    };
     int output = static_cast<int>(m_parameters.outputMode);
-    if (ImGui::Combo("Output", &output, outputs, 3))
+    if (ImGui::Combo("Output", &output, outputs, 5))
         m_parameters.outputMode = static_cast<std::uint32_t>(output);
 
     float* slice = &m_parameters.normalizedSlicePosition.x;
@@ -266,6 +270,45 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     ImGui::DragFloat("Noise Offset", &cloudParameters.noiseOffset, 0.01f, -20.0f, 20.0f);
     ImGui::DragFloat3("Wind Direction", &cloudParameters.windDirection.x, 0.01f, -1.0f, 1.0f);
     ImGui::SliderFloat("Wind Speed", &cloudParameters.windSpeed, 0.0f, 3.0f, "%.2f m/s");
+
+    ImGui::SeparatorText("Height profile");
+    ImGui::SliderFloat("Bottom Fade End", &cloudParameters.bottomFadeEnd,
+                       0.01f, 0.99f, "%.2f normalized height");
+    ImGui::SliderFloat("Top Fade Start", &cloudParameters.topFadeStart,
+                       0.01f, 0.99f, "%.2f normalized height");
+    cloudParameters.bottomFadeEnd = std::clamp(cloudParameters.bottomFadeEnd, 0.01f, 0.99f);
+    cloudParameters.topFadeStart = std::clamp(cloudParameters.topFadeStart, 0.01f, 0.99f);
+    if (cloudParameters.bottomFadeEnd > cloudParameters.topFadeStart)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                           "Fade ranges overlap: the full-density plateau disappears.");
+    }
+
+    std::array<float, 64> profileCurve = {};
+    for (std::size_t index = 0; index < profileCurve.size(); ++index)
+    {
+        const float height = static_cast<float>(index) /
+            static_cast<float>(profileCurve.size() - 1);
+        profileCurve[index] = stage3::EvaluateHeightProfileFromFraction(
+            height, cloudParameters.bottomFadeEnd, cloudParameters.topFadeStart);
+    }
+    ImGui::PlotLines("Profile curve", profileCurve.data(),
+                     static_cast<int>(profileCurve.size()), 0,
+                     "bottom 0 -> top 1", 0.0f, 1.0f, ImVec2(0.0f, 80.0f));
+    const float selectedWorldY = cloudParameters.cloudBoundsMin.y +
+        (cloudParameters.cloudBoundsMax.y - cloudParameters.cloudBoundsMin.y) *
+        m_parameters.normalizedSlicePosition.y;
+    const float selectedHeight = stage3::EvaluateHeightFraction(
+        selectedWorldY, cloudParameters.cloudBoundsMin.y, cloudParameters.cloudBoundsMax.y);
+    const float selectedProfile = stage3::EvaluateHeightProfileFromFraction(
+        selectedHeight, cloudParameters.bottomFadeEnd, cloudParameters.topFadeStart);
+    ImGui::Text("Selected Y: fraction %.3f, profile %.3f",
+                selectedHeight, selectedProfile);
+    if (ImGui::Button("Reset Bottom Fade"))
+        cloudParameters.bottomFadeEnd = 0.20f;
+    ImGui::SameLine();
+    if (ImGui::Button("Reset Top Fade"))
+        cloudParameters.topFadeStart = 0.80f;
 
     ImGui::SeparatorText("Animation");
     ImGui::Checkbox("Pause Time", &m_timePaused);
@@ -427,8 +470,12 @@ bool NoiseLab::ConsumeExportRequest()
 
 bool NoiseLab::ValidatePreviewData()
 {
-    for (SliceTarget& target : m_targets)
+    const auto outputMode = static_cast<NoiseOutputMode>(m_parameters.outputMode);
+    const bool heightOnly = outputMode == NoiseOutputMode::HeightFraction ||
+                            outputMode == NoiseOutputMode::HeightProfile;
+    for (std::size_t targetIndex = 0; targetIndex < m_targets.size(); ++targetIndex)
     {
+        SliceTarget& target = m_targets[targetIndex];
         m_context->CopyResource(target.staging.Get(), target.texture.Get());
         D3D11_MAPPED_SUBRESOURCE mapped = {};
         if (FAILED(m_context->Map(target.staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
@@ -447,8 +494,18 @@ bool NoiseLab::ValidatePreviewData()
             }
         }
         m_context->Unmap(target.staging.Get(), 0);
-        if (maximum <= minimum)
+        // XZ는 Y를 고정하므로 height-only 출력이 단색인 것이 정상이다.
+        // XY와 YZ는 세로축에 월드 Y가 들어가므로 위아래 변화가 반드시 있어야 한다.
+        const bool fixedYHeightSlice = heightOnly && targetIndex == 1;
+        if (fixedYHeightSlice)
+        {
+            if (maximum != minimum)
+                return false;
+        }
+        else if (maximum <= minimum)
+        {
             return false;
+        }
     }
     return true;
 }
@@ -535,10 +592,13 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
     std::ofstream output(path, std::ios::binary);
     if (!output)
         return false;
-    static const char* outputNames[] = { "rawNoise", "thresholdDensity", "finalDensity" };
+    static const char* outputNames[] = {
+        "rawNoise", "thresholdDensity", "finalDensity",
+        "heightFraction", "heightProfile"
+    };
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 1,\n"
+           << "  \"schemaVersion\": 2,\n"
            << "  \"output\": \"" << outputNames[m_parameters.outputMode] << "\",\n"
            << "  \"resolution\": [512, 512],\n"
            << "  \"slicePosition\": [" << m_parameters.normalizedSlicePosition.x << ", "
@@ -548,6 +608,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"baseNoiseScale\": " << cloud.baseNoiseScale << ",\n"
            << "  \"coverage\": " << cloud.coverage << ",\n"
            << "  \"densityMultiplier\": " << cloud.densityMultiplier << ",\n"
+           << "  \"bottomFadeEnd\": " << cloud.bottomFadeEnd << ",\n"
+           << "  \"topFadeStart\": " << cloud.topFadeStart << ",\n"
            << "  \"noiseOffset\": " << cloud.noiseOffset << ",\n"
            << "  \"windDirection\": [" << cloud.windDirection.x << ", "
            << cloud.windDirection.y << ", " << cloud.windDirection.z << "],\n"

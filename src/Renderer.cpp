@@ -3,6 +3,7 @@
 
 #include <d3dcompiler.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -147,7 +148,7 @@ bool Renderer::Init(HWND hwnd, int width, int height)
         !CreatePipelineStates() || !CreateConstantBuffers() ||
         !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
     {
-        MessageBoxW(hwnd, L"단계 2 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 3 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -583,6 +584,12 @@ void Renderer::ApplyStage1ValidationPreset(Stage1ValidationPreset preset)
 
     switch (preset)
     {
+    case Stage1ValidationPreset::WideVolume:
+        m_cloudParameters.cloudBoundsMin.x = -8.0f;
+        m_cloudParameters.cloudBoundsMin.z = -8.0f;
+        m_cloudParameters.cloudBoundsMax.x = 8.0f;
+        m_cloudParameters.cloudBoundsMax.z = 8.0f;
+        break;
     case Stage1ValidationPreset::ThinVolume:
         m_cloudParameters.cloudBoundsMin.z = -0.5f;
         m_cloudParameters.cloudBoundsMax.z = 0.5f;
@@ -653,6 +660,14 @@ void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
 Stage2NoisePreset Renderer::NoisePreset() const
 {
     return m_noisePreset;
+}
+
+void Renderer::SetHeightProfile(float bottomFadeEnd, float topFadeStart)
+{
+    // CPU에서도 UI와 같은 범위를 보장해 smoke test나 이후 프리셋이 잘못된
+    // smoothstep edge를 GPU로 보내지 않게 한다. 두 범위의 교차는 의도적으로 허용한다.
+    m_cloudParameters.bottomFadeEnd = std::clamp(bottomFadeEnd, 0.01f, 0.99f);
+    m_cloudParameters.topFadeStart = std::clamp(topFadeStart, 0.01f, 0.99f);
 }
 
 bool Renderer::HasDebugLayerErrors() const

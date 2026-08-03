@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.h - 단계 2 절차적 3D noise의 세 축 단면과 개발용 ImGui UI
+//  NoiseLab.h - 단계 3 noise·높이 프로파일 단면과 개발용 ImGui UI
 // ============================================================================
 #pragma once
 
@@ -28,6 +28,8 @@ enum class NoiseOutputMode : std::uint32_t
     RawNoise = 0,
     ThresholdDensity = 1,
     FinalDensity = 2,
+    HeightFraction = 3,
+    HeightProfile = 4,
 };
 
 struct alignas(16) NoiseLabParameters
@@ -71,6 +73,7 @@ public:
     {
         m_parameters.outputMode = static_cast<std::uint32_t>(mode);
     }
+    // 현재 출력 모드의 축 특성까지 고려해 GPU readback이 유효한지 검사한다.
     bool ValidatePreviewData();
     std::uint64_t PreviewHash(std::size_t targetIndex);
     bool ExportSnapshot(const std::filesystem::path& root,

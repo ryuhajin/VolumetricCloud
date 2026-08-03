@@ -67,10 +67,12 @@ void Window::UpdateDebugTitle()
     static const wchar_t* debugNames[] = {
         L"0 합성", L"1 월드 레이", L"2 Scene Depth", L"3 월드 위치", L"4 화면 UV",
         L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
-        L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW"
+        L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW",
+        L"B 높이 비율", L"M 높이 Profile"
     };
     static const wchar_t* presetNames[] = {
-        L"Q 기본 볼륨", L"W 얇은 Z", L"E 두꺼운 Z", L"R Fine 0.025m", L"T Coarse 0.5m"
+        L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
+        L"R Fine 0.025m", L"T Coarse 0.5m"
     };
     static const wchar_t* noisePresetNames[] = {
         L"N 기본 Noise", L"A Sparse", L"S Dense", L"D 큰 덩어리",
@@ -82,9 +84,9 @@ void Window::UpdateDebugTitle()
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
     const int noisePresetIndex = static_cast<int>(m_renderer->NoisePreset());
     wchar_t title[256] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 2 | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 13) ? debugIndex : 0],
-               presetNames[(presetIndex >= 0 && presetIndex <= 4) ? presetIndex : 0],
+    swprintf_s(title, L"VolumetricCloud - Stage 3 | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 15) ? debugIndex : 0],
+               presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
@@ -192,6 +194,18 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             UpdateDebugTitle();
             return 0;
         }
+        if (m_renderer && wParam == 'B')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::HeightFraction);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'M')
+        {
+            m_renderer->SetDebugMode(CloudDebugMode::HeightProfile);
+            UpdateDebugTitle();
+            return 0;
+        }
         if (m_camera && wParam == VK_F5)
         {
             m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
@@ -225,6 +239,12 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (m_renderer && wParam == 'Q')
         {
             m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::DefaultVolume);
+            UpdateDebugTitle();
+            return 0;
+        }
+        if (m_renderer && wParam == 'Y')
+        {
+            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
             UpdateDebugTitle();
             return 0;
         }

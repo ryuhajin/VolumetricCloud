@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 2 단일 3D 노이즈 렌더링
+//  Renderer.h - Direct3D 11 단계 3 높이 프로파일 렌더링
 // ============================================================================
 #pragma once
 
@@ -38,6 +38,7 @@ public:
     Stage1ValidationPreset ValidationPreset() const;
     void ApplyStage2NoisePreset(Stage2NoisePreset preset);
     Stage2NoisePreset NoisePreset() const;
+    void SetHeightProfile(float bottomFadeEnd, float topFadeStart);
     bool HasDebugLayerErrors() const;
     bool HandleWindowMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     bool ValidateNoiseLabPreviews();
@@ -124,7 +125,7 @@ private:
     ComPtr<ID3D11SamplerState> m_pointClampSampler;
 
     CloudParameters m_cloudParameters;
-    Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::DefaultVolume;
+    Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::WideVolume;
     Stage2NoisePreset m_noisePreset = Stage2NoisePreset::DefaultNoise;
 
     std::wstring m_shaderDir;

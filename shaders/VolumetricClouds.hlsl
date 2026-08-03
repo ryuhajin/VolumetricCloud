@@ -1,17 +1,17 @@
 // ============================================================================
-//  VolumetricClouds.hlsl - 단계 2 단일 3D 노이즈 밀도장과 합성
+//  VolumetricClouds.hlsl - 단계 3 높이 프로파일 밀도장과 합성
 // ----------------------------------------------------------------------------
 //  한 프레임의 렌더링 순서
 //  1. CPU가 카메라와 CloudParameters를 b0/b1 상수버퍼에 복사한다.
 //  2. 앞선 DiagnosticScene 패스가 불투명 Scene Color와 Scene Depth를 만든다.
 //  3. 이 풀스크린 PS가 UV → 월드 레이 → 깊이 거리 순으로 복원한다.
 //  4. 레이와 AABB의 교차 구간을 구하고 Scene Depth보다 뒤를 잘라 낸다.
-//  5. 각 월드 샘플에서 단일 3D value noise와 coverage 밀도를 계산한다.
+//  5. 각 월드 샘플에서 noise 기본 밀도와 상·하단 높이 프로파일을 계산한다.
 //  6. 위치별 밀도를 적분해 산란광과 투과율을 만든다.
 //  7. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
 //
-//  단계 3의 Height Profile, 단계 4의 Detail Noise, 단계 6의 Light,
-//  단계 9의 Early Exit는 의도적으로 없다. 지금은 저주파 noise 하나만 사용한다.
+//  단계 4 Detail Noise, 단계 5 Weather, 단계 6 Light와 단계 9 Early Exit는
+//  의도적으로 없다. 지금은 저주파 noise 하나와 월드 Y 높이 마스크만 사용한다.
 // ============================================================================
 
 #include "Ray.hlsli"
@@ -50,7 +50,7 @@ struct CloudResult
     float representativeDepth; // 적분 구간 대표 거리(m), 이후 temporal/upsample용.
 };
 
-// 단계 1 교차와 단계 2 밀도 적분이 실제로 사용한 값을 확인하는 진단 자료.
+// 단계 1 교차, 단계 2 noise와 단계 3 높이 적분이 사용한 대표값 진단 자료.
 struct CloudMarchDebug
 {
     float entryDistance;   // Scene Depth 제한 전 AABB 진입을 0 이상으로 자른 거리(m).
@@ -60,6 +60,8 @@ struct CloudMarchDebug
     float hit;             // 유효 적분 구간이면 1, 아니면 0.
     float rawNoise;        // 대표 중간 위치의 threshold 전 value noise(0~1).
     float thresholdDensity;// coverage threshold와 remap만 적용한 밀도(0~1).
+    float heightFraction;  // 대표 위치의 AABB 정규화 높이. 바닥 0, 천장 1.
+    float heightProfile;   // 대표 위치의 상·하단 fade 곱(0~1).
     float3 noiseUvw;       // 대표 중간 위치의 연속 noise 좌표(cycle).
 };
 
@@ -132,7 +134,7 @@ bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
     return intersectsAabb && tEnd > tStart;
 }
 
-// AABB의 유효 구간을 단일 3D noise 밀도로 레이 마칭한다.
+// AABB의 유효 구간을 noise × 높이 프로파일 밀도로 레이 마칭한다.
 // 입력은 월드 위치(m), 정규화 월드 방향, 장면 거리(m)이고 출력은 합성 가능한
 // CloudResult와 관찰용 CloudMarchDebug다. 모든 실패 경로는 산란 0, 투과율 1의
 // 중립 결과를 반환해 배경을 바꾸지 않는다.
@@ -175,11 +177,13 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             SampleCloudDensity(representativePosition, time);
         debugData.rawNoise = representativeSample.rawNoise;
         debugData.thresholdDensity = representativeSample.thresholdDensity;
+        debugData.heightFraction = representativeSample.heightFraction;
+        debugData.heightProfile = representativeSample.heightProfile;
         debugData.sampledDensity = representativeSample.finalDensity;
         debugData.noiseUvw = representativeSample.noiseUvw;
 
-        // 4. 각 구간 중앙의 월드 위치에서 동일한 단일 noise 밀도 함수를 평가한다.
-        //    단계 3은 finalDensity에 높이 profile을 곱하고, 단계 4는 detail erosion을 추가한다.
+        // 4. 각 구간 중앙에서 noise와 높이 프로파일이 결합된 최종 밀도를 평가한다.
+        //    단계 4는 이 finalDensity 앞에 작은 detail erosion을 추가할 예정이다.
         [loop]
         for (uint stepIndex = 0u; stepIndex < stepCount; ++stepIndex)
         {
@@ -227,7 +231,7 @@ float4 main(VSOut input) : SV_TARGET
         ? length(worldPosition - cameraPos)
         : farPlane;
 
-    // 4. AABB 교차와 Scene Depth 제한 뒤 단일 3D noise 밀도를 적분한다.
+    // 4. AABB 교차와 Scene Depth 제한 뒤 noise × 높이 프로파일 밀도를 적분한다.
     CloudMarchDebug marchDebug;
     CloudResult cloud = RaymarchCloud(
         cameraPos, rayDirection, sceneDistance, marchDebug);
@@ -264,6 +268,10 @@ float4 main(VSOut input) : SV_TARGET
         return float4((marchDebug.sampledDensity * marchDebug.hit).xxx, 1.0);
     if (debugMode == 13)
         return float4(frac(marchDebug.noiseUvw) * marchDebug.hit, 1.0);
+    if (debugMode == 14)
+        return float4((marchDebug.heightFraction * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 15)
+        return float4((marchDebug.heightProfile * marchDebug.hit).xxx, 1.0);
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
