@@ -1,10 +1,10 @@
 // ============================================================================
-//  NoiseLab.hlsl - 단계 3 noise·높이 프로파일의 XY/XZ/YZ 고정 단면 출력
+//  NoiseLab.hlsl - 단계 4 Base/Detail Erosion의 XY/XZ/YZ 고정 단면 출력
 // ----------------------------------------------------------------------------
 //  1. CPU NoiseLabCB의 정규화 단면 위치를 받는다.
 //  2. 화면 UV를 AABB 안의 월드 위치(m)로 바꾼다.
 //  3. 실제 구름과 같은 SampleCloudDensity를 호출한다.
-//  4. 선택한 raw/threshold/final/height 값을 회색조로 출력한다.
+//  4. 선택한 Base/Detail/erosion 중간값을 회색조로 출력한다.
 // ============================================================================
 #include "Noise.hlsli"
 
@@ -39,8 +39,12 @@ float3 SliceWorldPosition(float2 uv)
 
 float4 main(VSOut input) : SV_TARGET
 {
+    // Base/Height 전용 출력은 sampleDetail=false로 Detail 함수 자체를 생략한다.
+    // Final/Detail/Erosion/Mask만 실제 침식 결과가 필요하다.
+    bool requiresDetail = noiseOutputMode == 2u ||
+                          (noiseOutputMode >= 6u && noiseOutputMode <= 8u);
     CloudDensitySample sample = SampleCloudDensity(
-        SliceWorldPosition(saturate(input.uv)), effectiveTime);
+        SliceWorldPosition(saturate(input.uv)), effectiveTime, requiresDetail);
     float value = sample.rawNoise;
     if (noiseOutputMode == 1u)
         value = sample.thresholdDensity;
@@ -50,5 +54,13 @@ float4 main(VSOut input) : SV_TARGET
         value = sample.heightFraction;
     else if (noiseOutputMode == 4u)
         value = sample.heightProfile;
+    else if (noiseOutputMode == 5u)
+        value = sample.baseDensity;
+    else if (noiseOutputMode == 6u)
+        value = sample.detailNoise;
+    else if (noiseOutputMode == 7u)
+        value = sample.erosion;
+    else if (noiseOutputMode == 8u)
+        value = sample.detailSampled;
     return float4(value.xxx, 1.0);
 }

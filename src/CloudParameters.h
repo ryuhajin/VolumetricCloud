@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudParameters.h - 단계 3 높이 프로파일에서 CPU/GPU가 공유하는 설정
+//  CloudParameters.h - 단계 4 Base Shape/Detail Erosion CPU/GPU 공유 설정
 // ============================================================================
 #pragma once
 
@@ -24,6 +24,10 @@ enum class CloudDebugMode : std::int32_t
     NoiseUvw = 13,
     HeightFraction = 14,
     HeightProfile = 15,
+    BaseDensity = 16,
+    DetailNoise = 17,
+    Erosion = 18,
+    DetailSampleMask = 19,
 };
 
 enum class Stage1ValidationPreset : std::int32_t
@@ -46,6 +50,15 @@ enum class Stage2NoisePreset : std::int32_t
     StoppedWind,
     FastWind,
     OffsetNoise,
+    Custom,
+};
+
+enum class Stage4DetailPreset : std::int32_t
+{
+    DetailOff,
+    DefaultDetail,
+    FineDetail,
+    StrongErosion,
     Custom,
 };
 
@@ -73,6 +86,11 @@ struct alignas(16) CloudParameters
 
     float topFadeStart = 0.80f;
     float heightProfilePadding[3] = {};
+
+    float detailNoiseScale = 2.5f;
+    float detailErosionStrength = 0.25f;
+    float detailWindSpeed = 0.45f;
+    float detailNoiseOffset = 17.3f;
 };
 
-static_assert(sizeof(CloudParameters) == 96, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 112, "CloudParameters must match CloudCB");

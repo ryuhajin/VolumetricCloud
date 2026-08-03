@@ -1,13 +1,16 @@
 // ============================================================================
-//  Noise.hlsli - 구름 렌더와 Noise Lab이 함께 사용하는 단계 3 밀도 함수
+//  Noise.hlsli - 구름 렌더와 Noise Lab이 함께 사용하는 단계 4 밀도 함수
 // ----------------------------------------------------------------------------
 //  데이터 흐름
 //  1. 월드 위치(m)를 바람이 이동시킨 noise 좌표로 바꾼다.
 //  2. value noise와 coverage로 단계 2의 기본 덩어리 밀도를 만든다.
 //  3. AABB 바닥/천장 사이의 높이 비율과 부드러운 높이 마스크를 계산한다.
-//  4. 기본 밀도 × 높이 마스크 × 밀도 배율을 최종 Beer-Lambert 밀도로 쓴다.
+//  4. threshold × 높이 × 배율을 큰 구름 형태인 Base Density로 확정한다.
+//  5. Base가 존재할 때만 별도 고주파 Detail Noise를 샘플링해 밀도를 깎는다.
 //
-//  단계 4 Detail Erosion, 단계 5 Weather, 단계 6 Light는 아직 적용하지 않는다.
+//  이번 단계는 단일 Value Noise만 사용한다. 이후 fBm/Worley는
+//  SampleDetailErosionNoise 내부만 교체하고 레이마칭 인터페이스는 유지한다.
+//  단계 5 Weather, 단계 6 Light는 아직 적용하지 않는다.
 // ============================================================================
 #ifndef VCLOUD_NOISE_HLSLI
 #define VCLOUD_NOISE_HLSLI
@@ -24,8 +27,21 @@ struct CloudDensitySample
     float thresholdDensity; // coverage만 적용한 단계 2 기본 밀도(0~1).
     float heightFraction;    // AABB 바닥=0, 천장=1인 정규화 월드 Y 높이.
     float heightProfile;     // 위·아래 경계를 부드럽게 지우는 마스크(0~1).
-    float finalDensity;      // threshold × heightProfile × multiplier 결과(0~1).
-    float3 noiseUvw;         // value noise를 조회한 연속 좌표(cycle).
+    float baseDensity;       // 단계 3까지의 큰 구름 형태(0~1).
+    float detailNoise;       // 실제 샘플한 고주파 침식 noise(0~1).
+    float erosion;           // detailNoise × detailErosionStrength.
+    float finalDensity;      // saturate(baseDensity - erosion), 적분 입력.
+    float detailSampled;     // Detail 함수를 호출했으면 1, 생략했으면 0.
+    float3 noiseUvw;         // Base value noise의 연속 좌표(cycle).
+    float3 detailNoiseUvw;   // Detail value noise의 연속 좌표(cycle), 생략 시 0.
+};
+
+// 서로 다른 노이즈 알고리즘도 동일한 값+좌표 인터페이스로 연결하기 위한 표본이다.
+// 단계 4는 value만 사용하지만 이후 fBm/Worley도 이 구조를 반환하게 한다.
+struct NoiseFieldSample
+{
+    float value;
+    float3 uvw;
 };
 
 // 월드 Y 위치(m)를 구름층 안의 0~1 높이로 바꾼다.
@@ -62,7 +78,7 @@ float HashNoiseCorner(float3 latticePoint)
 }
 
 // 셀 여덟 모서리의 hash 값을 Hermite 곡선과 삼선형 보간으로 연결한다.
-float SampleBaseNoise(float3 noiseUvw)
+float SampleValueNoise3D(float3 noiseUvw)
 {
     float3 cell = floor(noiseUvw);
     float3 local = frac(noiseUvw);
@@ -86,22 +102,46 @@ float SampleBaseNoise(float3 noiseUvw)
     return saturate(lerp(y0, y1, smoothLocal.z) + VCLOUD_NOISE_TEST_BIAS);
 }
 
-// 월드 위치(m)와 시간(s)을 구름 렌더와 Noise Lab이 공유하는 밀도 표본으로 변환한다.
-// 입력: 카메라와 무관한 월드 위치, 음수가 아닌 애니메이션 시간.
-// 출력: noise 중간값, 높이 중간값, Beer-Lambert 적분에 넣을 최종 밀도.
-CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds)
+// 0 벡터 바람은 정규화하지 않아 NaN을 막는다. Base와 Detail이 같은 방향을
+// 공유하되 각자의 속도로 이동하므로 표면이 큰 덩어리 위에서 천천히 미끄러질 수 있다.
+float3 SafeWindDirection()
+{
+    float windLength = length(windDirection);
+    return windLength > 1e-6 ? windDirection / windLength : 0.0.xxx;
+}
+
+// 단계 2부터 사용한 저주파 Base Shape Noise를 별도 함수로 감싼다.
+NoiseFieldSample SampleBaseShapeNoise(float3 worldPosition, float timeSeconds)
+{
+    NoiseFieldSample result = (NoiseFieldSample)0;
+    float3 stationaryWorld = worldPosition - SafeWindDirection() *
+        max(windSpeed, 0.0) * max(timeSeconds, 0.0);
+    result.uvw = stationaryWorld * max(baseNoiseScale, 1e-4) + noiseOffset.xxx;
+    result.value = SampleValueNoise3D(result.uvw);
+    return result;
+}
+
+// 표면 침식 노이즈의 유일한 교체 지점이다. 지금은 고주파 단일 Value Noise지만
+// 이후 3-octave fBm 또는 Worley를 도입해도 호출자와 CloudDensitySample은 바꾸지 않는다.
+NoiseFieldSample SampleDetailErosionNoise(float3 worldPosition, float timeSeconds)
+{
+    NoiseFieldSample result = (NoiseFieldSample)0;
+    float3 stationaryWorld = worldPosition - SafeWindDirection() *
+        max(detailWindSpeed, 0.0) * max(timeSeconds, 0.0);
+    result.uvw = stationaryWorld * max(detailNoiseScale, 1e-4) +
+        detailNoiseOffset.xxx;
+    result.value = SampleValueNoise3D(result.uvw);
+    return result;
+}
+
+// 단계 2 noise와 단계 3 높이만 계산해 큰 구름 형태를 만든다.
+// Detail 설정을 바꿔도 이 함수의 baseDensity는 절대로 바뀌지 않아야 한다.
+CloudDensitySample EvaluateBaseCloudDensity(float3 worldPosition, float timeSeconds)
 {
     CloudDensitySample sample = (CloudDensitySample)0;
-
-    float windLength = length(windDirection);
-    float3 safeWindDirection = windLength > 1e-6
-        ? windDirection / windLength
-        : 0.0.xxx;
-    float3 stationaryWorld = worldPosition -
-        safeWindDirection * max(windSpeed, 0.0) * max(timeSeconds, 0.0);
-    float safeScale = max(baseNoiseScale, 1e-4);
-    sample.noiseUvw = stationaryWorld * safeScale + noiseOffset.xxx;
-    sample.rawNoise = SampleBaseNoise(sample.noiseUvw);
+    NoiseFieldSample baseNoise = SampleBaseShapeNoise(worldPosition, timeSeconds);
+    sample.noiseUvw = baseNoise.uvw;
+    sample.rawNoise = baseNoise.value;
 
     float safeCoverage = saturate(coverage);
     if (safeCoverage > 1e-4)
@@ -114,9 +154,37 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds)
     // X/Z 덩어리 위치를 바꾸지 않고 Y 경계에서만 밀도를 0으로 부드럽게 줄인다.
     sample.heightFraction = EvaluateHeightFraction(worldPosition.y);
     sample.heightProfile = EvaluateHeightProfileFromFraction(sample.heightFraction);
-    sample.finalDensity = saturate(sample.thresholdDensity *
+    sample.baseDensity = saturate(sample.thresholdDensity *
         sample.heightProfile * max(densityMultiplier, 0.0));
+    sample.finalDensity = sample.baseDensity;
     return sample;
+}
+
+// Base Shape 뒤에 선택적으로 Detail Erosion을 적용한다.
+// sampleDetail=false, 빈 Base, strength=0 경로는 Detail 함수 자체를 호출하지 않는다.
+// 이 조기 반환은 단계 4의 기능 요구이며 단계 9의 레이 스텝 최적화와는 별개다.
+CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
+                                      bool sampleDetail)
+{
+    CloudDensitySample sample = EvaluateBaseCloudDensity(worldPosition, timeSeconds);
+    bool shouldSampleDetail = sampleDetail && sample.baseDensity > 0.0 &&
+                              detailErosionStrength > 0.0;
+    if (shouldSampleDetail)
+    {
+        NoiseFieldSample detail = SampleDetailErosionNoise(worldPosition, timeSeconds);
+        sample.detailNoiseUvw = detail.uvw;
+        sample.detailNoise = detail.value;
+        sample.erosion = sample.detailNoise * max(detailErosionStrength, 0.0);
+        sample.finalDensity = saturate(sample.baseDensity - sample.erosion);
+        sample.detailSampled = 1.0;
+    }
+    return sample;
+}
+
+// 기존 호출부와 이후 View Ray는 기본적으로 Detail을 사용하는 편의 overload다.
+CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds)
+{
+    return SampleCloudDensity(worldPosition, timeSeconds, true);
 }
 
 #endif

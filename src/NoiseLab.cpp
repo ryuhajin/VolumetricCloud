@@ -240,10 +240,11 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
 
     const char* outputs[] = {
         "Raw Noise", "Threshold Density", "Final Density",
-        "Height Fraction", "Height Profile"
+        "Height Fraction", "Height Profile", "Base Density",
+        "Detail Noise", "Erosion", "Detail Sample Mask"
     };
     int output = static_cast<int>(m_parameters.outputMode);
-    if (ImGui::Combo("Output", &output, outputs, 5))
+    if (ImGui::Combo("Output", &output, outputs, 9))
         m_parameters.outputMode = static_cast<std::uint32_t>(output);
 
     float* slice = &m_parameters.normalizedSlicePosition.x;
@@ -261,83 +262,118 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     ImGui::SameLine();
     DrawSlice("YZ (fixed X)", NoiseSliceAxis::YZ, m_targets[2]);
 
-    ImGui::SeparatorText("Shared cloud parameters");
     const CloudParameters before = cloudParameters;
-    ImGui::SliderFloat("Noise Scale", &cloudParameters.baseNoiseScale,
-                       0.01f, 2.0f, "%.3f cycle/m", ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Coverage", &cloudParameters.coverage, 0.0f, 1.0f);
-    ImGui::SliderFloat("Density", &cloudParameters.densityMultiplier, 0.0f, 4.0f);
-    ImGui::DragFloat("Noise Offset", &cloudParameters.noiseOffset, 0.01f, -20.0f, 20.0f);
-    ImGui::DragFloat3("Wind Direction", &cloudParameters.windDirection.x, 0.01f, -1.0f, 1.0f);
-    ImGui::SliderFloat("Wind Speed", &cloudParameters.windSpeed, 0.0f, 3.0f, "%.2f m/s");
+    if (ImGui::CollapsingHeader(
+            "Shared cloud parameters", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::SliderFloat("Noise Scale", &cloudParameters.baseNoiseScale,
+                           0.01f, 2.0f, "%.3f cycle/m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Coverage", &cloudParameters.coverage, 0.0f, 1.0f);
+        ImGui::SliderFloat("Density", &cloudParameters.densityMultiplier, 0.0f, 4.0f);
+        ImGui::DragFloat("Noise Offset", &cloudParameters.noiseOffset,
+                         0.01f, -20.0f, 20.0f);
+        ImGui::DragFloat3("Wind Direction", &cloudParameters.windDirection.x,
+                          0.01f, -1.0f, 1.0f);
+        ImGui::SliderFloat("Wind Speed", &cloudParameters.windSpeed,
+                           0.0f, 3.0f, "%.2f m/s");
+    }
 
-    ImGui::SeparatorText("Height profile");
-    ImGui::SliderFloat("Bottom Fade End", &cloudParameters.bottomFadeEnd,
-                       0.01f, 0.99f, "%.2f normalized height");
-    ImGui::SliderFloat("Top Fade Start", &cloudParameters.topFadeStart,
-                       0.01f, 0.99f, "%.2f normalized height");
+    if (ImGui::CollapsingHeader("Height profile", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::SliderFloat("Bottom Fade End", &cloudParameters.bottomFadeEnd,
+                           0.01f, 0.99f, "%.2f normalized height");
+        ImGui::SliderFloat("Top Fade Start", &cloudParameters.topFadeStart,
+                           0.01f, 0.99f, "%.2f normalized height");
+        if (cloudParameters.bottomFadeEnd > cloudParameters.topFadeStart)
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                               "Fade ranges overlap: the full-density plateau disappears.");
+        }
+
+        std::array<float, 64> profileCurve = {};
+        for (std::size_t index = 0; index < profileCurve.size(); ++index)
+        {
+            const float height = static_cast<float>(index) /
+                static_cast<float>(profileCurve.size() - 1);
+            profileCurve[index] = stage3::EvaluateHeightProfileFromFraction(
+                height, cloudParameters.bottomFadeEnd, cloudParameters.topFadeStart);
+        }
+        ImGui::PlotLines("Profile curve", profileCurve.data(),
+                         static_cast<int>(profileCurve.size()), 0,
+                         "bottom 0 -> top 1", 0.0f, 1.0f, ImVec2(0.0f, 80.0f));
+        const float selectedWorldY = cloudParameters.cloudBoundsMin.y +
+            (cloudParameters.cloudBoundsMax.y - cloudParameters.cloudBoundsMin.y) *
+            m_parameters.normalizedSlicePosition.y;
+        const float selectedHeight = stage3::EvaluateHeightFraction(
+            selectedWorldY, cloudParameters.cloudBoundsMin.y, cloudParameters.cloudBoundsMax.y);
+        const float selectedProfile = stage3::EvaluateHeightProfileFromFraction(
+            selectedHeight, cloudParameters.bottomFadeEnd, cloudParameters.topFadeStart);
+        ImGui::Text("Selected Y: fraction %.3f, profile %.3f",
+                    selectedHeight, selectedProfile);
+        if (ImGui::Button("Reset Bottom Fade"))
+            cloudParameters.bottomFadeEnd = 0.20f;
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Top Fade"))
+            cloudParameters.topFadeStart = 0.80f;
+    }
     cloudParameters.bottomFadeEnd = std::clamp(cloudParameters.bottomFadeEnd, 0.01f, 0.99f);
     cloudParameters.topFadeStart = std::clamp(cloudParameters.topFadeStart, 0.01f, 0.99f);
-    if (cloudParameters.bottomFadeEnd > cloudParameters.topFadeStart)
-    {
-        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-                           "Fade ranges overlap: the full-density plateau disappears.");
-    }
 
-    std::array<float, 64> profileCurve = {};
-    for (std::size_t index = 0; index < profileCurve.size(); ++index)
+    if (ImGui::CollapsingHeader("Detail erosion", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        const float height = static_cast<float>(index) /
-            static_cast<float>(profileCurve.size() - 1);
-        profileCurve[index] = stage3::EvaluateHeightProfileFromFraction(
-            height, cloudParameters.bottomFadeEnd, cloudParameters.topFadeStart);
+        ImGui::SliderFloat("Detail Scale", &cloudParameters.detailNoiseScale,
+                           0.1f, 16.0f, "%.3f cycle/m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Erosion Strength", &cloudParameters.detailErosionStrength,
+                           0.0f, 1.0f, "%.3f");
+        ImGui::SliderFloat("Detail Wind Speed", &cloudParameters.detailWindSpeed,
+                           0.0f, 3.0f, "%.2f m/s");
+        ImGui::DragFloat("Detail Offset", &cloudParameters.detailNoiseOffset,
+                         0.01f, -50.0f, 50.0f, "%.2f cycle");
+        if (ImGui::Button("Reset Detail"))
+        {
+            cloudParameters.detailNoiseScale = 2.5f;
+            cloudParameters.detailErosionStrength = 0.25f;
+            cloudParameters.detailWindSpeed = 0.45f;
+            cloudParameters.detailNoiseOffset = 17.3f;
+        }
+        ImGui::TextDisabled("F9 Off / F10 Default / F11 Fine / F12 Strong");
     }
-    ImGui::PlotLines("Profile curve", profileCurve.data(),
-                     static_cast<int>(profileCurve.size()), 0,
-                     "bottom 0 -> top 1", 0.0f, 1.0f, ImVec2(0.0f, 80.0f));
-    const float selectedWorldY = cloudParameters.cloudBoundsMin.y +
-        (cloudParameters.cloudBoundsMax.y - cloudParameters.cloudBoundsMin.y) *
-        m_parameters.normalizedSlicePosition.y;
-    const float selectedHeight = stage3::EvaluateHeightFraction(
-        selectedWorldY, cloudParameters.cloudBoundsMin.y, cloudParameters.cloudBoundsMax.y);
-    const float selectedProfile = stage3::EvaluateHeightProfileFromFraction(
-        selectedHeight, cloudParameters.bottomFadeEnd, cloudParameters.topFadeStart);
-    ImGui::Text("Selected Y: fraction %.3f, profile %.3f",
-                selectedHeight, selectedProfile);
-    if (ImGui::Button("Reset Bottom Fade"))
-        cloudParameters.bottomFadeEnd = 0.20f;
-    ImGui::SameLine();
-    if (ImGui::Button("Reset Top Fade"))
-        cloudParameters.topFadeStart = 0.80f;
+    cloudParameters.detailNoiseScale = std::max(cloudParameters.detailNoiseScale, 0.1f);
+    cloudParameters.detailErosionStrength = std::clamp(
+        cloudParameters.detailErosionStrength, 0.0f, 1.0f);
+    cloudParameters.detailWindSpeed = std::max(cloudParameters.detailWindSpeed, 0.0f);
 
-    ImGui::SeparatorText("Animation");
-    ImGui::Checkbox("Pause Time", &m_timePaused);
-    ImGui::SliderFloat("Time Scale", &m_timeScale, 0.0f, 4.0f);
-    if (m_timePaused)
+    if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        if (ImGui::DragFloat("Manual Time", &m_effectiveTime, 0.02f, 0.0f, 10000.0f))
-            m_parameters.effectiveTime = m_effectiveTime;
+        ImGui::Checkbox("Pause Time", &m_timePaused);
+        ImGui::SliderFloat("Time Scale", &m_timeScale, 0.0f, 4.0f);
+        if (m_timePaused)
+        {
+            if (ImGui::DragFloat("Manual Time", &m_effectiveTime,
+                                 0.02f, 0.0f, 10000.0f))
+                m_parameters.effectiveTime = m_effectiveTime;
+        }
+        if (ImGui::Button("Reset Time"))
+        {
+            m_effectiveTime = 0.0f;
+            m_parameters.effectiveTime = 0.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Noise"))
+        {
+            cloudParameters.baseNoiseScale = 0.35f;
+            cloudParameters.coverage = 0.55f;
+            cloudParameters.densityMultiplier = 1.0f;
+            cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
+            cloudParameters.windSpeed = 0.25f;
+            cloudParameters.noiseOffset = 0.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Export 3 PNG + JSON"))
+            m_exportRequested = true;
+        if (!m_exportStatus.empty())
+            ImGui::TextWrapped("%s", m_exportStatus.c_str());
     }
-    if (ImGui::Button("Reset Time"))
-    {
-        m_effectiveTime = 0.0f;
-        m_parameters.effectiveTime = 0.0f;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Reset Noise"))
-    {
-        cloudParameters.baseNoiseScale = 0.35f;
-        cloudParameters.coverage = 0.55f;
-        cloudParameters.densityMultiplier = 1.0f;
-        cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-        cloudParameters.windSpeed = 0.25f;
-        cloudParameters.noiseOffset = 0.0f;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Export 3 PNG + JSON"))
-        m_exportRequested = true;
-    if (!m_exportStatus.empty())
-        ImGui::TextWrapped("%s", m_exportStatus.c_str());
 
     m_parametersChanged = m_parametersChanged ||
         std::memcmp(&before, &cloudParameters, sizeof(CloudParameters)) != 0;
@@ -473,6 +509,7 @@ bool NoiseLab::ValidatePreviewData()
     const auto outputMode = static_cast<NoiseOutputMode>(m_parameters.outputMode);
     const bool heightOnly = outputMode == NoiseOutputMode::HeightFraction ||
                             outputMode == NoiseOutputMode::HeightProfile;
+    const bool sampleMask = outputMode == NoiseOutputMode::DetailSampleMask;
     for (std::size_t targetIndex = 0; targetIndex < m_targets.size(); ++targetIndex)
     {
         SliceTarget& target = m_targets[targetIndex];
@@ -506,6 +543,8 @@ bool NoiseLab::ValidatePreviewData()
         {
             return false;
         }
+        if (sampleMask && (minimum != 0 || maximum != 255))
+            return false;
     }
     return true;
 }
@@ -587,6 +626,7 @@ std::uint64_t NoiseLab::HashFile(const std::filesystem::path& path) const
 
 bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const CloudParameters& cloud,
+                             Stage4DetailPreset detailPreset,
                              const std::filesystem::path& noiseSourcePath) const
 {
     std::ofstream output(path, std::ios::binary);
@@ -594,12 +634,18 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         return false;
     static const char* outputNames[] = {
         "rawNoise", "thresholdDensity", "finalDensity",
-        "heightFraction", "heightProfile"
+        "heightFraction", "heightProfile", "baseDensity",
+        "detailNoise", "erosion", "detailSampleMask"
     };
+    static const char* detailPresetNames[] = {
+        "detailOff", "defaultDetail", "fineDetail", "strongErosion", "custom"
+    };
+    const int presetIndex = std::clamp(static_cast<int>(detailPreset), 0, 4);
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 2,\n"
+           << "  \"schemaVersion\": 3,\n"
            << "  \"output\": \"" << outputNames[m_parameters.outputMode] << "\",\n"
+           << "  \"detailPreset\": \"" << detailPresetNames[presetIndex] << "\",\n"
            << "  \"resolution\": [512, 512],\n"
            << "  \"slicePosition\": [" << m_parameters.normalizedSlicePosition.x << ", "
            << m_parameters.normalizedSlicePosition.y << ", "
@@ -610,6 +656,10 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"densityMultiplier\": " << cloud.densityMultiplier << ",\n"
            << "  \"bottomFadeEnd\": " << cloud.bottomFadeEnd << ",\n"
            << "  \"topFadeStart\": " << cloud.topFadeStart << ",\n"
+           << "  \"detailNoiseScale\": " << cloud.detailNoiseScale << ",\n"
+           << "  \"detailErosionStrength\": " << cloud.detailErosionStrength << ",\n"
+           << "  \"detailWindSpeed\": " << cloud.detailWindSpeed << ",\n"
+           << "  \"detailNoiseOffset\": " << cloud.detailNoiseOffset << ",\n"
            << "  \"noiseOffset\": " << cloud.noiseOffset << ",\n"
            << "  \"windDirection\": [" << cloud.windDirection.x << ", "
            << cloud.windDirection.y << ", " << cloud.windDirection.z << "],\n"
@@ -623,6 +673,7 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
 
 bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const CloudParameters& cloudParameters,
+                              Stage4DetailPreset detailPreset,
                               const std::filesystem::path& noiseSourcePath)
 {
     std::error_code error;
@@ -638,7 +689,7 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                          SaveTargetPng(directory / L"xz.png", m_targets[1]) &&
                          SaveTargetPng(directory / L"yz.png", m_targets[2]) &&
                          WriteMetadata(directory / L"noise-settings.json",
-                                       cloudParameters, noiseSourcePath);
+                                       cloudParameters, detailPreset, noiseSourcePath);
     m_exportStatus = success
         ? "Exported: " + NarrowUtf8(directory)
         : "Export failed while writing PNG or JSON";

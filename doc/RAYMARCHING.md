@@ -155,3 +155,30 @@ finalDensity = saturate(thresholdDensity × heightProfile × densityMultiplier)
 ```
 
 Noise Lab과 구름 PS는 모두 `Noise.hlsli`의 `EvaluateHeightFraction`, `EvaluateHeightProfileFromFraction`과 `SampleCloudDensity`를 호출한다. B/M 화면 디버그는 레이 교차 구간의 중간 대표 위치를 보여 주고, 정확한 수직 분포는 Noise Lab 단면을 사용한다. XY와 YZ는 월드 Y가 세로축이라 변화하며, XZ는 Y를 고정하므로 높이 전용 출력이 단색인 것이 정상이다.
+
+## 단계 4: Base Shape와 Detail Erosion
+
+Base Density는 단계 2 noise와 단계 3 높이를 합친 큰 형태다. Detail 설정은 이 값을 만들 때 관여하지 않는다.
+
+```text
+baseDensity = saturate(thresholdDensity × heightProfile × densityMultiplier)
+```
+
+Detail은 같은 Value Noise 수학을 별도 고주파 좌표에서 평가한다. 바람 방향은 공유하지만 속도·scale·offset은 독립적이다.
+
+```text
+detailStationaryWorld = worldPosition - windDirection × detailWindSpeed × time
+detailUVW = detailStationaryWorld × detailNoiseScale + detailNoiseOffset
+detailNoise = SampleDetailErosionNoise(detailUVW)
+```
+
+Detail을 Base에 더하면 빈 공간에 새 구름이 생겨 큰 실루엣과 작은 표면의 역할이 섞인다. 따라서 오직 빼는 침식으로 사용한다.
+
+```text
+erosion = detailNoise × detailErosionStrength
+finalDensity = saturate(baseDensity - erosion)
+```
+
+`sampleDetail=false`, `baseDensity<=0`, `detailErosionStrength<=0`이면 Detail 함수 자체를 호출하지 않고 `finalDensity=baseDensity`를 반환한다. 이는 한 밀도 평가 안의 필수 분기이며 큰 step, adaptive stepping과 같은 단계 9 최적화는 아니다.
+
+`SampleValueNoise3D`는 공통 수학, `SampleBaseShapeNoise`는 큰 형태, `SampleDetailErosionNoise`는 표면 전략을 담당한다. 이후 Detail을 fBm이나 Worley로 교체할 때 마지막 함수의 내부만 바꾸고 레이마칭과 `CloudDensitySample`은 유지한다.

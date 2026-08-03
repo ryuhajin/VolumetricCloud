@@ -148,7 +148,7 @@ bool Renderer::Init(HWND hwnd, int width, int height)
         !CreatePipelineStates() || !CreateConstantBuffers() ||
         !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
     {
-        MessageBoxW(hwnd, L"단계 3 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 4 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -498,10 +498,33 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         return;
 
     CheckShaderHotReload();
+    // Noise Lab은 CloudParameters를 직접 편집한다. 편집 전 값을 보관해 Base와
+    // Detail 중 실제로 바뀐 묶음만 Custom으로 표시한다. 예를 들어 Base Wind만
+    // 0으로 바꾼 검증에서 F10 Detail 프리셋 이름이 사라지면 안 된다.
+    const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
     m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
                           m_shaderGeneration, m_shaderStatus, m_shaderError);
     if (m_noiseLab.ConsumeParametersChanged())
-        m_noisePreset = Stage2NoisePreset::Custom;
+    {
+        const bool baseChanged =
+            parametersBeforeNoiseLab.baseNoiseScale != m_cloudParameters.baseNoiseScale ||
+            parametersBeforeNoiseLab.coverage != m_cloudParameters.coverage ||
+            parametersBeforeNoiseLab.densityMultiplier != m_cloudParameters.densityMultiplier ||
+            parametersBeforeNoiseLab.windDirection.x != m_cloudParameters.windDirection.x ||
+            parametersBeforeNoiseLab.windDirection.y != m_cloudParameters.windDirection.y ||
+            parametersBeforeNoiseLab.windDirection.z != m_cloudParameters.windDirection.z ||
+            parametersBeforeNoiseLab.windSpeed != m_cloudParameters.windSpeed ||
+            parametersBeforeNoiseLab.noiseOffset != m_cloudParameters.noiseOffset;
+        const bool detailChanged =
+            parametersBeforeNoiseLab.detailNoiseScale != m_cloudParameters.detailNoiseScale ||
+            parametersBeforeNoiseLab.detailErosionStrength != m_cloudParameters.detailErosionStrength ||
+            parametersBeforeNoiseLab.detailWindSpeed != m_cloudParameters.detailWindSpeed ||
+            parametersBeforeNoiseLab.detailNoiseOffset != m_cloudParameters.detailNoiseOffset;
+        if (baseChanged)
+            m_noisePreset = Stage2NoisePreset::Custom;
+        if (detailChanged)
+            m_detailPreset = Stage4DetailPreset::Custom;
+    }
     const float effectiveTime = m_noiseLab.EffectiveTime();
     D3D11_VIEWPORT viewport = {};
     viewport.Width = static_cast<float>(m_width);
@@ -522,6 +545,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
             shaderDirectory = shaderDirectory.parent_path();
         m_noiseLab.ExportSnapshot(shaderDirectory.parent_path() / L"captures" / L"noise-lab",
                                   m_cloudParameters,
+                                  m_detailPreset,
                                   shaderDirectory / L"Noise.hlsli");
     }
     m_noiseLab.EndFrame(m_backBufferRtv.Get());
@@ -670,6 +694,38 @@ void Renderer::SetHeightProfile(float bottomFadeEnd, float topFadeStart)
     m_cloudParameters.topFadeStart = std::clamp(topFadeStart, 0.01f, 0.99f);
 }
 
+void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
+{
+    // 프리셋 전환 순서와 무관하게 네 Detail 값만 기본화한다. Base noise, 높이와
+    // Q/Y 볼륨은 그대로 두므로 큰 형태가 변하지 않는지 직접 비교할 수 있다.
+    m_cloudParameters.detailNoiseScale = 2.5f;
+    m_cloudParameters.detailErosionStrength = 0.25f;
+    m_cloudParameters.detailWindSpeed = 0.45f;
+    m_cloudParameters.detailNoiseOffset = 17.3f;
+
+    switch (preset)
+    {
+    case Stage4DetailPreset::DetailOff:
+        m_cloudParameters.detailErosionStrength = 0.0f;
+        break;
+    case Stage4DetailPreset::FineDetail:
+        m_cloudParameters.detailNoiseScale = 6.0f;
+        break;
+    case Stage4DetailPreset::StrongErosion:
+        m_cloudParameters.detailErosionStrength = 0.55f;
+        break;
+    case Stage4DetailPreset::DefaultDetail:
+    default:
+        break;
+    }
+    m_detailPreset = preset;
+}
+
+Stage4DetailPreset Renderer::DetailPreset() const
+{
+    return m_detailPreset;
+}
+
 bool Renderer::HasDebugLayerErrors() const
 {
 #ifdef _DEBUG
@@ -777,7 +833,7 @@ bool Renderer::ValidateNoiseLabPreviews()
 bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
-        root, m_cloudParameters,
+        root, m_cloudParameters, m_detailPreset,
         std::filesystem::path(m_shaderDir) / L"Noise.hlsli");
 }
 

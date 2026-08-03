@@ -52,6 +52,11 @@
 - Noise Lab JSON schema 2에 높이 경계를 기록하고 겹친 fade는 허용하되 UI 경고를 표시한다.
 - 실행 기본 AABB를 X/Z `±8m`로 넓히고 `Y` 넓은 볼륨 프리셋을 추가했다. `Q`의
   X/Z `±2m` 볼륨은 단계 1 수치 검증 기준으로 보존한다.
+- 단계 4에서 Base Shape 평가, 교체 가능한 Detail Noise 샘플과 subtractive erosion을 분리했다.
+- `CloudParameters`를 112바이트로 확장하고 Detail scale/strength/speed/offset을 추가했다.
+- Base가 0, Detail Off 또는 `sampleDetail=false`이면 Detail 함수를 호출하지 않는다.
+- J/L/P/U, F9~F12와 Noise Lab의 Base/Detail/Erosion/Sample Mask 출력을 추가했다.
+- Noise Lab JSON schema 3이 네 Detail 파라미터와 현재 Detail 프리셋을 기록한다.
 
 ## 7. 캐시·호환성·성능 영향
 
@@ -59,6 +64,7 @@
 - 단계 0은 full-resolution 장면 색상과 32비트 깊이 타깃을 각각 하나 사용한다.
 - Noise Lab은 `R8G8B8A8_UNORM` 512² render target/SRV/staging texture를 축별로 한 벌씩 사용하며 F1으로 UI를 숨길 수 있다.
 - 단계 3은 새 texture를 만들지 않고 기존 CloudCB를 16바이트 늘리며 기존 Noise Lab 타깃을 재사용한다.
+- 단계 4도 새 texture 없이 CloudCB 16바이트와 Base가 존재하는 표본당 Value Noise 1회만 추가한다.
 
 ## 8. 테스트 및 실행 결과
 
@@ -86,6 +92,21 @@
 - 넓은 볼륨 추가 후 Debug/Release 빌드와 양 구성 CTest 10/10 통과. 확장된
   Stage1Smoke가 `Q/Y/W/E/R/T` 여섯 프리셋의 모드 0~9 draw를 모두 통과했다.
 - 단계 3 사용자 렌더 승인: 2026-08-03 높이 프로파일과 Q↔Y 넓은 볼륨 검증 전체 통과
+- 단계 4 Debug/Release 빌드와 양 구성 CTest 각각 12/12 성공. 기존 Foundation,
+  Stage1~3, NoiseLabSmoke와 ShaderHotReloadSmoke 회귀를 포함한다.
+- `Stage4DetailMath`에서 독립 Base/Detail 좌표·속도, subtractive erosion,
+  Detail Off·빈 Base·`sampleDetail=false` 샘플 생략과 finite 출력을 확인했다.
+- `Stage4Smoke`에서 J/L/P/U × F9~F12 × Q/Y 조합을 렌더했고 D3D11
+  error/corruption 없이 반환 코드 0을 확인했다.
+- NoiseLabSmoke에서 9개 출력 readback과 PNG 3장, JSON schema 3의 Detail
+  프리셋·네 파라미터 기록을 확인했다.
+- 단계 4 HLSL은 Fullscreen/Cloud/Noise Lab/Diagnostic VS·PS 5개 엔트리 포인트를
+  `fxc /Od /WX`로 경고 없이 컴파일했다.
+- 사용자 검증에서 Noise Lab의 ImGui 키보드 캡처가 F9~F12를 막는
+  문제를 확인했다. F5~F12 전역 검증 단축키를 UI보다 먼저 처리하도록
+  수정했고, Windows가 F10을 메뉴 키로 전달하는 `WM_SYSKEYDOWN` 경로도 포함했다.
+- 단계 4 사용자 렌더 승인: 2026-08-03 F9~F12 입력 재검증과 접이식 Noise Lab
+  UI를 포함한 수동 체크리스트 전체 통과
 
 ## 9. 남은 문제와 후속 개선
 
@@ -93,4 +114,5 @@
 - 단계 1은 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
 - 단계 2는 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
 - 단계 3은 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
-- detail noise는 단계 4에서 분리하고 weather map, 태양광과 early exit는 이후 단계로 남긴다.
+- 단계 4는 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
+- fBm/Worley, weather map, 태양광과 early exit는 이후 단계로 남긴다.

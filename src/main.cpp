@@ -2,7 +2,7 @@
 //  main.cpp  —  진입점 (WinMain)
 // ----------------------------------------------------------------------------
 //  창(Window) · 카메라(Camera) · 렌더러(Renderer)를 생성·연결하고,
-//  메인 루프에서 진단 장면과 단계 3 높이 프로파일 구름 패스를 그린다.
+//  메인 루프에서 진단 장면과 단계 4 Base/Detail Erosion 구름 패스를 그린다.
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -55,6 +55,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage2-smoke-test") != nullptr;
     const bool stage3SmokeTest = commandLine &&
         wcsstr(commandLine, L"--stage3-smoke-test") != nullptr;
+    const bool stage4SmokeTest = commandLine &&
+        wcsstr(commandLine, L"--stage4-smoke-test") != nullptr;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -78,9 +80,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 3 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | 외부 기본(F5)",
+                    L"VolumetricCloud - Stage 4 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | 외부 기본(F5)",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
-                    !stage3SmokeTest && !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
+                    !stage3SmokeTest && !stage4SmokeTest &&
+                    !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
 
@@ -155,10 +158,35 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 
+    if (stage4SmokeTest)
+    {
+        // Base/Detail 중간값 네 종류와 네 프리셋을 작은/넓은 볼륨에서 모두 draw한다.
+        const Stage1ValidationPreset volumes[] = {
+            Stage1ValidationPreset::DefaultVolume,
+            Stage1ValidationPreset::WideVolume,
+        };
+        for (int mode = static_cast<int>(CloudDebugMode::BaseDensity);
+             mode <= static_cast<int>(CloudDebugMode::DetailSampleMask); ++mode)
+        {
+            renderer.SetDebugMode(static_cast<CloudDebugMode>(mode));
+            for (int preset = static_cast<int>(Stage4DetailPreset::DetailOff);
+                 preset <= static_cast<int>(Stage4DetailPreset::StrongErosion); ++preset)
+            {
+                renderer.ApplyStage4DetailPreset(static_cast<Stage4DetailPreset>(preset));
+                for (Stage1ValidationPreset volume : volumes)
+                {
+                    renderer.ApplyStage1ValidationPreset(volume);
+                    renderer.Render(camera, static_cast<float>(mode + preset) / 60.0f);
+                }
+            }
+        }
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
     if (noiseLabSmokeTest)
     {
         for (int mode = static_cast<int>(NoiseOutputMode::RawNoise);
-             mode <= static_cast<int>(NoiseOutputMode::HeightProfile); ++mode)
+             mode <= static_cast<int>(NoiseOutputMode::DetailSampleMask); ++mode)
         {
             renderer.SetNoiseLabOutputMode(static_cast<NoiseOutputMode>(mode));
             renderer.Render(camera, 0.0f);

@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 3 높이 프로파일 렌더링
+//  Renderer.h - Direct3D 11 단계 4 Base/Detail Erosion 렌더링
 // ============================================================================
 #pragma once
 
@@ -39,6 +39,8 @@ public:
     void ApplyStage2NoisePreset(Stage2NoisePreset preset);
     Stage2NoisePreset NoisePreset() const;
     void SetHeightProfile(float bottomFadeEnd, float topFadeStart);
+    void ApplyStage4DetailPreset(Stage4DetailPreset preset);
+    Stage4DetailPreset DetailPreset() const;
     bool HasDebugLayerErrors() const;
     bool HandleWindowMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     bool ValidateNoiseLabPreviews();
@@ -127,6 +129,7 @@ private:
     CloudParameters m_cloudParameters;
     Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::WideVolume;
     Stage2NoisePreset m_noisePreset = Stage2NoisePreset::DefaultNoise;
+    Stage4DetailPreset m_detailPreset = Stage4DetailPreset::DefaultDetail;
 
     std::wstring m_shaderDir;
     std::wstring m_fullscreenShaderPath;

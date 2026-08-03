@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudParameters.hlsli - CPU CloudParameters와 공유하는 96바이트 CloudCB
+//  CloudParameters.hlsli - CPU CloudParameters와 공유하는 112바이트 CloudCB
 // ----------------------------------------------------------------------------
 //  CPU Renderer가 매 프레임 b1에 복사하고 Cloud PS와 Noise Lab PS가 함께 읽는다.
 //  모든 위치와 길이는 월드 공간 meter 기준이다. 필드 순서나 자료형을 바꾸면
@@ -26,6 +26,10 @@ cbuffer CloudCB : register(b1)
     float bottomFadeEnd;        // CPU bottomFadeEnd. 바닥 fade가 끝나는 정규화 높이(0~1).
     float topFadeStart;         // CPU topFadeStart. 꼭대기 fade가 시작되는 정규화 높이(0~1).
     float3 heightProfilePadding;// 16바이트 정렬용 예약 필드. 현재 셰이더에서는 사용하지 않는다.
+    float detailNoiseScale;     // CPU detailNoiseScale. 표면 침식 noise 주파수(cycle/m).
+    float detailErosionStrength;// CPU detailErosionStrength. Base에서 뺄 최대 밀도(0~1 권장).
+    float detailWindSpeed;      // CPU detailWindSpeed. Detail 무늬 이동 속도(m/s).
+    float detailNoiseOffset;    // CPU detailNoiseOffset. Base와 분리할 noise 좌표 이동(cycle).
 };
 
 #endif
