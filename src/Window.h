@@ -33,7 +33,7 @@ public:
 private:
     static LRESULT CALLBACK WndProcStatic(HWND, UINT, WPARAM, LPARAM);
     LRESULT WndProc(HWND, UINT, WPARAM, LPARAM);
-    void UpdateStage1Title();
+    void UpdateDebugTitle();
 
     HWND      m_hwnd    = nullptr;
     int       m_width   = 0;

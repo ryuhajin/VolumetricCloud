@@ -76,3 +76,47 @@ finalColor = cloudScattering + backgroundColor × cloudTransmittance
 ```
 
 `transmittanceThreshold=0.01`은 단계 9에서 충분히 불투명해진 레이를 일찍 끝내기 위한 예약 값이다. 단계 1에서는 정확한 전체 구간 비교를 위해 사용하지 않는다.
+
+## 단계 2: 월드 공간 단일 3D noise 밀도
+
+단계 2는 교차·step·합성식을 바꾸지 않고 `density`만 위치별 값으로 교체한다. 화면 UV나 카메라 위치가 아니라 각 step의 `samplePosition`을 입력으로 사용한다.
+
+### 바람과 noise 좌표
+
+```text
+safeWindDirection = normalize(windDirection)  // 0 벡터는 (0,0,0)
+stationaryWorld = worldPosition - safeWindDirection × windSpeed × time
+noiseUVW = stationaryWorld × baseNoiseScale + noiseOffset
+```
+
+`baseNoiseScale`의 단위는 cycle/m다. 값이 커지면 같은 월드 거리에서 더 많은 noise 셀을 지나므로 덩어리가 작아진다. `f(x-vt)` 형태로 조회하면 화면의 무늬는 `+v` 월드 방향으로 이동한다. 같은 월드 위치와 같은 시간은 카메라와 무관하게 항상 같은 noise 좌표를 갖는다.
+
+### 단일 3D value noise
+
+`floor(noiseUVW)`가 가리키는 셀의 여덟 모서리를 hash해 각각 `0~1` 값을 만든다. 셀 내부 좌표에는 다음 Hermite 곡선을 적용한다.
+
+```text
+smooth = local × local × (3 - 2 × local)
+```
+
+여덟 값을 X, Y, Z 순서로 삼선형 보간해 원본 noise 하나를 얻는다. 여러 octave, Worley, detail noise나 texture를 혼합하지 않는다.
+
+### coverage remap
+
+```text
+threshold = 1 - coverage
+thresholdDensity = saturate((rawNoise - threshold) / max(coverage, 1e-4))
+finalDensity = saturate(thresholdDensity × densityMultiplier)
+```
+
+coverage가 0이면 별도 분기로 밀도를 0으로 만든다. coverage가 커질수록 threshold가 낮아져 0보다 큰 밀도를 가진 공간이 증가한다. `densityMultiplier`는 남은 덩어리의 농도만 바꾸며 최종 값은 `0~1`로 제한한다.
+
+레이 마칭의 각 step은 `finalDensity`로 Beer-Lambert 투과율을 계산한다. 단계 1과 달리 위치마다 밀도가 다르므로 step 크기에 따른 근사 오차가 생길 수 있지만, adaptive stepping과 빈 공간 건너뛰기는 단계 9까지 추가하지 않는다.
+
+### Noise Lab 단면과 실제 구름의 관계
+
+3D noise는 한 장의 이미지가 아니라 `noise(x,y,z)` 함수다. Noise Lab은 AABB를 정규화한 교차점에서 XY, XZ, YZ 평면을 각각 512×512로 잘라 같은 `SampleCloudDensity(worldPosition, effectiveTime)` 함수를 평가한다. 세 화면의 빨간 crosshair는 같은 3D 위치를 가리킨다.
+
+ImGui의 scale·coverage·density·offset·wind 값은 CPU `CloudParameters`를 바꾸므로 재컴파일 없이 단면과 구름에 같은 프레임에 반영된다. hash와 보간 코드는 `Noise.hlsli` 하나에 있고, 저장 시 Noise Lab PS와 Cloud PS를 함께 컴파일·교체한다.
+
+내보낸 `xy.png`, `xz.png`, `yz.png`는 선택 시점의 2D 단면 기록이다. Z축 전체를 담지 않으므로 구름 셰이더가 다시 읽는 밀도 texture가 아니다. 향후 2D Weather Map은 PNG를 사용할 수 있지만, 3D noise를 굽는 기능은 Texture3D 또는 여러 단면 atlas가 필요하다.

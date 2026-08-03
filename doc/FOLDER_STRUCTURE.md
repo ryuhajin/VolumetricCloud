@@ -2,11 +2,11 @@
 
 ```text
 VolumetricCloud/
-├─ CMakeLists.txt                  # 앱과 FoundationMath 테스트 빌드
+├─ CMakeLists.txt                  # 앱과 단계별 수치·D3D smoke 테스트 빌드
 ├─ README.md / AGENTS.md           # 사용자 안내 / AI 작업 규칙
 ├─ doc/
-│  ├─ ARCHITECTURE.md              # 단계 0 파이프라인과 상수버퍼
-│  ├─ RAYMARCHING.md               # 월드 레이·깊이 역투영 수식
+│  ├─ ARCHITECTURE.md              # 현재 파이프라인과 상수버퍼
+│  ├─ RAYMARCHING.md               # 교차·적분·noise 밀도 수식
 │  ├─ ROADMAP.md                   # 사용자 승인 기반 0~15단계
 │  ├─ FOLDER_STRUCTURE.md
 │  ├─ CONTRIBUTING.md
@@ -16,16 +16,25 @@ VolumetricCloud/
 │  ├─ main.cpp
 │  ├─ Window.* / Camera.*          # 입력, 오빗과 고정 검증 카메라
 │  ├─ Renderer.*                   # 진단 장면, 깊이, 풀스크린 합성
-│  └─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
+│  ├─ NoiseLab.*                   # ImGui 단면 UI, GPU readback과 PNG/JSON 내보내기
+│  ├─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
+│  ├─ Stage1VolumeMath.h           # AABB·상수 밀도 CPU 테스트 기준
+│  └─ Stage2NoiseMath.h            # value noise·coverage CPU 테스트 기준
 ├─ shaders/
 │  ├─ DiagnosticScene.hlsl         # 불투명 평면·박스
 │  ├─ Fullscreen.hlsl              # SV_VertexID 풀스크린 삼각형
-│  ├─ VolumetricClouds.hlsl        # 단계 0 진단·합성 패스
-│  └─ Ray.hlsli                    # 단계 1 이후 교차 함수 자리
+│  ├─ VolumetricClouds.hlsl        # 단계 2 noise 밀도·적분·합성 패스
+│  ├─ NoiseLab.hlsl                # XY/XZ/YZ 고정 단면 픽셀 셰이더
+│  ├─ CloudParameters.hlsli        # CPU와 공유하는 80바이트 CloudCB
+│  ├─ Noise.hlsli                  # 구름과 Lab 공용 3D value noise 라이브러리
+│  └─ Ray.hlsli                    # 안전한 AABB 교차
 ├─ tests/
-│  └─ FoundationTests.cpp          # 카메라 역투영 CPU 회귀 테스트
+│  ├─ FoundationTests.cpp          # 카메라 역투영 CPU 회귀 테스트
+│  ├─ Stage1VolumeMathTests.cpp    # AABB·Beer-Lambert 회귀 테스트
+│  └─ Stage2NoiseMathTests.cpp     # value noise·coverage·wind 회귀 테스트
 ├─ notes/                           # 로컬 단계 학습·사용자 검증 문서와 개인 메모, Git 제외
-├─ third_party/                    # 현재 런타임 의존성 없음
+├─ third_party/imgui/              # Win32/DX11 개발 UI submodule
+├─ captures/noise-lab/             # 로컬 PNG/JSON 출력, Git 제외
 └─ build/                          # CMake 산출물, Git 제외
 ```
 

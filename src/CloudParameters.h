@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudParameters.h - 단계 1 상수 밀도 AABB에서 CPU/GPU가 공유하는 설정
+//  CloudParameters.h - 단계 2 단일 3D 노이즈에서 CPU/GPU가 공유하는 설정
 // ============================================================================
 #pragma once
 
@@ -18,6 +18,10 @@ enum class CloudDebugMode : std::int32_t
     ViewStepCount = 7,
     Transmittance = 8,
     ConstantDensity = 9,
+    RawNoise = 10,
+    ThresholdDensity = 11,
+    FinalDensity = 12,
+    NoiseUvw = 13,
 };
 
 enum class Stage1ValidationPreset : std::int32_t
@@ -29,11 +33,24 @@ enum class Stage1ValidationPreset : std::int32_t
     CoarseStep,
 };
 
+enum class Stage2NoisePreset : std::int32_t
+{
+    DefaultNoise,
+    SparseCoverage,
+    DenseCoverage,
+    LargeBlobs,
+    SmallBlobs,
+    StoppedWind,
+    FastWind,
+    OffsetNoise,
+    Custom,
+};
+
 // HLSL CloudCB와 16바이트 묶음 순서가 정확히 일치해야 한다.
 struct alignas(16) CloudParameters
 {
     DirectX::XMFLOAT3 cloudBoundsMin = { -2.0f, -1.0f, -2.0f };
-    float cloudDensity = 0.35f;
+    float densityMultiplier = 1.0f;
 
     DirectX::XMFLOAT3 cloudBoundsMax = { 2.0f, 2.0f, 2.0f };
     float stepSize = 0.1f;
@@ -42,6 +59,14 @@ struct alignas(16) CloudParameters
     float extinctionCoefficient = 1.0f;
     float transmittanceThreshold = 0.01f;
     std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
+
+    float baseNoiseScale = 0.35f;
+    float coverage = 0.55f;
+    float windSpeed = 0.25f;
+    float noiseOffset = 0.0f;
+
+    DirectX::XMFLOAT3 windDirection = { 0.9701425f, 0.0f, 0.2425356f };
+    float padding = 0.0f;
 };
 
-static_assert(sizeof(CloudParameters) == 48, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 80, "CloudParameters must match CloudCB");

@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 1 상수 밀도 AABB 렌더링
+//  Renderer.h - Direct3D 11 단계 2 단일 3D 노이즈 렌더링
 // ============================================================================
 #pragma once
 
@@ -9,12 +9,13 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 
-#include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 
 #include "CloudParameters.h"
+#include "NoiseLab.h"
 
 class Camera;
 
@@ -27,6 +28,7 @@ struct DiagnosticSceneVertex
 class Renderer
 {
 public:
+    ~Renderer();
     bool Init(HWND hwnd, int width, int height);
     void Resize(int width, int height);
     void Render(const Camera& camera, float timeSeconds);
@@ -34,7 +36,17 @@ public:
     CloudDebugMode DebugMode() const;
     void ApplyStage1ValidationPreset(Stage1ValidationPreset preset);
     Stage1ValidationPreset ValidationPreset() const;
+    void ApplyStage2NoisePreset(Stage2NoisePreset preset);
+    Stage2NoisePreset NoisePreset() const;
     bool HasDebugLayerErrors() const;
+    bool HandleWindowMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    bool ValidateNoiseLabPreviews();
+    bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
+    void SetNoiseLabOutputMode(NoiseOutputMode mode) { m_noiseLab.SetOutputMode(mode); }
+    std::uint64_t NoiseLabPreviewHash(std::size_t targetIndex);
+    std::uint64_t ShaderGeneration() const { return m_shaderGeneration; }
+    void EnableFrameHashCapture(bool enabled) { m_captureFrameHashes = enabled; }
+    std::uint64_t LastCloudFrameHash() const { return m_lastCloudFrameHash; }
 
 private:
     template <typename T>
@@ -72,10 +84,11 @@ private:
     void ReleaseSizeDependentResources();
     void RenderDiagnosticScene(const Camera& camera);
     void RenderCloudPass(const Camera& camera, float timeSeconds);
+    void CaptureCloudFrameHash();
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
     bool GetShaderWriteTimes(
-        std::array<std::filesystem::file_time_type, 4>& writeTimes) const;
+        std::map<std::wstring, std::filesystem::file_time_type>& writeTimes) const;
 
     int m_width = 0;
     int m_height = 0;
@@ -93,7 +106,8 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_sceneDepthSrv;
 
     ComPtr<ID3D11VertexShader> m_fullscreenVs;
-    ComPtr<ID3D11PixelShader> m_foundationPs;
+    ComPtr<ID3D11PixelShader> m_cloudPs;
+    ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
     ComPtr<ID3D11InputLayout> m_sceneInputLayout;
@@ -111,8 +125,18 @@ private:
 
     CloudParameters m_cloudParameters;
     Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::DefaultVolume;
+    Stage2NoisePreset m_noisePreset = Stage2NoisePreset::DefaultNoise;
 
     std::wstring m_shaderDir;
-    std::array<std::wstring, 4> m_shaderPaths;
-    std::array<std::filesystem::file_time_type, 4> m_shaderWriteTimes = {};
+    std::wstring m_fullscreenShaderPath;
+    std::wstring m_cloudShaderPath;
+    std::wstring m_noiseLabShaderPath;
+    std::wstring m_sceneShaderPath;
+    std::map<std::wstring, std::filesystem::file_time_type> m_shaderWriteTimes;
+    std::uint64_t m_shaderGeneration = 0;
+    std::string m_shaderStatus = "Not compiled";
+    std::string m_shaderError;
+    bool m_captureFrameHashes = false;
+    std::uint64_t m_lastCloudFrameHash = 0;
+    NoiseLab m_noiseLab;
 };
