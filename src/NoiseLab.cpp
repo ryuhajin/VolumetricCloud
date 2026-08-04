@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
@@ -199,21 +200,37 @@ void NoiseLab::UpdateEffectiveTime(float applicationTime)
 
 void NoiseLab::BeginFrame(float applicationTime,
                           CloudParameters& cloudParameters,
+                          Stage5WeatherPreset weatherPreset,
+                          const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                          ID3D11ShaderResourceView* weatherMapSrv,
+                          const std::string& weatherMapStatus,
                           std::uint64_t shaderGeneration,
                           const std::string& shaderStatus,
                           const std::string& shaderError)
 {
     if (!m_initialized)
         return;
+    m_currentApplicationTime = applicationTime;
+    if (!m_weatherGeneratorDraftInitialized)
+    {
+        m_weatherGeneratorDraft = weatherGeneratorSettings;
+        m_weatherGeneratorDraftInitialized = true;
+    }
     UpdateEffectiveTime(applicationTime);
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     if (m_visible)
-        DrawControlWindow(cloudParameters, shaderGeneration, shaderStatus, shaderError);
+        DrawControlWindow(cloudParameters, weatherPreset, weatherGeneratorSettings,
+                          weatherMapSrv, weatherMapStatus, shaderGeneration,
+                          shaderStatus, shaderError);
 }
 
 void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
+                                 Stage5WeatherPreset weatherPreset,
+                                 const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                                 ID3D11ShaderResourceView* weatherMapSrv,
+                                 const std::string& weatherMapStatus,
                                  std::uint64_t shaderGeneration,
                                  const std::string& shaderStatus,
                                  const std::string& shaderError)
@@ -241,10 +258,12 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     const char* outputs[] = {
         "Raw Noise", "Threshold Density", "Final Density",
         "Height Fraction", "Height Profile", "Base Density",
-        "Detail Noise", "Erosion", "Detail Sample Mask"
+        "Detail Noise", "Erosion", "Detail Sample Mask",
+        "Weather Coverage", "Cloud Type", "Weather Density Modifier",
+        "Weather Threshold Density", "Typed Height Profile", "Weather UV"
     };
     int output = static_cast<int>(m_parameters.outputMode);
-    if (ImGui::Combo("Output", &output, outputs, 9))
+    if (ImGui::Combo("Output", &output, outputs, 15))
         m_parameters.outputMode = static_cast<std::uint32_t>(output);
 
     float* slice = &m_parameters.normalizedSlicePosition.x;
@@ -263,6 +282,131 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     DrawSlice("YZ (fixed X)", NoiseSliceAxis::YZ, m_targets[2]);
 
     const CloudParameters before = cloudParameters;
+    m_weatherPreset = weatherPreset;
+    m_weatherMapPreviewSrv = weatherMapSrv;
+    if (ImGui::CollapsingHeader("Weather map", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const char* presets[] = {
+            "F2 Uniform Legacy", "F3 Periodic Perlin", "F4 Channel Debug"
+        };
+        int presetIndex = static_cast<int>(weatherPreset);
+        if (ImGui::Combo("Weather Preset", &presetIndex, presets, 3))
+        {
+            m_weatherPresetRequest = presetIndex;
+            m_weatherPreset = static_cast<Stage5WeatherPreset>(presetIndex);
+        }
+        if (m_weatherMapPreviewSrv)
+        {
+            ImGui::TextUnformatted("Actual RGBA texture (R coverage / G type / B density)");
+            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(
+                reinterpret_cast<std::uintptr_t>(m_weatherMapPreviewSrv))),
+                ImVec2(256.0f, 256.0f));
+        }
+        ImGui::SliderFloat("Weather World Size", &cloudParameters.weatherMapWorldSize,
+                           4.0f, 128.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Weather Wind Speed", &cloudParameters.weatherMapWindSpeed,
+                           0.0f, 2.0f, "%.2f m/s");
+        ImGui::DragFloat2("Weather Offset", &cloudParameters.weatherMapOffset.x,
+                          0.01f, -10.0f, 10.0f, "%.2f cycle");
+        if (ImGui::Button("Reset Weather Transform"))
+        {
+            cloudParameters.weatherMapWorldSize = 16.0f;
+            cloudParameters.weatherMapWindSpeed = 0.10f;
+            cloudParameters.weatherMapOffset = { 0.0f, 0.0f };
+        }
+    }
+
+    const bool generatorEnabled =
+        m_weatherPreset == Stage5WeatherPreset::PeriodicPerlin;
+    bool generatorChanged = false;
+    if (ImGui::CollapsingHeader(
+            "Periodic Perlin Generator", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::TextWrapped(
+            "CPU RGBA map -> DEFAULT texture UpdateSubresource (max 10 Hz)");
+        ImGui::TextWrapped("%s", weatherMapStatus.c_str());
+        if (!generatorEnabled)
+        {
+            ImGui::TextColored(
+                ImVec4(0.45f, 0.75f, 1.0f, 1.0f),
+                "Settings are editable; switch to F3 to preview Periodic Perlin.");
+        }
+
+        if (ImGui::CollapsingHeader("R Coverage"))
+        {
+            generatorChanged |= DrawPeriodicChannelFields(
+                "R Coverage", m_weatherGeneratorDraft.coverage);
+            generatorChanged |= ImGui::SliderFloat(
+                "Coverage Threshold", &m_weatherGeneratorDraft.coverageThreshold,
+                0.0f, 1.0f, "%.3f");
+            generatorChanged |= ImGui::SliderFloat(
+                "Coverage Softness", &m_weatherGeneratorDraft.coverageSoftness,
+                0.02f, 0.8f, "%.3f");
+        }
+        if (ImGui::CollapsingHeader("G Cloud Type"))
+        {
+            generatorChanged |= DrawPeriodicChannelFields(
+                "G Cloud Type", m_weatherGeneratorDraft.cloudType);
+        }
+        if (ImGui::CollapsingHeader("B Density"))
+        {
+            generatorChanged |= DrawPeriodicChannelFields(
+                "B Density", m_weatherGeneratorDraft.density);
+            generatorChanged |= ImGui::SliderFloat(
+                "Density Coverage Influence",
+                &m_weatherGeneratorDraft.densityCoverageInfluence,
+                0.0f, 1.0f, "%.3f");
+        }
+
+        ImGui::Checkbox("Live Update", &m_weatherGeneratorLiveUpdate);
+        if (ImGui::Button("Apply Now"))
+            QueueWeatherGeneratorRequest(true);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Generator"))
+        {
+            m_weatherGeneratorDraft = WeatherMapGeneratorSettings{};
+            m_weatherGeneratorDirty = true;
+            QueueWeatherGeneratorRequest(true);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Next Seeds"))
+        {
+            const auto nextSeed = [](std::uint32_t seed)
+            {
+                return seed * 1664525u + 1013904223u;
+            };
+            m_weatherGeneratorDraft.coverage.seed =
+                nextSeed(m_weatherGeneratorDraft.coverage.seed);
+            m_weatherGeneratorDraft.cloudType.seed =
+                nextSeed(m_weatherGeneratorDraft.cloudType.seed);
+            m_weatherGeneratorDraft.density.seed =
+                nextSeed(m_weatherGeneratorDraft.density.seed);
+            m_weatherGeneratorDirty = true;
+            QueueWeatherGeneratorRequest(true);
+        }
+
+        if (!WeatherMapGeneratorSettingsEqual(
+                weatherGeneratorSettings, m_weatherGeneratorDraft))
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                               "Generator has unapplied values.");
+        }
+    }
+
+    if (generatorChanged)
+        m_weatherGeneratorDirty = true;
+    m_weatherGeneratorDraft = SanitizeWeatherMapGeneratorSettings(
+        m_weatherGeneratorDraft);
+    if (generatorEnabled && m_weatherGeneratorDirty &&
+        m_weatherGeneratorLiveUpdate)
+    {
+        QueueWeatherGeneratorRequest(!ImGui::IsAnyItemActive());
+    }
+    cloudParameters.weatherMapWorldSize = std::max(
+        cloudParameters.weatherMapWorldSize, 1e-4f);
+    cloudParameters.weatherMapWindSpeed = std::max(
+        cloudParameters.weatherMapWindSpeed, 0.0f);
+
     if (ImGui::CollapsingHeader(
             "Shared cloud parameters", ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -369,7 +513,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
             cloudParameters.noiseOffset = 0.0f;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Export 3 PNG + JSON"))
+        if (ImGui::Button("Export 4 PNG + JSON"))
             m_exportRequested = true;
         if (!m_exportStatus.empty())
             ImGui::TextWrapped("%s", m_exportStatus.c_str());
@@ -379,6 +523,51 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         std::memcmp(&before, &cloudParameters, sizeof(CloudParameters)) != 0;
 
     ImGui::End();
+}
+
+bool NoiseLab::DrawPeriodicChannelFields(
+    const char* label, PeriodicChannelSettings& settings)
+{
+    ImGui::PushID(label);
+    bool changed = false;
+    changed |= ImGui::InputScalar(
+        "Seed", ImGuiDataType_U32, &settings.seed, nullptr, nullptr, "%u");
+    int macroPeriod = static_cast<int>(settings.macroPeriod);
+    int detailPeriod = static_cast<int>(settings.detailPeriod);
+    if (ImGui::SliderInt("Macro Period", &macroPeriod, 1, 8))
+    {
+        settings.macroPeriod = static_cast<std::uint32_t>(macroPeriod);
+        changed = true;
+    }
+    if (ImGui::SliderInt("Detail Period", &detailPeriod, 2, 16))
+    {
+        settings.detailPeriod = static_cast<std::uint32_t>(detailPeriod);
+        changed = true;
+    }
+    changed |= ImGui::SliderFloat(
+        "Detail Weight", &settings.detailWeight, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::SliderFloat(
+        "Bias", &settings.bias, -0.5f, 0.5f, "%.3f");
+    changed |= ImGui::SliderFloat(
+        "Contrast", &settings.contrast, 0.25f, 3.0f, "%.3f");
+    ImGui::PopID();
+    return changed;
+}
+
+void NoiseLab::QueueWeatherGeneratorRequest(bool force)
+{
+    if (!force)
+    {
+        if (!m_weatherGeneratorLiveUpdate ||
+            m_currentApplicationTime - m_weatherGeneratorLastRequestTime < 0.1f)
+            return;
+    }
+    m_weatherGeneratorDraft = SanitizeWeatherMapGeneratorSettings(
+        m_weatherGeneratorDraft);
+    m_weatherGeneratorRequest = m_weatherGeneratorDraft;
+    m_weatherGeneratorRequestPending = true;
+    m_weatherGeneratorDirty = false;
+    m_weatherGeneratorLastRequestTime = m_currentApplicationTime;
 }
 
 void NoiseLab::DrawSlice(const char* label, NoiseSliceAxis axis, SliceTarget& target)
@@ -442,7 +631,9 @@ void NoiseLab::DrawSlice(const char* label, NoiseSliceAxis axis, SliceTarget& ta
 
 void NoiseLab::RenderPreviews(ID3D11VertexShader* fullscreenVs,
                               ID3D11PixelShader* noiseLabPs,
-                              ID3D11Buffer* cloudCb)
+                              ID3D11Buffer* cloudCb,
+                              ID3D11ShaderResourceView* weatherMapSrv,
+                              ID3D11SamplerState* weatherSampler)
 {
     if (!m_initialized || !m_visible || !fullscreenVs || !noiseLabPs)
         return;
@@ -459,6 +650,8 @@ void NoiseLab::RenderPreviews(ID3D11VertexShader* fullscreenVs,
     m_context->VSSetShader(fullscreenVs, nullptr, 0);
     m_context->PSSetShader(noiseLabPs, nullptr, 0);
     m_context->PSSetConstantBuffers(1, 1, &cloudCb);
+    m_context->PSSetShaderResources(2, 1, &weatherMapSrv);
+    m_context->PSSetSamplers(1, 1, &weatherSampler);
 
     for (std::uint32_t axis = 0; axis < m_targets.size(); ++axis)
     {
@@ -479,6 +672,8 @@ void NoiseLab::RenderPreviews(ID3D11VertexShader* fullscreenVs,
         m_context->Draw(3, 0);
     }
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    m_context->PSSetShaderResources(2, 1, &nullSrv);
 }
 
 void NoiseLab::EndFrame(ID3D11RenderTargetView* backBufferRtv)
@@ -497,6 +692,25 @@ bool NoiseLab::ConsumeParametersChanged()
     return result;
 }
 
+bool NoiseLab::ConsumeWeatherPresetRequest(Stage5WeatherPreset& preset)
+{
+    if (m_weatherPresetRequest < 0 || m_weatherPresetRequest > 2)
+        return false;
+    preset = static_cast<Stage5WeatherPreset>(m_weatherPresetRequest);
+    m_weatherPresetRequest = -1;
+    return true;
+}
+
+bool NoiseLab::ConsumeWeatherGeneratorRequest(
+    WeatherMapGeneratorSettings& settings)
+{
+    if (!m_weatherGeneratorRequestPending)
+        return false;
+    settings = m_weatherGeneratorRequest;
+    m_weatherGeneratorRequestPending = false;
+    return true;
+}
+
 bool NoiseLab::ConsumeExportRequest()
 {
     const bool result = m_exportRequested;
@@ -510,6 +724,17 @@ bool NoiseLab::ValidatePreviewData()
     const bool heightOnly = outputMode == NoiseOutputMode::HeightFraction ||
                             outputMode == NoiseOutputMode::HeightProfile;
     const bool sampleMask = outputMode == NoiseOutputMode::DetailSampleMask;
+    const bool weatherMayEmptySlice = outputMode == NoiseOutputMode::FinalDensity ||
+        outputMode == NoiseOutputMode::BaseDensity ||
+        outputMode == NoiseOutputMode::DetailNoise ||
+        outputMode == NoiseOutputMode::Erosion || sampleMask ||
+        outputMode == NoiseOutputMode::WeatherCoverage ||
+        outputMode == NoiseOutputMode::WeatherThresholdDensity;
+    const bool cloudTypeOnly = outputMode == NoiseOutputMode::CloudType;
+    const bool weatherXOnly = outputMode == NoiseOutputMode::WeatherDensityModifier ||
+                              outputMode == NoiseOutputMode::WeatherUv;
+    unsigned char globalMinimum = 255;
+    unsigned char globalMaximum = 0;
     for (std::size_t targetIndex = 0; targetIndex < m_targets.size(); ++targetIndex)
     {
         SliceTarget& target = m_targets[targetIndex];
@@ -531,21 +756,31 @@ bool NoiseLab::ValidatePreviewData()
             }
         }
         m_context->Unmap(target.staging.Get(), 0);
+        globalMinimum = std::min(globalMinimum, minimum);
+        globalMaximum = std::max(globalMaximum, maximum);
         // XZ는 Y를 고정하므로 height-only 출력이 단색인 것이 정상이다.
         // XY와 YZ는 세로축에 월드 Y가 들어가므로 위아래 변화가 반드시 있어야 한다.
-        const bool fixedYHeightSlice = heightOnly && targetIndex == 1;
-        if (fixedYHeightSlice)
+        // Cloud Type 프리셋은 Z 띠이므로 Z 고정 XY가 단색이고, Density/UV의
+        // 첫 채널은 X 기준이므로 X 고정 YZ가 단색이다.
+        const bool expectedUniform = (heightOnly && targetIndex == 1) ||
+            (cloudTypeOnly && targetIndex == 0) ||
+            (weatherXOnly && targetIndex == 2);
+        if (expectedUniform)
         {
             if (maximum != minimum)
                 return false;
         }
-        else if (maximum <= minimum)
+        else if (maximum <= minimum && !(weatherMayEmptySlice && maximum == 0))
         {
             return false;
         }
-        if (sampleMask && (minimum != 0 || maximum != 255))
-            return false;
     }
+    // Weather R이 한 단면 전체를 비우는 것은 정상이다. 대신 세 단면 전체가
+    // 모두 비어 자동 검사가 무의미해지는 경우와 sample mask 양 끝 누락은 막는다.
+    if (weatherMayEmptySlice && globalMaximum <= globalMinimum)
+        return false;
+    if (sampleMask && (globalMinimum != 0 || globalMaximum != 255))
+        return false;
     return true;
 }
 
@@ -611,6 +846,73 @@ bool NoiseLab::SaveTargetPng(const std::filesystem::path& path, SliceTarget& tar
     return SUCCEEDED(result);
 }
 
+bool NoiseLab::SaveTexturePng(const std::filesystem::path& path,
+                              ID3D11Texture2D* texture)
+{
+    if (!texture)
+        return false;
+    D3D11_TEXTURE2D_DESC desc = {};
+    texture->GetDesc(&desc);
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &staging)))
+        return false;
+    m_context->CopyResource(staging.Get(), texture);
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return false;
+
+    // D3D R8G8B8A8의 메모리 순서는 RGBA지만 WIC PNG encoder가 안정적으로
+    // 받는 형식은 BGRA다. R/B를 명시적으로 바꾼 packed buffer를 만들어
+    // coverage(R)와 density(B)가 저장 파일에서 뒤바뀌지 않게 한다.
+    const UINT packedPitch = desc.Width * 4u;
+    std::vector<BYTE> bgra(static_cast<std::size_t>(packedPitch) * desc.Height);
+    for (UINT y = 0; y < desc.Height; ++y)
+    {
+        const BYTE* source = static_cast<const BYTE*>(mapped.pData) +
+            static_cast<std::size_t>(y) * mapped.RowPitch;
+        BYTE* destination = bgra.data() + static_cast<std::size_t>(y) * packedPitch;
+        for (UINT x = 0; x < desc.Width; ++x)
+        {
+            destination[x * 4u + 0u] = source[x * 4u + 2u];
+            destination[x * 4u + 1u] = source[x * 4u + 1u];
+            destination[x * 4u + 2u] = source[x * 4u + 0u];
+            destination[x * 4u + 3u] = source[x * 4u + 3u];
+        }
+    }
+
+    ComPtr<IWICImagingFactory> factory;
+    ComPtr<IWICStream> stream;
+    ComPtr<IWICBitmapEncoder> encoder;
+    ComPtr<IWICBitmapFrameEncode> frame;
+    ComPtr<IPropertyBag2> properties;
+    HRESULT result = CoCreateInstance(
+        CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&factory));
+    if (SUCCEEDED(result)) result = factory->CreateStream(&stream);
+    if (SUCCEEDED(result)) result = stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE);
+    if (SUCCEEDED(result)) result = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+    if (SUCCEEDED(result)) result = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+    if (SUCCEEDED(result)) result = encoder->CreateNewFrame(&frame, &properties);
+    if (SUCCEEDED(result)) result = frame->Initialize(properties.Get());
+    if (SUCCEEDED(result)) result = frame->SetSize(desc.Width, desc.Height);
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+    if (SUCCEEDED(result)) result = frame->SetPixelFormat(&format);
+    if (SUCCEEDED(result) && format != GUID_WICPixelFormat32bppBGRA)
+        result = E_FAIL;
+    if (SUCCEEDED(result))
+        result = frame->WritePixels(desc.Height, packedPitch,
+                                    packedPitch * desc.Height, bgra.data());
+    if (SUCCEEDED(result)) result = frame->Commit();
+    if (SUCCEEDED(result)) result = encoder->Commit();
+    m_context->Unmap(staging.Get(), 0);
+    return SUCCEEDED(result);
+}
+
 std::uint64_t NoiseLab::HashFile(const std::filesystem::path& path) const
 {
     std::ifstream input(path, std::ios::binary);
@@ -627,6 +929,9 @@ std::uint64_t NoiseLab::HashFile(const std::filesystem::path& path) const
 bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const CloudParameters& cloud,
                              Stage4DetailPreset detailPreset,
+                             Stage5WeatherPreset weatherPreset,
+                             const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                             std::uint64_t weatherMapHash,
                              const std::filesystem::path& noiseSourcePath) const
 {
     std::ofstream output(path, std::ios::binary);
@@ -635,17 +940,56 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
     static const char* outputNames[] = {
         "rawNoise", "thresholdDensity", "finalDensity",
         "heightFraction", "heightProfile", "baseDensity",
-        "detailNoise", "erosion", "detailSampleMask"
+        "detailNoise", "erosion", "detailSampleMask",
+        "weatherCoverage", "cloudType", "weatherDensityModifier",
+        "weatherThresholdDensity", "typedHeightProfile", "weatherUv"
     };
     static const char* detailPresetNames[] = {
         "detailOff", "defaultDetail", "fineDetail", "strongErosion", "custom"
     };
+    static const char* weatherPresetNames[] = {
+        "uniformLegacy", "periodicPerlin", "channelDebug"
+    };
     const int presetIndex = std::clamp(static_cast<int>(detailPreset), 0, 4);
+    const int weatherPresetIndex = std::clamp(static_cast<int>(weatherPreset), 0, 2);
+    const std::uint32_t outputIndex = std::min(m_parameters.outputMode, 14u);
+    const WeatherMapGeneratorSettings generator =
+        SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 3,\n"
-           << "  \"output\": \"" << outputNames[m_parameters.outputMode] << "\",\n"
+           << "  \"schemaVersion\": 5,\n"
+           << "  \"output\": \"" << outputNames[outputIndex] << "\",\n"
            << "  \"detailPreset\": \"" << detailPresetNames[presetIndex] << "\",\n"
+           << "  \"weatherPreset\": \"" << weatherPresetNames[weatherPresetIndex] << "\",\n"
+           << "  \"weatherMapResolution\": [256, 256],\n"
+           << "  \"weatherChannels\": {\"R\": \"coverage\", \"G\": \"cloudType\", "
+              "\"B\": \"densityModifierSource\", \"A\": \"reserved\"},\n"
+           << "  \"weatherMapHashFnv1a64\": \"" << std::hex << weatherMapHash
+           << std::dec << "\",\n"
+           << "  \"weatherGenerator\": {\n"
+           << "    \"coverage\": {\"seed\": " << generator.coverage.seed
+           << ", \"macroPeriod\": " << generator.coverage.macroPeriod
+           << ", \"detailPeriod\": " << generator.coverage.detailPeriod
+           << ", \"detailWeight\": " << generator.coverage.detailWeight
+           << ", \"bias\": " << generator.coverage.bias
+           << ", \"contrast\": " << generator.coverage.contrast << "},\n"
+           << "    \"cloudType\": {\"seed\": " << generator.cloudType.seed
+           << ", \"macroPeriod\": " << generator.cloudType.macroPeriod
+           << ", \"detailPeriod\": " << generator.cloudType.detailPeriod
+           << ", \"detailWeight\": " << generator.cloudType.detailWeight
+           << ", \"bias\": " << generator.cloudType.bias
+           << ", \"contrast\": " << generator.cloudType.contrast << "},\n"
+           << "    \"density\": {\"seed\": " << generator.density.seed
+           << ", \"macroPeriod\": " << generator.density.macroPeriod
+           << ", \"detailPeriod\": " << generator.density.detailPeriod
+           << ", \"detailWeight\": " << generator.density.detailWeight
+           << ", \"bias\": " << generator.density.bias
+           << ", \"contrast\": " << generator.density.contrast << "},\n"
+           << "    \"coverageThreshold\": " << generator.coverageThreshold << ",\n"
+           << "    \"coverageSoftness\": " << generator.coverageSoftness << ",\n"
+           << "    \"densityCoverageInfluence\": "
+           << generator.densityCoverageInfluence << "\n"
+           << "  },\n"
            << "  \"resolution\": [512, 512],\n"
            << "  \"slicePosition\": [" << m_parameters.normalizedSlicePosition.x << ", "
            << m_parameters.normalizedSlicePosition.y << ", "
@@ -660,6 +1004,10 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"detailErosionStrength\": " << cloud.detailErosionStrength << ",\n"
            << "  \"detailWindSpeed\": " << cloud.detailWindSpeed << ",\n"
            << "  \"detailNoiseOffset\": " << cloud.detailNoiseOffset << ",\n"
+           << "  \"weatherMapWorldSize\": " << cloud.weatherMapWorldSize << ",\n"
+           << "  \"weatherMapWindSpeed\": " << cloud.weatherMapWindSpeed << ",\n"
+           << "  \"weatherMapOffset\": [" << cloud.weatherMapOffset.x << ", "
+           << cloud.weatherMapOffset.y << "],\n"
            << "  \"noiseOffset\": " << cloud.noiseOffset << ",\n"
            << "  \"windDirection\": [" << cloud.windDirection.x << ", "
            << cloud.windDirection.y << ", " << cloud.windDirection.z << "],\n"
@@ -674,6 +1022,10 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
 bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const CloudParameters& cloudParameters,
                               Stage4DetailPreset detailPreset,
+                              Stage5WeatherPreset weatherPreset,
+                              const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                              std::uint64_t weatherMapHash,
+                              ID3D11Texture2D* weatherMapTexture,
                               const std::filesystem::path& noiseSourcePath)
 {
     std::error_code error;
@@ -688,8 +1040,11 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
     const bool success = SaveTargetPng(directory / L"xy.png", m_targets[0]) &&
                          SaveTargetPng(directory / L"xz.png", m_targets[1]) &&
                          SaveTargetPng(directory / L"yz.png", m_targets[2]) &&
+                         SaveTexturePng(directory / L"weather-map.png", weatherMapTexture) &&
                          WriteMetadata(directory / L"noise-settings.json",
-                                       cloudParameters, detailPreset, noiseSourcePath);
+                                       cloudParameters, detailPreset, weatherPreset,
+                                       weatherGeneratorSettings, weatherMapHash,
+                                       noiseSourcePath);
     m_exportStatus = success
         ? "Exported: " + NarrowUtf8(directory)
         : "Export failed while writing PNG or JSON";

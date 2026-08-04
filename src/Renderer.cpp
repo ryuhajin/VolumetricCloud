@@ -146,9 +146,10 @@ bool Renderer::Init(HWND hwnd, int width, int height)
     if (!CreateBackBufferTarget() || !CreateSceneTargets() ||
         !CreateShaders(true) || !CreateDiagnosticScene() ||
         !CreatePipelineStates() || !CreateConstantBuffers() ||
+        !CreateWeatherMapTexture(m_weatherPreset) ||
         !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
     {
-        MessageBoxW(hwnd, L"단계 4 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 5 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -362,8 +363,105 @@ bool Renderer::CreatePipelineStates()
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(m_device->CreateSamplerState(&samplerDesc, &m_pointClampSampler)))
+        return false;
+
+    // Weather Map의 연속 coverage/type 값은 bilinear로 읽고, 0/1 UV 경계는
+    // 넓은 월드에서 반복되므로 wrap한다. Scene Depth의 point-clamp와 분리한다.
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
     return SUCCEEDED(m_device->CreateSamplerState(
-        &samplerDesc, &m_pointClampSampler));
+        &samplerDesc, &m_weatherLinearWrapSampler));
+}
+
+bool Renderer::CreateWeatherMapTexture(Stage5WeatherPreset preset)
+{
+    const WeatherMapGeneratorSettings safeSettings =
+        SanitizeWeatherMapGeneratorSettings(m_weatherGeneratorSettings);
+    const WeatherMapData map = BuildWeatherMap(preset, safeSettings);
+    if (!IsValidWeatherMapData(map))
+    {
+        m_weatherMapStatus = "Initial weather map validation failed";
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = map.width;
+    desc.Height = map.height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.CPUAccessFlags = 0;
+
+    D3D11_SUBRESOURCE_DATA data = {};
+    data.pSysMem = map.rgba.data();
+    data.SysMemPitch = map.width * 4u;
+
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(m_device->CreateTexture2D(&desc, &data, &texture)) ||
+        FAILED(m_device->CreateShaderResourceView(texture.Get(), nullptr, &srv)))
+    {
+        m_weatherMapStatus = "Failed to create DEFAULT weather texture/SRV";
+        return false;
+    }
+
+    m_weatherMapTexture = texture;
+    m_weatherMapSrv = srv;
+    m_weatherGeneratorSettings = safeSettings;
+    m_weatherMapHash = HashWeatherMap(map);
+    m_weatherPreset = preset;
+    m_weatherMapStatus = "DEFAULT texture created";
+    return true;
+}
+
+bool Renderer::UpdateWeatherMapTexture(
+    Stage5WeatherPreset preset,
+    const WeatherMapGeneratorSettings& settings)
+{
+    if (!m_weatherMapTexture || !m_weatherMapSrv || !m_context)
+    {
+        m_weatherMapStatus = "Weather texture is not initialized";
+        return false;
+    }
+
+    const WeatherMapGeneratorSettings safeSettings =
+        SanitizeWeatherMapGeneratorSettings(settings);
+    const WeatherMapData map = BuildWeatherMap(preset, safeSettings);
+    if (!IsValidWeatherMapData(map))
+    {
+        m_weatherMapStatus = "Weather map validation failed; previous map retained";
+        return false;
+    }
+
+    // 이전 frame의 t2 바인딩을 명시적으로 해제한 뒤 같은 DEFAULT texture에
+    // 새 CPU RGBA를 복사한다. texture/SRV 객체는 생성 이후 바뀌지 않는다.
+    ID3D11ShaderResourceView* nullWeatherSrv = nullptr;
+    m_context->PSSetShaderResources(2, 1, &nullWeatherSrv);
+    m_context->UpdateSubresource(
+        m_weatherMapTexture.Get(), 0, nullptr, map.rgba.data(), map.width * 4u, 0);
+    const HRESULT deviceState = m_device->GetDeviceRemovedReason();
+    if (FAILED(deviceState))
+    {
+        std::ostringstream failure;
+        failure << "UpdateSubresource device failure 0x" << std::hex
+                << static_cast<unsigned long>(deviceState);
+        m_weatherMapStatus = failure.str();
+        return false;
+    }
+
+    m_weatherGeneratorSettings = safeSettings;
+    m_weatherMapHash = HashWeatherMap(map);
+    m_weatherPreset = preset;
+    std::ostringstream status;
+    status << "UpdateSubresource OK, hash " << std::hex << m_weatherMapHash;
+    m_weatherMapStatus = status.str();
+    return true;
 }
 
 bool Renderer::CreateConstantBuffers()
@@ -402,8 +500,8 @@ void Renderer::Resize(int width, int height)
     m_width = width;
     m_height = height;
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
-    ID3D11ShaderResourceView* nullSrvs[2] = { nullptr, nullptr };
-    m_context->PSSetShaderResources(0, 2, nullSrvs);
+    ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
+    m_context->PSSetShaderResources(0, 3, nullSrvs);
     ReleaseSizeDependentResources();
 
     if (SUCCEEDED(m_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
@@ -481,15 +579,18 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
     m_context->PSSetShader(m_cloudPs.Get(), nullptr, 0);
     ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
-    ID3D11ShaderResourceView* resources[2] = {
-        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get()
+    ID3D11ShaderResourceView* resources[3] = {
+        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get()
     };
-    m_context->PSSetShaderResources(0, 2, resources);
-    m_context->PSSetSamplers(0, 1, m_pointClampSampler.GetAddressOf());
+    m_context->PSSetShaderResources(0, 3, resources);
+    ID3D11SamplerState* samplers[2] = {
+        m_pointClampSampler.Get(), m_weatherLinearWrapSampler.Get()
+    };
+    m_context->PSSetSamplers(0, 2, samplers);
     m_context->Draw(3, 0);
 
-    ID3D11ShaderResourceView* nullResources[2] = { nullptr, nullptr };
-    m_context->PSSetShaderResources(0, 2, nullResources);
+    ID3D11ShaderResourceView* nullResources[3] = { nullptr, nullptr, nullptr };
+    m_context->PSSetShaderResources(0, 3, nullResources);
 }
 
 void Renderer::Render(const Camera& camera, float timeSeconds)
@@ -503,6 +604,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     // 0으로 바꾼 검증에서 F10 Detail 프리셋 이름이 사라지면 안 된다.
     const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
     m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
+                          m_weatherPreset, m_weatherGeneratorSettings,
+                          m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_shaderGeneration, m_shaderStatus, m_shaderError);
     if (m_noiseLab.ConsumeParametersChanged())
     {
@@ -525,6 +628,12 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         if (detailChanged)
             m_detailPreset = Stage4DetailPreset::Custom;
     }
+    Stage5WeatherPreset requestedWeatherPreset = m_weatherPreset;
+    if (m_noiseLab.ConsumeWeatherPresetRequest(requestedWeatherPreset))
+        ApplyStage5WeatherPreset(requestedWeatherPreset);
+    WeatherMapGeneratorSettings requestedGeneratorSettings;
+    if (m_noiseLab.ConsumeWeatherGeneratorRequest(requestedGeneratorSettings))
+        ApplyWeatherGeneratorSettings(requestedGeneratorSettings);
     const float effectiveTime = m_noiseLab.EffectiveTime();
     D3D11_VIEWPORT viewport = {};
     viewport.Width = static_cast<float>(m_width);
@@ -537,7 +646,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     if (m_captureFrameHashes)
         CaptureCloudFrameHash();
     m_noiseLab.RenderPreviews(
-        m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get());
+        m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get(),
+        m_weatherMapSrv.Get(), m_weatherLinearWrapSampler.Get());
     if (m_noiseLab.ConsumeExportRequest())
     {
         std::filesystem::path shaderDirectory(m_shaderDir);
@@ -546,6 +656,10 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         m_noiseLab.ExportSnapshot(shaderDirectory.parent_path() / L"captures" / L"noise-lab",
                                   m_cloudParameters,
                                   m_detailPreset,
+                                  m_weatherPreset,
+                                  m_weatherGeneratorSettings,
+                                  m_weatherMapHash,
+                                  m_weatherMapTexture.Get(),
                                   shaderDirectory / L"Noise.hlsli");
     }
     m_noiseLab.EndFrame(m_backBufferRtv.Get());
@@ -726,6 +840,18 @@ Stage4DetailPreset Renderer::DetailPreset() const
     return m_detailPreset;
 }
 
+bool Renderer::ApplyStage5WeatherPreset(Stage5WeatherPreset preset)
+{
+    // 프리셋 전환도 초기 texture/SRV를 재생성하지 않고 픽셀만 교체한다.
+    return UpdateWeatherMapTexture(preset, m_weatherGeneratorSettings);
+}
+
+bool Renderer::ApplyWeatherGeneratorSettings(
+    const WeatherMapGeneratorSettings& settings)
+{
+    return UpdateWeatherMapTexture(m_weatherPreset, settings);
+}
+
 bool Renderer::HasDebugLayerErrors() const
 {
 #ifdef _DEBUG
@@ -833,7 +959,8 @@ bool Renderer::ValidateNoiseLabPreviews()
 bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
-        root, m_cloudParameters, m_detailPreset,
+        root, m_cloudParameters, m_detailPreset, m_weatherPreset,
+        m_weatherGeneratorSettings, m_weatherMapHash, m_weatherMapTexture.Get(),
         std::filesystem::path(m_shaderDir) / L"Noise.hlsli");
 }
 

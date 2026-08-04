@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 4: Base Shape와 단일 Value Noise Detail Erosion 분리
+#  재구축 단계 5: CPU RGBA Weather Map과 Cloud Type 높이 프로파일
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -21,6 +21,7 @@ add_executable(VolumetricCloud WIN32
     src/Window.cpp
     src/Renderer.cpp
     src/NoiseLab.cpp
+    src/WeatherMap.cpp
     src/Camera.cpp
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
@@ -132,6 +133,20 @@ add_test(NAME VolumetricCloud.Stage4DetailMath
          COMMAND VolumetricCloud.Stage4DetailMathTests)
 add_test(NAME VolumetricCloud.Stage4Smoke
          COMMAND VolumetricCloud --stage4-smoke-test)
+
+# 단계 5의 CPU 맵 채널, 월드 UV, coverage와 cloud type 프로파일을 검사한다.
+add_executable(VolumetricCloud.Stage5WeatherMathTests
+    tests/Stage5WeatherMathTests.cpp
+    src/WeatherMap.cpp
+)
+target_include_directories(VolumetricCloud.Stage5WeatherMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage5WeatherMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage5WeatherMath
+         COMMAND VolumetricCloud.Stage5WeatherMathTests)
+add_test(NAME VolumetricCloud.Stage5Smoke
+         COMMAND VolumetricCloud --stage5-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

@@ -2,7 +2,7 @@
 //  main.cpp  —  진입점 (WinMain)
 // ----------------------------------------------------------------------------
 //  창(Window) · 카메라(Camera) · 렌더러(Renderer)를 생성·연결하고,
-//  메인 루프에서 진단 장면과 단계 4 Base/Detail Erosion 구름 패스를 그린다.
+//  메인 루프에서 진단 장면과 단계 5 Weather Map 구름 패스를 그린다.
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -57,6 +57,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage3-smoke-test") != nullptr;
     const bool stage4SmokeTest = commandLine &&
         wcsstr(commandLine, L"--stage4-smoke-test") != nullptr;
+    const bool stage5SmokeTest = commandLine &&
+        wcsstr(commandLine, L"--stage5-smoke-test") != nullptr;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -80,9 +82,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 4 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | 외부 기본(F5)",
+                    L"VolumetricCloud - Stage 5 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | 외부 기본(F5)",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
-                    !stage3SmokeTest && !stage4SmokeTest &&
+                    !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -183,15 +185,63 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 
+    if (stage5SmokeTest)
+    {
+        // Weather 중간값 네 종류를 세 CPU 맵, Q/Y 볼륨, 이동 전/후에 draw한다.
+        const Stage1ValidationPreset volumes[] = {
+            Stage1ValidationPreset::DefaultVolume,
+            Stage1ValidationPreset::WideVolume,
+        };
+        const std::uintptr_t weatherTextureIdentity =
+            renderer.WeatherTextureIdentity();
+        const std::uintptr_t weatherSrvIdentity = renderer.WeatherSrvIdentity();
+        if (weatherTextureIdentity == 0 || weatherSrvIdentity == 0)
+            return 3;
+        for (int mode = static_cast<int>(CloudDebugMode::WeatherCoverage);
+             mode <= static_cast<int>(CloudDebugMode::TypedHeightProfile); ++mode)
+        {
+            renderer.SetDebugMode(static_cast<CloudDebugMode>(mode));
+            for (int preset = static_cast<int>(Stage5WeatherPreset::UniformLegacy);
+                 preset <= static_cast<int>(Stage5WeatherPreset::ChannelDebug); ++preset)
+            {
+                if (!renderer.ApplyStage5WeatherPreset(
+                        static_cast<Stage5WeatherPreset>(preset)))
+                    return 3;
+                if (renderer.WeatherTextureIdentity() != weatherTextureIdentity ||
+                    renderer.WeatherSrvIdentity() != weatherSrvIdentity)
+                    return 4;
+                for (Stage1ValidationPreset volume : volumes)
+                {
+                    renderer.ApplyStage1ValidationPreset(volume);
+                    renderer.Render(camera, 0.0f);
+                    renderer.Render(camera, 4.0f);
+                }
+            }
+        }
+        if (!renderer.ApplyStage5WeatherPreset(Stage5WeatherPreset::PeriodicPerlin))
+            return 5;
+        const std::uint64_t defaultHash = renderer.WeatherMapHash();
+        WeatherMapGeneratorSettings changedGenerator;
+        changedGenerator.coverage.seed += 1u;
+        if (!renderer.ApplyWeatherGeneratorSettings(changedGenerator) ||
+            renderer.WeatherMapHash() == defaultHash)
+            return 6;
+        if (renderer.WeatherTextureIdentity() != weatherTextureIdentity ||
+            renderer.WeatherSrvIdentity() != weatherSrvIdentity)
+            return 7;
+        renderer.Render(camera, 0.0f);
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
     if (noiseLabSmokeTest)
     {
         for (int mode = static_cast<int>(NoiseOutputMode::RawNoise);
-             mode <= static_cast<int>(NoiseOutputMode::DetailSampleMask); ++mode)
+             mode <= static_cast<int>(NoiseOutputMode::WeatherUv); ++mode)
         {
             renderer.SetNoiseLabOutputMode(static_cast<NoiseOutputMode>(mode));
             renderer.Render(camera, 0.0f);
             if (!renderer.ValidateNoiseLabPreviews())
-                return 3;
+                return 30 + mode;
         }
         wchar_t temporaryPath[MAX_PATH] = {};
         if (GetTempPathW(MAX_PATH, temporaryPath) == 0 ||
@@ -266,6 +316,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             camera.SetAspect(static_cast<float>(window.GetWidth()) / window.GetHeight());
 
         renderer.Render(camera, elapsed);
+        // Noise Lab에서 프리셋/파라미터를 바꾼 경우에도 다음 프레임까지 기다리지
+        // 않고 창 제목이 Renderer의 현재 상태를 정확히 표시하게 한다.
+        window.RefreshDebugTitle();
     }
 
     return 0;

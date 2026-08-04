@@ -182,3 +182,58 @@ finalDensity = saturate(baseDensity - erosion)
 `sampleDetail=false`, `baseDensity<=0`, `detailErosionStrength<=0`이면 Detail 함수 자체를 호출하지 않고 `finalDensity=baseDensity`를 반환한다. 이는 한 밀도 평가 안의 필수 분기이며 큰 step, adaptive stepping과 같은 단계 9 최적화는 아니다.
 
 `SampleValueNoise3D`는 공통 수학, `SampleBaseShapeNoise`는 큰 형태, `SampleDetailErosionNoise`는 표면 전략을 담당한다. 이후 Detail을 fBm이나 Worley로 교체할 때 마지막 함수의 내부만 바꾸고 레이마칭과 `CloudDensitySample`은 유지한다.
+
+## 단계 5: Weather Map과 구름 종류
+
+Weather Map은 월드 XZ를 16m 주기의 UV로 바꾸어 `t2` RGBA8 texture를 읽는다.
+기존 바람 방향의 XZ를 공유하지만 `weatherMapWindSpeed`는 독립적이다.
+
+```text
+weatherUV = frac((worldXZ - normalize(windXZ) × weatherSpeed × time)
+                 / weatherWorldSize + weatherOffset)
+```
+
+R은 global coverage에 곱해 Base threshold를 바꾸고, B는 `0.5+B`로 해석해
+0.5~1.5 밀도 배율을 만든다. 8-bit에서 중립 0.5는 128/255이므로 셰이더가
+0/0.5/1 기준값을 복원해 Uniform Legacy가 단계 4와 정확히 같게 한다.
+
+```text
+cutoff = TypedFootprintCutoff(heightFraction, cloudType)
+shapedWeatherR = saturate((weatherR - cutoff) / (1 - cutoff))
+effectiveCoverage = globalCoverage × shapedWeatherR
+weatherThreshold = RemapCoverage(rawNoise, effectiveCoverage)
+weatherDensityMultiplier = 0.5 + weatherB
+```
+
+층운 cutoff는 `0.10`으로 일정하다. 혼합형은 바닥/중간/상단 `0.22/0.04/0.38`,
+적운은 `0.32/0.03/0.62`를 smoothstep으로 잇는다. 따라서 혼합형과 적운은
+중간이 넓고 위아래가 좁아지며, R=1인 Uniform Legacy는 모든 높이에서 정확히
+1을 유지한다.
+
+G는 수직 종류를 정한다. 0은 높이 0.55 전에 사라지는 층운, 0.5는 단계 3
+프로파일 그대로, 1은 상단 fade가 늦고 위쪽 질량이 큰 적운이다. 0.5 양쪽을
+구간별 보간하므로 기존 높이 기준이 끊기지 않는다.
+
+```text
+baseDensity = weatherThreshold × typedHeightProfile
+              × densityMultiplier × weatherDensityMultiplier
+finalDensity = saturate(baseDensity - detailErosion)
+```
+
+Weather R이 Base를 0으로 만들면 단계 4의 Detail sample skip도 그대로 작동한다.
+Weather, Base Noise, 기본 Height, Typed Height와 Detail 중간값은 각각 별도
+디버그 출력으로 유지한다.
+
+F3 Periodic Perlin은 CPU에서 채널마다 독립적인 macro/detail 2D gradient
+Perlin을 만든다. lattice 좌표를 integer period로 modulo 처리하고 quintic fade를
+사용하므로 UV 0/1에서 값과 기울기가 이어진다.
+
+```text
+field = lerp(macroNoise, detailNoise, detailWeight)
+adjusted = saturate((field - 0.5) × contrast + 0.5 + bias)
+R = smoothstep(threshold - softness/2, threshold + softness/2, adjustedR)
+B = lerp(adjustedB, R, coverageInfluence)
+```
+
+G는 독립 Type field다. R이 1/255 이하인 빈 곳의 G/B는 중립 0.5로 저장하며
+A는 항상 1이다. F4는 canonical 채널 검증을 위해 기존 원형 R과 G/B 띠를 유지한다.

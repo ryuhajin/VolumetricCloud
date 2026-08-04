@@ -1,17 +1,18 @@
 // ============================================================================
-//  VolumetricClouds.hlsl - 단계 4 Base Shape와 Detail Erosion 합성
+//  VolumetricClouds.hlsl - 단계 5 Weather Map과 구름 종류 합성
 // ----------------------------------------------------------------------------
 //  한 프레임의 렌더링 순서
 //  1. CPU가 카메라와 CloudParameters를 b0/b1 상수버퍼에 복사한다.
 //  2. 앞선 DiagnosticScene 패스가 불투명 Scene Color와 Scene Depth를 만든다.
 //  3. 이 풀스크린 PS가 UV → 월드 레이 → 깊이 거리 순으로 복원한다.
 //  4. 레이와 AABB의 교차 구간을 구하고 Scene Depth보다 뒤를 잘라 낸다.
-//  5. 각 샘플에서 Base Shape를 먼저 만들고 비어 있지 않을 때만 Detail로 깎는다.
-//  6. 위치별 밀도를 적분해 산란광과 투과율을 만든다.
-//  7. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
+//  5. 월드 XZ Weather R/G/B로 배치·종류·밀도를 결정해 Base Shape를 만든다.
+//  6. Base가 비어 있지 않을 때만 Detail로 깎는다.
+//  7. 위치별 밀도를 적분해 산란광과 투과율을 만든다.
+//  8. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
 //
-//  단계 5 Weather, 단계 6 Light와 단계 9 Early Exit는 의도적으로 없다.
-//  Detail은 단일 고주파 Value Noise이며 fBm/Worley는 아직 구현하지 않는다.
+//  단계 6 Light와 단계 9 Early Exit는 의도적으로 없다. Weather는 CPU 생성
+//  256² RGBA8 한 장이고 Detail은 단일 Value Noise다. fBm/Worley도 아직 없다.
 // ============================================================================
 
 #include "Ray.hlsli"
@@ -66,8 +67,14 @@ struct CloudMarchDebug
     float detailNoise;     // 대표 위치에서 실제로 샘플한 고주파 noise.
     float erosion;         // 대표 위치에서 Base로부터 뺄 밀도.
     float detailSampled;   // 대표 위치가 Detail 함수를 실행했으면 1.
+    float weatherCoverage; // 대표 위치 Weather R.
+    float cloudType;       // 대표 위치 Weather G.
+    float weatherDensityModifier; // 대표 위치 Weather B의 0.5~1.5 배율.
+    float weatherThresholdDensity;// Weather coverage 적용 threshold.
+    float typedHeightProfile; // Cloud Type 적용 높이 마스크.
     float3 noiseUvw;       // 대표 중간 위치의 연속 noise 좌표(cycle).
     float3 detailNoiseUvw; // 대표 Detail noise 좌표(cycle), 생략 시 0.
+    float2 weatherUv;      // 대표 Weather Map UV(0~1).
 };
 
 // 화면 UV를 DirectX NDC로 바꾼다.
@@ -188,9 +195,15 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         debugData.detailNoise = representativeSample.detailNoise;
         debugData.erosion = representativeSample.erosion;
         debugData.detailSampled = representativeSample.detailSampled;
+        debugData.weatherCoverage = representativeSample.weatherCoverage;
+        debugData.cloudType = representativeSample.cloudType;
+        debugData.weatherDensityModifier = representativeSample.weatherDensityModifier;
+        debugData.weatherThresholdDensity = representativeSample.weatherThresholdDensity;
+        debugData.typedHeightProfile = representativeSample.typedHeightProfile;
         debugData.sampledDensity = representativeSample.finalDensity;
         debugData.noiseUvw = representativeSample.noiseUvw;
         debugData.detailNoiseUvw = representativeSample.detailNoiseUvw;
+        debugData.weatherUv = representativeSample.weatherUv;
 
         // 4. 각 구간 중앙에서 Base를 만들고 필요한 위치에서만 Detail로 침식한다.
         [loop]
@@ -289,6 +302,14 @@ float4 main(VSOut input) : SV_TARGET
         return float4((marchDebug.erosion * marchDebug.hit).xxx, 1.0);
     if (debugMode == 19)
         return float4((marchDebug.detailSampled * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 20)
+        return float4((marchDebug.weatherCoverage * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 21)
+        return float4((marchDebug.cloudType * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 22)
+        return float4((marchDebug.weatherThresholdDensity * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 23)
+        return float4((marchDebug.typedHeightProfile * marchDebug.hit).xxx, 1.0);
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry

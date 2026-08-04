@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.h - 단계 4 Base/Detail Erosion 단면과 개발용 ImGui UI
+//  NoiseLab.h - 단계 5 Weather/Base/Detail 단면과 개발용 ImGui UI
 // ============================================================================
 #pragma once
 
@@ -14,7 +14,7 @@
 #include <filesystem>
 #include <string>
 
-#include "CloudParameters.h"
+#include "WeatherMap.h"
 
 enum class NoiseSliceAxis : std::uint32_t
 {
@@ -34,6 +34,12 @@ enum class NoiseOutputMode : std::uint32_t
     DetailNoise = 6,
     Erosion = 7,
     DetailSampleMask = 8,
+    WeatherCoverage = 9,
+    CloudType = 10,
+    WeatherDensityModifier = 11,
+    WeatherThresholdDensity = 12,
+    TypedHeightProfile = 13,
+    WeatherUv = 14,
 };
 
 struct alignas(16) NoiseLabParameters
@@ -63,16 +69,24 @@ public:
     // UI 명령을 먼저 만든 뒤 동일 프레임에서 preview texture를 갱신한다.
     void BeginFrame(float applicationTime,
                     CloudParameters& cloudParameters,
+                    Stage5WeatherPreset weatherPreset,
+                    const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                    ID3D11ShaderResourceView* weatherMapSrv,
+                    const std::string& weatherMapStatus,
                     std::uint64_t shaderGeneration,
                     const std::string& shaderStatus,
                     const std::string& shaderError);
     void RenderPreviews(ID3D11VertexShader* fullscreenVs,
                         ID3D11PixelShader* noiseLabPs,
-                        ID3D11Buffer* cloudCb);
+                        ID3D11Buffer* cloudCb,
+                        ID3D11ShaderResourceView* weatherMapSrv,
+                        ID3D11SamplerState* weatherSampler);
     void EndFrame(ID3D11RenderTargetView* backBufferRtv);
 
     float EffectiveTime() const { return m_effectiveTime; }
     bool ConsumeParametersChanged();
+    bool ConsumeWeatherPresetRequest(Stage5WeatherPreset& preset);
+    bool ConsumeWeatherGeneratorRequest(WeatherMapGeneratorSettings& settings);
     void SetOutputMode(NoiseOutputMode mode)
     {
         m_parameters.outputMode = static_cast<std::uint32_t>(mode);
@@ -83,6 +97,10 @@ public:
     bool ExportSnapshot(const std::filesystem::path& root,
                         const CloudParameters& cloudParameters,
                         Stage4DetailPreset detailPreset,
+                        Stage5WeatherPreset weatherPreset,
+                        const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                        std::uint64_t weatherMapHash,
+                        ID3D11Texture2D* weatherMapTexture,
                         const std::filesystem::path& noiseSourcePath);
     bool ConsumeExportRequest();
     const std::string& LastExportStatus() const { return m_exportStatus; }
@@ -104,16 +122,28 @@ private:
     bool CreatePreviewTargets();
     bool CreateConstantBuffer();
     void DrawControlWindow(CloudParameters& cloudParameters,
+                           Stage5WeatherPreset weatherPreset,
+                           const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                           ID3D11ShaderResourceView* weatherMapSrv,
+                           const std::string& weatherMapStatus,
                            std::uint64_t shaderGeneration,
                            const std::string& shaderStatus,
                            const std::string& shaderError);
     void DrawSlice(const char* label, NoiseSliceAxis axis, SliceTarget& target);
+    bool DrawPeriodicChannelFields(const char* label,
+                                   PeriodicChannelSettings& settings);
+    void QueueWeatherGeneratorRequest(bool force);
     void UpdateEffectiveTime(float applicationTime);
     bool SaveTargetPng(const std::filesystem::path& path, SliceTarget& target);
+    bool SaveTexturePng(const std::filesystem::path& path,
+                        ID3D11Texture2D* texture);
     std::uint64_t HashFile(const std::filesystem::path& path) const;
     bool WriteMetadata(const std::filesystem::path& path,
                        const CloudParameters& cloudParameters,
                        Stage4DetailPreset detailPreset,
+                       Stage5WeatherPreset weatherPreset,
+                       const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                       std::uint64_t weatherMapHash,
                        const std::filesystem::path& noiseSourcePath) const;
 
     HWND m_hwnd = nullptr;
@@ -126,6 +156,17 @@ private:
     bool m_visible = true;
     bool m_parametersChanged = false;
     bool m_exportRequested = false;
+    int m_weatherPresetRequest = -1;
+    bool m_weatherGeneratorRequestPending = false;
+    bool m_weatherGeneratorDraftInitialized = false;
+    bool m_weatherGeneratorDirty = false;
+    bool m_weatherGeneratorLiveUpdate = true;
+    float m_weatherGeneratorLastRequestTime = -1.0f;
+    float m_currentApplicationTime = 0.0f;
+    WeatherMapGeneratorSettings m_weatherGeneratorDraft;
+    WeatherMapGeneratorSettings m_weatherGeneratorRequest;
+    ID3D11ShaderResourceView* m_weatherMapPreviewSrv = nullptr;
+    Stage5WeatherPreset m_weatherPreset = Stage5WeatherPreset::ChannelDebug;
     bool m_slicePlaying = false;
     bool m_timePaused = false;
     int m_playAxis = 2;
