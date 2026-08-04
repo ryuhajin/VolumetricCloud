@@ -107,6 +107,35 @@
   수정했고, Windows가 F10을 메뉴 키로 전달하는 `WM_SYSKEYDOWN` 경로도 포함했다.
 - 단계 4 사용자 렌더 승인: 2026-08-03 F9~F12 입력 재검증과 접이식 Noise Lab
   UI를 포함한 수동 체크리스트 전체 통과
+- 단계 5에서 CPU 생성 256² RGBA8 Weather Map을 `t2`, linear-wrap sampler를
+  `s1`에 연결하고 Uniform/Periodic Perlin/Channel Debug 프리셋을 추가했다.
+- Weather R은 effective coverage, G는 층운·단계 3 혼합형·적운 높이 보간,
+  B는 0.5~1.5 density modifier로 분리했다.
+- `CloudParameters`를 128바이트로 확장하고 16m world size, 0.10m/s 독립 속도,
+  float2 UV offset을 추가했다.
+- I/O와 Shift+I/O Weather 디버그, F2~F4 프리셋, Noise Lab 15개 출력과
+  실제 RGBA preview를 추가했다.
+- Noise Lab JSON을 schema 5로 올리고 `weather-map.png`, 채널 정의·맵 해시,
+  Weather transform과 CPU generator 설정을 기록한다.
+- 단계 5 Debug clean/Release 빌드와 양 구성 CTest 각각 14/14 성공. 기존
+  Foundation~Stage4, NoiseLab과 ShaderHotReload 회귀를 포함한다.
+- `Stage5WeatherMath`에서 세 맵의 결정성·채널, 반복 UV·바람, coverage·density,
+  Type 0.5 회귀·구간 연속성·finite와 Weather 빈 Base Detail skip을 확인했다.
+- `Stage5Smoke`에서 I/O·Shift+I/O × F2~F4 × Q/Y × 이동 전후 렌더를 확인했고
+  D3D11 error/corruption 없이 반환 코드 0이었다.
+- NoiseLab 15개 출력 readback, PNG 4장과 JSON schema 5를 확인했고 실제
+  `weather-map.png`의 RGBA 채널 순서도 검증했다.
+- HLSL Fullscreen/Cloud/Noise Lab/Diagnostic VS·PS 5개 엔트리 포인트를
+  `fxc /Od /WX`로 경고 없이 컴파일했다.
+- 사용자 검증에서 반복 셀과 단조로운 배치가 확인되어 F3를 CPU 생성 2-scale
+  Periodic Perlin으로 교체했다. R/G/B별 독립 seed와 macro/detail period를 사용하며
+  modulo lattice와 quintic fade로 UV 경계의 값과 기울기를 잇는다.
+- Weather texture/SRV는 `D3D11_USAGE_DEFAULT`로 한 번 만들고 Noise Lab 변경과
+  F2~F4 전환은 `UpdateSubresource`만 수행한다. Live Update는 최대 10Hz이며
+  UI에 Apply/Reset/Next Seeds를 제공한다.
+- Weather R에 층운·혼합형·적운별 높이 cutoff를 적용해 혼합형과 적운의 중간
+  footprint는 넓고 바닥·상단은 좁아지게 했다. F2/F4, 128바이트 CloudCB와
+  기존 Weather 디버그 출력은 유지한다.
 
 ## 9. 남은 문제와 후속 개선
 
@@ -115,4 +144,6 @@
 - 단계 2는 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
 - 단계 3은 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
 - 단계 4는 자동 검증과 사용자 수동 렌더 검증을 모두 통과했다.
-- fBm/Worley, weather map, 태양광과 early exit는 이후 단계로 남긴다.
+- 단계 5는 2026-08-04 사용자 수동 체크리스트 전체와 최종 승인을 통과했다.
+- 외부 Weather PNG/편집, precipitation, fBm/Worley와 early exit는 이후 단계로 남긴다.
+- 단계 6에서는 승인된 Weather 밀도장을 입력으로 태양 방향 Light Ray와 단일 산란을 구현한다.

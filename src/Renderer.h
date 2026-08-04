@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 4 Base/Detail Erosion 렌더링
+//  Renderer.h - Direct3D 11 단계 5 Weather Map/Cloud Type 렌더링
 // ============================================================================
 #pragma once
 
@@ -16,6 +16,7 @@
 
 #include "CloudParameters.h"
 #include "NoiseLab.h"
+#include "WeatherMap.h"
 
 class Camera;
 
@@ -41,6 +42,19 @@ public:
     void SetHeightProfile(float bottomFadeEnd, float topFadeStart);
     void ApplyStage4DetailPreset(Stage4DetailPreset preset);
     Stage4DetailPreset DetailPreset() const;
+    bool ApplyStage5WeatherPreset(Stage5WeatherPreset preset);
+    bool ApplyWeatherGeneratorSettings(
+        const WeatherMapGeneratorSettings& settings);
+    Stage5WeatherPreset WeatherPreset() const { return m_weatherPreset; }
+    std::uint64_t WeatherMapHash() const { return m_weatherMapHash; }
+    std::uintptr_t WeatherTextureIdentity() const
+    {
+        return reinterpret_cast<std::uintptr_t>(m_weatherMapTexture.Get());
+    }
+    std::uintptr_t WeatherSrvIdentity() const
+    {
+        return reinterpret_cast<std::uintptr_t>(m_weatherMapSrv.Get());
+    }
     bool HasDebugLayerErrors() const;
     bool HandleWindowMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     bool ValidateNoiseLabPreviews();
@@ -84,6 +98,10 @@ private:
     bool CreateDiagnosticScene();
     bool CreatePipelineStates();
     bool CreateConstantBuffers();
+    bool CreateWeatherMapTexture(Stage5WeatherPreset preset);
+    bool UpdateWeatherMapTexture(
+        Stage5WeatherPreset preset,
+        const WeatherMapGeneratorSettings& settings);
     void ReleaseSizeDependentResources();
     void RenderDiagnosticScene(const Camera& camera);
     void RenderCloudPass(const Camera& camera, float timeSeconds);
@@ -125,11 +143,18 @@ private:
     ComPtr<ID3D11DepthStencilState> m_depthState;
     ComPtr<ID3D11RasterizerState> m_rasterizerState;
     ComPtr<ID3D11SamplerState> m_pointClampSampler;
+    ComPtr<ID3D11SamplerState> m_weatherLinearWrapSampler;
+    ComPtr<ID3D11Texture2D> m_weatherMapTexture;
+    ComPtr<ID3D11ShaderResourceView> m_weatherMapSrv;
 
     CloudParameters m_cloudParameters;
     Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::WideVolume;
     Stage2NoisePreset m_noisePreset = Stage2NoisePreset::DefaultNoise;
     Stage4DetailPreset m_detailPreset = Stage4DetailPreset::DefaultDetail;
+    Stage5WeatherPreset m_weatherPreset = Stage5WeatherPreset::ChannelDebug;
+    WeatherMapGeneratorSettings m_weatherGeneratorSettings;
+    std::uint64_t m_weatherMapHash = 0;
+    std::string m_weatherMapStatus = "Not generated";
 
     std::wstring m_shaderDir;
     std::wstring m_fullscreenShaderPath;

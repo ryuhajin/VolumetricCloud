@@ -6,14 +6,14 @@
 ## 이 프로젝트가 무엇인가
 
 DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류메트릭 클라우드**를 렌더링하는
-학습 프로젝트입니다. 현재는 **재구축 단계 4**를 진행하며, 큰 Base Shape와
-고주파 Detail Erosion의 독립 제어 및 빈 Base의 Detail 샘플 생략을 검증합니다.
+학습 프로젝트입니다. 현재는 **재구축 단계 6**을 시작하며, 승인된 Weather Map 밀도장을
+기준으로 태양 방향 Light Ray와 단일 산란을 구현합니다.
 
 ## 빠른 사실 (Quick Facts)
 
 - **언어/환경:** C++17, HLSL(shader model 5.0), DirectX 11, Win32, Windows
 - **빌드:** CMake (`cmake -B build -G "Visual Studio 17 2022" -A x64` → `cmake --build build --config Debug`)
-- **실행:** `build/Debug/VolumetricCloud.exe` (숫자 0~9, Z/X/C/V/B/M/J/L/P/U, F5~F12, Q/Y/W/E/R/T, N/A/S/D/F/G/H/K)
+- **실행:** `build/Debug/VolumetricCloud.exe` (기존 키 + I/O, Shift+I/O, F2~F4 Weather, F5~F12 검증)
 - **셰이더:** 런타임 컴파일(`D3DCompileFromFile`) + 실행 중 핫-리로드.
   개발 중에는 소스 `shaders/`를 우선 읽고, 없으면 exe 옆 `shaders/`로 폴백
 - **렌더 방식:** 정점 버퍼 없이 풀스크린 삼각형 1개를 그리고, 픽셀 셰이더에서 레이마칭
@@ -29,7 +29,8 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
 | 카메라 | `src/Camera.*` | 오빗 카메라 → view/proj/invViewProj |
 | 렌더러 | `src/Renderer.*` | D3D11 초기화, 진단 장면, 깊이 SRV, 합성 패스 |
 | 노이즈 도구 | `src/NoiseLab.*` | ImGui 3축 단면, 파라미터 조절, PNG/JSON 내보내기 |
-| 구름 설정 | `src/CloudParameters.h` | 112바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
+| 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
+| Weather Map | `src/WeatherMap.*` | 256² CPU RGBA 프리셋 생성과 해시 |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
 | Ray | `shaders/Ray.hlsli` | 평행축을 안전하게 처리하는 slab AABB 교차 |
@@ -39,6 +40,7 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
 | Noise 기준 | `src/Stage2NoiseMath.h` | 단계 2 CPU 회귀 검사용 noise·밀도·바람 좌표 |
 | 높이 기준 | `src/Stage3HeightMath.h` | 단계 3 CPU 회귀 검사용 높이·fade·최종 밀도 |
 | Detail 기준 | `src/Stage4DetailMath.h` | 단계 4 CPU 회귀 검사용 Detail 좌표·침식·샘플 생략 |
+| Weather 기준 | `src/Stage5WeatherMath.h` | 단계 5 CPU 회귀 검사용 UV·coverage·구름 종류 프로파일 |
 
 ## 반드시 지킬 규칙
 
@@ -47,7 +49,7 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
    **세 곳을 동시에** 맞춥니다.
 2. **브랜치/커밋 규칙**을 따릅니다 → [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md)
 3. **빌드가 깨지지 않게** 유지합니다. 변경 후 위 빌드 명령으로 확인하세요.
-4. 현재 단계 4 범위 밖(fBm/Worley, weather, light, early exit, temporal)은 다음 단계로 분리합니다.
+4. 현재 단계 6 범위 밖(phase function, 환경광·다중 산란, 그림자 맵, early exit, temporal)은 다음 단계로 분리합니다.
 
 ## 로컬 단계별 구현 문서 규칙
 

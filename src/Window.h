@@ -29,6 +29,7 @@ public:
     HWND GetHandle() const { return m_hwnd; }
     int  GetWidth()  const { return m_width; }
     int  GetHeight() const { return m_height; }
+    void RefreshDebugTitle() { UpdateDebugTitle(); }
 
 private:
     static LRESULT CALLBACK WndProcStatic(HWND, UINT, WPARAM, LPARAM);

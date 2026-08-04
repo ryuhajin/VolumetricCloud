@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudParameters.h - 단계 4 Base Shape/Detail Erosion CPU/GPU 공유 설정
+//  CloudParameters.h - 단계 5 Weather Map/Cloud Type CPU/GPU 공유 설정
 // ============================================================================
 #pragma once
 
@@ -28,6 +28,10 @@ enum class CloudDebugMode : std::int32_t
     DetailNoise = 17,
     Erosion = 18,
     DetailSampleMask = 19,
+    WeatherCoverage = 20,
+    CloudType = 21,
+    WeatherThresholdDensity = 22,
+    TypedHeightProfile = 23,
 };
 
 enum class Stage1ValidationPreset : std::int32_t
@@ -62,6 +66,13 @@ enum class Stage4DetailPreset : std::int32_t
     Custom,
 };
 
+enum class Stage5WeatherPreset : std::int32_t
+{
+    UniformLegacy,
+    PeriodicPerlin,
+    ChannelDebug,
+};
+
 // HLSL CloudCB와 16바이트 묶음 순서가 정확히 일치해야 한다.
 struct alignas(16) CloudParameters
 {
@@ -91,6 +102,10 @@ struct alignas(16) CloudParameters
     float detailErosionStrength = 0.25f;
     float detailWindSpeed = 0.45f;
     float detailNoiseOffset = 17.3f;
+
+    float weatherMapWorldSize = 16.0f;
+    float weatherMapWindSpeed = 0.10f;
+    DirectX::XMFLOAT2 weatherMapOffset = { 0.0f, 0.0f };
 };
 
-static_assert(sizeof(CloudParameters) == 112, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 128, "CloudParameters must match CloudCB");

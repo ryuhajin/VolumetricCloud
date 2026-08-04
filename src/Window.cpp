@@ -69,7 +69,8 @@ void Window::UpdateDebugTitle()
         L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
         L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW",
         L"B 높이 비율", L"M 높이 Profile", L"J Base 밀도", L"L Detail Noise",
-        L"P Erosion", L"U Detail Sample"
+        L"P Erosion", L"U Detail Sample", L"I Weather Coverage", L"O Cloud Type",
+        L"Shift+I Weather Threshold", L"Shift+O Typed Height"
     };
     static const wchar_t* presetNames[] = {
         L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
@@ -84,17 +85,22 @@ void Window::UpdateDebugTitle()
         L"F9 Detail Off", L"F10 기본 Detail", L"F11 Fine Detail",
         L"F12 Strong Erosion", L"UI Custom Detail"
     };
+    static const wchar_t* weatherPresetNames[] = {
+        L"F2 Uniform Weather", L"F3 Periodic Perlin", L"F4 Channel Debug"
+    };
 
     const int debugIndex = static_cast<int>(m_renderer->DebugMode());
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
     const int noisePresetIndex = static_cast<int>(m_renderer->NoisePreset());
     const int detailPresetIndex = static_cast<int>(m_renderer->DetailPreset());
-    wchar_t title[384] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 4 | %ls | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 19) ? debugIndex : 0],
+    const int weatherPresetIndex = static_cast<int>(m_renderer->WeatherPreset());
+    wchar_t title[512] = {};
+    swprintf_s(title, L"VolumetricCloud - Stage 5 | %ls | %ls | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 23) ? debugIndex : 0],
                presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
                detailPresetNames[(detailPresetIndex >= 0 && detailPresetIndex <= 4) ? detailPresetIndex : 1],
+               weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 2],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
 }
@@ -121,15 +127,38 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    // Noise Lab은 기본으로 열려 있고 ImGui가 키보드를 캡처할 수 있다. F5~F12는
+    // Weather 비교 키는 Noise Lab이 기본으로 열린 상태에서도 즉시 작동해야 한다.
+    // Shift 조합은 같은 중간값의 "입력 지도"와 "적용 결과"를 짝으로 보여 준다.
+    if (msg == WM_KEYDOWN && m_renderer && (wParam == 'I' || wParam == 'O'))
+    {
+        const bool shifted = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (wParam == 'I')
+            m_renderer->SetDebugMode(shifted
+                ? CloudDebugMode::WeatherThresholdDensity
+                : CloudDebugMode::WeatherCoverage);
+        else
+            m_renderer->SetDebugMode(shifted
+                ? CloudDebugMode::TypedHeightProfile
+                : CloudDebugMode::CloudType);
+        UpdateDebugTitle();
+        return 0;
+    }
+
+    // Noise Lab은 기본으로 열려 있고 ImGui가 키보드를 캡처할 수 있다. F2~F12는
     // 텍스트 편집에 쓰이지 않는 전역 검증 단축키이므로 UI보다 먼저 처리한다.
     // 특히 F9~F12가 ImGui에 막히면 Detail 프리셋을 다시 선택할 수 없다.
     // Windows는 F10을 메뉴 활성화 키로 취급해 WM_SYSKEYDOWN으로 보낼 수
     // 있으므로 일반 키와 시스템 키 경로를 모두 받는다.
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) &&
-        wParam >= VK_F5 && wParam <= VK_F12)
+        wParam >= VK_F2 && wParam <= VK_F12)
     {
-        if (m_camera && wParam == VK_F5)
+        if (m_renderer && wParam == VK_F2)
+            m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::UniformLegacy);
+        else if (m_renderer && wParam == VK_F3)
+            m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::PeriodicPerlin);
+        else if (m_renderer && wParam == VK_F4)
+            m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::ChannelDebug);
+        else if (m_camera && wParam == VK_F5)
         {
             m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
             m_cameraPresetName = L"외부 기본(F5)";

@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.hlsl - 단계 4 Base/Detail Erosion의 XY/XZ/YZ 고정 단면 출력
+//  NoiseLab.hlsl - 단계 5 Weather/Base/Detail의 XY/XZ/YZ 고정 단면 출력
 // ----------------------------------------------------------------------------
 //  1. CPU NoiseLabCB의 정규화 단면 위치를 받는다.
 //  2. 화면 UV를 AABB 안의 월드 위치(m)로 바꾼다.
@@ -62,5 +62,17 @@ float4 main(VSOut input) : SV_TARGET
         value = sample.erosion;
     else if (noiseOutputMode == 8u)
         value = sample.detailSampled;
+    else if (noiseOutputMode == 9u)
+        value = sample.weatherCoverage;
+    else if (noiseOutputMode == 10u)
+        value = sample.cloudType;
+    else if (noiseOutputMode == 11u)
+        value = saturate((sample.weatherDensityModifier - 0.5) / 1.0);
+    else if (noiseOutputMode == 12u)
+        value = sample.weatherThresholdDensity;
+    else if (noiseOutputMode == 13u)
+        value = sample.typedHeightProfile;
+    else if (noiseOutputMode == 14u)
+        return float4(sample.weatherUv, 0.0, 1.0);
     return float4(value.xxx, 1.0);
 }
