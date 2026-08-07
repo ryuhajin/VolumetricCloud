@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 5: CPU RGBA Weather Map과 Cloud Type 높이 프로파일
+#  재구축 단계 6: 태양 Light Ray와 직접 단일 산란
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -21,6 +21,7 @@ add_executable(VolumetricCloud WIN32
     src/Window.cpp
     src/Renderer.cpp
     src/NoiseLab.cpp
+    src/FrameProfiler.cpp
     src/WeatherMap.cpp
     src/Camera.cpp
     third_party/imgui/imgui.cpp
@@ -147,6 +148,34 @@ add_test(NAME VolumetricCloud.Stage5WeatherMath
          COMMAND VolumetricCloud.Stage5WeatherMathTests)
 add_test(NAME VolumetricCloud.Stage5Smoke
          COMMAND VolumetricCloud --stage5-smoke-test)
+
+# 단계 6의 태양 투과율, Base-only Light Ray와 단일 산란 수식을 검사한다.
+add_executable(VolumetricCloud.Stage6LightMathTests
+    tests/Stage6LightMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage6LightMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage6LightMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage6LightMath
+         COMMAND VolumetricCloud.Stage6LightMathTests)
+add_test(NAME VolumetricCloud.Stage6Smoke
+         COMMAND VolumetricCloud --stage6-smoke-test)
+
+# 7단계 전 성능 오버레이의 EMA 수학과 비동기 D3D query 경로를 검사한다.
+add_executable(VolumetricCloud.FrameProfilerMathTests
+    tests/FrameProfilerMathTests.cpp
+    src/FrameProfiler.cpp
+)
+target_include_directories(VolumetricCloud.FrameProfilerMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.FrameProfilerMathTests PRIVATE /utf-8)
+endif()
+target_link_libraries(VolumetricCloud.FrameProfilerMathTests PRIVATE d3d11)
+add_test(NAME VolumetricCloud.FrameProfilerMath
+         COMMAND VolumetricCloud.FrameProfilerMathTests)
+add_test(NAME VolumetricCloud.PerformanceOverlaySmoke
+         COMMAND VolumetricCloud --performance-overlay-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

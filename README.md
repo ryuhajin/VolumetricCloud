@@ -2,7 +2,7 @@
 
 DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 다시 구축하는 학습 프로젝트입니다.
 
-현재는 **재구축 단계 5**로, CPU 생성 RGBA Weather Map으로 넓은 구름 배치와 종류를 검증합니다.
+현재는 **재구축 단계 6**으로, Weather 밀도장 안에서 태양 Light Ray와 직접 단일 산란을 검증합니다.
 
 - 평면과 두 박스로 구성된 불투명 진단 장면
 - 샘플 가능한 Scene Depth와 월드 위치 복원
@@ -19,6 +19,10 @@ DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 �
 - 실제 256² RGBA8 Weather Map Texture2D와 linear-wrap 샘플링
 - Weather R coverage, G cloud type, B 0.5~1.5 density modifier
 - 층운·기존 혼합형·상향 발달 적운의 수직 프로파일 보간
+- 별도 48바이트 LightCB와 표본→태양 방향 규칙
+- Base Density만 적분하는 태양 Light Ray와 Beer-Lambert 태양 투과율
+- 태양색·세기·산란계수를 적용한 직접 단일 산란
+- 우측 상단 FPS·CPU/GPU Frame·GPU Cloud 실시간 성능 오버레이
 - 원본 noise, threshold, 최종 밀도와 noise UVW 디버그
 - ImGui Noise Lab의 XY/XZ/YZ 동기 단면, 높이 출력과 프로파일 곡선
 - 공용 `Noise.hlsli` 저장 시 Noise Lab·구름 동시 핫리로드
@@ -33,7 +37,7 @@ cmake --build build --config Debug
 .\build\Debug\VolumetricCloud.exe
 ```
 
-## 단계 5 조작
+## 단계 6 조작
 
 | 입력 | 동작 |
 |---|---|
@@ -58,6 +62,8 @@ cmake --build build --config Debug
 | `P` / `U` | Erosion 양 / Detail Sample 실행 영역 |
 | `I` / `O` | Weather Coverage / Cloud Type |
 | `Shift+I` / `Shift+O` | Weather Threshold / Typed Height Profile |
+| `Shift+J` / `Shift+L` | 태양 투과율 / 태양 방향 광학 깊이 |
+| `Shift+P` / `Shift+U` | 전체 Light Sample 비용 / 직접 단일 산란 |
 | `F5`~`F7` | 외부 고정 검증 카메라 |
 | `F8` | AABB 내부 카메라 |
 | `Y` / `Q` | 넓은 XZ 볼륨 / 기본 수치 검증 볼륨 |
@@ -71,9 +77,14 @@ cmake --build build --config Debug
 | `F9` / `F10` | Detail Off / 기본 Detail |
 | `F11` / `F12` | Fine Detail / Strong Erosion |
 
-현재 Base와 Detail은 각각 단일 절차적 Value Noise를 사용하며 고정 산란색만 적용합니다. Weather Map은 CPU가 만드는 실제 RGBA8 Texture2D지만 외부 PNG 로딩은 하지 않습니다. fBm, Worley, 태양광과 early exit는 이후 단계까지 의도적으로 구현하지 않습니다.
+현재 Base와 Detail은 각각 단일 절차적 Value Noise를 사용합니다. Weather Map은 CPU가 만드는 실제 RGBA8 Texture2D이며 외부 PNG 로딩은 하지 않습니다. Light Ray는 Weather·Type·Height가 적용된 Base만 읽고 Detail은 생략합니다. Phase Function, 환경광·다중 산란과 early exit는 이후 단계까지 의도적으로 구현하지 않습니다.
 
-Noise Lab은 실제 구름 위에 떠 있는 개발 창입니다. 15개 밀도·Weather 출력을 전환하고 실제 RGBA 맵을 미리 보며 F3 Periodic Perlin 생성기를 실시간 조절할 수 있습니다. `Export 4 PNG + JSON`은 세 단면과 `weather-map.png`, schema 5 생성 설정을 저장합니다.
+Noise Lab은 실제 구름 위에 떠 있는 개발 창입니다. 15개 밀도·Weather 출력과 실제 RGBA 맵, F3 Periodic Perlin 생성기뿐 아니라 태양 Azimuth/Elevation·색·세기·Light Step을 조절합니다. Noon/Low East/Low West 버튼으로 방향을 재현하며 `Export 4 PNG + JSON`은 schema 6 조명 설정도 저장합니다.
+
+우측 상단 성능 오버레이는 `F1`로 Noise Lab을 숨겨도 유지됩니다. Noise Lab의 `Performance`
+항목에서 VSync를 켜거나 끌 수 있습니다. CPU Frame은 `Present`와 VSync 대기를 포함하지만
+GPU Frame은 Present를 제외하며, View/Light Step 비용 비교에는 `GPU Cloud ms`를 사용합니다.
+재현 가능한 측정 절차는 [성능 측정 기준](doc/PERFORMANCE.md)에 정리되어 있습니다.
 
 ## 자동 검사
 
@@ -82,6 +93,6 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-`Foundation*`부터 `Stage4*`까지는 이전 단계 회귀를 검사합니다. `Stage5WeatherMath`는 CPU 맵 채널·월드 UV·coverage·cloud type 수학을, `Stage5Smoke`는 Weather 디버그와 F2~F4의 D3D11 경로를 검사합니다. `NoiseLabSmoke`는 15개 출력과 PNG/JSON을 검사합니다.
+`Foundation*`부터 `Stage5*`까지는 이전 단계 회귀를 검사합니다. `Stage6LightMath`는 광학 깊이·Base-only Light Ray·단일 산란을, `Stage6Smoke`는 LightCB와 조명 디버그·태양 프리셋 D3D11 경로를 검사합니다. `FrameProfilerMath`와 `PerformanceOverlaySmoke`는 EMA·FPS 계산, 비동기 GPU timestamp와 VSync 경로를 검사합니다. `NoiseLabSmoke`는 15개 출력과 schema 6 PNG/JSON을 검사합니다.
 
 자세한 구조와 단계는 [아키텍처](doc/ARCHITECTURE.md), [AABB 레이 마칭](doc/RAYMARCHING.md), [로드맵](doc/ROADMAP.md)을 참고하세요.

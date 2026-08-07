@@ -1,22 +1,20 @@
 // ============================================================================
-//  VolumetricClouds.hlsl - 단계 5 Weather Map과 구름 종류 합성
+//  VolumetricClouds.hlsl - 단계 6 태양광과 단일 산란 합성
 // ----------------------------------------------------------------------------
 //  한 프레임의 렌더링 순서
-//  1. CPU가 카메라와 CloudParameters를 b0/b1 상수버퍼에 복사한다.
+//  1. CPU가 Camera/Cloud/Light 데이터를 b0/b1/b3 상수버퍼에 복사한다.
 //  2. 앞선 DiagnosticScene 패스가 불투명 Scene Color와 Scene Depth를 만든다.
 //  3. 이 풀스크린 PS가 UV → 월드 레이 → 깊이 거리 순으로 복원한다.
 //  4. 레이와 AABB의 교차 구간을 구하고 Scene Depth보다 뒤를 잘라 낸다.
 //  5. 월드 XZ Weather R/G/B로 배치·종류·밀도를 결정해 Base Shape를 만든다.
 //  6. Base가 비어 있지 않을 때만 Detail로 깎는다.
-//  7. 위치별 밀도를 적분해 산란광과 투과율을 만든다.
-//  8. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
+//  7. 밀도가 있는 View 표본에서 태양 방향 Light Ray로 광학 깊이를 잰다.
+//  8. 태양 투과율을 직접 단일 산란에 곱하고 View 투과율을 누적한다.
+//  9. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
 //
-//  단계 6 Light와 단계 9 Early Exit는 의도적으로 없다. Weather는 CPU 생성
-//  256² RGBA8 한 장이고 Detail은 단일 Value Noise다. fBm/Worley도 아직 없다.
+//  단계 7 Phase Function, 단계 8 환경광/다중 산란과 단계 9 Early Exit는 없다.
+//  Light Ray는 비용을 분리하기 위해 Detail이 아닌 Base Density만 샘플링한다.
 // ============================================================================
-
-#include "Ray.hlsli"
-#include "Noise.hlsli"
 
 // CPU Renderer::CameraCB와 같은 96바이트 b0 상수버퍼다.
 cbuffer cbCamera : register(b0)
@@ -28,6 +26,9 @@ cbuffer cbCamera : register(b0)
     float nearPlane;      // CPU nearPlane. 카메라 근평면 거리(m), 현재 예약 값.
     float farPlane;       // CPU farPlane. 하늘 픽셀의 최대 추적 거리(m).
 };
+
+// cbCamera의 time 선언 뒤 포함해야 Light Ray가 같은 애니메이션 시간을 사용한다.
+#include "CloudLighting.hlsli"
 
 // t0: 앞선 DiagnosticScene PS가 R16G16B16A16_FLOAT에 쓴 linear RGB 장면색.
 Texture2D<float4> sceneColorTexture : register(t0);
@@ -75,6 +76,10 @@ struct CloudMarchDebug
     float3 noiseUvw;       // 대표 중간 위치의 연속 noise 좌표(cycle).
     float3 detailNoiseUvw; // 대표 Detail noise 좌표(cycle), 생략 시 0.
     float2 weatherUv;      // 대표 Weather Map UV(0~1).
+    float lightTransmittance; // 대표 위치에서 태양까지 살아남은 직접광 비율.
+    float lightOpticalDepth;  // 대표 위치에서 태양까지의 Base 광학 깊이.
+    float totalLightSamples;  // 이 픽셀의 모든 View 표본이 실행한 Light 표본 합계.
+    float3 directScattering;  // 대표 위치의 직접 단일 산란 linear RGB.
 };
 
 // 화면 UV를 DirectX NDC로 바꾼다.
@@ -177,9 +182,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         uint stepCount = min(safeMaxSteps, (uint)ceil(segmentLength / safeStepSize));
         float actualStepLength = segmentLength / (float)stepCount;
 
-        // 3. 고정 산란색은 유지하고 위치별 noise 밀도만 Beer-Lambert에 연결한다.
+        // 3. View Ray 소멸계수와 대표 표본을 준비한다.
         float extinction = max(extinctionCoefficient, 0.0);
-        const float3 fixedFogColor = float3(0.82, 0.86, 0.92);
 
         // 디버그 모드는 같은 대표 위치에서 raw→threshold→final→UVW를 비교한다.
         float representativeDistance = (tStart + tEnd) * 0.5;
@@ -205,6 +209,19 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         debugData.detailNoiseUvw = representativeSample.detailNoiseUvw;
         debugData.weatherUv = representativeSample.weatherUv;
 
+        // 조명 디버그를 선택했을 때만 대표 위치에 추가 Light Ray를 쏜다.
+        // 실제 합성용 Light Ray는 아래 View 반복 안에서 따로 누적한다.
+        if (debugMode == 24 || debugMode == 25 || debugMode == 27)
+        {
+            LightMarchResult representativeLight = ComputeLightTransmittance(
+                representativePosition, directionToSun);
+            debugData.lightTransmittance = representativeLight.transmittance;
+            debugData.lightOpticalDepth = representativeLight.opticalDepth;
+            debugData.directScattering = IntegrateSingleScattering(
+                representativeSample.finalDensity,
+                representativeLight.transmittance, 1.0, actualStepLength);
+        }
+
         // 4. 각 구간 중앙에서 Base를 만들고 필요한 위치에서만 Detail로 침식한다.
         [loop]
         for (uint stepIndex = 0u; stepIndex < stepCount; ++stepIndex)
@@ -216,15 +233,26 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             float sampledStepTransmittance = exp(
                 -sampledDensity * extinction * actualStepLength);
 
-            // 아직 살아남은 빛의 비율만큼 이 step의 고정 안개색을 더한다.
-            result.scattering += result.transmittance * fixedFogColor *
-                                 (1.0 - sampledStepTransmittance);
+            // 5. 밀도가 있을 때만 태양 방향 Base Density를 추가로 적분한다.
+            //    Light Ray에서 Detail을 생략해 큰 구름 그늘과 비용을 먼저 검증한다.
+            // 기존 1~23 디버그는 조명 결과를 표시하지 않으므로 Light Ray를 생략한다.
+            // 합성(0)과 단계 6 조명 디버그(24~27)만 실제 조명 비용을 실행한다.
+            bool requiresLighting = debugMode == 0 || debugMode == 26;
+            if (sampledDensity > 0.0 && requiresLighting)
+            {
+                LightMarchResult light = ComputeLightTransmittance(
+                    samplePosition, directionToSun);
+                result.scattering += IntegrateSingleScattering(
+                    sampledDensity, light.transmittance,
+                    result.transmittance, actualStepLength);
+                debugData.totalLightSamples += light.stepCount;
+            }
             result.transmittance *= sampledStepTransmittance;
             // 단계 9 Early Exit 자리: 현재는 transmittanceThreshold를 사용하지 않고
             // 항상 stepCount 전체를 돌아 fine/coarse 적분의 동일성을 먼저 검증한다.
         }
 
-        // 5. 디버그와 이후 temporal 단계가 사용할 최종 값을 기록한다.
+        // 6. 디버그와 이후 temporal 단계가 사용할 최종 값을 기록한다.
         result.transmittance = saturate(result.transmittance);
         result.representativeDepth = (tStart + tEnd) * 0.5;
         debugData.stepCount = (float)stepCount;
@@ -310,6 +338,28 @@ float4 main(VSOut input) : SV_TARGET
         return float4((marchDebug.weatherThresholdDensity * marchDebug.hit).xxx, 1.0);
     if (debugMode == 23)
         return float4((marchDebug.typedHeightProfile * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 24)
+        return float4((marchDebug.lightTransmittance * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 25)
+    {
+        float opticalDepthView = 1.0 - exp(-max(marchDebug.lightOpticalDepth, 0.0));
+        return float4((opticalDepthView * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 26)
+    {
+        float maxSamples = max((float)(maxViewSteps * max(maxLightSteps, 1u)), 1.0);
+        float normalizedCost = sqrt(saturate(marchDebug.totalLightSamples / maxSamples));
+        float3 heat = normalizedCost < 0.5
+            ? lerp(float3(0.0, 0.12, 0.25), float3(0.0, 0.9, 0.8), normalizedCost * 2.0)
+            : lerp(float3(0.0, 0.9, 0.8), float3(1.0, 0.9, 0.1), (normalizedCost - 0.5) * 2.0);
+        return float4(heat * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 27)
+    {
+        float3 mappedScattering = marchDebug.directScattering /
+            (1.0.xxx + max(marchDebug.directScattering, 0.0.xxx));
+        return float4(mappedScattering * marchDebug.hit, 1.0);
+    }
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry

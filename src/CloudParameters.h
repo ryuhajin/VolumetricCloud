@@ -32,6 +32,10 @@ enum class CloudDebugMode : std::int32_t
     CloudType = 21,
     WeatherThresholdDensity = 22,
     TypedHeightProfile = 23,
+    LightTransmittance = 24,
+    LightOpticalDepth = 25,
+    TotalLightSamples = 26,
+    DirectSingleScattering = 27,
 };
 
 enum class Stage1ValidationPreset : std::int32_t

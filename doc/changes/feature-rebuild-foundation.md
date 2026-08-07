@@ -147,3 +147,22 @@
 - 단계 5는 2026-08-04 사용자 수동 체크리스트 전체와 최종 승인을 통과했다.
 - 외부 Weather PNG/편집, precipitation, fBm/Worley와 early exit는 이후 단계로 남긴다.
 - 단계 6에서는 승인된 Weather 밀도장을 입력으로 태양 방향 Light Ray와 단일 산란을 구현한다.
+- 단계 6에서 CloudCB와 분리된 48바이트 LightCB(b3), Noon/Low East/Low West
+  방향 프리셋과 Noise Lab 조명 조절·schema 6 export를 추가했다.
+- View 표본에서 태양 방향 AABB 이탈까지 Base Density만 적분해 광학 깊이와
+  Beer-Lambert 태양 투과율을 계산한다. Detail, Phase Function, 환경광은 제외한다.
+- Shift+J/L/P/U에 태양 투과율·광학 깊이·Light Sample 비용·직접 산란 진단을 추가했다.
+- 단계 6 Debug/Release 빌드, 양 구성 CTest 18/18, HLSL 5/5가 통과했다.
+  Stage6Smoke는 조명 모드·태양·Weather·Q/Y pairwise와 8/16/32 Light Step,
+  schema 6 export 및 D3D11 error/corruption 부재를 확인한다.
+- 단계 6 보조 기능으로 `FrameProfiler`의 8-slot 비동기 D3D11 timestamp query ring과
+  우측 상단 성능 오버레이를 추가했다. CPU Frame은 Present/VSync를 포함하고 GPU Frame은
+  Present를 제외하며, GPU Cloud는 구름 패스만 측정한다.
+- Noise Lab에 Performance/VSync 설정을 추가했다. 오버레이는 F1로 Noise Lab을 숨겨도
+  유지되고, VSync Off는 `Present(0, 0)`을 사용한다.
+- `FrameProfilerMath`와 `PerformanceOverlaySmoke`를 추가해 전체 CTest를 18개로 확장했다.
+  동일 조건 비교 절차는 `doc/PERFORMANCE.md`에 고정했다.
+- 2026-08-07 사용자 수동 검증에서 단계 6 조명, 디버그 출력, Light Step 비용 변화,
+  F1 독립 성능 오버레이와 VSync On/Off를 모두 확인하고 단계 6을 승인 완료했다.
+- 다음 작업은 승인된 등방성 단일 산란을 보존한 채 단계 7 Dual-lobe
+  Henyey-Greenstein Phase Function을 추가하는 것이다.

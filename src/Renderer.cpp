@@ -143,13 +143,17 @@ bool Renderer::Init(HWND hwnd, int width, int height)
         return false;
     }
 
+    // GPU timestamp를 만들 수 없는 특수 환경에서도 렌더는 계속하고 오버레이에는
+    // GPU timing unavailable을 표시한다. 일반 D3D11 장치에서는 8-slot ring을 쓴다.
+    m_frameProfiler.Init(m_device.Get());
+
     if (!CreateBackBufferTarget() || !CreateSceneTargets() ||
         !CreateShaders(true) || !CreateDiagnosticScene() ||
         !CreatePipelineStates() || !CreateConstantBuffers() ||
         !CreateWeatherMapTexture(m_weatherPreset) ||
         !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
     {
-        MessageBoxW(hwnd, L"단계 5 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 6 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -478,6 +482,7 @@ bool Renderer::CreateConstantBuffers()
 
     return createDynamicBuffer(sizeof(CameraCB), &m_cameraCb) &&
            createDynamicBuffer(sizeof(CloudParameters), &m_cloudCb) &&
+           createDynamicBuffer(sizeof(LightParameters), &m_lightCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -499,6 +504,7 @@ void Renderer::Resize(int width, int height)
 
     m_width = width;
     m_height = height;
+    m_frameProfiler.ResetMeasurements();
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
     ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
     m_context->PSSetShaderResources(0, 3, nullSrvs);
@@ -566,6 +572,12 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
         std::memcpy(mapped.pData, &m_cloudParameters, sizeof(m_cloudParameters));
         m_context->Unmap(m_cloudCb.Get(), 0);
     }
+    m_lightParameters = stage6light::Sanitize(m_lightParameters);
+    if (SUCCEEDED(m_context->Map(m_lightCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_lightParameters, sizeof(m_lightParameters));
+        m_context->Unmap(m_lightCb.Get(), 0);
+    }
 
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     m_context->OMSetRenderTargets(1, m_backBufferRtv.GetAddressOf(), nullptr);
@@ -579,6 +591,8 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
     m_context->PSSetShader(m_cloudPs.Get(), nullptr, 0);
     ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
+    ID3D11Buffer* lightBuffer = m_lightCb.Get();
+    m_context->PSSetConstantBuffers(3, 1, &lightBuffer);
     ID3D11ShaderResourceView* resources[3] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get()
     };
@@ -598,14 +612,18 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     if (!m_backBufferRtv || !m_sceneColorRtv || !m_sceneDepthDsv)
         return;
 
+    m_frameProfiler.BeginCpuFrame();
     CheckShaderHotReload();
+    m_frameProfiler.BeginGpuFrame(m_context.Get());
     // Noise Lab은 CloudParameters를 직접 편집한다. 편집 전 값을 보관해 Base와
     // Detail 중 실제로 바뀐 묶음만 Custom으로 표시한다. 예를 들어 Base Wind만
     // 0으로 바꾼 검증에서 F10 Detail 프리셋 이름이 사라지면 안 된다.
     const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
     m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
+                          m_lightParameters, m_sunPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
+                          m_frameProfiler.Snapshot(), m_vsyncEnabled,
                           m_shaderGeneration, m_shaderStatus, m_shaderError);
     if (m_noiseLab.ConsumeParametersChanged())
     {
@@ -642,12 +660,17 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     m_context->RSSetViewports(1, &viewport);
 
     RenderDiagnosticScene(camera);
+    m_frameProfiler.BeginCloudPass(m_context.Get());
     RenderCloudPass(camera, effectiveTime);
+    m_frameProfiler.EndCloudPass(m_context.Get());
     if (m_captureFrameHashes)
         CaptureCloudFrameHash();
-    m_noiseLab.RenderPreviews(
-        m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get(),
-        m_weatherMapSrv.Get(), m_weatherLinearWrapSampler.Get());
+    if (m_renderNoiseLabPreviews)
+    {
+        m_noiseLab.RenderPreviews(
+            m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get(),
+            m_weatherMapSrv.Get(), m_weatherLinearWrapSampler.Get());
+    }
     if (m_noiseLab.ConsumeExportRequest())
     {
         std::filesystem::path shaderDirectory(m_shaderDir);
@@ -655,6 +678,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
             shaderDirectory = shaderDirectory.parent_path();
         m_noiseLab.ExportSnapshot(shaderDirectory.parent_path() / L"captures" / L"noise-lab",
                                   m_cloudParameters,
+                                  m_lightParameters,
+                                  m_sunPreset,
                                   m_detailPreset,
                                   m_weatherPreset,
                                   m_weatherGeneratorSettings,
@@ -663,7 +688,9 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
                                   shaderDirectory / L"Noise.hlsli");
     }
     m_noiseLab.EndFrame(m_backBufferRtv.Get());
-    m_swapChain->Present(1, 0);
+    m_frameProfiler.EndGpuFrame(m_context.Get());
+    m_swapChain->Present(m_vsyncEnabled ? 1u : 0u, 0);
+    m_frameProfiler.EndCpuFrame();
 }
 
 void Renderer::CaptureCloudFrameHash()
@@ -846,6 +873,33 @@ bool Renderer::ApplyStage5WeatherPreset(Stage5WeatherPreset preset)
     return UpdateWeatherMapTexture(preset, m_weatherGeneratorSettings);
 }
 
+void Renderer::ApplyStage6SunPreset(Stage6SunPreset preset)
+{
+    if (preset == Stage6SunPreset::Custom)
+    {
+        m_sunPreset = preset;
+        return;
+    }
+    // 방향 프리셋은 사용자가 조절한 색·세기·품질 설정을 보존한다.
+    m_lightParameters.directionToSun =
+        stage6light::Preset(preset).directionToSun;
+    m_sunPreset = preset;
+}
+
+void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
+{
+    m_lightParameters.maxLightSteps = maxSteps;
+    m_lightParameters.lightStepSize = stepSize;
+    m_lightParameters = stage6light::Sanitize(m_lightParameters);
+    m_sunPreset = Stage6SunPreset::Custom;
+}
+
+void Renderer::SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize)
+{
+    m_cloudParameters.maxViewSteps = std::max(maxSteps, 1u);
+    m_cloudParameters.stepSize = std::max(stepSize, 1e-4f);
+}
+
 bool Renderer::ApplyWeatherGeneratorSettings(
     const WeatherMapGeneratorSettings& settings)
 {
@@ -959,7 +1013,8 @@ bool Renderer::ValidateNoiseLabPreviews()
 bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
-        root, m_cloudParameters, m_detailPreset, m_weatherPreset,
+        root, m_cloudParameters, m_lightParameters, m_sunPreset,
+        m_detailPreset, m_weatherPreset,
         m_weatherGeneratorSettings, m_weatherMapHash, m_weatherMapTexture.Get(),
         std::filesystem::path(m_shaderDir) / L"Noise.hlsli");
 }

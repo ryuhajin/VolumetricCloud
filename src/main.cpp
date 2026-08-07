@@ -2,12 +2,13 @@
 //  main.cpp  —  진입점 (WinMain)
 // ----------------------------------------------------------------------------
 //  창(Window) · 카메라(Camera) · 렌더러(Renderer)를 생성·연결하고,
-//  메인 루프에서 진단 장면과 단계 5 Weather Map 구름 패스를 그린다.
+//  메인 루프에서 진단 장면과 단계 6 태양 단일 산란 구름 패스를 그린다.
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <objbase.h>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -44,8 +45,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         ~ComScope() { if (SUCCEEDED(result)) CoUninitialize(); }
     } comScope{ comResult };
 
-    const int kWidth  = 1280;
-    const int kHeight = 720;
+    // Stage6Smoke는 중첩 View/Light Ray를 확인하므로 D3D 경로 검증에 충분한 작은 타깃을 쓴다.
+    // 일반 실행과 이전 단계 smoke의 해상도·프레임 해시는 바꾸지 않는다.
+    const bool requestedStage6Smoke = commandLine &&
+        wcsstr(commandLine, L"--stage6-smoke-test") != nullptr;
+    const bool requestedPerformanceOverlaySmoke = commandLine &&
+        wcsstr(commandLine, L"--performance-overlay-smoke-test") != nullptr;
+    const bool requestedSmallGpuSmoke = requestedStage6Smoke ||
+        requestedPerformanceOverlaySmoke;
+    const int kWidth  = requestedSmallGpuSmoke ? 96 : 1280;
+    const int kHeight = requestedSmallGpuSmoke ? 54 : 720;
 
     const bool smokeTest = commandLine &&
         wcsstr(commandLine, L"--foundation-smoke-test") != nullptr;
@@ -59,6 +68,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage4-smoke-test") != nullptr;
     const bool stage5SmokeTest = commandLine &&
         wcsstr(commandLine, L"--stage5-smoke-test") != nullptr;
+    const bool stage6SmokeTest = requestedStage6Smoke;
+    const bool performanceOverlaySmokeTest = requestedPerformanceOverlaySmoke;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -82,9 +93,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 5 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | 외부 기본(F5)",
+                    L"VolumetricCloud - Stage 6 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | 외부 기본(F5)",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
+                    !stage6SmokeTest &&
+                    !performanceOverlaySmokeTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -93,6 +106,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     if (!renderer.Init(window.GetHandle(), kWidth, kHeight))
         return -1; // 초기화 실패 (오류 메시지는 Renderer가 표시)
+
+    // 숨김 자동 검증은 D3D 분기 확인이 목적이다. 합성 모드를 사용하는 Foundation,
+    // Noise Lab, Hot Reload smoke가 단계 6의 기본 128×16 중첩 비용을 그대로 쓰지
+    // 않도록 낮은 표본 수를 적용한다. 일반 사용자 실행에는 영향을 주지 않는다.
+    if (smokeTest || stage1SmokeTest || stage2SmokeTest || stage3SmokeTest ||
+        stage4SmokeTest || stage5SmokeTest || stage6SmokeTest ||
+        performanceOverlaySmokeTest ||
+        noiseLabSmokeTest || shaderHotReloadSmokeTest)
+    {
+        renderer.SetViewSamplingForSmoke(16u, 0.5f);
+        renderer.SetLightSampling(4u, 1.0f);
+    }
 
     // 입력/리사이즈 연결
     window.SetCamera(&camera);
@@ -117,6 +142,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             {
                 renderer.ApplyStage1ValidationPreset(
                     static_cast<Stage1ValidationPreset>(preset));
+                renderer.SetViewSamplingForSmoke(16u, 0.5f);
                 renderer.Render(camera, static_cast<float>(mode + preset) / 60.0f);
             }
         }
@@ -230,6 +256,125 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             renderer.WeatherSrvIdentity() != weatherSrvIdentity)
             return 7;
         renderer.Render(camera, 0.0f);
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
+    if (stage6SmokeTest)
+    {
+        // 조명 진단 4종과 태양·Weather·Q/Y 값을 pairwise 실제 draw한다.
+        const Stage1ValidationPreset volumes[] = {
+            Stage1ValidationPreset::DefaultVolume,
+            Stage1ValidationPreset::WideVolume,
+        };
+        const Stage6SunPreset suns[] = {
+            Stage6SunPreset::Noon,
+            Stage6SunPreset::LowEast,
+            Stage6SunPreset::LowWest,
+        };
+        // 자동 smoke 조합은 바인딩/분기 검증이 목적이므로 4-step으로 실행한다.
+        // 아래에서 8/16/32 설정을 각각 별도 draw해 실제 품질 경로도 확인한다.
+        renderer.SetLightSampling(4u, 1.0f);
+        renderer.EnableNoiseLabPreviews(false);
+        for (int mode = static_cast<int>(CloudDebugMode::LightTransmittance);
+             mode <= static_cast<int>(CloudDebugMode::DirectSingleScattering); ++mode)
+        {
+            renderer.SetDebugMode(static_cast<CloudDebugMode>(mode));
+            // 네 pairwise draw가 모든 mode를 실행하며 sun/weather/volume 값도
+            // 순환 배치해 각각 최소 한 번 실제 b1/b3 및 t2 경로를 지난다.
+            const int combination = mode -
+                static_cast<int>(CloudDebugMode::LightTransmittance);
+            renderer.ApplyStage6SunPreset(suns[combination % 3]);
+            if (!renderer.ApplyStage5WeatherPreset(
+                    static_cast<Stage5WeatherPreset>(combination % 3)))
+                return 3;
+            renderer.ApplyStage1ValidationPreset(volumes[combination % 2]);
+            renderer.SetViewSamplingForSmoke(1u, 32.0f);
+            renderer.Render(camera, 0.0f);
+        }
+
+        // 품질/비용 비교용 8/16/32 step 설정도 같은 b3 경로로 전달한다.
+        const std::uint32_t lightSteps[] = { 8u, 16u, 32u };
+        for (std::uint32_t steps : lightSteps)
+        {
+            renderer.SetLightSampling(steps, 0.25f);
+            renderer.SetViewSamplingForSmoke(1u, 32.0f);
+            renderer.SetDebugMode(CloudDebugMode::TotalLightSamples);
+            renderer.Render(camera, 0.0f);
+            if (renderer.LightSettings().maxLightSteps != steps)
+                return 4;
+        }
+
+        const std::filesystem::path exportRoot =
+            std::filesystem::temp_directory_path() / L"VolumetricCloudStage6Smoke";
+        if (!renderer.ExportNoiseLabSnapshot(exportRoot))
+            return 5;
+        bool foundSchema6 = false;
+        std::error_code exportError;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                 exportRoot, exportError))
+        {
+            if (exportError)
+                return 6;
+            if (entry.path().filename() != L"noise-settings.json")
+                continue;
+            std::string metadata;
+            if (ReadTextFile(entry.path(), metadata) &&
+                metadata.find("\"schemaVersion\": 6") != std::string::npos &&
+                metadata.find("\"lightRayDensitySource\": \"baseDensityWithoutDetailErosion\"") != std::string::npos)
+                foundSchema6 = true;
+        }
+        if (!foundSchema6)
+            return 7;
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
+    if (performanceOverlaySmokeTest)
+    {
+        // UI 창을 숨긴 상태에서도 오버레이와 timestamp query가 계속 동작해야 한다.
+        // 작은 숨김 타깃에서 GPU 완료를 비동기로 기다리되, 어떤 프레임에서도
+        // GetData가 GPU flush나 CPU 대기를 유발하지 않도록 profiler가 DONOTFLUSH만 쓴다.
+        renderer.SetNoiseLabVisible(false);
+        renderer.EnableNoiseLabPreviews(false);
+        renderer.SetVSyncEnabled(false);
+        renderer.SetViewSamplingForSmoke(1u, 32.0f);
+        renderer.SetLightSampling(1u, 32.0f);
+
+        bool receivedGpuTiming = false;
+        for (int frame = 0; frame < 180; ++frame)
+        {
+            renderer.Render(camera, static_cast<float>(frame) / 60.0f);
+            const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+            if (timing.gpuValid)
+            {
+                receivedGpuTiming = true;
+                if (!std::isfinite(timing.gpuFrameMs) ||
+                    !std::isfinite(timing.gpuCloudMs) ||
+                    timing.gpuFrameMs < 0.0 || timing.gpuCloudMs < 0.0 ||
+                    timing.gpuCloudMs > timing.gpuFrameMs)
+                    return 3;
+                break;
+            }
+            Sleep(1);
+        }
+        if (!receivedGpuTiming)
+            return 4;
+
+        const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+        if (!timing.cpuValid || timing.frameIndex == 0 ||
+            !std::isfinite(timing.cpuFrameMs) ||
+            !std::isfinite(timing.fps) || timing.cpuFrameMs <= 0.0 ||
+            timing.fps <= 0.0)
+            return 5;
+
+        renderer.SetVSyncEnabled(true);
+        renderer.Render(camera, 0.0f);
+        if (!renderer.VSyncEnabled())
+            return 6;
+        renderer.SetVSyncEnabled(false);
+        renderer.Render(camera, 0.0f);
+        if (renderer.VSyncEnabled())
+            return 7;
+
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 

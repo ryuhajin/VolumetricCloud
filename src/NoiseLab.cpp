@@ -200,10 +200,14 @@ void NoiseLab::UpdateEffectiveTime(float applicationTime)
 
 void NoiseLab::BeginFrame(float applicationTime,
                           CloudParameters& cloudParameters,
+                          LightParameters& lightParameters,
+                          Stage6SunPreset& sunPreset,
                           Stage5WeatherPreset weatherPreset,
                           const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                           ID3D11ShaderResourceView* weatherMapSrv,
                           const std::string& weatherMapStatus,
+                          const FrameTimingSnapshot& timing,
+                          bool& vsyncEnabled,
                           std::uint64_t shaderGeneration,
                           const std::string& shaderStatus,
                           const std::string& shaderError)
@@ -221,16 +225,23 @@ void NoiseLab::BeginFrame(float applicationTime,
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     if (m_visible)
-        DrawControlWindow(cloudParameters, weatherPreset, weatherGeneratorSettings,
-                          weatherMapSrv, weatherMapStatus, shaderGeneration,
+        DrawControlWindow(cloudParameters, lightParameters, sunPreset,
+                          weatherPreset, weatherGeneratorSettings,
+                          weatherMapSrv, weatherMapStatus, vsyncEnabled,
+                          shaderGeneration,
                           shaderStatus, shaderError);
+    DrawPerformanceOverlay(timing, cloudParameters, lightParameters,
+                           vsyncEnabled);
 }
 
 void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
+                                 LightParameters& lightParameters,
+                                 Stage6SunPreset& sunPreset,
                                  Stage5WeatherPreset weatherPreset,
                                  const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                                  ID3D11ShaderResourceView* weatherMapSrv,
                                  const std::string& weatherMapStatus,
+                                 bool& vsyncEnabled,
                                  std::uint64_t shaderGeneration,
                                  const std::string& shaderStatus,
                                  const std::string& shaderError)
@@ -282,6 +293,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     DrawSlice("YZ (fixed X)", NoiseSliceAxis::YZ, m_targets[2]);
 
     const CloudParameters before = cloudParameters;
+    const LightParameters lightBefore = lightParameters;
     m_weatherPreset = weatherPreset;
     m_weatherMapPreviewSrv = weatherMapSrv;
     if (ImGui::CollapsingHeader("Weather map", ImGuiTreeNodeFlags_DefaultOpen))
@@ -487,6 +499,126 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         cloudParameters.detailErosionStrength, 0.0f, 1.0f);
     cloudParameters.detailWindSpeed = std::max(cloudParameters.detailWindSpeed, 0.0f);
 
+    if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::Checkbox("VSync", &vsyncEnabled);
+        ImGui::TextDisabled("CPU Frame includes Present/VSync wait.");
+        ImGui::TextDisabled("GPU Frame excludes Present; compare ray cost with GPU Cloud.");
+    }
+
+    if (ImGui::CollapsingHeader("Directional light", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        static const char* sunPresetNames[] = {
+            "Noon", "Low East", "Low West", "Custom Sun"
+        };
+        const int sunPresetIndex = std::clamp(static_cast<int>(sunPreset), 0, 3);
+        ImGui::Text("Current: %s", sunPresetNames[sunPresetIndex]);
+        if (ImGui::Button("Noon"))
+        {
+            lightParameters.directionToSun =
+                stage6light::Preset(Stage6SunPreset::Noon).directionToSun;
+            sunPreset = Stage6SunPreset::Noon;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Low East"))
+        {
+            lightParameters.directionToSun =
+                stage6light::Preset(Stage6SunPreset::LowEast).directionToSun;
+            sunPreset = Stage6SunPreset::LowEast;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Low West"))
+        {
+            lightParameters.directionToSun =
+                stage6light::Preset(Stage6SunPreset::LowWest).directionToSun;
+            sunPreset = Stage6SunPreset::LowWest;
+        }
+
+        float azimuth = 0.0f;
+        float elevation = 0.0f;
+        stage6light::AnglesFromDirection(
+            lightParameters.directionToSun, azimuth, elevation);
+        bool lightChanged = false;
+        lightChanged |= ImGui::SliderFloat("Sun Azimuth", &azimuth,
+                                            -180.0f, 180.0f, "%.1f deg");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##Azimuth"))
+        {
+            azimuth = 45.0f;
+            lightChanged = true;
+        }
+        lightChanged |= ImGui::SliderFloat("Sun Elevation", &elevation,
+                                            0.0f, 90.0f, "%.1f deg");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##Elevation"))
+        {
+            elevation = 70.0f;
+            lightChanged = true;
+        }
+        if (lightChanged)
+            lightParameters.directionToSun =
+                stage6light::DirectionFromAngles(azimuth, elevation);
+
+        lightChanged |= ImGui::ColorEdit3("Sun Color", &lightParameters.sunColor.x,
+                                           ImGuiColorEditFlags_Float);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##SunColor"))
+        {
+            lightParameters.sunColor = { 1.0f, 0.95f, 0.85f };
+            lightChanged = true;
+        }
+        lightChanged |= ImGui::SliderFloat("Sun Intensity", &lightParameters.sunIntensity,
+                                            0.0f, 5.0f, "%.2f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##SunIntensity"))
+        {
+            lightParameters.sunIntensity = 1.0f;
+            lightChanged = true;
+        }
+        lightChanged |= ImGui::SliderFloat("Scattering Coefficient",
+                                            &lightParameters.scatteringCoefficient,
+                                            0.0f, 2.0f, "%.2f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##Scatter"))
+        {
+            lightParameters.scatteringCoefficient = 1.0f;
+            lightChanged = true;
+        }
+        int lightSteps = static_cast<int>(lightParameters.maxLightSteps);
+        if (ImGui::SliderInt("Max Light Steps", &lightSteps, 1, 32))
+        {
+            lightParameters.maxLightSteps = static_cast<std::uint32_t>(lightSteps);
+            lightChanged = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##LightSteps"))
+        {
+            lightParameters.maxLightSteps = 16;
+            lightChanged = true;
+        }
+        lightChanged |= ImGui::SliderFloat("Light Step Size", &lightParameters.lightStepSize,
+                                            0.05f, 1.0f, "%.3f m",
+                                            ImGuiSliderFlags_Logarithmic);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##LightStepSize"))
+        {
+            lightParameters.lightStepSize = 0.25f;
+            lightChanged = true;
+        }
+        lightChanged |= ImGui::SliderFloat("Light Ray Bias", &lightParameters.lightRayBias,
+                                            0.001f, 0.05f, "%.3f m");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##LightBias"))
+        {
+            lightParameters.lightRayBias = 0.01f;
+            lightChanged = true;
+        }
+        if (lightChanged)
+            sunPreset = Stage6SunPreset::Custom;
+        lightParameters = stage6light::Sanitize(lightParameters);
+        ImGui::TextDisabled("Light Ray samples Base Density only; Detail is omitted.");
+    }
+
     if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::Checkbox("Pause Time", &m_timePaused);
@@ -521,6 +653,11 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
 
     m_parametersChanged = m_parametersChanged ||
         std::memcmp(&before, &cloudParameters, sizeof(CloudParameters)) != 0;
+    if (std::memcmp(&lightBefore, &lightParameters, sizeof(LightParameters)) != 0 &&
+        sunPreset != Stage6SunPreset::Noon &&
+        sunPreset != Stage6SunPreset::LowEast &&
+        sunPreset != Stage6SunPreset::LowWest)
+        sunPreset = Stage6SunPreset::Custom;
 
     ImGui::End();
 }
@@ -674,6 +811,64 @@ void NoiseLab::RenderPreviews(ID3D11VertexShader* fullscreenVs,
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
     ID3D11ShaderResourceView* nullSrv = nullptr;
     m_context->PSSetShaderResources(2, 1, &nullSrv);
+}
+
+void NoiseLab::DrawPerformanceOverlay(const FrameTimingSnapshot& timing,
+                                      const CloudParameters& cloudParameters,
+                                      const LightParameters& lightParameters,
+                                      bool vsyncEnabled)
+{
+    // Win32 DPI 가상화가 켜진 환경에서는 viewport WorkSize가 물리 픽셀 기준으로
+    // 남을 수 있다. ImGui가 실제 레이아웃에 사용하는 DisplaySize를 기준으로 잡아야
+    // 우측 가장자리가 고배율 모니터에서도 화면 밖으로 밀려나지 않는다.
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 position(
+        io.DisplaySize.x - 12.0f,
+        12.0f);
+    ImGui::SetNextWindowPos(position, ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.72f);
+
+    constexpr ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoInputs;
+
+    if (ImGui::Begin("Performance Overlay", nullptr, flags))
+    {
+        ImGui::Text("Frame # %llu",
+                    static_cast<unsigned long long>(timing.frameIndex));
+        if (timing.cpuValid)
+        {
+            ImGui::Text("FPS        %7.1f", timing.fps);
+            ImGui::Text("CPU Frame  %7.3f ms", timing.cpuFrameMs);
+        }
+        else
+        {
+            ImGui::TextUnformatted("FPS / CPU  warming up");
+        }
+
+        if (timing.gpuValid)
+        {
+            ImGui::Text("GPU Frame  %7.3f ms", timing.gpuFrameMs);
+            ImGui::Text("GPU Cloud  %7.3f ms", timing.gpuCloudMs);
+        }
+        else
+        {
+            ImGui::TextUnformatted("GPU        warming up");
+        }
+
+        ImGui::Separator();
+        ImGui::Text("View   %u @ %.3f m",
+                    cloudParameters.maxViewSteps, cloudParameters.stepSize);
+        ImGui::Text("Light  %u @ %.3f m",
+                    lightParameters.maxLightSteps, lightParameters.lightStepSize);
+        ImGui::Text("VSync  %s", vsyncEnabled ? "On" : "Off");
+    }
+    ImGui::End();
 }
 
 void NoiseLab::EndFrame(ID3D11RenderTargetView* backBufferRtv)
@@ -928,6 +1123,8 @@ std::uint64_t NoiseLab::HashFile(const std::filesystem::path& path) const
 
 bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const CloudParameters& cloud,
+                             const LightParameters& light,
+                             Stage6SunPreset sunPreset,
                              Stage4DetailPreset detailPreset,
                              Stage5WeatherPreset weatherPreset,
                              const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -950,17 +1147,33 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
     static const char* weatherPresetNames[] = {
         "uniformLegacy", "periodicPerlin", "channelDebug"
     };
+    static const char* sunPresetNames[] = {
+        "noon", "lowEast", "lowWest", "customSun"
+    };
     const int presetIndex = std::clamp(static_cast<int>(detailPreset), 0, 4);
     const int weatherPresetIndex = std::clamp(static_cast<int>(weatherPreset), 0, 2);
+    const int sunPresetIndex = std::clamp(static_cast<int>(sunPreset), 0, 3);
     const std::uint32_t outputIndex = std::min(m_parameters.outputMode, 14u);
     const WeatherMapGeneratorSettings generator =
         SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 5,\n"
+           << "  \"schemaVersion\": 6,\n"
            << "  \"output\": \"" << outputNames[outputIndex] << "\",\n"
            << "  \"detailPreset\": \"" << detailPresetNames[presetIndex] << "\",\n"
            << "  \"weatherPreset\": \"" << weatherPresetNames[weatherPresetIndex] << "\",\n"
+           << "  \"sunPreset\": \"" << sunPresetNames[sunPresetIndex] << "\",\n"
+           << "  \"directionConvention\": \"sampleToSunWorldDirection\",\n"
+           << "  \"directionToSun\": [" << light.directionToSun.x << ", "
+           << light.directionToSun.y << ", " << light.directionToSun.z << "],\n"
+           << "  \"sunColorLinear\": [" << light.sunColor.x << ", "
+           << light.sunColor.y << ", " << light.sunColor.z << "],\n"
+           << "  \"sunIntensity\": " << light.sunIntensity << ",\n"
+           << "  \"scatteringCoefficient\": " << light.scatteringCoefficient << ",\n"
+           << "  \"maxLightSteps\": " << light.maxLightSteps << ",\n"
+           << "  \"lightStepSizeMeters\": " << light.lightStepSize << ",\n"
+           << "  \"lightRayBiasMeters\": " << light.lightRayBias << ",\n"
+           << "  \"lightRayDensitySource\": \"baseDensityWithoutDetailErosion\",\n"
            << "  \"weatherMapResolution\": [256, 256],\n"
            << "  \"weatherChannels\": {\"R\": \"coverage\", \"G\": \"cloudType\", "
               "\"B\": \"densityModifierSource\", \"A\": \"reserved\"},\n"
@@ -1021,6 +1234,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
 
 bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const CloudParameters& cloudParameters,
+                              const LightParameters& lightParameters,
+                              Stage6SunPreset sunPreset,
                               Stage4DetailPreset detailPreset,
                               Stage5WeatherPreset weatherPreset,
                               const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -1042,7 +1257,8 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                          SaveTargetPng(directory / L"yz.png", m_targets[2]) &&
                          SaveTexturePng(directory / L"weather-map.png", weatherMapTexture) &&
                          WriteMetadata(directory / L"noise-settings.json",
-                                       cloudParameters, detailPreset, weatherPreset,
+                                       cloudParameters, lightParameters, sunPreset,
+                                       detailPreset, weatherPreset,
                                        weatherGeneratorSettings, weatherMapHash,
                                        noiseSourcePath);
     m_exportStatus = success
