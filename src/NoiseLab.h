@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.h - 단계 6 Weather 밀도 단면과 태양광 개발용 ImGui UI
+//  NoiseLab.h - 단계 7 밀도·태양광·Phase Function 개발용 ImGui UI
 // ============================================================================
 #pragma once
 
@@ -74,6 +74,7 @@ public:
                     CloudParameters& cloudParameters,
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
+                    Stage7PhasePreset& phasePreset,
                     Stage5WeatherPreset weatherPreset,
                     const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                     ID3D11ShaderResourceView* weatherMapSrv,
@@ -105,6 +106,7 @@ public:
                         const CloudParameters& cloudParameters,
                         const LightParameters& lightParameters,
                         Stage6SunPreset sunPreset,
+                        Stage7PhasePreset phasePreset,
                         Stage4DetailPreset detailPreset,
                         Stage5WeatherPreset weatherPreset,
                         const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -133,6 +135,7 @@ private:
     void DrawControlWindow(CloudParameters& cloudParameters,
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
+                           Stage7PhasePreset& phasePreset,
                            Stage5WeatherPreset weatherPreset,
                            const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                            ID3D11ShaderResourceView* weatherMapSrv,
@@ -158,6 +161,7 @@ private:
                        const CloudParameters& cloudParameters,
                        const LightParameters& lightParameters,
                        Stage6SunPreset sunPreset,
+                       Stage7PhasePreset phasePreset,
                        Stage4DetailPreset detailPreset,
                        Stage5WeatherPreset weatherPreset,
                        const WeatherMapGeneratorSettings& weatherGeneratorSettings,

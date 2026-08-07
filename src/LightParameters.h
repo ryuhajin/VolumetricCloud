@@ -1,5 +1,5 @@
 // ============================================================================
-//  LightParameters.h - 단계 6 태양광/단일 산란 CPU/GPU 공유 설정
+//  LightParameters.h - 단계 7 태양광·Dual-lobe Phase CPU/GPU 공유 설정
 // ============================================================================
 #pragma once
 
@@ -13,6 +13,15 @@ enum class Stage6SunPreset : std::int32_t
     Noon,
     LowEast,
     LowWest,
+    Custom,
+};
+
+enum class Stage7PhasePreset : std::int32_t
+{
+    Off,
+    Balanced,
+    SilverLining,
+    BackscatterCheck,
     Custom,
 };
 
@@ -32,10 +41,15 @@ struct alignas(16) LightParameters
     std::uint32_t maxLightSteps = 16;
     float lightStepSize = 0.25f;
     float lightRayBias = 0.01f;
-    float lightPadding = 0.0f;
+    float phaseEnabled = 0.0f;
+
+    float forwardScatteringG = 0.65f;
+    float backwardScatteringG = -0.25f;
+    float phaseBlend = 0.80f;
+    float phaseIntensity = 0.25f;
 };
 
-static_assert(sizeof(LightParameters) == 48, "LightParameters must match LightCB");
+static_assert(sizeof(LightParameters) == 64, "LightParameters must match LightCB");
 
 namespace stage6light
 {
@@ -91,8 +105,61 @@ inline LightParameters Sanitize(LightParameters value)
     value.lightRayBias = std::clamp(
         std::isfinite(value.lightRayBias) ? value.lightRayBias : 0.01f,
         0.0f, 1.0f);
-    value.lightPadding = 0.0f;
+    value.phaseEnabled = std::isfinite(value.phaseEnabled) &&
+                         value.phaseEnabled >= 0.5f ? 1.0f : 0.0f;
+    value.forwardScatteringG = std::clamp(
+        std::isfinite(value.forwardScatteringG) ? value.forwardScatteringG : 0.65f,
+        0.0f, 0.95f);
+    value.backwardScatteringG = std::clamp(
+        std::isfinite(value.backwardScatteringG) ? value.backwardScatteringG : -0.25f,
+        -0.95f, 0.0f);
+    value.phaseBlend = std::clamp(
+        std::isfinite(value.phaseBlend) ? value.phaseBlend : 0.80f,
+        0.0f, 1.0f);
+    value.phaseIntensity = std::clamp(
+        std::isfinite(value.phaseIntensity) ? value.phaseIntensity : 0.25f,
+        0.0f, 1.0f);
     return value;
+}
+
+inline void ApplyPhasePreset(LightParameters& value, Stage7PhasePreset preset)
+{
+    switch (preset)
+    {
+    case Stage7PhasePreset::Balanced:
+        value.phaseEnabled = 1.0f;
+        value.forwardScatteringG = 0.65f;
+        value.backwardScatteringG = -0.25f;
+        value.phaseBlend = 0.80f;
+        value.phaseIntensity = 0.25f;
+        break;
+    case Stage7PhasePreset::SilverLining:
+        value.phaseEnabled = 1.0f;
+        value.forwardScatteringG = 0.80f;
+        value.backwardScatteringG = -0.15f;
+        value.phaseBlend = 0.90f;
+        value.phaseIntensity = 0.20f;
+        break;
+    case Stage7PhasePreset::BackscatterCheck:
+        value.phaseEnabled = 1.0f;
+        value.forwardScatteringG = 0.40f;
+        value.backwardScatteringG = -0.55f;
+        value.phaseBlend = 0.30f;
+        value.phaseIntensity = 0.25f;
+        break;
+    case Stage7PhasePreset::Custom:
+        value = Sanitize(value);
+        return;
+    case Stage7PhasePreset::Off:
+    default:
+        value.phaseEnabled = 0.0f;
+        value.forwardScatteringG = 0.65f;
+        value.backwardScatteringG = -0.25f;
+        value.phaseBlend = 0.80f;
+        value.phaseIntensity = 0.25f;
+        break;
+    }
+    value = Sanitize(value);
 }
 
 inline LightParameters Preset(Stage6SunPreset preset)

@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 6 태양광/단일 산란 렌더링
+//  Renderer.h - Direct3D 11 단계 7 방향성 단일 산란 렌더링
 // ============================================================================
 #pragma once
 
@@ -49,9 +49,11 @@ public:
         const WeatherMapGeneratorSettings& settings);
     Stage5WeatherPreset WeatherPreset() const { return m_weatherPreset; }
     void ApplyStage6SunPreset(Stage6SunPreset preset);
+    void ApplyStage7PhasePreset(Stage7PhasePreset preset);
     void SetLightSampling(std::uint32_t maxSteps, float stepSize);
     void SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize);
     Stage6SunPreset SunPreset() const { return m_sunPreset; }
+    Stage7PhasePreset PhasePreset() const { return m_phasePreset; }
     const LightParameters& LightSettings() const { return m_lightParameters; }
     std::uint64_t WeatherMapHash() const { return m_weatherMapHash; }
     std::uintptr_t WeatherTextureIdentity() const
@@ -170,6 +172,7 @@ private:
     Stage4DetailPreset m_detailPreset = Stage4DetailPreset::DefaultDetail;
     Stage5WeatherPreset m_weatherPreset = Stage5WeatherPreset::ChannelDebug;
     Stage6SunPreset m_sunPreset = Stage6SunPreset::Custom;
+    Stage7PhasePreset m_phasePreset = Stage7PhasePreset::Off;
     WeatherMapGeneratorSettings m_weatherGeneratorSettings;
     std::uint64_t m_weatherMapHash = 0;
     std::string m_weatherMapStatus = "Not generated";

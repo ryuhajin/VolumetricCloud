@@ -14,6 +14,7 @@
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
 #include "Stage3HeightMath.h"
+#include "Stage7PhaseMath.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -202,6 +203,7 @@ void NoiseLab::BeginFrame(float applicationTime,
                           CloudParameters& cloudParameters,
                           LightParameters& lightParameters,
                           Stage6SunPreset& sunPreset,
+                          Stage7PhasePreset& phasePreset,
                           Stage5WeatherPreset weatherPreset,
                           const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                           ID3D11ShaderResourceView* weatherMapSrv,
@@ -225,7 +227,7 @@ void NoiseLab::BeginFrame(float applicationTime,
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     if (m_visible)
-        DrawControlWindow(cloudParameters, lightParameters, sunPreset,
+        DrawControlWindow(cloudParameters, lightParameters, sunPreset, phasePreset,
                           weatherPreset, weatherGeneratorSettings,
                           weatherMapSrv, weatherMapStatus, vsyncEnabled,
                           shaderGeneration,
@@ -237,6 +239,7 @@ void NoiseLab::BeginFrame(float applicationTime,
 void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                                  LightParameters& lightParameters,
                                  Stage6SunPreset& sunPreset,
+                                 Stage7PhasePreset& phasePreset,
                                  Stage5WeatherPreset weatherPreset,
                                  const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                                  ID3D11ShaderResourceView* weatherMapSrv,
@@ -619,6 +622,144 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::TextDisabled("Light Ray samples Base Density only; Detail is omitted.");
     }
 
+    if (ImGui::CollapsingHeader("Phase Function", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        static const char* phasePresetNames[] = {
+            "Off", "Balanced", "Silver Lining", "Backscatter Check", "Custom"
+        };
+        const int phasePresetIndex = std::clamp(
+            static_cast<int>(phasePreset), 0, 4);
+        ImGui::Text("Current: %s", phasePresetNames[phasePresetIndex]);
+
+        if (ImGui::Button("Phase Off"))
+        {
+            stage6light::ApplyPhasePreset(
+                lightParameters, Stage7PhasePreset::Off);
+            phasePreset = Stage7PhasePreset::Off;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Balanced"))
+        {
+            stage6light::ApplyPhasePreset(
+                lightParameters, Stage7PhasePreset::Balanced);
+            phasePreset = Stage7PhasePreset::Balanced;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Silver Lining"))
+        {
+            stage6light::ApplyPhasePreset(
+                lightParameters, Stage7PhasePreset::SilverLining);
+            phasePreset = Stage7PhasePreset::SilverLining;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Backscatter Check"))
+        {
+            stage6light::ApplyPhasePreset(
+                lightParameters, Stage7PhasePreset::BackscatterCheck);
+            phasePreset = Stage7PhasePreset::BackscatterCheck;
+        }
+
+        bool phaseEditedManually = false;
+        bool phaseEnabled = lightParameters.phaseEnabled >= 0.5f;
+        if (ImGui::Checkbox("Enable Phase Function", &phaseEnabled))
+        {
+            lightParameters.phaseEnabled = phaseEnabled ? 1.0f : 0.0f;
+            phaseEditedManually = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##PhaseEnabled"))
+        {
+            lightParameters.phaseEnabled = 0.0f;
+            phaseEditedManually = true;
+        }
+
+        phaseEditedManually |= ImGui::SliderFloat(
+            "Forward Scattering G", &lightParameters.forwardScatteringG,
+            0.0f, 0.95f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ForwardG"))
+        {
+            lightParameters.forwardScatteringG = 0.65f;
+            phaseEditedManually = true;
+        }
+        phaseEditedManually |= ImGui::SliderFloat(
+            "Backward Scattering G", &lightParameters.backwardScatteringG,
+            -0.95f, 0.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##BackwardG"))
+        {
+            lightParameters.backwardScatteringG = -0.25f;
+            phaseEditedManually = true;
+        }
+        phaseEditedManually |= ImGui::SliderFloat(
+            "Phase Blend", &lightParameters.phaseBlend, 0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##PhaseBlend"))
+        {
+            lightParameters.phaseBlend = 0.80f;
+            phaseEditedManually = true;
+        }
+        phaseEditedManually |= ImGui::SliderFloat(
+            "Phase Intensity", &lightParameters.phaseIntensity,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##PhaseIntensity"))
+        {
+            lightParameters.phaseIntensity = 0.25f;
+            phaseEditedManually = true;
+        }
+        if (ImGui::Button("Reset All Phase"))
+        {
+            stage6light::ApplyPhasePreset(
+                lightParameters, Stage7PhasePreset::Off);
+            phasePreset = Stage7PhasePreset::Off;
+        }
+
+        lightParameters = stage6light::Sanitize(lightParameters);
+        if (phaseEditedManually)
+            phasePreset = Stage7PhasePreset::Custom;
+
+        std::array<float, 128> forwardCurve = {};
+        std::array<float, 128> backwardCurve = {};
+        std::array<float, 128> dualCurve = {};
+        std::array<float, 128> appliedCurve = {};
+        for (std::size_t index = 0; index < forwardCurve.size(); ++index)
+        {
+            const float cosTheta = -1.0f + 2.0f * static_cast<float>(index) /
+                static_cast<float>(forwardCurve.size() - 1);
+            forwardCurve[index] = stage7::HenyeyGreenstein(
+                cosTheta, lightParameters.forwardScatteringG);
+            backwardCurve[index] = stage7::HenyeyGreenstein(
+                cosTheta, lightParameters.backwardScatteringG);
+            dualCurve[index] = backwardCurve[index] +
+                (forwardCurve[index] - backwardCurve[index]) *
+                lightParameters.phaseBlend;
+            const float boundedDual = std::clamp(
+                dualCurve[index], 0.0f, stage7::kMaxPhaseFactor);
+            appliedCurve[index] = lightParameters.phaseEnabled >= 0.5f
+                ? 1.0f + (boundedDual - 1.0f) * lightParameters.phaseIntensity
+                : 1.0f;
+        }
+        ImGui::PlotLines("Forward HG", forwardCurve.data(),
+                         static_cast<int>(forwardCurve.size()), 0,
+                         "-1 opposite  ->  +1 toward sun", 0.0f, 16.0f,
+                         ImVec2(0.0f, 70.0f));
+        ImGui::PlotLines("Backward HG", backwardCurve.data(),
+                         static_cast<int>(backwardCurve.size()), 0,
+                         "-1 opposite  ->  +1 toward sun", 0.0f, 16.0f,
+                         ImVec2(0.0f, 70.0f));
+        ImGui::PlotLines("Dual Lobe", dualCurve.data(),
+                         static_cast<int>(dualCurve.size()), 0,
+                         "Backward/Forward mixed by Phase Blend", 0.0f, 16.0f,
+                         ImVec2(0.0f, 70.0f));
+        ImGui::PlotLines("Applied Factor", appliedCurve.data(),
+                         static_cast<int>(appliedCurve.size()), 0,
+                         "1 = Stage 6 isotropic", 0.0f, 16.0f,
+                         ImVec2(0.0f, 70.0f));
+        ImGui::TextDisabled(
+            "cosTheta +1: camera looks toward sun / -1: opposite direction");
+    }
+
     if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::Checkbox("Pause Time", &m_timePaused);
@@ -653,7 +794,19 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
 
     m_parametersChanged = m_parametersChanged ||
         std::memcmp(&before, &cloudParameters, sizeof(CloudParameters)) != 0;
-    if (std::memcmp(&lightBefore, &lightParameters, sizeof(LightParameters)) != 0 &&
+    const bool sunSettingsChanged =
+        lightBefore.directionToSun.x != lightParameters.directionToSun.x ||
+        lightBefore.directionToSun.y != lightParameters.directionToSun.y ||
+        lightBefore.directionToSun.z != lightParameters.directionToSun.z ||
+        lightBefore.sunIntensity != lightParameters.sunIntensity ||
+        lightBefore.sunColor.x != lightParameters.sunColor.x ||
+        lightBefore.sunColor.y != lightParameters.sunColor.y ||
+        lightBefore.sunColor.z != lightParameters.sunColor.z ||
+        lightBefore.scatteringCoefficient != lightParameters.scatteringCoefficient ||
+        lightBefore.maxLightSteps != lightParameters.maxLightSteps ||
+        lightBefore.lightStepSize != lightParameters.lightStepSize ||
+        lightBefore.lightRayBias != lightParameters.lightRayBias;
+    if (sunSettingsChanged &&
         sunPreset != Stage6SunPreset::Noon &&
         sunPreset != Stage6SunPreset::LowEast &&
         sunPreset != Stage6SunPreset::LowWest)
@@ -1125,6 +1278,7 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const CloudParameters& cloud,
                              const LightParameters& light,
                              Stage6SunPreset sunPreset,
+                             Stage7PhasePreset phasePreset,
                              Stage4DetailPreset detailPreset,
                              Stage5WeatherPreset weatherPreset,
                              const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -1150,20 +1304,27 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
     static const char* sunPresetNames[] = {
         "noon", "lowEast", "lowWest", "customSun"
     };
+    static const char* phasePresetNames[] = {
+        "off", "balanced", "silverLining", "backscatterCheck", "custom"
+    };
     const int presetIndex = std::clamp(static_cast<int>(detailPreset), 0, 4);
     const int weatherPresetIndex = std::clamp(static_cast<int>(weatherPreset), 0, 2);
     const int sunPresetIndex = std::clamp(static_cast<int>(sunPreset), 0, 3);
+    const int phasePresetIndex = std::clamp(static_cast<int>(phasePreset), 0, 4);
     const std::uint32_t outputIndex = std::min(m_parameters.outputMode, 14u);
     const WeatherMapGeneratorSettings generator =
         SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 6,\n"
+           << "  \"schemaVersion\": 7,\n"
            << "  \"output\": \"" << outputNames[outputIndex] << "\",\n"
            << "  \"detailPreset\": \"" << detailPresetNames[presetIndex] << "\",\n"
            << "  \"weatherPreset\": \"" << weatherPresetNames[weatherPresetIndex] << "\",\n"
            << "  \"sunPreset\": \"" << sunPresetNames[sunPresetIndex] << "\",\n"
+           << "  \"phasePreset\": \"" << phasePresetNames[phasePresetIndex] << "\",\n"
            << "  \"directionConvention\": \"sampleToSunWorldDirection\",\n"
+           << "  \"phaseDirectionConvention\": "
+              "\"cosTheta=dot(cameraToSample,sampleToSun)\",\n"
            << "  \"directionToSun\": [" << light.directionToSun.x << ", "
            << light.directionToSun.y << ", " << light.directionToSun.z << "],\n"
            << "  \"sunColorLinear\": [" << light.sunColor.x << ", "
@@ -1174,6 +1335,13 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"lightStepSizeMeters\": " << light.lightStepSize << ",\n"
            << "  \"lightRayBiasMeters\": " << light.lightRayBias << ",\n"
            << "  \"lightRayDensitySource\": \"baseDensityWithoutDetailErosion\",\n"
+           << "  \"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\",\n"
+           << "  \"phaseEnabled\": " << (light.phaseEnabled >= 0.5f ? "true" : "false") << ",\n"
+           << "  \"forwardScatteringG\": " << light.forwardScatteringG << ",\n"
+           << "  \"backwardScatteringG\": " << light.backwardScatteringG << ",\n"
+           << "  \"phaseBlend\": " << light.phaseBlend << ",\n"
+           << "  \"phaseIntensity\": " << light.phaseIntensity << ",\n"
+           << "  \"maxPhaseFactor\": 16.000000,\n"
            << "  \"weatherMapResolution\": [256, 256],\n"
            << "  \"weatherChannels\": {\"R\": \"coverage\", \"G\": \"cloudType\", "
               "\"B\": \"densityModifierSource\", \"A\": \"reserved\"},\n"
@@ -1236,6 +1404,7 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const CloudParameters& cloudParameters,
                               const LightParameters& lightParameters,
                               Stage6SunPreset sunPreset,
+                              Stage7PhasePreset phasePreset,
                               Stage4DetailPreset detailPreset,
                               Stage5WeatherPreset weatherPreset,
                               const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -1258,7 +1427,7 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                          SaveTexturePng(directory / L"weather-map.png", weatherMapTexture) &&
                          WriteMetadata(directory / L"noise-settings.json",
                                        cloudParameters, lightParameters, sunPreset,
-                                       detailPreset, weatherPreset,
+                                       phasePreset, detailPreset, weatherPreset,
                                        weatherGeneratorSettings, weatherMapHash,
                                        noiseSourcePath);
     m_exportStatus = success

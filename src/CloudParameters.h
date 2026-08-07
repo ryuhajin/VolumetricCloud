@@ -36,6 +36,10 @@ enum class CloudDebugMode : std::int32_t
     LightOpticalDepth = 25,
     TotalLightSamples = 26,
     DirectSingleScattering = 27,
+    PhaseCosTheta = 28,
+    ForwardPhaseLobe = 29,
+    BackwardPhaseLobe = 30,
+    DualPhaseFactor = 31,
 };
 
 enum class Stage1ValidationPreset : std::int32_t

@@ -1,15 +1,15 @@
 // ============================================================================
-//  CloudLighting.hlsli - 단계 6 태양 Light Ray와 단일 산란
+//  CloudLighting.hlsli - 단계 6 Light Ray와 단계 7 방향성 단일 산란
 // ----------------------------------------------------------------------------
 //  렌더링 흐름에서의 위치
 //  1. View Ray가 현재 구름 표본의 최종 밀도를 구한다.
 //  2. 밀도가 있을 때만 표본에서 태양 방향으로 Light Ray를 만든다.
 //  3. Light Ray는 Weather·Type·Height가 적용된 Base Density만 누적한다.
 //  4. 광학 깊이를 Beer-Lambert 식으로 태양 투과율로 바꾼다.
-//  5. 태양색 × 태양 투과율 × 현재 밀도를 View Ray 산란에 더한다.
+//  5. 단계 7 Phase Factor를 방향성 산란량에 곱해 View Ray에 더한다.
 //
 //  Detail Erosion은 비용과 고주파 깜박임을 분리하기 위해 Light Ray에서 생략한다.
-//  단계 7 Phase Function, 단계 8 환경광/다중 산란, 단계 9 Early Exit는 아직 없다.
+//  단계 8 환경광/다중 산란, 단계 9 Early Exit는 아직 없다.
 // ============================================================================
 #ifndef VCLOUD_CLOUD_LIGHTING_HLSLI
 #define VCLOUD_CLOUD_LIGHTING_HLSLI
@@ -17,6 +17,7 @@
 #include "Ray.hlsli"
 #include "Noise.hlsli"
 #include "LightParameters.hlsli"
+#include "PhaseFunction.hlsli"
 
 struct LightMarchResult
 {
@@ -85,10 +86,12 @@ LightMarchResult ComputeLightTransmittance(
 }
 
 // 한 View Ray 구간에서 카메라 방향으로 새로 들어오는 직접 태양광을 계산한다.
-// Phase Function이 아직 없으므로 방향에 따른 산란 차이는 적용하지 않는다.
+// phaseFactor는 단계 7에서 카메라와 태양 각도로 한 픽셀에 한 번 계산한다.
+// 이 값은 새로 들어오는 빛만 바꾸며 투과율과 광학 깊이는 바꾸지 않는다.
 float3 IntegrateSingleScattering(
     float density, float lightTransmittance,
-    float viewTransmittance, float viewStepLength)
+    float viewTransmittance, float viewStepLength,
+    float phaseFactor)
 {
     float safeDensity = max(density, 0.0);
     float safeLength = max(viewStepLength, 0.0);
@@ -101,7 +104,8 @@ float3 IntegrateSingleScattering(
         : safeDensity * safeLength;
     return saturate(viewTransmittance) * max(sunColor, 0.0.xxx) *
            max(sunIntensity, 0.0) * saturate(lightTransmittance) *
-           max(scatteringCoefficient, 0.0) * max(densityIntegral, 0.0);
+           max(scatteringCoefficient, 0.0) * max(densityIntegral, 0.0) *
+           clamp(phaseFactor, 0.0, kMaxPhaseFactor);
 }
 
 #endif

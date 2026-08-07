@@ -1,5 +1,5 @@
 // ============================================================================
-//  VolumetricClouds.hlsl - 단계 6 태양광과 단일 산란 합성
+//  VolumetricClouds.hlsl - 단계 7 Dual-lobe Phase 단일 산란 합성
 // ----------------------------------------------------------------------------
 //  한 프레임의 렌더링 순서
 //  1. CPU가 Camera/Cloud/Light 데이터를 b0/b1/b3 상수버퍼에 복사한다.
@@ -9,10 +9,11 @@
 //  5. 월드 XZ Weather R/G/B로 배치·종류·밀도를 결정해 Base Shape를 만든다.
 //  6. Base가 비어 있지 않을 때만 Detail로 깎는다.
 //  7. 밀도가 있는 View 표본에서 태양 방향 Light Ray로 광학 깊이를 잰다.
-//  8. 태양 투과율을 직접 단일 산란에 곱하고 View 투과율을 누적한다.
-//  9. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
+//  8. 카메라→표본과 표본→태양 방향으로 Dual-lobe Phase Factor를 구한다.
+//  9. 태양 투과율과 Phase를 직접 단일 산란에 곱하고 View 투과율을 누적한다.
+// 10. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
 //
-//  단계 7 Phase Function, 단계 8 환경광/다중 산란과 단계 9 Early Exit는 없다.
+//  단계 8 환경광/다중 산란과 단계 9 Early Exit는 아직 없다.
 //  Light Ray는 비용을 분리하기 위해 Detail이 아닌 Base Density만 샘플링한다.
 // ============================================================================
 
@@ -80,6 +81,10 @@ struct CloudMarchDebug
     float lightOpticalDepth;  // 대표 위치에서 태양까지의 Base 광학 깊이.
     float totalLightSamples;  // 이 픽셀의 모든 View 표본이 실행한 Light 표본 합계.
     float3 directScattering;  // 대표 위치의 직접 단일 산란 linear RGB.
+    float phaseCosTheta;      // 카메라→표본과 표본→태양의 내적. +1이면 태양을 바라봄.
+    float forwardPhaseLobe;   // 양의 g를 사용한 전방 HG 값.
+    float backwardPhaseLobe;  // 음의 g를 사용한 후방 HG 값.
+    float dualPhaseFactor;    // 직접 산란에 실제로 적용한 최종 [0,16] 배율.
 };
 
 // 화면 UV를 DirectX NDC로 바꾼다.
@@ -209,6 +214,16 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         debugData.detailNoiseUvw = representativeSample.detailNoiseUvw;
         debugData.weatherUv = representativeSample.weatherUv;
 
+        // Phase는 한 View Ray 안에서 방향이 변하지 않으므로 픽셀당 한 번만 계산한다.
+        // viewRayDirection은 카메라→표본, directionToSun은 표본→태양이며 두 방향이
+        // 나란한 cosTheta=+1이 태양을 바라보는 전방 산란 방향이다.
+        PhaseSample phase = EvaluateDualLobePhase(
+            rayDirection, directionToSun);
+        debugData.phaseCosTheta = phase.cosTheta;
+        debugData.forwardPhaseLobe = phase.forwardLobe;
+        debugData.backwardPhaseLobe = phase.backwardLobe;
+        debugData.dualPhaseFactor = phase.phaseFactor;
+
         // 조명 디버그를 선택했을 때만 대표 위치에 추가 Light Ray를 쏜다.
         // 실제 합성용 Light Ray는 아래 View 반복 안에서 따로 누적한다.
         if (debugMode == 24 || debugMode == 25 || debugMode == 27)
@@ -219,7 +234,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             debugData.lightOpticalDepth = representativeLight.opticalDepth;
             debugData.directScattering = IntegrateSingleScattering(
                 representativeSample.finalDensity,
-                representativeLight.transmittance, 1.0, actualStepLength);
+                representativeLight.transmittance, 1.0, actualStepLength,
+                phase.phaseFactor);
         }
 
         // 4. 각 구간 중앙에서 Base를 만들고 필요한 위치에서만 Detail로 침식한다.
@@ -244,7 +260,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
                     samplePosition, directionToSun);
                 result.scattering += IntegrateSingleScattering(
                     sampledDensity, light.transmittance,
-                    result.transmittance, actualStepLength);
+                    result.transmittance, actualStepLength,
+                    phase.phaseFactor);
                 debugData.totalLightSamples += light.stepCount;
             }
             result.transmittance *= sampledStepTransmittance;
@@ -359,6 +376,34 @@ float4 main(VSOut input) : SV_TARGET
         float3 mappedScattering = marchDebug.directScattering /
             (1.0.xxx + max(marchDebug.directScattering, 0.0.xxx));
         return float4(mappedScattering * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 28)
+    {
+        float mappedCosTheta = marchDebug.phaseCosTheta * 0.5 + 0.5;
+        return float4((mappedCosTheta * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 29)
+    {
+        float exposedForward = 1.0 - exp(
+            -0.25 * max(marchDebug.forwardPhaseLobe, 0.0));
+        return float4(float3(1.0, 0.45, 0.08) *
+                      exposedForward * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 30)
+    {
+        float exposedBackward = 1.0 - exp(
+            -0.25 * max(marchDebug.backwardPhaseLobe, 0.0));
+        return float4(float3(0.10, 0.42, 1.0) *
+                      exposedBackward * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 31)
+    {
+        float factor = clamp(marchDebug.dualPhaseFactor, 0.0, kMaxPhaseFactor);
+        float3 factorColor = factor < 1.0
+            ? lerp(float3(0.10, 0.35, 1.0), 1.0.xxx, factor)
+            : lerp(1.0.xxx, float3(1.0, 0.82, 0.08),
+                   saturate((factor - 1.0) / 3.0));
+        return float4(factorColor * marchDebug.hit, 1.0);
     }
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.

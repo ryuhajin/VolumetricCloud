@@ -2,7 +2,7 @@
 //  main.cpp  —  진입점 (WinMain)
 // ----------------------------------------------------------------------------
 //  창(Window) · 카메라(Camera) · 렌더러(Renderer)를 생성·연결하고,
-//  메인 루프에서 진단 장면과 단계 6 태양 단일 산란 구름 패스를 그린다.
+//  메인 루프에서 진단 장면과 단계 7 방향성 단일 산란 구름 패스를 그린다.
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -49,9 +49,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     // 일반 실행과 이전 단계 smoke의 해상도·프레임 해시는 바꾸지 않는다.
     const bool requestedStage6Smoke = commandLine &&
         wcsstr(commandLine, L"--stage6-smoke-test") != nullptr;
+    const bool requestedStage7Smoke = commandLine &&
+        wcsstr(commandLine, L"--stage7-smoke-test") != nullptr;
     const bool requestedPerformanceOverlaySmoke = commandLine &&
         wcsstr(commandLine, L"--performance-overlay-smoke-test") != nullptr;
-    const bool requestedSmallGpuSmoke = requestedStage6Smoke ||
+    const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
         requestedPerformanceOverlaySmoke;
     const int kWidth  = requestedSmallGpuSmoke ? 96 : 1280;
     const int kHeight = requestedSmallGpuSmoke ? 54 : 720;
@@ -69,6 +71,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage5SmokeTest = commandLine &&
         wcsstr(commandLine, L"--stage5-smoke-test") != nullptr;
     const bool stage6SmokeTest = requestedStage6Smoke;
+    const bool stage7SmokeTest = requestedStage7Smoke;
     const bool performanceOverlaySmokeTest = requestedPerformanceOverlaySmoke;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
@@ -93,10 +96,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 6 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | 외부 기본(F5)",
+                    L"VolumetricCloud - Stage 7 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | Phase Off | 외부 기본(F5)",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
-                    !stage6SmokeTest &&
+                    !stage6SmokeTest && !stage7SmokeTest &&
                     !performanceOverlaySmokeTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
@@ -111,7 +114,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     // Noise Lab, Hot Reload smoke가 단계 6의 기본 128×16 중첩 비용을 그대로 쓰지
     // 않도록 낮은 표본 수를 적용한다. 일반 사용자 실행에는 영향을 주지 않는다.
     if (smokeTest || stage1SmokeTest || stage2SmokeTest || stage3SmokeTest ||
-        stage4SmokeTest || stage5SmokeTest || stage6SmokeTest ||
+        stage4SmokeTest || stage5SmokeTest || stage6SmokeTest || stage7SmokeTest ||
         performanceOverlaySmokeTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest)
     {
@@ -308,7 +311,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             std::filesystem::temp_directory_path() / L"VolumetricCloudStage6Smoke";
         if (!renderer.ExportNoiseLabSnapshot(exportRoot))
             return 5;
-        bool foundSchema6 = false;
+        bool foundCurrentSchema = false;
         std::error_code exportError;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(
                  exportRoot, exportError))
@@ -319,11 +322,97 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 6") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 7") != std::string::npos &&
                 metadata.find("\"lightRayDensitySource\": \"baseDensityWithoutDetailErosion\"") != std::string::npos)
-                foundSchema6 = true;
+                foundCurrentSchema = true;
         }
-        if (!foundSchema6)
+        if (!foundCurrentSchema)
+            return 7;
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
+    if (stage7SmokeTest)
+    {
+        const Stage1ValidationPreset volumes[] = {
+            Stage1ValidationPreset::DefaultVolume,
+            Stage1ValidationPreset::WideVolume,
+        };
+        const Stage6SunPreset suns[] = {
+            Stage6SunPreset::Noon,
+            Stage6SunPreset::LowEast,
+            Stage6SunPreset::LowWest,
+        };
+        const Stage7PhasePreset phases[] = {
+            Stage7PhasePreset::Off,
+            Stage7PhasePreset::Balanced,
+            Stage7PhasePreset::SilverLining,
+            Stage7PhasePreset::BackscatterCheck,
+        };
+
+        renderer.EnableNoiseLabPreviews(false);
+        renderer.SetViewSamplingForSmoke(1u, 32.0f);
+        renderer.SetLightSampling(4u, 1.0f);
+        for (int mode = static_cast<int>(CloudDebugMode::PhaseCosTheta);
+             mode <= static_cast<int>(CloudDebugMode::DualPhaseFactor); ++mode)
+        {
+            const int combination = mode -
+                static_cast<int>(CloudDebugMode::PhaseCosTheta);
+            renderer.SetDebugMode(static_cast<CloudDebugMode>(mode));
+            renderer.ApplyStage6SunPreset(suns[combination % 3]);
+            renderer.ApplyStage7PhasePreset(phases[combination % 4]);
+            renderer.ApplyStage1ValidationPreset(volumes[combination % 2]);
+            renderer.Render(camera, 0.0f);
+        }
+
+        // Phase 프리셋을 바꿔도 태양 방향 프리셋 이름과 Light Ray 품질은 유지되어야 한다.
+        renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
+        renderer.SetLightSampling(4u, 1.0f);
+        renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
+        renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Balanced);
+        if (renderer.SunPreset() != Stage6SunPreset::Noon ||
+            renderer.PhasePreset() != Stage7PhasePreset::Balanced ||
+            renderer.LightSettings().maxLightSteps != 4u ||
+            sizeof(LightParameters) != 64u)
+            return 3;
+
+        // 합성 경로에서 Off와 방향성 Phase가 실제로 다른 프레임을 만드는지 확인한다.
+        renderer.EnableFrameHashCapture(true);
+        renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
+        renderer.SetViewSamplingForSmoke(8u, 2.0f);
+        renderer.SetDebugMode(CloudDebugMode::Composite);
+        renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Off);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t offHash = renderer.LastCloudFrameHash();
+        renderer.ApplyStage7PhasePreset(Stage7PhasePreset::SilverLining);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t onHash = renderer.LastCloudFrameHash();
+        if (offHash == 0 || onHash == 0 || offHash == onHash)
+            return 4;
+
+        renderer.SetDebugMode(CloudDebugMode::DirectSingleScattering);
+        renderer.Render(camera, 0.0f);
+
+        const std::filesystem::path exportRoot =
+            std::filesystem::temp_directory_path() / L"VolumetricCloudStage7Smoke";
+        if (!renderer.ExportNoiseLabSnapshot(exportRoot))
+            return 5;
+        bool foundSchema7 = false;
+        std::error_code exportError;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                 exportRoot, exportError))
+        {
+            if (exportError)
+                return 6;
+            if (entry.path().filename() != L"noise-settings.json")
+                continue;
+            std::string metadata;
+            if (ReadTextFile(entry.path(), metadata) &&
+                metadata.find("\"schemaVersion\": 7") != std::string::npos &&
+                metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
+                metadata.find("\"phaseDirectionConvention\": \"cosTheta=dot(cameraToSample,sampleToSun)\"") != std::string::npos)
+                foundSchema7 = true;
+        }
+        if (!foundSchema7)
             return 7;
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }

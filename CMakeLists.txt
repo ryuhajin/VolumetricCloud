@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 6: 태양 Light Ray와 직접 단일 산란
+#  재구축 단계 7: Dual-lobe Henyey-Greenstein Phase Function
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -176,6 +176,19 @@ add_test(NAME VolumetricCloud.FrameProfilerMath
          COMMAND VolumetricCloud.FrameProfilerMathTests)
 add_test(NAME VolumetricCloud.PerformanceOverlaySmoke
          COMMAND VolumetricCloud --performance-overlay-smoke-test)
+
+# 단계 7의 방향 부호, Dual-lobe HG와 등방성 회귀를 CPU와 D3D 경로에서 검사한다.
+add_executable(VolumetricCloud.Stage7PhaseMathTests
+    tests/Stage7PhaseMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage7PhaseMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage7PhaseMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage7PhaseMath
+         COMMAND VolumetricCloud.Stage7PhaseMathTests)
+add_test(NAME VolumetricCloud.Stage7Smoke
+         COMMAND VolumetricCloud --stage7-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

@@ -620,7 +620,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     // 0으로 바꾼 검증에서 F10 Detail 프리셋 이름이 사라지면 안 된다.
     const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
     m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
-                          m_lightParameters, m_sunPreset,
+                          m_lightParameters, m_sunPreset, m_phasePreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_frameProfiler.Snapshot(), m_vsyncEnabled,
@@ -680,6 +680,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
                                   m_cloudParameters,
                                   m_lightParameters,
                                   m_sunPreset,
+                                  m_phasePreset,
                                   m_detailPreset,
                                   m_weatherPreset,
                                   m_weatherGeneratorSettings,
@@ -886,6 +887,17 @@ void Renderer::ApplyStage6SunPreset(Stage6SunPreset preset)
     m_sunPreset = preset;
 }
 
+void Renderer::ApplyStage7PhasePreset(Stage7PhasePreset preset)
+{
+    if (preset == Stage7PhasePreset::Custom)
+    {
+        m_phasePreset = preset;
+        return;
+    }
+    stage6light::ApplyPhasePreset(m_lightParameters, preset);
+    m_phasePreset = preset;
+}
+
 void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
 {
     m_lightParameters.maxLightSteps = maxSteps;
@@ -1013,7 +1025,7 @@ bool Renderer::ValidateNoiseLabPreviews()
 bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
-        root, m_cloudParameters, m_lightParameters, m_sunPreset,
+        root, m_cloudParameters, m_lightParameters, m_sunPreset, m_phasePreset,
         m_detailPreset, m_weatherPreset,
         m_weatherGeneratorSettings, m_weatherMapHash, m_weatherMapTexture.Get(),
         std::filesystem::path(m_shaderDir) / L"Noise.hlsli");
