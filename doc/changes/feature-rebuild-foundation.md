@@ -208,3 +208,14 @@
   AO, 1~4 multiple octave, Phase·Light Sample 불변성과 schema 8을 모두 확인하고
   단계 8을 승인 완료했다. 다음 작업은 단계 8 기준 실행본을 보존하고 레이마칭의
   불필요한 표본을 줄이는 단계 9 기본 최적화와 계측이다.
+
+## 12. Stage 8 승인 기준 복원과 후속 재계획
+
+- 2026-08-10 단계 9 최적화와 단계 13 평면 구름층 실험에서 발생한 문제를 분리하기 위해
+  `stage8-approved`(`3549ddb`)를 새 기준 브랜치의 코드로 복원했다.
+- 단계 9 시도는 `feature/rebuild-foundation`의 `7df6e88`, 단계 13 실험은
+  `feature/large-planar-cloud-layer`의 `71cb634`와 `stage13-paused-20260810`에 보존했다.
+- 별도 `build-stage8-replan` 폴더에서 Debug/Release 빌드, 양 구성 CTest 22/22,
+  HLSL 5/5, Stage8Smoke와 D3D11 error/corruption 부재를 재확인했다.
+- 단계 8의 2026-08-09 사용자 승인은 유지한다. 단계 9 이후의 순서·범위·성능 기준을
+  새로 승인하기 전까지 렌더링 코드 변경을 중단한다.

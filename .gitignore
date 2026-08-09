@@ -1,5 +1,6 @@
 # ---- 빌드 산출물 ----
 build/
+/build-stage8-replan/
 out/
 bin/
 lib/
