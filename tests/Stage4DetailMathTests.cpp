@@ -27,6 +27,7 @@ bool Finite(const DetailDensitySample& sample)
            std::isfinite(sample.detailNoise) &&
            std::isfinite(sample.erosion) &&
            std::isfinite(sample.finalDensity) &&
+           std::isfinite(sample.detailLodFactor) &&
            std::isfinite(sample.detailNoiseUvw.x) &&
            std::isfinite(sample.detailNoiseUvw.y) &&
            std::isfinite(sample.detailNoiseUvw.z);
@@ -90,6 +91,17 @@ int main()
         !NearlyEqual(eroded.finalDensity,
                      std::max(eroded.baseDensity - eroded.erosion, 0.0f)))
         return Fail("detail must subtract erosion instead of adding density");
+
+    const DetailDensitySample filtered = stage4::ApplyDetailErosion(
+        base, world, 0.0f, 2.5f, 0.25f, wind, 0.45f, 17.3f, true, 0.5f);
+    const DetailDensitySample far = stage4::ApplyDetailErosion(
+        base, world, 0.0f, 2.5f, 0.25f, wind, 0.45f, 17.3f, true, 0.0f);
+    if (!filtered.detailSampled || far.detailSampled ||
+        !NearlyEqual(filtered.detailNoise, 0.5f +
+            (eroded.detailNoise - 0.5f) * 0.5f) ||
+        !NearlyEqual(far.detailNoise, 0.5f) ||
+        !NearlyEqual(far.erosion, 0.125f))
+        return Fail("detail LOD must filter to the mean and skip the far noise call");
 
     const DetailDensitySample detailOff = stage4::ApplyDetailErosion(
         base, world, 0.0f, 2.5f, 0.0f, wind, 0.45f, 17.3f, true);

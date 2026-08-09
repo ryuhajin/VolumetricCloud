@@ -42,7 +42,7 @@ private:
 
     Camera*   m_camera   = nullptr;
     Renderer* m_renderer = nullptr;
-    const wchar_t* m_cameraPresetName = L"외부 기본(F5)";
+    const wchar_t* m_cameraPresetName = L"지상 상향(F5)";
 
     // 마우스 드래그 상태
     bool m_dragging  = false;

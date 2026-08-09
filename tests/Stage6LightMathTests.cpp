@@ -63,8 +63,27 @@ int main()
         "view transmittance must scale scattering linearly");
     Require(Near(IntegrateSingleScattering(
         0.5f, 0.6f, 0.8f, 0.2f, 0.0f, 2.0f, 0.75f),
-        0.8f * 0.6f * 2.0f * 0.75f * 0.5f * 0.2f),
-        "zero extinction must use the finite rectangular fallback");
+        0.0f), "zero extinction must produce no interaction or scattering");
+    Require(Near(IntegrateSingleScattering(
+        0.5f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 0.0f), 0.0f),
+        "zero albedo must absorb without scattering");
+    Require(IntegrateSingleScattering(
+        0.5f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 2.0f) <=
+        IntegrateSingleScattering(
+            0.5f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 1.0f),
+        "albedo must clamp to the energy-conserving range");
+    Require(Near(IntegrateSingleScattering(
+        -1.0f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 0.9f), 0.0f) &&
+        Near(IntegrateSingleScattering(
+            std::numeric_limits<float>::quiet_NaN(), 0.6f, 0.8f, 0.2f,
+            1.0f, 2.0f, 0.9f), 0.0f),
+        "negative and NaN optical inputs must produce neutral scattering");
+
+    const auto kilometerReference = MarchConstantDensity(
+        3000.0f, 0.5f * 0.65f, 0.00075f, 100.0f, 256u);
+    Require(Near(kilometerReference.opticalDepth, 0.73125f, 1e-5f) &&
+            Near(kilometerReference.transmittance, std::exp(-0.73125f), 1e-5f),
+            "3 km reference optical depth must match the Stage 13 defaults");
 
     const auto invalid = MarchConstantDensity(
         std::numeric_limits<float>::quiet_NaN(), 1.0f, 1.0f, 0.0f, 0u);
@@ -77,13 +96,15 @@ int main()
     bad.sunIntensity = -1.0f;
     bad.maxLightSteps = 0;
     bad.lightStepSize = -1.0f;
+    bad.singleScatteringAlbedo = std::numeric_limits<float>::infinity();
     const LightParameters safe = stage6light::Sanitize(bad);
     const float directionLength = std::sqrt(
         safe.directionToSun.x * safe.directionToSun.x +
         safe.directionToSun.y * safe.directionToSun.y +
         safe.directionToSun.z * safe.directionToSun.z);
     Require(Near(directionLength, 1.0f, 1e-4f), "sun direction must be normalized");
-    Require(safe.sunIntensity == 0.0f && safe.maxLightSteps >= 1u &&
+    Require(safe.sunIntensity == 0.0f && safe.singleScatteringAlbedo == 0.90f &&
+            safe.maxLightSteps >= 1u &&
             safe.lightStepSize > 0.0f, "invalid CPU light settings must be clamped");
 
     const auto east = stage6light::Preset(Stage6SunPreset::LowEast).directionToSun;

@@ -24,6 +24,7 @@ struct DetailDensitySample
     float finalDensity = 0.0f;
     Float3 detailNoiseUvw = {};
     bool detailSampled = false;
+    float detailLodFactor = 1.0f;
 };
 
 inline NoiseFieldSample SampleNoiseField(const Float3& worldPosition,
@@ -60,24 +61,33 @@ inline DetailDensitySample ApplyDetailErosion(
     const Float3& windDirection,
     float detailWindSpeed,
     float detailOffset,
-    bool sampleDetail)
+    bool sampleDetail,
+    float detailLodFactor = 1.0f)
 {
     DetailDensitySample result;
     result.baseDensity = stage3::SaturateFinite(baseDensity);
     result.finalDensity = result.baseDensity;
+    result.detailLodFactor = std::clamp(
+        std::isfinite(detailLodFactor) ? detailLodFactor : 0.0f, 0.0f, 1.0f);
     if (!sampleDetail || result.baseDensity <= 0.0f ||
         !std::isfinite(erosionStrength) || erosionStrength <= 0.0f)
         return result;
 
-    const NoiseFieldSample detail = SampleNoiseField(
-        worldPosition, timeSeconds, detailScale, windDirection,
-        detailWindSpeed, detailOffset);
-    result.detailNoise = stage3::SaturateFinite(detail.value);
-    result.detailNoiseUvw = detail.uvw;
+    float rawDetail = 0.5f;
+    if (result.detailLodFactor > 0.0f)
+    {
+        const NoiseFieldSample detail = SampleNoiseField(
+            worldPosition, timeSeconds, detailScale, windDirection,
+            detailWindSpeed, detailOffset);
+        rawDetail = stage3::SaturateFinite(detail.value);
+        result.detailNoiseUvw = detail.uvw;
+        result.detailSampled = true;
+    }
+    result.detailNoise = 0.5f +
+        (rawDetail - 0.5f) * result.detailLodFactor;
     result.erosion = result.detailNoise * std::max(erosionStrength, 0.0f);
     result.finalDensity = stage3::SaturateFinite(
         result.baseDensity - result.erosion);
-    result.detailSampled = true;
     return result;
 }
 }

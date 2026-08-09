@@ -50,20 +50,31 @@ inline bool ShouldTraceLightRay(float finalDensity)
 inline float IntegrateSingleScattering(float density, float lightTransmittance,
                                        float viewTransmittance, float stepLength,
                                        float extinction, float sunIntensity,
-                                       float scatteringCoefficient)
+                                       float singleScatteringAlbedo)
 {
-    const float safeDensity = std::max(density, 0.0f);
-    const float safeLength = std::max(stepLength, 0.0f);
-    const float safeExtinction = std::max(extinction, 0.0f);
+    const float safeDensity = std::max(
+        std::isfinite(density) ? density : 0.0f, 0.0f);
+    const float safeLength = std::max(
+        std::isfinite(stepLength) ? stepLength : 0.0f, 0.0f);
+    const float safeExtinction = std::max(
+        std::isfinite(extinction) ? extinction : 0.0f, 0.0f);
+    const float safeViewTransmittance = std::clamp(
+        std::isfinite(viewTransmittance) ? viewTransmittance : 0.0f,
+        0.0f, 1.0f);
+    const float safeLightTransmittance = std::clamp(
+        std::isfinite(lightTransmittance) ? lightTransmittance : 0.0f,
+        0.0f, 1.0f);
+    const float safeSunIntensity = std::max(
+        std::isfinite(sunIntensity) ? sunIntensity : 0.0f, 0.0f);
+    const float safeAlbedo = std::clamp(
+        std::isfinite(singleScatteringAlbedo)
+            ? singleScatteringAlbedo : 0.0f,
+        0.0f, 1.0f);
     const float stepTransmittance = std::exp(
         -safeDensity * safeExtinction * safeLength);
-    const float densityIntegral = safeExtinction > 1e-6f
-        ? (1.0f - stepTransmittance) / safeExtinction
-        : safeDensity * safeLength;
-    return std::clamp(viewTransmittance, 0.0f, 1.0f) *
-           std::clamp(lightTransmittance, 0.0f, 1.0f) *
-           std::max(sunIntensity, 0.0f) *
-           std::max(scatteringCoefficient, 0.0f) *
-           std::max(densityIntegral, 0.0f);
+    const float stepAlpha = 1.0f - stepTransmittance;
+    return safeViewTransmittance * safeLightTransmittance *
+           safeSunIntensity * safeAlbedo *
+           std::max(stepAlpha, 0.0f);
 }
 }

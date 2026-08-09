@@ -66,7 +66,7 @@ void Window::UpdateDebugTitle()
 
     static const wchar_t* debugNames[] = {
         L"0 합성", L"1 월드 레이", L"2 Scene Depth", L"3 월드 위치", L"4 화면 UV",
-        L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
+        L"5 구름층 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
         L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW",
         L"B 높이 비율", L"M 높이 Profile", L"J Base 밀도", L"L Detail Noise",
         L"P Erosion", L"U Detail Sample", L"I Weather Coverage", L"O Cloud Type",
@@ -74,11 +74,18 @@ void Window::UpdateDebugTitle()
         L"Shift+J Light Transmittance", L"Shift+L Light Optical Depth",
         L"Shift+P Total Light Samples", L"Shift+U Direct Single Scattering",
         L"Shift+B Phase CosTheta", L"Shift+M Forward Phase",
-        L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor"
+        L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor",
+        L"Ctrl+J Accumulated Direct",
+        L"Ctrl+K Detail LOD Factor", L"예약 34", L"예약 35", L"예약 36", L"예약 37",
+        L"Ctrl+Shift+J Executed View Steps",
+        L"Ctrl+Shift+L Coarse Skipped Ratio",
+        L"Ctrl+Shift+P Early Exit Savings",
+        L"Ctrl+Shift+U Support Precheck",
+        L"Ctrl+Shift+B State Transitions"
     };
     static const wchar_t* presetNames[] = {
-        L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
-        L"R Fine 0.025m", L"T Coarse 0.5m"
+        L"Q 기준 50km 층", L"Y 장거리 64km", L"W 얇은 1.5km", L"E 두꺼운 6km",
+        L"R Fine 50m", L"T Coarse 200m"
     };
     static const wchar_t* noisePresetNames[] = {
         L"N 기본 Noise", L"A Sparse", L"S Dense", L"D 큰 덩어리",
@@ -99,6 +106,14 @@ void Window::UpdateDebugTitle()
         L"Phase Off", L"Balanced Phase", L"Silver Lining Phase",
         L"Backscatter Check", L"Custom Phase"
     };
+    static const wchar_t* environmentPresetNames[] = {
+        L"Environment Off", L"Balanced Ambient", L"Strong Fill",
+        L"Ground Check", L"Custom Environment"
+    };
+    static const wchar_t* optimizationPresetNames[] = {
+        L"Optimization Off", L"Early Exit Only", L"Empty Space Only",
+        L"Balanced Optimization", L"Custom Optimization"
+    };
 
     const int debugIndex = static_cast<int>(m_renderer->DebugMode());
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
@@ -107,15 +122,21 @@ void Window::UpdateDebugTitle()
     const int weatherPresetIndex = static_cast<int>(m_renderer->WeatherPreset());
     const int sunPresetIndex = static_cast<int>(m_renderer->SunPreset());
     const int phasePresetIndex = static_cast<int>(m_renderer->PhasePreset());
-    wchar_t title[512] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 7 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 31) ? debugIndex : 0],
+    const int environmentPresetIndex =
+        static_cast<int>(m_renderer->EnvironmentPreset());
+    const int optimizationPresetIndex =
+        static_cast<int>(m_renderer->OptimizationPreset());
+    wchar_t title[640] = {};
+    swprintf_s(title, L"VolumetricCloud - Stage 13 (Stage 9 보류) | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 42) ? debugIndex : 0],
                presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
                detailPresetNames[(detailPresetIndex >= 0 && detailPresetIndex <= 4) ? detailPresetIndex : 1],
                weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 2],
                sunPresetNames[(sunPresetIndex >= 0 && sunPresetIndex <= 3) ? sunPresetIndex : 3],
                phasePresetNames[(phasePresetIndex >= 0 && phasePresetIndex <= 4) ? phasePresetIndex : 0],
+               environmentPresetNames[(environmentPresetIndex >= 0 && environmentPresetIndex <= 4) ? environmentPresetIndex : 1],
+               optimizationPresetNames[(optimizationPresetIndex >= 0 && optimizationPresetIndex <= 4) ? optimizationPresetIndex : 3],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
 }
@@ -142,6 +163,45 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 && wParam == 'K')
+    {
+        m_renderer->SetDebugMode(CloudDebugMode::DetailLodFactor);
+        UpdateDebugTitle();
+        return 0;
+    }
+
+    // 단계 9 비용 진단은 Ctrl+Shift 조합을 먼저 처리해 기존 Ctrl+J와 Shift 조명을 보존한다.
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
+        (wParam == 'J' || wParam == 'L' || wParam == 'P' ||
+         wParam == 'U' || wParam == 'B'))
+    {
+        if (wParam == 'J')
+            m_renderer->SetDebugMode(CloudDebugMode::ExecutedViewSteps);
+        else if (wParam == 'L')
+            m_renderer->SetDebugMode(CloudDebugMode::CoarseSkippedRatio);
+        else if (wParam == 'P')
+            m_renderer->SetDebugMode(CloudDebugMode::EarlyExitSavings);
+        else if (wParam == 'U')
+            m_renderer->SetDebugMode(CloudDebugMode::SupportPrecheckMask);
+        else
+            m_renderer->SetDebugMode(CloudDebugMode::MarchStateTransitions);
+        UpdateDebugTitle();
+        return 0;
+    }
+
+    // 대표 위치가 아닌 View Ray 전체의 직접광 누적값은 Ctrl+J로 확인한다.
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        wParam == 'J')
+    {
+        m_renderer->SetDebugMode(CloudDebugMode::AccumulatedDirectLighting);
+        UpdateDebugTitle();
+        return 0;
+    }
+
     // 단계 7 Phase 진단은 기존 B/M/C/V의 높이·밀도 출력을 보존하고 Shift 조합으로 추가한다.
     // Noise Lab이 키보드를 캡처해도 방향 비교가 즉시 되도록 ImGui 처리보다 먼저 받는다.
     if (msg == WM_KEYDOWN && m_renderer &&
@@ -211,25 +271,23 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::ChannelDebug);
         else if (m_camera && wParam == VK_F5)
         {
-            m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
-            m_cameraPresetName = L"외부 기본(F5)";
+            m_camera->SetOrbit(0.0f, -0.73f, 3000.0f, { 0.0f, 2000.0f, 0.0f });
+            m_cameraPresetName = L"지상 상향(F5)";
         }
         else if (m_camera && wParam == VK_F6)
         {
-            m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"낮은 외부(F6)";
+            m_camera->SetOrbit(0.0f, -0.15f, 10000.0f, { 0.0f, 1500.0f, 0.0f });
+            m_cameraPresetName = L"지상 수평선(F6)";
         }
         else if (m_camera && wParam == VK_F7)
         {
-            m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"높은 외부(F7)";
+            m_camera->SetOrbit(0.0f, 0.0f, 100.0f, { 0.0f, 3000.0f, 0.0f });
+            m_cameraPresetName = L"구름층 내부(F7)";
         }
         else if (m_camera && wParam == VK_F8)
         {
-            // orbit의 눈 위치가 원점이 되도록 target을 -Z로 옮긴다. 따라서 얇은 W
-            // 프리셋에서도 카메라는 AABB 내부이고 raw tNear가 음수인 경로를 검증한다.
-            m_camera->SetOrbit(0.0f, 0.0f, 1.5f, { 0.0f, 0.0f, -1.5f });
-            m_cameraPresetName = L"AABB 내부(F8)";
+            m_camera->SetOrbit(0.0f, 0.75f, 3000.0f, { 0.0f, 3000.0f, 0.0f });
+            m_cameraPresetName = L"구름층 상공(F8)";
         }
         else if (m_renderer && wParam == VK_F9)
             m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::DetailOff);

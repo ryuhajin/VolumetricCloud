@@ -43,11 +43,11 @@ stepCount = min(maxViewSteps, ceil(segmentLength / stepSize))
 actualStepLength = segmentLength / stepCount
 ```
 
-실행 기본 `Y` 넓은 볼륨은 X/Z가 `±8m`이므로 비스듬한 레이의 구간이
-`maxViewSteps × stepSize = 12.8m`보다 길 수 있다. 이 경우 구간을 잘라 버리지
-않고 128개로 다시 나누므로 `actualStepLength`가 `0.10m`보다 커진다. `Q`의
-X/Z `±2m` 볼륨은 기존 수치·step 회귀 기준으로 남겨 둔다. 빈 공간 건너뛰기와
-원거리 step 최적화는 단계 9 범위다.
+Stage 13 기본은 `maxViewSteps=512`, `stepSize=100m`, 최대 거리 50km다. 전체 50km가
+구름층 안인 최악 구간도 `ceil(50000/100)=500`회이므로 상한 안에서 실제 100m를 유지한다.
+512는 50km를 항상 512등분하는 값이 아니라 목표 간격을 지킬 수 있게 허용하는 반복 상한이다.
+구간이 51.2km를 넘거나 step을 더 줄이면 상한에 걸려 `actualStepLength`가 목표보다 커진다.
+빈 공간 건너뛰기와 원거리 step 최적화는 단계 9 범위다.
 
 각 샘플 위치는 구간 중앙이다.
 
@@ -121,7 +121,14 @@ coverage가 0이면 별도 분기로 밀도를 0으로 만든다. coverage가 �
 
 ### Noise Lab 단면과 실제 구름의 관계
 
-3D noise는 한 장의 이미지가 아니라 `noise(x,y,z)` 함수다. Noise Lab은 AABB를 정규화한 교차점에서 XY, XZ, YZ 평면을 각각 512×512로 잘라 같은 `SampleCloudDensity(worldPosition, effectiveTime)` 함수를 평가한다. 세 화면의 빨간 crosshair는 같은 3D 위치를 가리킨다.
+3D noise는 한 장의 이미지가 아니라 `noise(x,y,z)` 함수다. Noise Lab은 카메라 중심 XZ 범위와
+평면 구름층 Y 범위에서 XY, XZ, YZ 평면을 각각 512×512로 잘라 같은
+`SampleCloudDensity(worldPosition, effectiveTime)` 함수를 평가한다. 세 화면의 빨간 crosshair는
+같은 3D 위치를 가리킨다. 기본 32km 폭과 3km 층에서는 XY/YZ의 Y 1m가 화면에서 X/Z 1m보다
+약 10.7배 크게 표시된다. `Equal Axis Diagnostic`은 폭을 층 두께와 같게 만들어 이 표시 왜곡과
+실제 축 매핑 오류를 구분하며 noise 함수와 월드 좌표 자체는 변경하지 않는다.
+따라서 동일 축/32km 복귀 버튼을 눌러도 메인 구름이 바뀌지 않는 것이 정상이다. Layer Bottom은
+구름층 전체의 월드 고도만 옮기고, 단면의 축 비율은 XZ 폭과 Layer Thickness의 비율로 결정된다.
 
 ImGui의 scale·coverage·density·offset·wind 값은 CPU `CloudParameters`를 바꾸므로 재컴파일 없이 단면과 구름에 같은 프레임에 반영된다. hash와 보간 코드는 `Noise.hlsli` 하나에 있고, 저장 시 Noise Lab PS와 Cloud PS를 함께 컴파일·교체한다.
 
@@ -132,8 +139,8 @@ ImGui의 scale·coverage·density·offset·wind 값은 CPU `CloudParameters`를 
 단계 2의 noise는 AABB 경계까지 그대로 남으므로 구름의 바닥과 천장이 평평하게 잘려 보인다. 단계 3은 X/Z 덩어리 위치는 유지하고 월드 Y 높이에 따른 마스크만 곱한다.
 
 ```text
-cloudThickness = cloudBoundsMax.y - cloudBoundsMin.y
-heightFraction = saturate((worldPosition.y - cloudBoundsMin.y) / cloudThickness)
+cloudThickness = cloudLayerThickness
+heightFraction = saturate((worldPosition.y - cloudBottomAltitude) / cloudThickness)
 ```
 
 `heightFraction`은 바닥에서 0, 천장에서 1이다. `cloudThickness <= 1e-6`인 퇴화·역전 AABB는 나누지 않고 height fraction과 profile을 모두 0으로 반환한다.
@@ -250,24 +257,22 @@ lightOpticalDepth = Σ(baseDensity × extinctionCoefficient × actualLightStep)
 lightTransmittance = exp(-lightOpticalDepth)
 ```
 
-View 구간의 투과율은 이전 단계와 같고, 직접 산란 적분에는 작은 extinction에서
-0으로 나누지 않는 분석적 구간 적분을 쓴다.
+View 구간의 투과율과 같은 step alpha를 직접 산란에도 사용한다. 단일산란 알베도는
+소멸된 에너지 중 카메라 방향 산란 계산에 참여하는 비율이며 0~1로 제한한다.
 
 ```text
-viewStepT = exp(-finalDensity × extinction × viewStepLength)
-densityIntegral = extinction > epsilon
-    ? (1 - viewStepT) / extinction
-    : finalDensity × viewStepLength
+viewStepT = exp(-effectiveDensity × extinction × viewStepLength)
+stepAlpha = 1 - viewStepT
 
 stepScattering = viewTransmittance
     × sunColor × sunIntensity
     × lightTransmittance
-    × scatteringCoefficient
-    × densityIntegral
+    × singleScatteringAlbedo
+    × stepAlpha
 ```
 
 `directionToSun`은 빛이 내려오는 방향이 아니라 표본에서 태양으로 향하는 정규화
-월드 방향이다. Light Ray 시작점은 그 방향으로 기본 `0.01m` 이동해 경계 자기
+월드 방향이다. Light Ray 시작점은 그 방향으로 기본 `1m` 이동해 경계 자기
 교차를 피한다. 단계 6은 등방성 직접광만 계산한다. 시선/태양 각도의 Phase
 Function은 단계 7, 환경광·다중 산란은 단계 8, Early Exit는 단계 9에서 추가한다.
 
@@ -312,3 +317,95 @@ stepScattering = stage6StepScattering × phaseFactor
 Phase Off나 Intensity 0은 배율 1이므로 단계 6 결과를 보존한다. Phase는 직접 산란량만
 바꾸고 View/Light 투과율, 광학 깊이와 step 수에는 영향을 주지 않는다. 방향은 View Ray
 전체에서 일정하므로 픽셀당 한 번만 계산한다. 환경광과 다중 산란은 단계 8에서 별도로 더한다.
+
+## 단계 8: 분석적 환경광과 저비용 다중 산란
+
+외부 Cube Map 없이 현재 표본의 정규화 높이 `h`와 최종 밀도로 하늘·지면광을 만든다.
+
+```text
+skyWeight = lerp(1, h, ambientHeightInfluence)
+groundWeight = 1 - h
+ambientOcclusion = exp(-finalDensity × ambientOcclusionStrength)
+sky = skyColor × skyStrength × skyWeight × ambientOcclusion
+ground = groundColor × groundStrength × groundWeight × ambientOcclusion
+```
+
+하늘·지면광은 방향이 없는 근사이므로 Phase를 적용하지 않는다. 각 색은 직접광과 같은
+`viewTransmittance × stepAlpha × singleScatteringAlbedo`로 적분한다.
+
+다중 산란은 추가 Light Ray를 쏘지 않고 이미 계산된 `lightOpticalDepth`를 최대 네 번
+다른 감쇠율로 재해석한다. 반복할수록 에너지, 소멸과 Phase 방향성이 감소한다.
+
+```text
+octaveLightT = exp(-lightOpticalDepth × extinctionScale)
+octavePhase = lerp(1, phaseFactor, phaseScale)
+multiple += sunRadiance × energy × octaveLightT × octavePhase
+```
+
+Off는 Sky/Ground/Multiple을 정확히 0으로 만들어 단계 7 직접광을 보존한다. 이 근사는
+실제 간접광 맵이나 IBL이 아니며 단계 14에서 대기·Cube Map 입력으로 교체할 수 있다.
+
+## 단계 13 선행: 대규모 평면 구름층
+
+단계 0~8의 유한 AABB는 교차와 적분을 학습하기에는 적합하지만, 지상 수평선에서 옆면이 드러나고
+수 km 이상 이동하면 구름 영역이 끝난다. 단계 13은 행성 구형 셸 대신 높이가 일정한 두 Y 평면 사이를
+구름층으로 사용한다. 모든 CPU/HLSL 거리는 meter이며 UI에서만 km를 함께 표시한다.
+
+```text
+bottom = cloudBottomAltitude
+top = bottom + cloudLayerThickness
+t0 = (bottom - rayOrigin.y) / rayDirection.y
+t1 = (top    - rayOrigin.y) / rayDirection.y
+tStart = max(0, min(t0, t1))
+tEnd = min(max(t0, t1), maxTraceDistance)
+```
+
+레이가 Y축과 거의 평행하면 나눗셈을 하지 않는다. 원점이 층 밖이면 miss이고, 층 안이면
+`tStart=0`, `tEnd=maxTraceDistance`다. 일반 레이도 카메라가 층 안이면 시작점을 0으로 자른다.
+퇴화 두께, 비정상 방향, NaN 입력은 밀도 0의 중립 결과로 끝낸다.
+
+View Ray의 최종 끝점은 평면층 이탈, 불투명 Scene Depth, `maxViewTraceDistance` 중 가장 가까운
+지점이다. 하늘 픽셀에는 복원 깊이나 카메라 far plane을 적용하지 않으므로 50km 구름 추적과 장면
+투영 거리가 독립적이다. Light Ray는 같은 평면층 교차를 사용하되 `maxLightTraceDistance=20km`로
+제한한다.
+
+50km에서 생기는 원형 절단면은 40~50km 구간의 밀도 fade로 숨긴다.
+
+```text
+distanceFade = 1 - smoothstep(viewTraceFadeStartDistance,
+                              maxViewTraceDistance, distance)
+viewDensity *= distanceFade
+```
+
+`viewDensity`는 투과율뿐 아니라 직접광·환경광·다중 산란이 공유하는 `effectiveDensity`다.
+따라서 40~50km fade 구간에서 불투명도만 사라지고 밝은 산란이 남는 불일치가 없다.
+
+Detail은 원거리에서 고주파를 성긴 step으로 읽어 aliasing을 만들지 않도록 별도 LOD를 쓴다.
+
+```text
+detailLod = 1 - smoothstep(8000, 20000, sampleDistance)
+filteredDetail = lerp(0.5, sampledDetail, detailLod)
+erosion = filteredDetail × detailErosionStrength
+```
+
+8km까지는 원본과 같고 8~20km에서 평균 0.5로 수렴한다. 20km 밖에서는 Detail 함수를
+호출하지 않고 평균값만 사용하므로 구름 평균 두께를 유지하면서 비용과 깜박임을 줄인다.
+
+Weather와 Base/Detail Noise 좌표는 월드 XZ에 고정한다. 여기서 "카메라 기준"은 구름 텍스처나
+박스가 카메라를 따라 이동한다는 뜻이 아니라, 각 카메라 위치에서 유한 반경까지만 추적한다는 뜻이다.
+기준값은 Weather 반복 32km, Base/Detail `0.00035/0.0025 cycle/m`, 바람 `12/18/8m/s`,
+`extinction=0.00075/m`, 밀도 배율 `0.65`, 단일산란 알베도 `0.90`이다.
+Base 약 2.86km와 Detail 400m 파장은 소규모 AABB의 `0.35/2.5 cycle/m`를 공간 1000배
+기준으로 확대한 값이다. View는 100m/512 steps를 사용해 50km 전체 구간에서도 Detail 파장당
+4표본을 확보하며 광학값은 유지한다.
+
+## 단계 9: 계산을 생략하는 레이마칭 (보류)
+
+최적화 합성 경로는 `높이/Weather support → Base Noise → Detail → Light → Environment` 순서로 평가한다. support가 0이면 비싼 3D Base Noise를 호출하지 않고, Base가 비면 Detail과 Light Ray도 호출하지 않는다. Base 표본은 Detail 함수에 넘겨 같은 위치의 Base Noise를 다시 계산하지 않는다.
+
+View 투과율이 `transmittanceThreshold` 이하가 되면 남은 배경 기여가 임계값보다 작으므로 뒤쪽 View·Light·Environment 반복을 종료한다. 빈 공간에서는 `coarseStepMultiplier × fineStep`으로 Base만 탐색하고, 후보를 만나면 직전 coarse 구간으로 되돌아가 fine 적분한다. 연속된 빈 표본이 `emptySamplesBeforeCoarse`에 도달하면 다시 Search 상태로 전환한다. 마지막 간격은 항상 `tEnd`로 잘라 Cloud Layer와 Scene Depth 경계를 넘지 않는다.
+
+이 구현과 소규모 AABB 벤치마크는 삭제하지 않는다. Dense 장면에서 p95 개선 기준을 만족하지 못해
+단계 13 사용자 승인까지 보류하며, 승인된 평면층의 Optimization Off 화면과 성능을 새 기준으로 다시 잰다.
+
+Light Ray 표본 수와 단계 8 다중 산란 octave 수는 품질 저하를 피하기 위해 줄이지 않는다. 저해상도 렌더·Temporal·Light Cache는 단계 10~12의 별도 결정이다.

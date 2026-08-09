@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.h - 단계 7 밀도·태양광·Phase Function 개발용 ImGui UI
+//  NoiseLab.h - 단계 8 밀도·태양광·환경광 개발용 ImGui UI
 // ============================================================================
 #pragma once
 
@@ -16,7 +16,9 @@
 
 #include "WeatherMap.h"
 #include "LightParameters.h"
+#include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
+#include "OptimizationParameters.h"
 
 enum class NoiseSliceAxis : std::uint32_t
 {
@@ -51,9 +53,11 @@ struct alignas(16) NoiseLabParameters
     std::uint32_t sliceAxis = static_cast<std::uint32_t>(NoiseSliceAxis::XY);
     float effectiveTime = 0.0f;
     float padding[2] = {};
+    DirectX::XMFLOAT2 previewCenterXZ = { 0.0f, 0.0f };
+    float previewPadding[2] = {};
 };
 
-static_assert(sizeof(NoiseLabParameters) == 32,
+static_assert(sizeof(NoiseLabParameters) == 48,
               "NoiseLabParameters must match NoiseLabCB");
 
 class NoiseLab
@@ -75,6 +79,10 @@ public:
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
                     Stage7PhasePreset& phasePreset,
+                    EnvironmentParameters& environmentParameters,
+                    Stage8EnvironmentPreset& environmentPreset,
+                    OptimizationParameters& optimizationParameters,
+                    Stage9OptimizationPreset& optimizationPreset,
                     Stage5WeatherPreset weatherPreset,
                     const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                     ID3D11ShaderResourceView* weatherMapSrv,
@@ -99,6 +107,10 @@ public:
     {
         m_parameters.outputMode = static_cast<std::uint32_t>(mode);
     }
+    void SetPreviewCenterXZ(const DirectX::XMFLOAT3& cameraPosition)
+    {
+        m_parameters.previewCenterXZ = { cameraPosition.x, cameraPosition.z };
+    }
     // 현재 출력 모드의 축 특성까지 고려해 GPU readback이 유효한지 검사한다.
     bool ValidatePreviewData();
     std::uint64_t PreviewHash(std::size_t targetIndex);
@@ -107,6 +119,10 @@ public:
                         const LightParameters& lightParameters,
                         Stage6SunPreset sunPreset,
                         Stage7PhasePreset phasePreset,
+                        const EnvironmentParameters& environmentParameters,
+                        Stage8EnvironmentPreset environmentPreset,
+                        const OptimizationParameters& optimizationParameters,
+                        Stage9OptimizationPreset optimizationPreset,
                         Stage4DetailPreset detailPreset,
                         Stage5WeatherPreset weatherPreset,
                         const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -136,6 +152,10 @@ private:
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
                            Stage7PhasePreset& phasePreset,
+                           EnvironmentParameters& environmentParameters,
+                           Stage8EnvironmentPreset& environmentPreset,
+                           OptimizationParameters& optimizationParameters,
+                           Stage9OptimizationPreset& optimizationPreset,
                            Stage5WeatherPreset weatherPreset,
                            const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                            ID3D11ShaderResourceView* weatherMapSrv,
@@ -162,6 +182,10 @@ private:
                        const LightParameters& lightParameters,
                        Stage6SunPreset sunPreset,
                        Stage7PhasePreset phasePreset,
+                       const EnvironmentParameters& environmentParameters,
+                       Stage8EnvironmentPreset environmentPreset,
+                       const OptimizationParameters& optimizationParameters,
+                       Stage9OptimizationPreset optimizationPreset,
                        Stage4DetailPreset detailPreset,
                        Stage5WeatherPreset weatherPreset,
                        const WeatherMapGeneratorSettings& weatherGeneratorSettings,

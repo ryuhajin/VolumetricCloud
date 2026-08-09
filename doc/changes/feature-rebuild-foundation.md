@@ -167,7 +167,7 @@
 - 다음 작업은 승인된 등방성 단일 산란을 보존한 채 단계 7 Dual-lobe
   Henyey-Greenstein Phase Function을 추가하는 것이다.
 
-## 10. 단계 7 Dual-lobe Phase Function 구현 중
+## 10. 단계 7 Dual-lobe Phase Function 구현 및 승인 완료
 
 - `LightParameters`와 HLSL `LightCB(b3)`를 64바이트로 확장하고 Phase Enable,
   전방/후방 `g`, lobe 혼합 비율과 적용 강도를 추가했다. 기본 프리셋은 Off라서
@@ -191,3 +191,100 @@
   디버그 출력, Light Ray 불변성과 schema 7을 확인하고 단계 7을 승인 완료했다.
 - 다음 작업은 외부 Cube Map 없이 분석적 하늘·지면 환경광과 기존 광학 깊이를
   재사용하는 저비용 다중 산란 근사를 추가하는 단계 8이다.
+
+## 11. 단계 8 환경광과 다중 산란 구현 및 승인 완료
+
+- 64바이트 `EnvironmentParameters`/`EnvironmentCB(b4)`를 추가하고 LightCB와 책임을 분리했다.
+- 외부 Cube Map·간접광 텍스처 없이 높이 기반 Sky/Ground와 밀도 기반 AO를 계산한다.
+- 기존 Light Ray 광학 깊이를 최대 네 octave로 재사용해 추가 레이 없는 다중 산란을 근사한다.
+- Environment Off/Balanced/Strong Fill/Ground Check와 Custom UI, 높이 곡선을 추가했다.
+- Ctrl+J 모드 32에서 레이 전체의 누적 직접광을 확인한다. 가시성이 낮았던
+  Sky/Ground/Multiple/AO/전체 간접광 Ctrl 디버그 모드는 제거했다.
+- Noise Lab export를 schema 8로 올리고 Environment 입력과 근사 모델을 기록한다.
+- `Stage8AmbientMath`와 `Stage8Smoke`를 추가해 전체 테스트 목표를 22개로 확장했다.
+- 2026-08-09 Debug/Release 빌드와 양 구성 CTest 22/22, HLSL 5/5,
+  schema 8 export 및 D3D11 error/corruption 부재를 재확인했다.
+- 2026-08-09 사용자 수동 검증에서 Off 회귀, Balanced 환경광, 높이별 Sky/Ground,
+  AO, 1~4 multiple octave, Phase·Light Sample 불변성과 schema 8을 모두 확인하고
+  단계 8을 승인 완료했다. 다음 작업은 단계 8 기준 실행본을 보존하고 레이마칭의
+  불필요한 표본을 줄이는 단계 9 기본 최적화와 계측이다.
+
+## 12. 단계 9 레이마칭 기본 최적화 (보류)
+
+- `OptimizationCB(b5)`와 Off/Early Exit/Empty Space/Balanced 프리셋을 추가했다.
+- 합성 전용 `mainOptimized`와 진단·회귀용 `mainLegacy`를 분리하고 Release HLSL O3를 명시했다.
+- 높이·Weather support 사전 검사, Base 결과 재사용, View Early Exit와 Search/Full adaptive march를 구현했다.
+- Ctrl+Shift+J/L/P/U/B 모드 38~42에서 실행 fine 표본, 건너뛴 거리, Early Exit 절약, support 생략과 상태 전환을 진단한다.
+- Release 벤치마크 CLI는 네 고정 장면에서 UI/VSync/애니메이션을 배제하고 원시 D3D11 timestamp CSV와 p50/p95 JSON을 기록한다.
+- `stage8-approved` 태그와 로컬 고정 worktree/runtime 번들을 만들어 승인된 8단계 실행 환경을 보존했다.
+- 2026-08-09 소규모 AABB `DenseExterior`에서 Balanced GPU Cloud p95가 -1.66%로 회귀해
+  15% 개선 기준을 통과하지 못했다. 구현과 벤치마크는 `7df6e88` 체크포인트에 보존하고,
+  단계 13 승인 후 새 평면층 기준으로 재측정한다.
+
+## 13. 단계 13 대규모 평면 구름층 (사용자 검증 대기)
+
+- 유한 XZ AABB를 바닥 1.5km, 상단 4.5km의 Y축 평면층으로 교체했다.
+- View 50km/40km fade, Light 20km의 독립 추적 상한을 추가하고 하늘 픽셀을 카메라 far plane과 분리했다.
+- Weather 32km, Base/Detail `0.0015/0.012 cycle/m`, 바람 `12/18/8m/s`의 meter 기반 기본값을 적용했다.
+- CloudCB는 128바이트를 유지하면서 AABB 여섯 값을 평면층·추적 거리·Noise Lab 폭 값으로 교체했다.
+- Light Ray도 Y 평면 이탈과 20km 상한을 사용하며 Light step 기본값은 250m, 최대 32회다.
+- Noise Lab은 카메라 XZ 중심 32km 단면과 schema 13 도메인 정보를 내보낸다.
+- `Stage13CloudLayerMath` CPU 기준과 아래/내부/위·평행·깊이·거리·fade·Weather 고정 회귀 테스트를 추가했다.
+- 구형 셸, 대기 산란, 원점 재배치와 단계 9~12 최적화는 이 단계에서 제외한다.
+- 2026-08-09 Debug/Release 빌드, 양 구성 CTest 26/26, Legacy/Optimized Od/O3 런타임 HLSL,
+  schema 13 export와 D3D11 error/corruption 부재를 확인했다. 화면 품질은 사용자 승인을 기다린다.
+
+## 14. 단계 13 km 광학 보정과 Detail 거리 LOD
+
+- extinction/density 기본값을 `0.00075/m`, `0.65`로 낮추고 직접·환경 산란을
+  `stepAlpha × singleScatteringAlbedo(0.90)` 에너지 보존식으로 통일했다.
+- View 원거리 fade를 투과율과 모든 산란 항이 공유하는 effective density에 적용했다.
+- CloudCB 예약 공간에 8km Detail 유지와 20km 호출 생략 거리를 배치해 128바이트를 유지했다.
+- 중거리 Detail은 평균 0.5로 필터링하고 원거리는 함수 호출 없이 같은 평균 erosion을 적용한다.
+- Ctrl+K Detail LOD 진단과 schema 13 광학·LOD metadata를 추가했다.
+- 2026-08-09 Debug/Release 전체 CTest를 각각 26/26 통과했고, Stage13Smoke에서
+  Legacy/Optimized 런타임 HLSL 컴파일, Detail LOD/호출 생략 출력, schema 13 export와
+  D3D11 error/corruption 부재를 재검증했다. F5~F8 자동 캡처에서는 이전의 전면 흰색
+  포화와 검정 화면이 재현되지 않았으며 최종 화질 승인은 사용자가 수행한다.
+
+## 15. 단계 13 품질 재검증 — 동일 축 Noise Lab 진단
+
+- `Equal Axis Diagnostic`으로 Noise Lab XZ 폭을 평면층 Y 두께와 같게 설정해 세 단면을
+  동일한 월드 길이 비율로 비교할 수 있게 했다.
+- XY/XZ/YZ의 km 범위와 XY/YZ의 Y 표시 확대율을 UI에 표시하고 32km 복귀 버튼을 추가했다.
+- CloudCB·NoiseLabCB와 실제 noise 월드 좌표는 변경하지 않아 진단 UI가 렌더 형태에 개입하지 않는다.
+- 사용자 검증 피드백에 따라 두 버튼이 메인 렌더에 영향을 주지 않는 미리보기 전용이고,
+  동일 축은 Layer Bottom이 아닌 Layer Thickness를 기준으로 한다는 설명을 UI와 문서에 추가했다.
+- 2026-08-09 Debug/Release 빌드와 CTest를 각각 26/26 통과했으며 NoiseLabSmoke와
+  ShaderHotReloadSmoke도 양 구성에서 통과했다.
+- 화면 축 매핑과 단면 연속성은 사용자 승인 뒤 다음 품질 보정 단계로 진행한다.
+
+## 16. 단계 13 품질 재검증 — AABB 공간 비율 복원
+
+- 소규모 AABB의 Base/Detail `0.35/2.5 cycle/m`를 공간 1000배 기준으로 확장해
+  평면층 기본값을 `0.00035/0.0025 cycle/m`로 변경했다.
+- N 기본 Base와 D/F 크기 프리셋은 `0.00035/0.000175/0.0007`, F10/F11 Detail은
+  `0.0025/0.005`로 같은 상대 배율을 유지하고 UI Reset도 동일한 값으로 맞췄다.
+- Density 0.65, Extinction 0.00075/m, View 100m/256 steps와 Weather 32km는 유지해
+  이번 사용자 검증에서 noise 공간 비율 변화만 분리한다.
+- Stage13Smoke export 검증에 Base/Detail 기본값을 추가해 프리셋 회귀를 자동으로 감지한다.
+- 2026-08-09 Debug/Release 빌드와 전체 CTest를 각각 26/26 통과했으며 새 기본값을
+  사용하는 NoiseLab/Stage2/Stage4/Stage13 smoke와 shader hot reload를 확인했다.
+
+## 17. 단계 13 품질 재검증 — View 512-step 기준
+
+- View 최대 반복을 256에서 512로 올려 50km 전체 구간에서도 100m 목표 간격과
+  400m Detail 파장당 4표본을 유지한다.
+- Noise Lab에 Max View Steps, 256/512 비교 버튼과 50km 실제 간격·Base/Detail 파장당
+  표본 수·상한 초과 여부를 표시한다.
+- schema 13 export에 `maxViewSteps`와 `viewStepSizeMeters`를 추가하고 Stage13Smoke가
+  512/100 기본값을 직접 검사한다.
+- GPU 비용은 기록만 하고 단계 13 사용자 승인 전에는 단계 9 성능 게이트를 적용하지 않는다.
+- 2026-08-09 Debug/Release 빌드와 전체 CTest를 각각 26/26 통과했으며 Legacy/Optimized
+  D3D smoke, Noise Lab export와 shader hot reload를 새 512-step 기본값에서 확인했다.
+- Z Raw Noise 팝핑 진단을 위해 `Stage13Smoke`에 고정 F6 카메라, time 0, Wind 0,
+  Optimization Off 조건의 8프레임 해시 비교를 추가했다. 제품 기본값 `0.00035`와
+  진단 전용 `0.00662 cycle/m`를 각각 검사하고 두 스케일의 해시 차이도 확인한다.
+- 2026-08-10 Debug/Release `Stage13Smoke`에서 두 스케일 모두 8프레임 해시가
+  고정되고 스케일 간 해시는 달랐다. 전체 CTest도 양 구성 각각 26/26 통과해 관찰된
+  팝이 고정 입력 Cloud Pass의 비결정적 재계산 때문이 아님을 확인했다.

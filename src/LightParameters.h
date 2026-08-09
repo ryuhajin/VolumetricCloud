@@ -36,11 +36,11 @@ struct alignas(16) LightParameters
     float sunIntensity = 1.0f;
 
     DirectX::XMFLOAT3 sunColor = { 1.0f, 0.95f, 0.85f };
-    float scatteringCoefficient = 1.0f;
+    float singleScatteringAlbedo = 0.90f;
 
-    std::uint32_t maxLightSteps = 16;
-    float lightStepSize = 0.25f;
-    float lightRayBias = 0.01f;
+    std::uint32_t maxLightSteps = 32;
+    float lightStepSize = 250.0f;
+    float lightRayBias = 1.0f;
     float phaseEnabled = 0.0f;
 
     float forwardScatteringG = 0.65f;
@@ -96,15 +96,16 @@ inline LightParameters Sanitize(LightParameters value)
     value.sunColor.x = std::max(std::isfinite(value.sunColor.x) ? value.sunColor.x : 0.0f, 0.0f);
     value.sunColor.y = std::max(std::isfinite(value.sunColor.y) ? value.sunColor.y : 0.0f, 0.0f);
     value.sunColor.z = std::max(std::isfinite(value.sunColor.z) ? value.sunColor.z : 0.0f, 0.0f);
-    value.scatteringCoefficient = std::max(
-        std::isfinite(value.scatteringCoefficient) ? value.scatteringCoefficient : 0.0f, 0.0f);
+    value.singleScatteringAlbedo = std::clamp(
+        std::isfinite(value.singleScatteringAlbedo) ? value.singleScatteringAlbedo : 0.90f,
+        0.0f, 1.0f);
     value.maxLightSteps = std::clamp(value.maxLightSteps, 1u, 64u);
     value.lightStepSize = std::clamp(
-        std::isfinite(value.lightStepSize) ? value.lightStepSize : 0.25f,
-        1e-4f, 10.0f);
+        std::isfinite(value.lightStepSize) ? value.lightStepSize : 250.0f,
+        1e-4f, 5000.0f);
     value.lightRayBias = std::clamp(
-        std::isfinite(value.lightRayBias) ? value.lightRayBias : 0.01f,
-        0.0f, 1.0f);
+        std::isfinite(value.lightRayBias) ? value.lightRayBias : 1.0f,
+        0.0f, 100.0f);
     value.phaseEnabled = std::isfinite(value.phaseEnabled) &&
                          value.phaseEnabled >= 0.5f ? 1.0f : 0.0f;
     value.forwardScatteringG = std::clamp(

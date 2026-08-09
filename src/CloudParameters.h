@@ -13,8 +13,8 @@ enum class CloudDebugMode : std::int32_t
     SceneDepth = 2,
     WorldPosition = 3,
     ScreenUv = 4,
-    AabbEntryDistance = 5,
-    AabbExitDistance = 6,
+    CloudLayerEntryDistance = 5,
+    CloudLayerExitDistance = 6,
     ViewStepCount = 7,
     Transmittance = 8,
     ConstantDensity = 9,
@@ -40,6 +40,13 @@ enum class CloudDebugMode : std::int32_t
     ForwardPhaseLobe = 29,
     BackwardPhaseLobe = 30,
     DualPhaseFactor = 31,
+    AccumulatedDirectLighting = 32,
+    DetailLodFactor = 33,
+    ExecutedViewSteps = 38,
+    CoarseSkippedRatio = 39,
+    EarlyExitSavings = 40,
+    SupportPrecheckMask = 41,
+    MarchStateTransitions = 42,
 };
 
 enum class Stage1ValidationPreset : std::int32_t
@@ -84,35 +91,41 @@ enum class Stage5WeatherPreset : std::int32_t
 // HLSL CloudCB와 16바이트 묶음 순서가 정확히 일치해야 한다.
 struct alignas(16) CloudParameters
 {
-    DirectX::XMFLOAT3 cloudBoundsMin = { -8.0f, -1.0f, -8.0f };
-    float densityMultiplier = 1.0f;
+    float cloudBottomAltitude = 1500.0f;
+    float cloudLayerThickness = 3000.0f;
+    float maxViewTraceDistance = 50000.0f;
+    float densityMultiplier = 0.65f;
 
-    DirectX::XMFLOAT3 cloudBoundsMax = { 8.0f, 2.0f, 8.0f };
-    float stepSize = 0.1f;
+    float maxLightTraceDistance = 20000.0f;
+    float noiseLabPreviewWorldSize = 32000.0f;
+    float stepSize = 100.0f;
+    float viewTraceFadeStartDistance = 40000.0f;
 
-    std::uint32_t maxViewSteps = 128;
-    float extinctionCoefficient = 1.0f;
+    std::uint32_t maxViewSteps = 512;
+    float extinctionCoefficient = 0.00075f;
     float transmittanceThreshold = 0.01f;
     std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
 
-    float baseNoiseScale = 0.35f;
+    float baseNoiseScale = 0.00035f;
     float coverage = 0.55f;
-    float windSpeed = 0.25f;
+    float windSpeed = 12.0f;
     float noiseOffset = 0.0f;
 
     DirectX::XMFLOAT3 windDirection = { 0.9701425f, 0.0f, 0.2425356f };
     float bottomFadeEnd = 0.20f;
 
     float topFadeStart = 0.80f;
-    float heightProfilePadding[3] = {};
+    float detailLodFadeStartDistance = 8000.0f;
+    float detailLodFadeEndDistance = 20000.0f;
+    float detailLodPadding = 0.0f;
 
-    float detailNoiseScale = 2.5f;
+    float detailNoiseScale = 0.0025f;
     float detailErosionStrength = 0.25f;
-    float detailWindSpeed = 0.45f;
+    float detailWindSpeed = 18.0f;
     float detailNoiseOffset = 17.3f;
 
-    float weatherMapWorldSize = 16.0f;
-    float weatherMapWindSpeed = 0.10f;
+    float weatherMapWorldSize = 32000.0f;
+    float weatherMapWindSpeed = 8.0f;
     DirectX::XMFLOAT2 weatherMapOffset = { 0.0f, 0.0f };
 };
 

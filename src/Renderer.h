@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 7 방향성 단일 산란 렌더링
+//  Renderer.h - Direct3D 11 단계 9 최적화·성능 계측 렌더링
 // ============================================================================
 #pragma once
 
@@ -15,9 +15,11 @@
 #include <string>
 
 #include "CloudParameters.h"
+#include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
 #include "LightParameters.h"
 #include "NoiseLab.h"
+#include "OptimizationParameters.h"
 #include "WeatherMap.h"
 
 class Camera;
@@ -50,11 +52,18 @@ public:
     Stage5WeatherPreset WeatherPreset() const { return m_weatherPreset; }
     void ApplyStage6SunPreset(Stage6SunPreset preset);
     void ApplyStage7PhasePreset(Stage7PhasePreset preset);
+    void ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset);
+    void ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset);
     void SetLightSampling(std::uint32_t maxSteps, float stepSize);
     void SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize);
+    void SetBaseNoiseScaleForSmoke(float scale);
     Stage6SunPreset SunPreset() const { return m_sunPreset; }
     Stage7PhasePreset PhasePreset() const { return m_phasePreset; }
+    Stage8EnvironmentPreset EnvironmentPreset() const { return m_environmentPreset; }
+    Stage9OptimizationPreset OptimizationPreset() const { return m_optimizationPreset; }
+    const OptimizationParameters& OptimizationSettings() const { return m_optimizationParameters; }
     const LightParameters& LightSettings() const { return m_lightParameters; }
+    const EnvironmentParameters& EnvironmentSettings() const { return m_environmentParameters; }
     std::uint64_t WeatherMapHash() const { return m_weatherMapHash; }
     std::uintptr_t WeatherTextureIdentity() const
     {
@@ -144,7 +153,8 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_sceneDepthSrv;
 
     ComPtr<ID3D11VertexShader> m_fullscreenVs;
-    ComPtr<ID3D11PixelShader> m_cloudPs;
+    ComPtr<ID3D11PixelShader> m_cloudLegacyPs;
+    ComPtr<ID3D11PixelShader> m_cloudOptimizedPs;
     ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
@@ -153,6 +163,8 @@ private:
     ComPtr<ID3D11Buffer> m_cameraCb;
     ComPtr<ID3D11Buffer> m_cloudCb;
     ComPtr<ID3D11Buffer> m_lightCb;
+    ComPtr<ID3D11Buffer> m_environmentCb;
+    ComPtr<ID3D11Buffer> m_optimizationCb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
@@ -167,12 +179,16 @@ private:
 
     CloudParameters m_cloudParameters;
     LightParameters m_lightParameters;
-    Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::WideVolume;
+    EnvironmentParameters m_environmentParameters;
+    OptimizationParameters m_optimizationParameters;
+    Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::DefaultVolume;
     Stage2NoisePreset m_noisePreset = Stage2NoisePreset::DefaultNoise;
     Stage4DetailPreset m_detailPreset = Stage4DetailPreset::DefaultDetail;
     Stage5WeatherPreset m_weatherPreset = Stage5WeatherPreset::ChannelDebug;
     Stage6SunPreset m_sunPreset = Stage6SunPreset::Custom;
     Stage7PhasePreset m_phasePreset = Stage7PhasePreset::Off;
+    Stage8EnvironmentPreset m_environmentPreset = Stage8EnvironmentPreset::Balanced;
+    Stage9OptimizationPreset m_optimizationPreset = Stage9OptimizationPreset::Balanced;
     WeatherMapGeneratorSettings m_weatherGeneratorSettings;
     std::uint64_t m_weatherMapHash = 0;
     std::string m_weatherMapStatus = "Not generated";

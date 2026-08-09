@@ -4,6 +4,7 @@
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -153,7 +154,7 @@ bool Renderer::Init(HWND hwnd, int width, int height)
         !CreateWeatherMapTexture(m_weatherPreset) ||
         !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
     {
-        MessageBoxW(hwnd, L"단계 6 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 8 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -218,6 +219,9 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
 #ifdef _DEBUG
     compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+    // 성능 비교용 Release는 드라이버에 넘기기 전 HLSL 컴파일러의 최고 최적화를 고정한다.
+    compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
 
     ComPtr<ID3DBlob> errors;
@@ -242,12 +246,14 @@ bool Renderer::CreateShaders(bool showErrors)
 {
     m_shaderError.clear();
     ComPtr<ID3DBlob> fullscreenVsBlob;
-    ComPtr<ID3DBlob> cloudPsBlob;
+    ComPtr<ID3DBlob> cloudLegacyPsBlob;
+    ComPtr<ID3DBlob> cloudOptimizedPsBlob;
     ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
     if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudShaderPath, "main", "ps_5_0", cloudPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainLegacy", "ps_5_0", cloudLegacyPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors) ||
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors))
@@ -257,7 +263,8 @@ bool Renderer::CreateShaders(bool showErrors)
     }
 
     ComPtr<ID3D11VertexShader> fullscreenVs;
-    ComPtr<ID3D11PixelShader> cloudPs;
+    ComPtr<ID3D11PixelShader> cloudLegacyPs;
+    ComPtr<ID3D11PixelShader> cloudOptimizedPs;
     ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
@@ -267,8 +274,11 @@ bool Renderer::CreateShaders(bool showErrors)
             fullscreenVsBlob->GetBufferPointer(), fullscreenVsBlob->GetBufferSize(),
             nullptr, &fullscreenVs)) ||
         FAILED(m_device->CreatePixelShader(
-            cloudPsBlob->GetBufferPointer(), cloudPsBlob->GetBufferSize(),
-            nullptr, &cloudPs)) ||
+            cloudLegacyPsBlob->GetBufferPointer(), cloudLegacyPsBlob->GetBufferSize(),
+            nullptr, &cloudLegacyPs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudOptimizedPsBlob->GetBufferPointer(), cloudOptimizedPsBlob->GetBufferSize(),
+            nullptr, &cloudOptimizedPs)) ||
         FAILED(m_device->CreatePixelShader(
             noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
             nullptr, &noiseLabPs)) ||
@@ -301,7 +311,8 @@ bool Renderer::CreateShaders(bool showErrors)
     }
 
     m_fullscreenVs = fullscreenVs;
-    m_cloudPs = cloudPs;
+    m_cloudLegacyPs = cloudLegacyPs;
+    m_cloudOptimizedPs = cloudOptimizedPs;
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
@@ -483,6 +494,8 @@ bool Renderer::CreateConstantBuffers()
     return createDynamicBuffer(sizeof(CameraCB), &m_cameraCb) &&
            createDynamicBuffer(sizeof(CloudParameters), &m_cloudCb) &&
            createDynamicBuffer(sizeof(LightParameters), &m_lightCb) &&
+           createDynamicBuffer(sizeof(EnvironmentParameters), &m_environmentCb) &&
+           createDynamicBuffer(sizeof(OptimizationParameters), &m_optimizationCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -578,6 +591,26 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
         std::memcpy(mapped.pData, &m_lightParameters, sizeof(m_lightParameters));
         m_context->Unmap(m_lightCb.Get(), 0);
     }
+    m_environmentParameters = stage8environment::Sanitize(m_environmentParameters);
+    if (SUCCEEDED(m_context->Map(m_environmentCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_environmentParameters,
+                    sizeof(m_environmentParameters));
+        m_context->Unmap(m_environmentCb.Get(), 0);
+    }
+    m_cloudParameters.transmittanceThreshold = std::clamp(
+        std::isfinite(m_cloudParameters.transmittanceThreshold)
+            ? m_cloudParameters.transmittanceThreshold : 0.01f,
+        0.0f, 0.1f);
+    m_optimizationParameters = stage9optimization::Sanitize(
+        m_optimizationParameters);
+    if (SUCCEEDED(m_context->Map(
+            m_optimizationCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_optimizationParameters,
+                    sizeof(m_optimizationParameters));
+        m_context->Unmap(m_optimizationCb.Get(), 0);
+    }
 
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     m_context->OMSetRenderTargets(1, m_backBufferRtv.GetAddressOf(), nullptr);
@@ -588,11 +621,20 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
     m_context->IASetInputLayout(nullptr);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    m_context->PSSetShader(m_cloudPs.Get(), nullptr, 0);
+    const bool useOptimizedShader =
+        m_cloudParameters.debugMode == static_cast<std::int32_t>(CloudDebugMode::Composite) &&
+        m_optimizationPreset != Stage9OptimizationPreset::Off;
+    m_context->PSSetShader(
+        useOptimizedShader ? m_cloudOptimizedPs.Get() : m_cloudLegacyPs.Get(),
+        nullptr, 0);
     ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
     ID3D11Buffer* lightBuffer = m_lightCb.Get();
     m_context->PSSetConstantBuffers(3, 1, &lightBuffer);
+    ID3D11Buffer* environmentBuffer = m_environmentCb.Get();
+    m_context->PSSetConstantBuffers(4, 1, &environmentBuffer);
+    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
+    m_context->PSSetConstantBuffers(5, 1, &optimizationBuffer);
     ID3D11ShaderResourceView* resources[3] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get()
     };
@@ -620,7 +662,9 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     // 0으로 바꾼 검증에서 F10 Detail 프리셋 이름이 사라지면 안 된다.
     const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
     m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
-                          m_lightParameters, m_sunPreset, m_phasePreset,
+                           m_lightParameters, m_sunPreset, m_phasePreset,
+                           m_environmentParameters, m_environmentPreset,
+                           m_optimizationParameters, m_optimizationPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_frameProfiler.Snapshot(), m_vsyncEnabled,
@@ -667,6 +711,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         CaptureCloudFrameHash();
     if (m_renderNoiseLabPreviews)
     {
+        m_noiseLab.SetPreviewCenterXZ(camera.GetPosition());
         m_noiseLab.RenderPreviews(
             m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get(),
             m_weatherMapSrv.Get(), m_weatherLinearWrapSampler.Get());
@@ -681,6 +726,10 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
                                   m_lightParameters,
                                   m_sunPreset,
                                   m_phasePreset,
+                                   m_environmentParameters,
+                                   m_environmentPreset,
+                                   m_optimizationParameters,
+                                   m_optimizationPreset,
                                   m_detailPreset,
                                   m_weatherPreset,
                                   m_weatherGeneratorSettings,
@@ -739,36 +788,38 @@ CloudDebugMode Renderer::DebugMode() const
 
 void Renderer::ApplyStage1ValidationPreset(Stage1ValidationPreset preset)
 {
-    // 각 키는 다른 키의 잔여 상태가 결과를 흐리지 않도록 단계 1 기본값에서 시작한다.
-    m_cloudParameters.cloudBoundsMin = { -2.0f, -1.0f, -2.0f };
-    m_cloudParameters.cloudBoundsMax = { 2.0f, 2.0f, 2.0f };
-    m_cloudParameters.densityMultiplier = 1.0f;
-    m_cloudParameters.stepSize = 0.10f;
-    m_cloudParameters.maxViewSteps = 128;
-    m_cloudParameters.extinctionCoefficient = 1.0f;
+    // 단계 13 기준층에서 시작해 두께·거리·표본만 독립적으로 바꾼다.
+    m_cloudParameters.cloudBottomAltitude = 1500.0f;
+    m_cloudParameters.cloudLayerThickness = 3000.0f;
+    m_cloudParameters.maxViewTraceDistance = 50000.0f;
+    m_cloudParameters.maxLightTraceDistance = 20000.0f;
+    m_cloudParameters.noiseLabPreviewWorldSize = 32000.0f;
+    m_cloudParameters.viewTraceFadeStartDistance = 40000.0f;
+    m_cloudParameters.densityMultiplier = 0.65f;
+    m_cloudParameters.stepSize = 100.0f;
+    m_cloudParameters.maxViewSteps = 512;
+    m_cloudParameters.extinctionCoefficient = 0.00075f;
     m_cloudParameters.transmittanceThreshold = 0.01f;
+    m_cloudParameters.detailLodFadeStartDistance = 8000.0f;
+    m_cloudParameters.detailLodFadeEndDistance = 20000.0f;
 
     switch (preset)
     {
     case Stage1ValidationPreset::WideVolume:
-        m_cloudParameters.cloudBoundsMin.x = -8.0f;
-        m_cloudParameters.cloudBoundsMin.z = -8.0f;
-        m_cloudParameters.cloudBoundsMax.x = 8.0f;
-        m_cloudParameters.cloudBoundsMax.z = 8.0f;
+        m_cloudParameters.maxViewTraceDistance = 64000.0f;
+        m_cloudParameters.viewTraceFadeStartDistance = 52000.0f;
         break;
     case Stage1ValidationPreset::ThinVolume:
-        m_cloudParameters.cloudBoundsMin.z = -0.5f;
-        m_cloudParameters.cloudBoundsMax.z = 0.5f;
+        m_cloudParameters.cloudLayerThickness = 1500.0f;
         break;
     case Stage1ValidationPreset::ThickVolume:
-        m_cloudParameters.cloudBoundsMin.z = -4.0f;
-        m_cloudParameters.cloudBoundsMax.z = 4.0f;
+        m_cloudParameters.cloudLayerThickness = 6000.0f;
         break;
     case Stage1ValidationPreset::FineStep:
-        m_cloudParameters.stepSize = 0.025f;
+        m_cloudParameters.stepSize = 50.0f;
         break;
     case Stage1ValidationPreset::CoarseStep:
-        m_cloudParameters.stepSize = 0.5f;
+        m_cloudParameters.stepSize = 200.0f;
         break;
     case Stage1ValidationPreset::DefaultVolume:
     default:
@@ -785,12 +836,12 @@ Stage1ValidationPreset Renderer::ValidationPreset() const
 void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
 {
     // 프리셋을 누르는 순서와 무관하게 비교할 수 있도록 noise 관련 값만 기본화한다.
-    // AABB와 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
-    m_cloudParameters.baseNoiseScale = 0.35f;
+    // 평면층과 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
+    m_cloudParameters.baseNoiseScale = 0.00035f;
     m_cloudParameters.coverage = 0.55f;
-    m_cloudParameters.densityMultiplier = 1.0f;
+    m_cloudParameters.densityMultiplier = 0.65f;
     m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    m_cloudParameters.windSpeed = 0.25f;
+    m_cloudParameters.windSpeed = 12.0f;
     m_cloudParameters.noiseOffset = 0.0f;
 
     switch (preset)
@@ -802,16 +853,16 @@ void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
         m_cloudParameters.coverage = 0.75f;
         break;
     case Stage2NoisePreset::LargeBlobs:
-        m_cloudParameters.baseNoiseScale = 0.18f;
+        m_cloudParameters.baseNoiseScale = 0.000175f;
         break;
     case Stage2NoisePreset::SmallBlobs:
-        m_cloudParameters.baseNoiseScale = 0.70f;
+        m_cloudParameters.baseNoiseScale = 0.0007f;
         break;
     case Stage2NoisePreset::StoppedWind:
         m_cloudParameters.windSpeed = 0.0f;
         break;
     case Stage2NoisePreset::FastWind:
-        m_cloudParameters.windSpeed = 0.8f;
+        m_cloudParameters.windSpeed = 24.0f;
         break;
     case Stage2NoisePreset::OffsetNoise:
         m_cloudParameters.noiseOffset = 0.73f;
@@ -840,10 +891,12 @@ void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
 {
     // 프리셋 전환 순서와 무관하게 네 Detail 값만 기본화한다. Base noise, 높이와
     // Q/Y 볼륨은 그대로 두므로 큰 형태가 변하지 않는지 직접 비교할 수 있다.
-    m_cloudParameters.detailNoiseScale = 2.5f;
+    m_cloudParameters.detailNoiseScale = 0.0025f;
     m_cloudParameters.detailErosionStrength = 0.25f;
-    m_cloudParameters.detailWindSpeed = 0.45f;
+    m_cloudParameters.detailWindSpeed = 18.0f;
     m_cloudParameters.detailNoiseOffset = 17.3f;
+    m_cloudParameters.detailLodFadeStartDistance = 8000.0f;
+    m_cloudParameters.detailLodFadeEndDistance = 20000.0f;
 
     switch (preset)
     {
@@ -851,7 +904,7 @@ void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
         m_cloudParameters.detailErosionStrength = 0.0f;
         break;
     case Stage4DetailPreset::FineDetail:
-        m_cloudParameters.detailNoiseScale = 6.0f;
+        m_cloudParameters.detailNoiseScale = 0.005f;
         break;
     case Stage4DetailPreset::StrongErosion:
         m_cloudParameters.detailErosionStrength = 0.55f;
@@ -898,6 +951,32 @@ void Renderer::ApplyStage7PhasePreset(Stage7PhasePreset preset)
     m_phasePreset = preset;
 }
 
+void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
+{
+    if (preset == Stage8EnvironmentPreset::Custom)
+    {
+        m_environmentParameters =
+            stage8environment::Sanitize(m_environmentParameters);
+        m_environmentPreset = preset;
+        return;
+    }
+    stage8environment::ApplyPreset(m_environmentParameters, preset);
+    m_environmentPreset = preset;
+}
+
+void Renderer::ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset)
+{
+    if (preset == Stage9OptimizationPreset::Custom)
+    {
+        m_optimizationParameters = stage9optimization::Sanitize(
+            m_optimizationParameters);
+        m_optimizationPreset = preset;
+        return;
+    }
+    stage9optimization::ApplyPreset(m_optimizationParameters, preset);
+    m_optimizationPreset = preset;
+}
+
 void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
 {
     m_lightParameters.maxLightSteps = maxSteps;
@@ -910,6 +989,12 @@ void Renderer::SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize)
 {
     m_cloudParameters.maxViewSteps = std::max(maxSteps, 1u);
     m_cloudParameters.stepSize = std::max(stepSize, 1e-4f);
+}
+
+void Renderer::SetBaseNoiseScaleForSmoke(float scale)
+{
+    m_cloudParameters.baseNoiseScale =
+        std::isfinite(scale) ? std::max(scale, 1e-4f) : 0.00035f;
 }
 
 bool Renderer::ApplyWeatherGeneratorSettings(
@@ -1026,6 +1111,8 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
         root, m_cloudParameters, m_lightParameters, m_sunPreset, m_phasePreset,
+        m_environmentParameters, m_environmentPreset,
+        m_optimizationParameters, m_optimizationPreset,
         m_detailPreset, m_weatherPreset,
         m_weatherGeneratorSettings, m_weatherMapHash, m_weatherMapTexture.Get(),
         std::filesystem::path(m_shaderDir) / L"Noise.hlsli");
