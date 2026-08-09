@@ -56,6 +56,7 @@ public:
     void ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset);
     void SetLightSampling(std::uint32_t maxSteps, float stepSize);
     void SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize);
+    void SetBaseNoiseScaleForSmoke(float scale);
     Stage6SunPreset SunPreset() const { return m_sunPreset; }
     Stage7PhasePreset PhasePreset() const { return m_phasePreset; }
     Stage8EnvironmentPreset EnvironmentPreset() const { return m_environmentPreset; }

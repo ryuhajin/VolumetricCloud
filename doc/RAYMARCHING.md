@@ -43,11 +43,11 @@ stepCount = min(maxViewSteps, ceil(segmentLength / stepSize))
 actualStepLength = segmentLength / stepCount
 ```
 
-실행 기본 `Y` 넓은 볼륨은 X/Z가 `±8m`이므로 비스듬한 레이의 구간이
-`maxViewSteps × stepSize = 12.8m`보다 길 수 있다. 이 경우 구간을 잘라 버리지
-않고 128개로 다시 나누므로 `actualStepLength`가 `0.10m`보다 커진다. `Q`의
-X/Z `±2m` 볼륨은 기존 수치·step 회귀 기준으로 남겨 둔다. 빈 공간 건너뛰기와
-원거리 step 최적화는 단계 9 범위다.
+Stage 13 기본은 `maxViewSteps=512`, `stepSize=100m`, 최대 거리 50km다. 전체 50km가
+구름층 안인 최악 구간도 `ceil(50000/100)=500`회이므로 상한 안에서 실제 100m를 유지한다.
+512는 50km를 항상 512등분하는 값이 아니라 목표 간격을 지킬 수 있게 허용하는 반복 상한이다.
+구간이 51.2km를 넘거나 step을 더 줄이면 상한에 걸려 `actualStepLength`가 목표보다 커진다.
+빈 공간 건너뛰기와 원거리 step 최적화는 단계 9 범위다.
 
 각 샘플 위치는 구간 중앙이다.
 
@@ -393,8 +393,11 @@ erosion = filteredDetail × detailErosionStrength
 
 Weather와 Base/Detail Noise 좌표는 월드 XZ에 고정한다. 여기서 "카메라 기준"은 구름 텍스처나
 박스가 카메라를 따라 이동한다는 뜻이 아니라, 각 카메라 위치에서 유한 반경까지만 추적한다는 뜻이다.
-기준값은 Weather 반복 32km, Base/Detail `0.0015/0.012 cycle/m`, 바람 `12/18/8m/s`,
+기준값은 Weather 반복 32km, Base/Detail `0.00035/0.0025 cycle/m`, 바람 `12/18/8m/s`,
 `extinction=0.00075/m`, 밀도 배율 `0.65`, 단일산란 알베도 `0.90`이다.
+Base 약 2.86km와 Detail 400m 파장은 소규모 AABB의 `0.35/2.5 cycle/m`를 공간 1000배
+기준으로 확대한 값이다. View는 100m/512 steps를 사용해 50km 전체 구간에서도 Detail 파장당
+4표본을 확보하며 광학값은 유지한다.
 
 ## 단계 9: 계산을 생략하는 레이마칭 (보류)
 

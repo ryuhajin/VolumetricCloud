@@ -321,6 +321,14 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                            1000.0f, 100000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("View Fade Start", &cloudParameters.viewTraceFadeStartDistance,
                            0.0f, cloudParameters.maxViewTraceDistance, "%.2f m");
+        int viewSteps = static_cast<int>(cloudParameters.maxViewSteps);
+        if (ImGui::SliderInt("Max View Steps", &viewSteps, 1, 1024))
+            cloudParameters.maxViewSteps = static_cast<std::uint32_t>(viewSteps);
+        if (ImGui::Button("View 256 Steps"))
+            cloudParameters.maxViewSteps = 256u;
+        ImGui::SameLine();
+        if (ImGui::Button("View 512 Steps"))
+            cloudParameters.maxViewSteps = 512u;
         ImGui::SliderFloat("Light Trace Max", &cloudParameters.maxLightTraceDistance,
                            1000.0f, 50000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Noise Lab Width", &cloudParameters.noiseLabPreviewWorldSize,
@@ -346,7 +354,29 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::TextDisabled(
             "Preview only: these buttons do not change cloud rendering or world noise.");
         ImGui::TextDisabled(
-            "Equal Axis matches Layer Thickness, not Layer Bottom (cloud altitude)." );
+            "Equal Axis matches Layer Thickness, not Layer Bottom (cloud altitude).");
+
+        const float targetViewStep = std::max(cloudParameters.stepSize, 1e-4f);
+        const float requestedViewSteps = std::ceil(
+            cloudParameters.maxViewTraceDistance / targetViewStep);
+        const float executedWorstCaseSteps = std::max(
+            std::min(requestedViewSteps,
+                     static_cast<float>(std::max(cloudParameters.maxViewSteps, 1u))),
+            1.0f);
+        const float worstCaseActualStep =
+            cloudParameters.maxViewTraceDistance / executedWorstCaseSteps;
+        const float baseWavelength = 1.0f /
+            std::max(cloudParameters.baseNoiseScale, 1e-6f);
+        const float detailWavelength = 1.0f /
+            std::max(cloudParameters.detailNoiseScale, 1e-6f);
+        const bool viewStepCapped = requestedViewSteps >
+            static_cast<float>(std::max(cloudParameters.maxViewSteps, 1u));
+        ImGui::Text("Max-trace step: %.1f m | target %.1f m | %s",
+                    worstCaseActualStep, targetViewStep,
+                    viewStepCapped ? "MAX STEPS CAPPED" : "target preserved");
+        ImGui::Text("Base %.0f m: %.1f samples | Detail %.0f m: %.1f samples",
+                    baseWavelength, baseWavelength / worstCaseActualStep,
+                    detailWavelength, detailWavelength / worstCaseActualStep);
         ImGui::SliderFloat("Extinction", &cloudParameters.extinctionCoefficient,
                            0.0001f, 0.005f, "%.6f /m", ImGuiSliderFlags_Logarithmic);
         const float referenceOpticalDepth = 0.5f *
@@ -366,6 +396,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         cloudParameters.cloudLayerThickness, 100.0f);
     cloudParameters.maxViewTraceDistance = std::max(
         cloudParameters.maxViewTraceDistance, 1000.0f);
+    cloudParameters.maxViewSteps = std::max(cloudParameters.maxViewSteps, 1u);
     cloudParameters.viewTraceFadeStartDistance = std::clamp(
         cloudParameters.viewTraceFadeStartDistance, 0.0f,
         cloudParameters.maxViewTraceDistance);
@@ -575,7 +606,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                            cloudParameters.maxViewTraceDistance, "%.0f m");
         if (ImGui::Button("Reset Detail"))
         {
-            cloudParameters.detailNoiseScale = 0.012f;
+            cloudParameters.detailNoiseScale = 0.0025f;
             cloudParameters.detailErosionStrength = 0.25f;
             cloudParameters.detailWindSpeed = 18.0f;
             cloudParameters.detailNoiseOffset = 17.3f;
@@ -1134,7 +1165,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::SameLine();
         if (ImGui::Button("Reset Noise"))
         {
-            cloudParameters.baseNoiseScale = 0.0015f;
+            cloudParameters.baseNoiseScale = 0.00035f;
             cloudParameters.coverage = 0.55f;
             cloudParameters.densityMultiplier = 0.65f;
             cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
@@ -1699,6 +1730,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << cloud.cloudBottomAltitude + cloud.cloudLayerThickness << ",\n"
            << "  \"maxViewTraceDistanceMeters\": "
            << cloud.maxViewTraceDistance << ",\n"
+           << "  \"maxViewSteps\": " << cloud.maxViewSteps << ",\n"
+           << "  \"viewStepSizeMeters\": " << cloud.stepSize << ",\n"
            << "  \"viewTraceFadeStartDistanceMeters\": "
            << cloud.viewTraceFadeStartDistance << ",\n"
            << "  \"maxLightTraceDistanceMeters\": "

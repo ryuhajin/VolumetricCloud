@@ -258,3 +258,33 @@
 - 2026-08-09 Debug/Release 빌드와 CTest를 각각 26/26 통과했으며 NoiseLabSmoke와
   ShaderHotReloadSmoke도 양 구성에서 통과했다.
 - 화면 축 매핑과 단면 연속성은 사용자 승인 뒤 다음 품질 보정 단계로 진행한다.
+
+## 16. 단계 13 품질 재검증 — AABB 공간 비율 복원
+
+- 소규모 AABB의 Base/Detail `0.35/2.5 cycle/m`를 공간 1000배 기준으로 확장해
+  평면층 기본값을 `0.00035/0.0025 cycle/m`로 변경했다.
+- N 기본 Base와 D/F 크기 프리셋은 `0.00035/0.000175/0.0007`, F10/F11 Detail은
+  `0.0025/0.005`로 같은 상대 배율을 유지하고 UI Reset도 동일한 값으로 맞췄다.
+- Density 0.65, Extinction 0.00075/m, View 100m/256 steps와 Weather 32km는 유지해
+  이번 사용자 검증에서 noise 공간 비율 변화만 분리한다.
+- Stage13Smoke export 검증에 Base/Detail 기본값을 추가해 프리셋 회귀를 자동으로 감지한다.
+- 2026-08-09 Debug/Release 빌드와 전체 CTest를 각각 26/26 통과했으며 새 기본값을
+  사용하는 NoiseLab/Stage2/Stage4/Stage13 smoke와 shader hot reload를 확인했다.
+
+## 17. 단계 13 품질 재검증 — View 512-step 기준
+
+- View 최대 반복을 256에서 512로 올려 50km 전체 구간에서도 100m 목표 간격과
+  400m Detail 파장당 4표본을 유지한다.
+- Noise Lab에 Max View Steps, 256/512 비교 버튼과 50km 실제 간격·Base/Detail 파장당
+  표본 수·상한 초과 여부를 표시한다.
+- schema 13 export에 `maxViewSteps`와 `viewStepSizeMeters`를 추가하고 Stage13Smoke가
+  512/100 기본값을 직접 검사한다.
+- GPU 비용은 기록만 하고 단계 13 사용자 승인 전에는 단계 9 성능 게이트를 적용하지 않는다.
+- 2026-08-09 Debug/Release 빌드와 전체 CTest를 각각 26/26 통과했으며 Legacy/Optimized
+  D3D smoke, Noise Lab export와 shader hot reload를 새 512-step 기본값에서 확인했다.
+- Z Raw Noise 팝핑 진단을 위해 `Stage13Smoke`에 고정 F6 카메라, time 0, Wind 0,
+  Optimization Off 조건의 8프레임 해시 비교를 추가했다. 제품 기본값 `0.00035`와
+  진단 전용 `0.00662 cycle/m`를 각각 검사하고 두 스케일의 해시 차이도 확인한다.
+- 2026-08-10 Debug/Release `Stage13Smoke`에서 두 스케일 모두 8프레임 해시가
+  고정되고 스케일 간 해시는 달랐다. 전체 CTest도 양 구성 각각 26/26 통과해 관찰된
+  팝이 고정 입력 Cloud Pass의 비결정적 재계산 때문이 아님을 확인했다.

@@ -797,7 +797,7 @@ void Renderer::ApplyStage1ValidationPreset(Stage1ValidationPreset preset)
     m_cloudParameters.viewTraceFadeStartDistance = 40000.0f;
     m_cloudParameters.densityMultiplier = 0.65f;
     m_cloudParameters.stepSize = 100.0f;
-    m_cloudParameters.maxViewSteps = 256;
+    m_cloudParameters.maxViewSteps = 512;
     m_cloudParameters.extinctionCoefficient = 0.00075f;
     m_cloudParameters.transmittanceThreshold = 0.01f;
     m_cloudParameters.detailLodFadeStartDistance = 8000.0f;
@@ -837,7 +837,7 @@ void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
 {
     // 프리셋을 누르는 순서와 무관하게 비교할 수 있도록 noise 관련 값만 기본화한다.
     // 평면층과 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
-    m_cloudParameters.baseNoiseScale = 0.0015f;
+    m_cloudParameters.baseNoiseScale = 0.00035f;
     m_cloudParameters.coverage = 0.55f;
     m_cloudParameters.densityMultiplier = 0.65f;
     m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
@@ -853,10 +853,10 @@ void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
         m_cloudParameters.coverage = 0.75f;
         break;
     case Stage2NoisePreset::LargeBlobs:
-        m_cloudParameters.baseNoiseScale = 0.0008f;
+        m_cloudParameters.baseNoiseScale = 0.000175f;
         break;
     case Stage2NoisePreset::SmallBlobs:
-        m_cloudParameters.baseNoiseScale = 0.0030f;
+        m_cloudParameters.baseNoiseScale = 0.0007f;
         break;
     case Stage2NoisePreset::StoppedWind:
         m_cloudParameters.windSpeed = 0.0f;
@@ -891,7 +891,7 @@ void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
 {
     // 프리셋 전환 순서와 무관하게 네 Detail 값만 기본화한다. Base noise, 높이와
     // Q/Y 볼륨은 그대로 두므로 큰 형태가 변하지 않는지 직접 비교할 수 있다.
-    m_cloudParameters.detailNoiseScale = 0.012f;
+    m_cloudParameters.detailNoiseScale = 0.0025f;
     m_cloudParameters.detailErosionStrength = 0.25f;
     m_cloudParameters.detailWindSpeed = 18.0f;
     m_cloudParameters.detailNoiseOffset = 17.3f;
@@ -904,7 +904,7 @@ void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
         m_cloudParameters.detailErosionStrength = 0.0f;
         break;
     case Stage4DetailPreset::FineDetail:
-        m_cloudParameters.detailNoiseScale = 0.024f;
+        m_cloudParameters.detailNoiseScale = 0.005f;
         break;
     case Stage4DetailPreset::StrongErosion:
         m_cloudParameters.detailErosionStrength = 0.55f;
@@ -989,6 +989,12 @@ void Renderer::SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize)
 {
     m_cloudParameters.maxViewSteps = std::max(maxSteps, 1u);
     m_cloudParameters.stepSize = std::max(stepSize, 1e-4f);
+}
+
+void Renderer::SetBaseNoiseScaleForSmoke(float scale)
+{
+    m_cloudParameters.baseNoiseScale =
+        std::isfinite(scale) ? std::max(scale, 1e-4f) : 0.00035f;
 }
 
 bool Renderer::ApplyWeatherGeneratorSettings(

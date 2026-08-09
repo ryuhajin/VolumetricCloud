@@ -753,6 +753,44 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             nearSampleHash == farSampleHash)
             return 8;
 
+        // 사용자가 Z Raw Noise에서 보고한 간헐적 팝이 실제 GPU 출력 변화인지
+        // 표시 과정의 모아레인지 분리한다. 시간·바람·카메라·최적화를 고정하고
+        // 기본 Base와 의도적인 고주파 스트레스 값을 각각 8프레임 비교한다.
+        camera.SetOrbit(0.0f, -0.15f, 10000.0f, {0.0f, 1500.0f, 0.0f});
+        renderer.ApplyStage2NoisePreset(Stage2NoisePreset::StoppedWind);
+        renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Off);
+        renderer.SetDebugMode(CloudDebugMode::RawNoise);
+        const auto captureStableRawNoiseHash =
+            [&](float baseNoiseScale, std::uint64_t& stableHash)
+        {
+            renderer.SetBaseNoiseScaleForSmoke(baseNoiseScale);
+            stableHash = 0;
+            for (int frame = 0; frame < 8; ++frame)
+            {
+                renderer.Render(camera, 0.0f);
+                const std::uint64_t frameHash = renderer.LastCloudFrameHash();
+                if (frameHash == 0)
+                    return false;
+                if (frame == 0)
+                    stableHash = frameHash;
+                else if (frameHash != stableHash)
+                    return false;
+            }
+            return true;
+        };
+
+        std::uint64_t defaultRawNoiseHash = 0;
+        if (!captureStableRawNoiseHash(0.00035f, defaultRawNoiseHash))
+            return 9;
+        std::uint64_t stressRawNoiseHash = 0;
+        if (!captureStableRawNoiseHash(0.00662f, stressRawNoiseHash))
+            return 10;
+        if (defaultRawNoiseHash == stressRawNoiseHash)
+            return 11;
+
+        // 아래 export는 제품 기본값을 검증하므로 스트레스 값을 남기지 않는다.
+        renderer.ApplyStage2NoisePreset(Stage2NoisePreset::DefaultNoise);
+
         const std::filesystem::path exportRoot =
             std::filesystem::temp_directory_path() / L"VolumetricCloudStage13Smoke";
         if (!renderer.ExportNoiseLabSnapshot(exportRoot))
@@ -769,6 +807,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 metadata.find("\"schemaVersion\": 13") != std::string::npos &&
                 metadata.find("\"cloudDomain\": \"cameraCenteredPlanarLayer\"") != std::string::npos &&
                 metadata.find("\"weatherMapWorldSize\": 32000") != std::string::npos &&
+                metadata.find("\"baseNoiseScale\": 0.00035") != std::string::npos &&
+                metadata.find("\"detailNoiseScale\": 0.0025") != std::string::npos &&
+                metadata.find("\"maxViewSteps\": 512") != std::string::npos &&
+                metadata.find("\"viewStepSizeMeters\": 100") != std::string::npos &&
                 metadata.find("\"singleScatteringModel\": \"energyConservingAlbedo\"") != std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\": 0.9") != std::string::npos &&
                 metadata.find("\"detailLodFadeStartDistanceMeters\": 8000") != std::string::npos &&

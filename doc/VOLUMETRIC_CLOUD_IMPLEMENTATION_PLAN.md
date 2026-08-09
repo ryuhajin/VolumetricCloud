@@ -116,9 +116,9 @@ Phase Off가 단계 6 결과와 같도록 배율 1을 중립값으로 쓴다.
 | View 최대 거리 / fade 시작 | 50,000m / 40,000m |
 | Light 최대 거리 | 20,000m |
 | Noise Lab 미리보기 폭 | 32,000m |
-| View step / 최대 횟수 | 100m / 256 |
+| View step / 최대 횟수 | 100m / 512 |
 | Light step / 최대 횟수 | 250m / 32 |
-| Base / Detail 주파수 | 0.0015 / 0.012 cycle/m |
+| Base / Detail 주파수 | 0.00035 / 0.0025 cycle/m |
 | extinction / density | 0.00075/m / 0.65 |
 | 단일산란 알베도 | 0.90 |
 | Detail LOD 유지 / 생략 | 8,000m / 20,000m |

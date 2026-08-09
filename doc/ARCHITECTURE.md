@@ -78,11 +78,11 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경�
 |---|---|---|
 | 0 | `cloudBottomAltitude`, `cloudLayerThickness`, `maxViewTraceDistance`, `densityMultiplier` | `1500m`, `3000m`, `50000m`, `0.65`; 구름층과 View 반경 |
 | 1 | `maxLightTraceDistance`, `noiseLabPreviewWorldSize`, `stepSize`, `viewTraceFadeStartDistance` | `20000m`, `32000m`, `100m`, `40000m`; Light 상한·미리보기·View 표본·fade |
-| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `256`, `0.00075/m`, `0.01`, `0`; km 광학 기준과 단계 9 Early Exit 임계값 |
-| 3 | `baseNoiseScale`, `coverage`, `windSpeed`, `noiseOffset` | `0.0015 cycle/m`, `0.55`, `12m/s`, `0`; km 규모 형태·이동 |
+| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `512`, `0.00075/m`, `0.01`, `0`; 50km에서 100m 목표 간격과 단계 9 Early Exit 임계값 |
+| 3 | `baseNoiseScale`, `coverage`, `windSpeed`, `noiseOffset` | `0.00035 cycle/m`, `0.55`, `12m/s`, `0`; AABB 비율을 1000배 확대한 약 2.86km Base 형태 |
 | 4 | `windDirection(float3)`, `bottomFadeEnd` | 정규화 `(0.9701,0,0.2425)`, `0.20`; 월드 바람 방향과 바닥 fade 종료 높이 |
 | 5 | `topFadeStart`, `detailLodFadeStartDistance`, `detailLodFadeEndDistance`, padding | `0.80`, `8000m`, `20000m`, `0`; 높이와 Detail 거리 LOD |
-| 6 | `detailNoiseScale`, `detailErosionStrength`, `detailWindSpeed`, `detailNoiseOffset` | `0.012 cycle/m`, `0.25`, `18m/s`, `17.3`; 독립 표면 침식 |
+| 6 | `detailNoiseScale`, `detailErosionStrength`, `detailWindSpeed`, `detailNoiseOffset` | `0.0025 cycle/m`, `0.25`, `18m/s`, `17.3`; 400m 파장의 독립 표면 침식 |
 | 7 | `weatherMapWorldSize`, `weatherMapWindSpeed`, `weatherMapOffset(float2)` | `32000m`, `8m/s`, `(0,0)`; Weather 반복 크기·이동·UV offset |
 
 구조체는 16바이트 묶음 여덟 개다. `transmittanceThreshold`는 단계 9 early exit에서 사용하고,
@@ -155,6 +155,8 @@ XY/XZ/YZ를 같은 월드 길이 비율로 비교한다. 단면 아래에는 각
 화면에서 발생하는 XY/YZ의 Y 표시 확대율을 함께 표시하며 실제 noise 좌표는 바꾸지 않는다.
 두 버튼은 Noise Lab 전용 폭만 바꾸므로 메인 구름 렌더가 변하지 않는 것이 정상이다. Layer Bottom은
 구름의 월드 고도이고 종횡비와 무관하며, 동일 축 폭은 Layer Thickness를 기준으로 정한다.
+같은 패널에서 View 최대 반복을 1~1024로 비교하고, 최대 추적 구간의 실제 step과
+Base/Detail 파장당 표본 수 및 반복 상한 적용 여부를 표시한다.
 Generator는 `Weather map`과 분리된 최상위 헤더로 기본 펼쳐지고, 그 안의 R/G/B
 채널은 각각 기본으로 접힌다. 헤더와 생성 설정은 F2/F4에서도 조작할 수 있으며,
 이때 바꾼 값은 보존되고 F3로 돌아오면 Periodic Perlin에 반영된다. 상위 헤더를

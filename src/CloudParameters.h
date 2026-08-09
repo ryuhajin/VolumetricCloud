@@ -101,12 +101,12 @@ struct alignas(16) CloudParameters
     float stepSize = 100.0f;
     float viewTraceFadeStartDistance = 40000.0f;
 
-    std::uint32_t maxViewSteps = 256;
+    std::uint32_t maxViewSteps = 512;
     float extinctionCoefficient = 0.00075f;
     float transmittanceThreshold = 0.01f;
     std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
 
-    float baseNoiseScale = 0.0015f;
+    float baseNoiseScale = 0.00035f;
     float coverage = 0.55f;
     float windSpeed = 12.0f;
     float noiseOffset = 0.0f;
@@ -119,7 +119,7 @@ struct alignas(16) CloudParameters
     float detailLodFadeEndDistance = 20000.0f;
     float detailLodPadding = 0.0f;
 
-    float detailNoiseScale = 0.012f;
+    float detailNoiseScale = 0.0025f;
     float detailErosionStrength = 0.25f;
     float detailWindSpeed = 18.0f;
     float detailNoiseOffset = 17.3f;
