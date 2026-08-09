@@ -325,6 +325,13 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                            1000.0f, 50000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Noise Lab Width", &cloudParameters.noiseLabPreviewWorldSize,
                            1000.0f, 64000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Extinction", &cloudParameters.extinctionCoefficient,
+                           0.0001f, 0.005f, "%.6f /m", ImGuiSliderFlags_Logarithmic);
+        const float referenceOpticalDepth = 0.5f *
+            cloudParameters.densityMultiplier * cloudParameters.extinctionCoefficient *
+            3000.0f;
+        ImGui::Text("3km reference: optical depth %.3f | T %.3f",
+                    referenceOpticalDepth, std::exp(-referenceOpticalDepth));
         ImGui::Text("Layer: %.2f - %.2f km | View: %.1f km",
                     cloudParameters.cloudBottomAltitude / 1000.0f,
                     (cloudParameters.cloudBottomAltitude +
@@ -344,6 +351,8 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         cloudParameters.maxLightTraceDistance, 1000.0f);
     cloudParameters.noiseLabPreviewWorldSize = std::max(
         cloudParameters.noiseLabPreviewWorldSize, 1000.0f);
+    cloudParameters.extinctionCoefficient = std::clamp(
+        cloudParameters.extinctionCoefficient, 0.0001f, 0.005f);
     if (ImGui::CollapsingHeader("Weather map", ImGuiTreeNodeFlags_DefaultOpen))
     {
         const char* presets[] = {
@@ -473,7 +482,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::SliderFloat("Noise Scale", &cloudParameters.baseNoiseScale,
                            0.0001f, 0.02f, "%.5f cycle/m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Coverage", &cloudParameters.coverage, 0.0f, 1.0f);
-        ImGui::SliderFloat("Density", &cloudParameters.densityMultiplier, 0.0f, 4.0f);
+        ImGui::SliderFloat("Density", &cloudParameters.densityMultiplier, 0.0f, 2.0f);
         ImGui::DragFloat("Noise Offset", &cloudParameters.noiseOffset,
                          0.01f, -20.0f, 20.0f);
         ImGui::DragFloat3("Wind Direction", &cloudParameters.windDirection.x,
@@ -534,12 +543,22 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                            0.0f, 60.0f, "%.2f m/s");
         ImGui::DragFloat("Detail Offset", &cloudParameters.detailNoiseOffset,
                          0.01f, -50.0f, 50.0f, "%.2f cycle");
+        ImGui::SliderFloat("Detail LOD Full Until",
+                           &cloudParameters.detailLodFadeStartDistance,
+                           0.0f, cloudParameters.maxViewTraceDistance,
+                           "%.0f m");
+        ImGui::SliderFloat("Detail LOD Skip After",
+                           &cloudParameters.detailLodFadeEndDistance,
+                           cloudParameters.detailLodFadeStartDistance,
+                           cloudParameters.maxViewTraceDistance, "%.0f m");
         if (ImGui::Button("Reset Detail"))
         {
             cloudParameters.detailNoiseScale = 0.012f;
             cloudParameters.detailErosionStrength = 0.25f;
             cloudParameters.detailWindSpeed = 18.0f;
             cloudParameters.detailNoiseOffset = 17.3f;
+            cloudParameters.detailLodFadeStartDistance = 8000.0f;
+            cloudParameters.detailLodFadeEndDistance = 20000.0f;
         }
         ImGui::TextDisabled("F9 Off / F10 Default / F11 Fine / F12 Strong");
     }
@@ -547,6 +566,13 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     cloudParameters.detailErosionStrength = std::clamp(
         cloudParameters.detailErosionStrength, 0.0f, 1.0f);
     cloudParameters.detailWindSpeed = std::max(cloudParameters.detailWindSpeed, 0.0f);
+    cloudParameters.detailLodFadeStartDistance = std::clamp(
+        cloudParameters.detailLodFadeStartDistance, 0.0f,
+        cloudParameters.maxViewTraceDistance);
+    cloudParameters.detailLodFadeEndDistance = std::clamp(
+        cloudParameters.detailLodFadeEndDistance,
+        cloudParameters.detailLodFadeStartDistance,
+        cloudParameters.maxViewTraceDistance);
 
     if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -697,13 +723,13 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
             lightParameters.sunIntensity = 1.0f;
             lightChanged = true;
         }
-        lightChanged |= ImGui::SliderFloat("Scattering Coefficient",
-                                            &lightParameters.scatteringCoefficient,
-                                            0.0f, 2.0f, "%.2f");
+        lightChanged |= ImGui::SliderFloat("Single Scattering Albedo",
+                                            &lightParameters.singleScatteringAlbedo,
+                                            0.0f, 1.0f, "%.3f");
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##Scatter"))
         {
-            lightParameters.scatteringCoefficient = 1.0f;
+            lightParameters.singleScatteringAlbedo = 0.90f;
             lightChanged = true;
         }
         int lightSteps = static_cast<int>(lightParameters.maxLightSteps);
@@ -1088,7 +1114,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         {
             cloudParameters.baseNoiseScale = 0.0015f;
             cloudParameters.coverage = 0.55f;
-            cloudParameters.densityMultiplier = 1.0f;
+            cloudParameters.densityMultiplier = 0.65f;
             cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
             cloudParameters.windSpeed = 12.0f;
             cloudParameters.noiseOffset = 0.0f;
@@ -1110,7 +1136,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         lightBefore.sunColor.x != lightParameters.sunColor.x ||
         lightBefore.sunColor.y != lightParameters.sunColor.y ||
         lightBefore.sunColor.z != lightParameters.sunColor.z ||
-        lightBefore.scatteringCoefficient != lightParameters.scatteringCoefficient ||
+        lightBefore.singleScatteringAlbedo != lightParameters.singleScatteringAlbedo ||
         lightBefore.maxLightSteps != lightParameters.maxLightSteps ||
         lightBefore.lightStepSize != lightParameters.lightStepSize ||
         lightBefore.lightRayBias != lightParameters.lightRayBias;
@@ -1694,7 +1720,9 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"sunColorLinear\": [" << light.sunColor.x << ", "
            << light.sunColor.y << ", " << light.sunColor.z << "],\n"
            << "  \"sunIntensity\": " << light.sunIntensity << ",\n"
-           << "  \"scatteringCoefficient\": " << light.scatteringCoefficient << ",\n"
+           << "  \"singleScatteringModel\": \"energyConservingAlbedo\",\n"
+           << "  \"singleScatteringAlbedo\": "
+           << light.singleScatteringAlbedo << ",\n"
            << "  \"maxLightSteps\": " << light.maxLightSteps << ",\n"
            << "  \"lightStepSizeMeters\": " << light.lightStepSize << ",\n"
            << "  \"lightRayBiasMeters\": " << light.lightRayBias << ",\n"
@@ -1764,12 +1792,19 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"baseNoiseScale\": " << cloud.baseNoiseScale << ",\n"
            << "  \"coverage\": " << cloud.coverage << ",\n"
            << "  \"densityMultiplier\": " << cloud.densityMultiplier << ",\n"
+           << "  \"extinctionCoefficientPerMeter\": "
+           << cloud.extinctionCoefficient << ",\n"
            << "  \"bottomFadeEnd\": " << cloud.bottomFadeEnd << ",\n"
            << "  \"topFadeStart\": " << cloud.topFadeStart << ",\n"
            << "  \"detailNoiseScale\": " << cloud.detailNoiseScale << ",\n"
            << "  \"detailErosionStrength\": " << cloud.detailErosionStrength << ",\n"
            << "  \"detailWindSpeed\": " << cloud.detailWindSpeed << ",\n"
            << "  \"detailNoiseOffset\": " << cloud.detailNoiseOffset << ",\n"
+           << "  \"detailLodFadeStartDistanceMeters\": "
+           << cloud.detailLodFadeStartDistance << ",\n"
+           << "  \"detailLodFadeEndDistanceMeters\": "
+           << cloud.detailLodFadeEndDistance << ",\n"
+           << "  \"detailLodFilter\": \"lerpMean0.5ThenSkip\",\n"
            << "  \"weatherMapWorldSize\": " << cloud.weatherMapWorldSize << ",\n"
            << "  \"weatherMapWindSpeed\": " << cloud.weatherMapWindSpeed << ",\n"
            << "  \"weatherMapOffset\": [" << cloud.weatherMapOffset.x << ", "

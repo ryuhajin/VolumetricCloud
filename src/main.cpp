@@ -734,6 +734,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         if (entryHash == 0 || renderer.LastCloudFrameHash() == 0)
             return 4;
 
+        camera.SetOrbit(0.0f, 0.0f, 100.0f, {0.0f, 3000.0f, 0.0f});
+        renderer.SetDebugMode(CloudDebugMode::DetailLodFactor);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t nearLodHash = renderer.LastCloudFrameHash();
+        renderer.SetDebugMode(CloudDebugMode::DetailSampleMask);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t nearSampleHash = renderer.LastCloudFrameHash();
+        camera.SetOrbit(0.0f, -0.15f, 10000.0f, {0.0f, 1500.0f, 0.0f});
+        renderer.SetDebugMode(CloudDebugMode::DetailLodFactor);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t farLodHash = renderer.LastCloudFrameHash();
+        renderer.SetDebugMode(CloudDebugMode::DetailSampleMask);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t farSampleHash = renderer.LastCloudFrameHash();
+        if (nearLodHash == 0 || nearSampleHash == 0 || farLodHash == 0 ||
+            farSampleHash == 0 || nearLodHash == farLodHash ||
+            nearSampleHash == farSampleHash)
+            return 8;
+
         const std::filesystem::path exportRoot =
             std::filesystem::temp_directory_path() / L"VolumetricCloudStage13Smoke";
         if (!renderer.ExportNoiseLabSnapshot(exportRoot))
@@ -749,10 +768,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             if (ReadTextFile(entry.path(), metadata) &&
                 metadata.find("\"schemaVersion\": 13") != std::string::npos &&
                 metadata.find("\"cloudDomain\": \"cameraCenteredPlanarLayer\"") != std::string::npos &&
-                metadata.find("\"weatherMapWorldSize\": 32000") != std::string::npos)
+                metadata.find("\"weatherMapWorldSize\": 32000") != std::string::npos &&
+                metadata.find("\"singleScatteringModel\": \"energyConservingAlbedo\"") != std::string::npos &&
+                metadata.find("\"singleScatteringAlbedo\": 0.9") != std::string::npos &&
+                metadata.find("\"detailLodFadeStartDistanceMeters\": 8000") != std::string::npos &&
+                metadata.find("\"detailLodFadeEndDistanceMeters\": 20000") != std::string::npos &&
+                metadata.find("\"detailLodFilter\": \"lerpMean0.5ThenSkip\"") != std::string::npos &&
+                metadata.find("\"scatteringCoefficient\"") == std::string::npos)
                 foundDomain = true;
         }
-        if (!foundDomain || sizeof(CloudParameters) != 128u)
+        if (!foundDomain || sizeof(CloudParameters) != 128u ||
+            sizeof(LightParameters) != 64u)
             return 7;
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }

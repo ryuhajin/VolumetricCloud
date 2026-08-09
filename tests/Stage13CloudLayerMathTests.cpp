@@ -75,5 +75,27 @@ int main()
     Require(Near(uvPositive,
                  stage13::PeriodicWeatherCoordinate(1234.0, 32000.0)),
             "weather coordinate must depend on world position, not camera position");
+
+    Require(Near(stage13::DetailLodFactor(0.0, 8000.0, 20000.0), 1.0) &&
+            Near(stage13::DetailLodFactor(8000.0, 8000.0, 20000.0), 1.0) &&
+            Near(stage13::DetailLodFactor(14000.0, 8000.0, 20000.0), 0.5) &&
+            Near(stage13::DetailLodFactor(20000.0, 8000.0, 20000.0), 0.0) &&
+            Near(stage13::DetailLodFactor(50000.0, 8000.0, 20000.0), 0.0),
+            "detail LOD must smoothly fall from 8 to 20 km");
+    Require(stage13::DetailLodFactor(10000.0, 8000.0, 20000.0) >
+            stage13::DetailLodFactor(18000.0, 8000.0, 20000.0),
+            "detail LOD must decrease monotonically");
+    Require(Near(stage13::FilteredDetailNoise(0.8, 1.0), 0.8) &&
+            Near(stage13::FilteredDetailNoise(0.8, 0.5), 0.65) &&
+            Near(stage13::FilteredDetailNoise(0.8, 0.0), 0.5),
+            "detail filtering must converge to the 0.5 mean");
+    Require(stage13::ShouldSampleDetail(1.0, 0.5, 0.25) &&
+            !stage13::ShouldSampleDetail(0.0, 0.5, 0.25),
+            "far detail must preserve mean erosion without a noise call");
+    Require(Near(stage13::DetailLodFactor(
+                9000.0, 8000.0, 8000.0), 0.0) &&
+            Near(stage13::DetailLodFactor(
+                std::numeric_limits<double>::quiet_NaN(), 8000.0, 20000.0), 0.0),
+            "degenerate and NaN detail LOD inputs must be neutral");
     return 0;
 }

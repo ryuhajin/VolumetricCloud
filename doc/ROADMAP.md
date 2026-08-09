@@ -20,6 +20,8 @@
   - 바닥 1.5km, 상단 4.5km, Weather 32km, View 50km 기준
   - 40~50km 거리 fade와 Light 20km 상한
   - 구름 아래·내부·위 카메라 지원
+  - km 광학값과 에너지 보존형 단일산란 알베도 보정
+  - 8~20km Detail LOD와 20km 이후 noise 호출 생략
 
 ## 단계 13 승인 후 실시간 최적화
 

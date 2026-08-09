@@ -123,13 +123,10 @@ float3 IntegrateSingleScattering(
     float safeExtinction = max(extinctionCoefficient, 0.0);
     float stepTransmittance = exp(-safeDensity * safeExtinction * safeLength);
 
-    // extinction이 0에 가까우면 0으로 나누지 않고 직사각형 적분으로 되돌아간다.
-    float densityIntegral = safeExtinction > 1e-6
-        ? (1.0 - stepTransmittance) / safeExtinction
-        : safeDensity * safeLength;
+    float stepAlpha = 1.0 - stepTransmittance;
     return saturate(viewTransmittance) * max(sunColor, 0.0.xxx) *
            max(sunIntensity, 0.0) * saturate(lightTransmittance) *
-           max(scatteringCoefficient, 0.0) * max(densityIntegral, 0.0) *
+           saturate(singleScatteringAlbedo) * max(stepAlpha, 0.0) *
            clamp(phaseFactor, 0.0, kMaxPhaseFactor);
 }
 

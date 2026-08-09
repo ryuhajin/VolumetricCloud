@@ -250,24 +250,22 @@ lightOpticalDepth = Σ(baseDensity × extinctionCoefficient × actualLightStep)
 lightTransmittance = exp(-lightOpticalDepth)
 ```
 
-View 구간의 투과율은 이전 단계와 같고, 직접 산란 적분에는 작은 extinction에서
-0으로 나누지 않는 분석적 구간 적분을 쓴다.
+View 구간의 투과율과 같은 step alpha를 직접 산란에도 사용한다. 단일산란 알베도는
+소멸된 에너지 중 카메라 방향 산란 계산에 참여하는 비율이며 0~1로 제한한다.
 
 ```text
-viewStepT = exp(-finalDensity × extinction × viewStepLength)
-densityIntegral = extinction > epsilon
-    ? (1 - viewStepT) / extinction
-    : finalDensity × viewStepLength
+viewStepT = exp(-effectiveDensity × extinction × viewStepLength)
+stepAlpha = 1 - viewStepT
 
 stepScattering = viewTransmittance
     × sunColor × sunIntensity
     × lightTransmittance
-    × scatteringCoefficient
-    × densityIntegral
+    × singleScatteringAlbedo
+    × stepAlpha
 ```
 
 `directionToSun`은 빛이 내려오는 방향이 아니라 표본에서 태양으로 향하는 정규화
-월드 방향이다. Light Ray 시작점은 그 방향으로 기본 `0.01m` 이동해 경계 자기
+월드 방향이다. Light Ray 시작점은 그 방향으로 기본 `1m` 이동해 경계 자기
 교차를 피한다. 단계 6은 등방성 직접광만 계산한다. 시선/태양 각도의 Phase
 Function은 단계 7, 환경광·다중 산란은 단계 8, Early Exit는 단계 9에서 추가한다.
 
@@ -326,7 +324,7 @@ ground = groundColor × groundStrength × groundWeight × ambientOcclusion
 ```
 
 하늘·지면광은 방향이 없는 근사이므로 Phase를 적용하지 않는다. 각 색은 직접광과 같은
-`viewTransmittance × densityIntegral × scatteringCoefficient`로 적분한다.
+`viewTransmittance × stepAlpha × singleScatteringAlbedo`로 적분한다.
 
 다중 산란은 추가 Light Ray를 쏘지 않고 이미 계산된 `lightOpticalDepth`를 최대 네 번
 다른 감쇠율로 재해석한다. 반복할수록 에너지, 소멸과 Phase 방향성이 감소한다.
@@ -372,9 +370,24 @@ distanceFade = 1 - smoothstep(viewTraceFadeStartDistance,
 viewDensity *= distanceFade
 ```
 
+`viewDensity`는 투과율뿐 아니라 직접광·환경광·다중 산란이 공유하는 `effectiveDensity`다.
+따라서 40~50km fade 구간에서 불투명도만 사라지고 밝은 산란이 남는 불일치가 없다.
+
+Detail은 원거리에서 고주파를 성긴 step으로 읽어 aliasing을 만들지 않도록 별도 LOD를 쓴다.
+
+```text
+detailLod = 1 - smoothstep(8000, 20000, sampleDistance)
+filteredDetail = lerp(0.5, sampledDetail, detailLod)
+erosion = filteredDetail × detailErosionStrength
+```
+
+8km까지는 원본과 같고 8~20km에서 평균 0.5로 수렴한다. 20km 밖에서는 Detail 함수를
+호출하지 않고 평균값만 사용하므로 구름 평균 두께를 유지하면서 비용과 깜박임을 줄인다.
+
 Weather와 Base/Detail Noise 좌표는 월드 XZ에 고정한다. 여기서 "카메라 기준"은 구름 텍스처나
 박스가 카메라를 따라 이동한다는 뜻이 아니라, 각 카메라 위치에서 유한 반경까지만 추적한다는 뜻이다.
-기준값은 Weather 반복 32km, Base/Detail `0.0015/0.012 cycle/m`, 바람 `12/18/8m/s`다.
+기준값은 Weather 반복 32km, Base/Detail `0.0015/0.012 cycle/m`, 바람 `12/18/8m/s`,
+`extinction=0.00075/m`, 밀도 배율 `0.65`, 단일산란 알베도 `0.90`이다.
 
 ## 단계 9: 계산을 생략하는 레이마칭 (보류)
 

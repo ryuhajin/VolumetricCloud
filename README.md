@@ -15,6 +15,8 @@ DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 �
 - XZ 측면 경계가 없는 Y축 평면 구름층
 - 구름 바닥 1.5km, 상단 4.5km, View 최대 50km
 - 40~50km 원거리 fade와 Light 최대 20km
+- `0.00075/m` extinction, 밀도 `0.65`, 단일산란 알베도 `0.90`
+- 8~20km Detail 평균 필터와 20km 밖 절차적 Detail 호출 생략
 - meter 내부 단위와 km UI 표시
 - 32km periodic Weather Map과 월드 고정 Base/Detail Noise
 - View 256×100m, Light 32×250m 기준 표본
@@ -50,6 +52,7 @@ cmake --build build --config Debug
 | `N`, `A`, `S` | 기본 / sparse / dense coverage |
 | `D`, `F`, `G`, `H`, `K` | Base 크기·바람·offset 프리셋 |
 | `F9`~`F12` | Detail Off / 기본 / Fine / Strong Erosion |
+| `Ctrl+K` | Detail LOD Factor: 8km까지 흰색, 8~20km 회색, 이후 검정 |
 | `Ctrl+Shift+J/L/P/U/B` | 보류된 단계 9 실행량·skip·Early Exit 진단 |
 
 ## 자동 검사
@@ -60,8 +63,8 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 `Stage13CloudLayerMath`는 아래·내부·위·수평 레이, Scene Depth·최대 거리 제한,
-거리 fade와 32km Weather wrap을 검사합니다. `Stage13Smoke`는 네 카메라와
-schema 13 export를 실제 D3D11 경로에서 확인합니다.
+거리 fade, 32km Weather wrap, 광학 기준과 Detail LOD를 검사합니다. `Stage13Smoke`는
+네 카메라, 원거리 Detail 호출 생략과 schema 13 export를 실제 D3D11 경로에서 확인합니다.
 
 단계 13 사용자 승인 후 단계 9 벤치마크를 대규모 장면으로 다시 실행합니다. 자세한
 구조와 수식은 [아키텍처](doc/ARCHITECTURE.md), [레이 마칭](doc/RAYMARCHING.md),

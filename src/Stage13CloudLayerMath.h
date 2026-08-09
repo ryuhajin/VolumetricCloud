@@ -81,4 +81,32 @@ inline double PeriodicWeatherCoordinate(double worldCoordinate,
         value += 1.0;
     return value;
 }
+
+inline double DetailLodFactor(double distance, double fadeStart,
+                              double fadeEnd)
+{
+    if (!std::isfinite(distance) || !std::isfinite(fadeStart) ||
+        !std::isfinite(fadeEnd) || fadeEnd <= fadeStart)
+        return distance <= fadeStart ? 1.0 : 0.0;
+    const double t = std::clamp((distance - fadeStart) /
+                                (fadeEnd - fadeStart), 0.0, 1.0);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
+inline double FilteredDetailNoise(double sampledDetail, double lodFactor)
+{
+    const double safeDetail = std::clamp(
+        std::isfinite(sampledDetail) ? sampledDetail : 0.5, 0.0, 1.0);
+    const double safeLod = std::clamp(
+        std::isfinite(lodFactor) ? lodFactor : 0.0, 0.0, 1.0);
+    return 0.5 + (safeDetail - 0.5) * safeLod;
+}
+
+inline bool ShouldSampleDetail(double lodFactor, double baseDensity,
+                               double erosionStrength)
+{
+    return std::isfinite(lodFactor) && lodFactor > 0.0 &&
+        std::isfinite(baseDensity) && baseDensity > 0.0 &&
+        std::isfinite(erosionStrength) && erosionStrength > 0.0;
+}
 }

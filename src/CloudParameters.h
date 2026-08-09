@@ -41,6 +41,7 @@ enum class CloudDebugMode : std::int32_t
     BackwardPhaseLobe = 30,
     DualPhaseFactor = 31,
     AccumulatedDirectLighting = 32,
+    DetailLodFactor = 33,
     ExecutedViewSteps = 38,
     CoarseSkippedRatio = 39,
     EarlyExitSavings = 40,
@@ -93,7 +94,7 @@ struct alignas(16) CloudParameters
     float cloudBottomAltitude = 1500.0f;
     float cloudLayerThickness = 3000.0f;
     float maxViewTraceDistance = 50000.0f;
-    float densityMultiplier = 1.0f;
+    float densityMultiplier = 0.65f;
 
     float maxLightTraceDistance = 20000.0f;
     float noiseLabPreviewWorldSize = 32000.0f;
@@ -101,7 +102,7 @@ struct alignas(16) CloudParameters
     float viewTraceFadeStartDistance = 40000.0f;
 
     std::uint32_t maxViewSteps = 256;
-    float extinctionCoefficient = 0.01f;
+    float extinctionCoefficient = 0.00075f;
     float transmittanceThreshold = 0.01f;
     std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
 
@@ -114,7 +115,9 @@ struct alignas(16) CloudParameters
     float bottomFadeEnd = 0.20f;
 
     float topFadeStart = 0.80f;
-    float heightProfilePadding[3] = {};
+    float detailLodFadeStartDistance = 8000.0f;
+    float detailLodFadeEndDistance = 20000.0f;
+    float detailLodPadding = 0.0f;
 
     float detailNoiseScale = 0.012f;
     float detailErosionStrength = 0.25f;

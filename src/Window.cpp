@@ -76,7 +76,7 @@ void Window::UpdateDebugTitle()
         L"Shift+B Phase CosTheta", L"Shift+M Forward Phase",
         L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor",
         L"Ctrl+J Accumulated Direct",
-        L"예약 33", L"예약 34", L"예약 35", L"예약 36", L"예약 37",
+        L"Ctrl+K Detail LOD Factor", L"예약 34", L"예약 35", L"예약 36", L"예약 37",
         L"Ctrl+Shift+J Executed View Steps",
         L"Ctrl+Shift+L Coarse Skipped Ratio",
         L"Ctrl+Shift+P Early Exit Savings",
@@ -127,7 +127,7 @@ void Window::UpdateDebugTitle()
     const int optimizationPresetIndex =
         static_cast<int>(m_renderer->OptimizationPreset());
     wchar_t title[640] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 9 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
+    swprintf_s(title, L"VolumetricCloud - Stage 13 (Stage 9 보류) | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
                debugNames[(debugIndex >= 0 && debugIndex <= 42) ? debugIndex : 0],
                presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
@@ -163,6 +163,14 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 && wParam == 'K')
+    {
+        m_renderer->SetDebugMode(CloudDebugMode::DetailLodFactor);
+        UpdateDebugTitle();
+        return 0;
+    }
+
     // 단계 9 비용 진단은 Ctrl+Shift 조합을 먼저 처리해 기존 Ctrl+J와 Shift 조명을 보존한다.
     if (msg == WM_KEYDOWN && m_renderer &&
         (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&

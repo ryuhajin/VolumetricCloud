@@ -76,30 +76,32 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경�
 
 | 묶음 | 필드 | 기본값과 현재 역할 |
 |---|---|---|
-| 0 | `cloudBottomAltitude`, `cloudLayerThickness`, `maxViewTraceDistance`, `densityMultiplier` | `1500m`, `3000m`, `50000m`, `1.0`; 구름층과 View 반경 |
+| 0 | `cloudBottomAltitude`, `cloudLayerThickness`, `maxViewTraceDistance`, `densityMultiplier` | `1500m`, `3000m`, `50000m`, `0.65`; 구름층과 View 반경 |
 | 1 | `maxLightTraceDistance`, `noiseLabPreviewWorldSize`, `stepSize`, `viewTraceFadeStartDistance` | `20000m`, `32000m`, `100m`, `40000m`; Light 상한·미리보기·View 표본·fade |
-| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `256`, `0.01/m`, `0.01`, `0`; 기준 표본과 단계 9 Early Exit 임계값 |
+| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `256`, `0.00075/m`, `0.01`, `0`; km 광학 기준과 단계 9 Early Exit 임계값 |
 | 3 | `baseNoiseScale`, `coverage`, `windSpeed`, `noiseOffset` | `0.0015 cycle/m`, `0.55`, `12m/s`, `0`; km 규모 형태·이동 |
 | 4 | `windDirection(float3)`, `bottomFadeEnd` | 정규화 `(0.9701,0,0.2425)`, `0.20`; 월드 바람 방향과 바닥 fade 종료 높이 |
-| 5 | `topFadeStart`, `heightProfilePadding(float3)` | `0.80`, `(0,0,0)`; 꼭대기 fade 시작 높이와 정렬 예약 값 |
+| 5 | `topFadeStart`, `detailLodFadeStartDistance`, `detailLodFadeEndDistance`, padding | `0.80`, `8000m`, `20000m`, `0`; 높이와 Detail 거리 LOD |
 | 6 | `detailNoiseScale`, `detailErosionStrength`, `detailWindSpeed`, `detailNoiseOffset` | `0.012 cycle/m`, `0.25`, `18m/s`, `17.3`; 독립 표면 침식 |
 | 7 | `weatherMapWorldSize`, `weatherMapWindSpeed`, `weatherMapOffset(float2)` | `32000m`, `8m/s`, `(0,0)`; Weather 반복 크기·이동·UV offset |
 
-구조체는 16바이트 묶음 여덟 개다. `transmittanceThreshold`는 단계 9 early exit 전까지 읽지 않고 `heightProfilePadding`은 GPU 정렬에만 사용한다.
+구조체는 16바이트 묶음 여덟 개다. `transmittanceThreshold`는 단계 9 early exit에서 사용하고,
+Detail은 8km까지 원본, 8~20km 평균 필터, 이후 평균 0.5만 적용해 noise 호출을 생략한다.
 
 ### `LightParameters` / `LightCB` (`b3`, 64바이트)
 
 | 묶음 | 필드 | 기본값과 역할 |
 |---|---|---|
 | 0 | `directionToSun(float3)`, `sunIntensity` | normalize `(0.45,0.80,0.35)`, `1.0`; 표본→태양 월드 방향과 세기 |
-| 1 | `sunColor(float3)`, `scatteringCoefficient` | `(1,0.95,0.85)`, `1.0`; linear RGB와 직접 산란 강도 |
+| 1 | `sunColor(float3)`, `singleScatteringAlbedo` | `(1,0.95,0.85)`, `0.90`; linear RGB와 소멸 에너지 중 산란 비율 |
 | 2 | `maxLightSteps`, `lightStepSize`, `lightRayBias`, `phaseEnabled` | `32`, `250m`, `1m`, `0`; 대규모 Light 품질과 Phase Off 기본값 |
 | 3 | `forwardScatteringG`, `backwardScatteringG`, `phaseBlend`, `phaseIntensity` | `0.65`, `-0.25`, `0.80`, `0.25`; 전방·후방 HG와 적용 강도 |
 
 LightCB는 CloudCB와 분리해 `b3`에 바인딩한다. 방향은 빛의 진행 방향이 아니라
 현재 표본에서 태양으로 나가는 방향이다. CPU는 방향을 정규화하고 음수·비정상
 값을 안전 범위로 제한한다. Light Ray는 `EvaluateBaseCloudDensity`만 호출한다. Phase는
-직접 산란량에만 적용하며 Light 투과율과 광학 깊이를 바꾸지 않는다. Phase Off에서는
+직접 산란량에만 적용하며 Light 투과율과 광학 깊이를 바꾸지 않는다. 산란은
+`stepAlpha × singleScatteringAlbedo`로 제한되어 extinction 변경에도 에너지가 발산하지 않는다. Phase Off에서는
 최종 배율이 정확히 1이다.
 
 ### `EnvironmentParameters` / `EnvironmentCB` (`b4`, 64바이트)

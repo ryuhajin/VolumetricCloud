@@ -119,7 +119,9 @@ Phase Off가 단계 6 결과와 같도록 배율 1을 중립값으로 쓴다.
 | View step / 최대 횟수 | 100m / 256 |
 | Light step / 최대 횟수 | 250m / 32 |
 | Base / Detail 주파수 | 0.0015 / 0.012 cycle/m |
-| extinction | 0.01/m |
+| extinction / density | 0.00075/m / 0.65 |
+| 단일산란 알베도 | 0.90 |
+| Detail LOD 유지 / 생략 | 8,000m / 20,000m |
 | Base / Detail / Weather 바람 | 12 / 18 / 8m/s |
 
 ### 평면층 교차
@@ -152,6 +154,25 @@ weatherUV = positiveWrap(worldXZ / 32000)
 40~50km fade는 최대 거리의 원형 절단면을 숨긴다. Weather와 Base/Detail Noise는 카메라 좌표를
 더하지 않고 월드 위치로 샘플하므로 장거리 이동에도 같은 위치의 밀도가 유지된다.
 
+### km 광학 보정과 Detail LOD
+
+View 투과율과 직접·환경·다중 산란은 모두 거리 fade가 반영된 effective density를 공유한다.
+소멸 에너지는 step alpha로 바꾸고 그중 90%까지만 단일 산란에 사용한다.
+
+```text
+stepT = exp(-effectiveDensity × 0.00075 × stepLength)
+stepAlpha = 1 - stepT
+scattering = viewT × lightT × 0.90 × stepAlpha × lightColor × phase
+```
+
+Detail은 8km까지 원본을 유지하고 8~20km에서 평균 0.5로 부드럽게 필터링한다. 20km 밖에서는
+절차적 Detail 호출을 생략하되 평균 erosion을 유지해 구름이 갑자기 두꺼워지지 않게 한다.
+
+```text
+detailLod = 1 - smoothstep(8000, 20000, sampleDistance)
+filteredDetail = lerp(0.5, sampledDetail, detailLod)
+```
+
 ### 공유 인터페이스
 
 128바이트 CloudCB의 AABB 여섯 float를 다음 여섯 값으로 교체한다.
@@ -168,6 +189,7 @@ C++ 구조체, HLSL cbuffer와 아키텍처 표는 항상 함께 변경한다. N
 - Q/W/E: 기준층·얇은층·두꺼운층 프리셋
 - F5/F6/F7/F8: 지상 위보기·지상 수평선·구름 내부·구름 위 카메라
 - 기존 디버그 번호 유지, AABB Entry/Exit 이름은 Cloud Layer Entry/Exit로 변경
+- Ctrl+K: 8~20km Detail LOD Factor, 기존 Detail Sample Mask는 실제 호출 여부 유지
 - Noise Lab은 카메라 XZ 중심의 32km 단면 표시
 
 ### 자동 검증

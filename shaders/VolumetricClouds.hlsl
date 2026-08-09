@@ -70,6 +70,7 @@ struct CloudMarchDebug
     float detailNoise;     // 대표 위치에서 실제로 샘플한 고주파 noise.
     float erosion;         // 대표 위치에서 Base로부터 뺄 밀도.
     float detailSampled;   // 대표 위치가 Detail 함수를 실행했으면 1.
+    float detailLodFactor; // 대표 위치의 거리 기반 Detail LOD [0,1].
     float weatherCoverage; // 대표 위치 Weather R.
     float cloudType;       // 대표 위치 Weather G.
     float weatherDensityModifier; // 대표 위치 Weather B의 0.5~1.5 배율.
@@ -137,36 +138,44 @@ bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
                           float sceneDistance,
                           out float tStart, out float tEnd)
 {
-    tStart = 0.0;
-    tEnd = 0.0;
-
+    float localStart = 0.0;
+    float localEnd = 0.0;
+    bool hit = false;
     float topAltitude = cloudBottomAltitude + cloudLayerThickness;
     float directionLengthSquared = dot(rayDirection, rayDirection);
     float traceLimit = min(max(sceneDistance, 0.0),
                            max(maxViewTraceDistance, 0.0));
     bool valid = cloudLayerThickness > 1e-5 &&
                  directionLengthSquared > 1e-8 && traceLimit > 0.0;
-    if (!valid)
-        return false;
-
-    float directionY = rayDirection.y;
-    bool originInside = rayOrigin.y >= cloudBottomAltitude &&
-                        rayOrigin.y <= topAltitude;
-    if (abs(directionY) <= 1e-6)
+    if (valid)
     {
-        if (!originInside)
-            return false;
-        tEnd = traceLimit;
-        return tEnd > tStart;
+        float directionY = rayDirection.y;
+        bool originInside = rayOrigin.y >= cloudBottomAltitude &&
+                            rayOrigin.y <= topAltitude;
+        if (abs(directionY) <= 1e-6)
+        {
+            if (originInside)
+            {
+                localEnd = traceLimit;
+                hit = localEnd > localStart;
+            }
+        }
+        else
+        {
+            float bottomDistance =
+                (cloudBottomAltitude - rayOrigin.y) / directionY;
+            float topDistance = (topAltitude - rayOrigin.y) / directionY;
+            float layerNear = min(bottomDistance, topDistance);
+            float layerFar = max(bottomDistance, topDistance);
+            localStart = max(layerNear, 0.0);
+            localEnd = min(layerFar, traceLimit);
+            hit = localEnd > localStart;
+        }
     }
 
-    float bottomDistance = (cloudBottomAltitude - rayOrigin.y) / directionY;
-    float topDistance = (topAltitude - rayOrigin.y) / directionY;
-    float layerNear = min(bottomDistance, topDistance);
-    float layerFar = max(bottomDistance, topDistance);
-    tStart = max(layerNear, 0.0);
-    tEnd = min(layerFar, traceLimit);
-    return tEnd > tStart;
+    tStart = hit ? localStart : 0.0;
+    tEnd = hit ? localEnd : 0.0;
+    return hit;
 }
 
 // 평면층은 수평선에서 자연 이탈점이 없을 수 있으므로 최대 거리 직전에 밀도를
@@ -220,7 +229,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         float3 representativePosition =
             rayOrigin + rayDirection * representativeDistance;
         CloudDensitySample representativeSample =
-            SampleCloudDensity(representativePosition, time);
+            SampleCloudDensityWithDetailLod(
+                representativePosition, time, representativeDistance);
         debugData.rawNoise = representativeSample.rawNoise;
         debugData.thresholdDensity = representativeSample.thresholdDensity;
         debugData.heightFraction = representativeSample.heightFraction;
@@ -229,6 +239,7 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         debugData.detailNoise = representativeSample.detailNoise;
         debugData.erosion = representativeSample.erosion;
         debugData.detailSampled = representativeSample.detailSampled;
+        debugData.detailLodFactor = representativeSample.detailLodFactor;
         debugData.weatherCoverage = representativeSample.weatherCoverage;
         debugData.cloudType = representativeSample.cloudType;
         debugData.weatherDensityModifier = representativeSample.weatherDensityModifier;
@@ -269,7 +280,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         {
             float sampleDistance = tStart + ((float)stepIndex + 0.5) * actualStepLength;
             float3 samplePosition = rayOrigin + rayDirection * sampleDistance;
-            CloudDensitySample densitySample = SampleCloudDensity(samplePosition, time);
+            CloudDensitySample densitySample = SampleCloudDensityWithDetailLod(
+                samplePosition, time, sampleDistance);
             float sampledDensity = densitySample.finalDensity *
                 EvaluateViewDistanceFade(sampleDistance);
             float sampledStepTransmittance = exp(
@@ -289,6 +301,7 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
                         samplePosition, directionToSun);
                     debugData.totalLightSamples += light.stepCount;
                 }
+                densitySample.finalDensity = sampledDensity;
                 EnvironmentLightingSample lighting = EvaluateEnvironmentLighting(
                     densitySample, light, phase, result.transmittance,
                     actualStepLength);
@@ -410,7 +423,8 @@ void RaymarchCloudOptimized(
             baseSample = EvaluateBaseCloudDensity(samplePosition, time);
         optimizationDebug.supportPrecheckRejects += baseSample.supportRejected;
         CloudDensitySample densitySample = ApplyDetailErosion(
-            baseSample, samplePosition, time);
+            baseSample, samplePosition, time,
+            EvaluateDetailLodFactor(sampleDistance));
         float density = densitySample.finalDensity *
             EvaluateViewDistanceFade(sampleDistance);
 
@@ -418,6 +432,7 @@ void RaymarchCloudOptimized(
         {
             LightMarchResult light = ComputeLightTransmittance(
                 samplePosition, directionToSun);
+            densitySample.finalDensity = density;
             EnvironmentLightingSample lighting = EvaluateEnvironmentLighting(
                 densitySample, light, phase, output.transmittance,
                 viewStepLength);
@@ -615,6 +630,8 @@ float4 mainLegacy(VSOut input) : SV_TARGET
             (1.0.xxx + max(component, 0.0.xxx));
         return float4(mapped * marchDebug.hit, 1.0);
     }
+    if (debugMode == 33)
+        return float4((marchDebug.detailLodFactor * marchDebug.hit).xxx, 1.0);
     if (debugMode == 38)
     {
         float value = sqrt(saturate(

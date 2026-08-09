@@ -795,11 +795,13 @@ void Renderer::ApplyStage1ValidationPreset(Stage1ValidationPreset preset)
     m_cloudParameters.maxLightTraceDistance = 20000.0f;
     m_cloudParameters.noiseLabPreviewWorldSize = 32000.0f;
     m_cloudParameters.viewTraceFadeStartDistance = 40000.0f;
-    m_cloudParameters.densityMultiplier = 1.0f;
+    m_cloudParameters.densityMultiplier = 0.65f;
     m_cloudParameters.stepSize = 100.0f;
     m_cloudParameters.maxViewSteps = 256;
-    m_cloudParameters.extinctionCoefficient = 0.01f;
+    m_cloudParameters.extinctionCoefficient = 0.00075f;
     m_cloudParameters.transmittanceThreshold = 0.01f;
+    m_cloudParameters.detailLodFadeStartDistance = 8000.0f;
+    m_cloudParameters.detailLodFadeEndDistance = 20000.0f;
 
     switch (preset)
     {
@@ -837,7 +839,7 @@ void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
     // 평면층과 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
     m_cloudParameters.baseNoiseScale = 0.0015f;
     m_cloudParameters.coverage = 0.55f;
-    m_cloudParameters.densityMultiplier = 1.0f;
+    m_cloudParameters.densityMultiplier = 0.65f;
     m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
     m_cloudParameters.windSpeed = 12.0f;
     m_cloudParameters.noiseOffset = 0.0f;
@@ -893,6 +895,8 @@ void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
     m_cloudParameters.detailErosionStrength = 0.25f;
     m_cloudParameters.detailWindSpeed = 18.0f;
     m_cloudParameters.detailNoiseOffset = 17.3f;
+    m_cloudParameters.detailLodFadeStartDistance = 8000.0f;
+    m_cloudParameters.detailLodFadeEndDistance = 20000.0f;
 
     switch (preset)
     {

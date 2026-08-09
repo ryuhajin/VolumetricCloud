@@ -39,6 +39,7 @@ struct CloudDensitySample
     float erosion;           // detailNoise × detailErosionStrength.
     float finalDensity;      // saturate(baseDensity - erosion), 적분 입력.
     float detailSampled;     // Detail 함수를 호출했으면 1, 생략했으면 0.
+    float detailLodFactor;   // 1=원본 Detail, 0=평균값·호출 생략.
     float3 noiseUvw;         // Base value noise의 연속 좌표(cycle).
     float3 detailNoiseUvw;   // Detail value noise의 연속 좌표(cycle), 생략 시 0.
     float2 weatherUv;        // 반복되는 2D Weather Map 조회 좌표(0~1).
@@ -81,6 +82,7 @@ CloudDensitySample MakeEmptyCloudDensitySample()
     sample.erosion = 0.0;
     sample.finalDensity = 0.0;
     sample.detailSampled = 0.0;
+    sample.detailLodFactor = 1.0;
     sample.noiseUvw = 0.0.xxx;
     sample.detailNoiseUvw = 0.0.xxx;
     sample.weatherUv = 0.0.xx;
@@ -314,20 +316,44 @@ void EvaluateBaseCloudDensityFast(
 // 이미 계산한 Base 표본에만 Detail Erosion을 적용한다. View Ray가 같은 위치의 Base
 // Noise를 다시 호출하지 않게 분리한 함수이며 Base가 비면 Detail도 호출하지 않는다.
 CloudDensitySample ApplyDetailErosion(
-    CloudDensitySample sample, float3 worldPosition, float timeSeconds)
+    CloudDensitySample sample, float3 worldPosition, float timeSeconds,
+    float detailLodFactor)
 {
+    float safeLod = saturate(detailLodFactor);
+    sample.detailLodFactor = safeLod;
     bool shouldSampleDetail = sample.baseDensity > 0.0 &&
-                              detailErosionStrength > 0.0;
-    if (shouldSampleDetail)
+                              detailErosionStrength > 0.0 && safeLod > 0.0;
+    if (sample.baseDensity > 0.0 && detailErosionStrength > 0.0)
     {
-        NoiseFieldSample detail = SampleDetailErosionNoise(worldPosition, timeSeconds);
-        sample.detailNoiseUvw = detail.uvw;
-        sample.detailNoise = detail.value;
+        float rawDetail = 0.5;
+        if (shouldSampleDetail)
+        {
+            NoiseFieldSample detail = SampleDetailErosionNoise(worldPosition, timeSeconds);
+            sample.detailNoiseUvw = detail.uvw;
+            rawDetail = detail.value;
+            sample.detailSampled = 1.0;
+        }
+        sample.detailNoise = lerp(0.5, rawDetail, safeLod);
         sample.erosion = sample.detailNoise * max(detailErosionStrength, 0.0);
         sample.finalDensity = saturate(sample.baseDensity - sample.erosion);
-        sample.detailSampled = 1.0;
     }
     return sample;
+}
+
+CloudDensitySample ApplyDetailErosion(
+    CloudDensitySample sample, float3 worldPosition, float timeSeconds)
+{
+    return ApplyDetailErosion(sample, worldPosition, timeSeconds, 1.0);
+}
+
+float EvaluateDetailLodFactor(float sampleDistance)
+{
+    float safeStart = max(detailLodFadeStartDistance, 0.0);
+    float safeEnd = max(detailLodFadeEndDistance, safeStart);
+    float width = safeEnd - safeStart;
+    return width > 1e-4
+        ? 1.0 - smoothstep(safeStart, safeEnd, max(sampleDistance, 0.0))
+        : (sampleDistance <= safeStart ? 1.0 : 0.0);
 }
 
 // Base Shape 뒤에 선택적으로 Detail Erosion을 적용한다.
@@ -346,6 +372,15 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
 CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds)
 {
     return SampleCloudDensity(worldPosition, timeSeconds, true);
+}
+
+CloudDensitySample SampleCloudDensityWithDetailLod(
+    float3 worldPosition, float timeSeconds, float sampleDistance)
+{
+    CloudDensitySample sample = EvaluateBaseCloudDensity(worldPosition, timeSeconds);
+    return ApplyDetailErosion(
+        sample, worldPosition, timeSeconds,
+        EvaluateDetailLodFactor(sampleDistance));
 }
 
 #endif

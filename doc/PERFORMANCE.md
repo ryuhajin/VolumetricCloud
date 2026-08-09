@@ -10,6 +10,10 @@ Early Exit Only와 Empty Space Only의 Dense p95도 각각 8.892ms, 9.625ms로 O
 현재 선행하는 단계 13은 대규모 평면층의 기준선을 수립하는 단계다. 이 단계의 성능 수치는 기록만 하며
 16.67ms 합격 조건이나 단계 9 개선 게이트를 적용하지 않는다.
 
+단계 13의 8~20km Detail LOD는 20km 밖 절차적 Detail 호출을 생략하지만 단계 9 최적화로
+판정하지 않는다. 광학 모델과 화면 기준이 함께 바뀌므로 이전 평면층 캡처도 사용자 승인 뒤
+Optimization Off 기준으로 다시 기록한다.
+
 ## 계측 범위
 
 `FrameProfiler`는 8-slot D3D11 timestamp query ring으로 GPU Frame과 GPU Cloud 구간을 비동기로

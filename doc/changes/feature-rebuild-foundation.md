@@ -233,3 +233,16 @@
 - 구형 셸, 대기 산란, 원점 재배치와 단계 9~12 최적화는 이 단계에서 제외한다.
 - 2026-08-09 Debug/Release 빌드, 양 구성 CTest 26/26, Legacy/Optimized Od/O3 런타임 HLSL,
   schema 13 export와 D3D11 error/corruption 부재를 확인했다. 화면 품질은 사용자 승인을 기다린다.
+
+## 14. 단계 13 km 광학 보정과 Detail 거리 LOD
+
+- extinction/density 기본값을 `0.00075/m`, `0.65`로 낮추고 직접·환경 산란을
+  `stepAlpha × singleScatteringAlbedo(0.90)` 에너지 보존식으로 통일했다.
+- View 원거리 fade를 투과율과 모든 산란 항이 공유하는 effective density에 적용했다.
+- CloudCB 예약 공간에 8km Detail 유지와 20km 호출 생략 거리를 배치해 128바이트를 유지했다.
+- 중거리 Detail은 평균 0.5로 필터링하고 원거리는 함수 호출 없이 같은 평균 erosion을 적용한다.
+- Ctrl+K Detail LOD 진단과 schema 13 광학·LOD metadata를 추가했다.
+- 2026-08-09 Debug/Release 전체 CTest를 각각 26/26 통과했고, Stage13Smoke에서
+  Legacy/Optimized 런타임 HLSL 컴파일, Detail LOD/호출 생략 출력, schema 13 export와
+  D3D11 error/corruption 부재를 재검증했다. F5~F8 자동 캡처에서는 이전의 전면 흰색
+  포화와 검정 화면이 재현되지 않았으며 최종 화질 승인은 사용자가 수행한다.
