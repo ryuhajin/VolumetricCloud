@@ -77,12 +77,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage8-smoke-test") != nullptr;
     const bool requestedStage9Smoke = commandLine &&
         wcsstr(commandLine, L"--stage9-smoke-test") != nullptr;
+    const bool requestedStage13Smoke = commandLine &&
+        wcsstr(commandLine, L"--stage13-smoke-test") != nullptr;
     const bool stage9Benchmark = commandLine &&
         wcsstr(commandLine, L"--stage9-benchmark") != nullptr;
     const bool requestedPerformanceOverlaySmoke = commandLine &&
         wcsstr(commandLine, L"--performance-overlay-smoke-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
-        requestedStage8Smoke || requestedStage9Smoke ||
+        requestedStage8Smoke || requestedStage9Smoke || requestedStage13Smoke ||
         requestedPerformanceOverlaySmoke;
     const int kWidth  = stage9Benchmark ? 1920 : (requestedSmallGpuSmoke ? 96 : 1280);
     const int kHeight = stage9Benchmark ? 1080 : (requestedSmallGpuSmoke ? 54 : 720);
@@ -107,6 +109,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage7SmokeTest = requestedStage7Smoke;
     const bool stage8SmokeTest = requestedStage8Smoke;
     const bool stage9SmokeTest = requestedStage9Smoke;
+    const bool stage13SmokeTest = requestedStage13Smoke;
     const bool performanceOverlaySmokeTest = requestedPerformanceOverlaySmoke;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
@@ -131,17 +134,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 9 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | Phase Off | Balanced Ambient | Balanced Optimization | 외부 기본(F5)",
+                    L"VolumetricCloud - Stage 13 | 0 합성 | Q 1.5-4.5km 평면층 | N 기본 Noise | F10 기본 Detail | F3 Periodic Weather | Balanced Light/Ambient | Stage 9 보류 | 지상 상향(F5)",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
                     !stage9SmokeTest &&
+                    !stage13SmokeTest &&
                     !performanceOverlaySmokeTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest && !stage9Benchmark);
     Camera   camera;
     Renderer renderer;
 
     camera.SetAspect(static_cast<float>(kWidth) / kHeight);
+    camera.SetOrbit(0.0f, -0.73f, 3000.0f, { 0.0f, 2000.0f, 0.0f });
 
     if (!renderer.Init(window.GetHandle(), kWidth, kHeight))
         return -1; // 초기화 실패 (오류 메시지는 Renderer가 표시)
@@ -151,12 +156,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     // 않도록 낮은 표본 수를 적용한다. 일반 사용자 실행에는 영향을 주지 않는다.
     if (smokeTest || stage1SmokeTest || stage2SmokeTest || stage3SmokeTest ||
         stage4SmokeTest || stage5SmokeTest || stage6SmokeTest || stage7SmokeTest ||
-        stage8SmokeTest || stage9SmokeTest ||
+        stage8SmokeTest || stage9SmokeTest || stage13SmokeTest ||
         performanceOverlaySmokeTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest)
     {
-        renderer.SetViewSamplingForSmoke(16u, 0.5f);
-        renderer.SetLightSampling(4u, 1.0f);
+        renderer.SetViewSamplingForSmoke(16u, 250.0f);
+        renderer.SetLightSampling(4u, 500.0f);
     }
 
     // 입력/리사이즈 연결
@@ -170,8 +175,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         renderer.EnableFrameHashCapture(false);
         renderer.SetVSyncEnabled(false);
         renderer.SetDebugMode(CloudDebugMode::Composite);
-        renderer.SetViewSamplingForSmoke(128u, 0.1f);
-        renderer.SetLightSampling(16u, 0.25f);
+        renderer.SetViewSamplingForSmoke(256u, 100.0f);
+        renderer.SetLightSampling(32u, 250.0f);
         renderer.ApplyStage4DetailPreset(Stage4DetailPreset::DefaultDetail);
         renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
         renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Balanced);
@@ -209,12 +214,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 << "{\n  \"schemaVersion\": 1,\n  \"optimization\": \""
                 << benchmarkPresetName << "\",\n  \"scenarios\": [\n";
 
-        struct Scenario { const char* name; Stage5WeatherPreset weather; Stage2NoisePreset noise; bool inside; };
+        enum class BenchmarkView { GroundZenith, GroundHorizon, InsideLayer };
+        struct Scenario { const char* name; Stage5WeatherPreset weather; Stage2NoisePreset noise; BenchmarkView view; };
         const Scenario scenarios[] = {
-            {"DenseExterior", Stage5WeatherPreset::UniformLegacy, Stage2NoisePreset::DenseCoverage, false},
-            {"SparseExterior", Stage5WeatherPreset::PeriodicPerlin, Stage2NoisePreset::SparseCoverage, false},
-            {"DepthOccluded", Stage5WeatherPreset::ChannelDebug, Stage2NoisePreset::DefaultNoise, false},
-            {"InsideVolume", Stage5WeatherPreset::UniformLegacy, Stage2NoisePreset::DenseCoverage, true}};
+            {"GroundZenithDense", Stage5WeatherPreset::UniformLegacy, Stage2NoisePreset::DenseCoverage, BenchmarkView::GroundZenith},
+            {"GroundHorizonDense", Stage5WeatherPreset::UniformLegacy, Stage2NoisePreset::DenseCoverage, BenchmarkView::GroundHorizon},
+            {"SparseHorizon", Stage5WeatherPreset::PeriodicPerlin, Stage2NoisePreset::SparseCoverage, BenchmarkView::GroundHorizon},
+            {"DepthOccluded", Stage5WeatherPreset::ChannelDebug, Stage2NoisePreset::DefaultNoise, BenchmarkView::GroundZenith},
+            {"InsideLayer", Stage5WeatherPreset::UniformLegacy, Stage2NoisePreset::DenseCoverage, BenchmarkView::InsideLayer}};
         const std::wstring selectedScenario = CommandOption(commandLine, L"--scenario");
         bool firstScenario = true;
         for (const Scenario& scenario : scenarios)
@@ -225,13 +232,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             if (!selectedScenario.empty() && selectedScenario != L"all" &&
                 wideScenarioName != selectedScenario)
                 continue;
-            renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
+            renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::DefaultVolume);
             renderer.ApplyStage5WeatherPreset(scenario.weather);
             renderer.ApplyStage2NoisePreset(scenario.noise);
-            camera.SetOrbit(scenario.inside ? 0.0f : 0.55f,
-                            scenario.inside ? 0.0f : 0.30f,
-                            scenario.inside ? 1.5f : 12.0f,
-                            scenario.inside ? DirectX::XMFLOAT3{0,0,-1.5f} : DirectX::XMFLOAT3{0,-0.2f,0});
+            if (scenario.view == BenchmarkView::GroundHorizon)
+                camera.SetOrbit(0.0f, -0.15f, 10000.0f, {0.0f, 1500.0f, 0.0f});
+            else if (scenario.view == BenchmarkView::InsideLayer)
+                camera.SetOrbit(0.0f, 0.0f, 100.0f, {0.0f, 3000.0f, 0.0f});
+            else
+                camera.SetOrbit(0.0f, -0.73f, 3000.0f, {0.0f, 2000.0f, 0.0f});
 
             std::vector<double> allCloud;
             std::vector<double> allFrame;
@@ -467,7 +476,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 8") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 13") != std::string::npos &&
                 metadata.find("\"lightRayDensitySource\": \"baseDensityWithoutDetailErosion\"") != std::string::npos)
                 foundCurrentSchema = true;
         }
@@ -522,8 +531,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
         // 합성 경로에서 Off와 방향성 Phase가 실제로 다른 프레임을 만드는지 확인한다.
         renderer.EnableFrameHashCapture(true);
-        renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
-        renderer.SetViewSamplingForSmoke(8u, 2.0f);
+        // km 평면층에서도 상단의 직접광 표본을 충분히 잡아 Phase 차이가 해시에 나타나게 한다.
+        renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::ThinVolume);
+        renderer.ApplyStage5WeatherPreset(Stage5WeatherPreset::UniformLegacy);
+        renderer.ApplyStage2NoisePreset(Stage2NoisePreset::DenseCoverage);
+        renderer.SetViewSamplingForSmoke(32u, 100.0f);
+        renderer.SetLightSampling(16u, 250.0f);
         renderer.SetDebugMode(CloudDebugMode::Composite);
         renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Off);
         renderer.Render(camera, 0.0f);
@@ -552,7 +565,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 8") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 13") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
                 metadata.find("\"phaseDirectionConvention\": \"cosTheta=dot(cameraToSample,sampleToSun)\"") != std::string::npos)
                 foundSchema7 = true;
@@ -621,7 +634,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 8") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 13") != std::string::npos &&
                 metadata.find("\"environmentSource\": \"analyticColorsNoExternalTexture\"") != std::string::npos &&
                 metadata.find("\"multipleScatteringModel\": \"reusedLightOpticalDepthOctaves\"") != std::string::npos)
                 foundSchema8 = true;
@@ -668,7 +681,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             std::filesystem::temp_directory_path() / L"VolumetricCloudStage9Smoke";
         if (!renderer.ExportNoiseLabSnapshot(exportRoot))
             return 5;
-        bool foundSchema9 = false;
+        bool foundSchema13 = false;
         std::error_code exportError;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(exportRoot, exportError))
         {
@@ -676,11 +689,71 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             if (entry.path().filename() != L"noise-settings.json") continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 9") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 13") != std::string::npos &&
                 metadata.find("\"optimizationPreset\"") != std::string::npos)
-                foundSchema9 = true;
+                foundSchema13 = true;
         }
-        if (!foundSchema9) return 7;
+        if (!foundSchema13) return 7;
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
+    if (stage13SmokeTest)
+    {
+        renderer.SetNoiseLabVisible(false);
+        renderer.EnableNoiseLabPreviews(false);
+        renderer.EnableFrameHashCapture(true);
+        renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::DefaultVolume);
+        renderer.ApplyStage5WeatherPreset(Stage5WeatherPreset::PeriodicPerlin);
+        renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Off);
+
+        const struct CameraCase
+        {
+            float yaw, pitch, distance;
+            DirectX::XMFLOAT3 target;
+        } cameras[] = {
+            {0.0f, -0.73f, 3000.0f, {0.0f, 2000.0f, 0.0f}},
+            {0.0f, -0.15f, 10000.0f, {0.0f, 1500.0f, 0.0f}},
+            {0.0f, 0.0f, 100.0f, {0.0f, 3000.0f, 0.0f}},
+            {0.0f, 0.75f, 3000.0f, {0.0f, 3000.0f, 0.0f}}
+        };
+        for (const CameraCase& cameraCase : cameras)
+        {
+            camera.SetOrbit(cameraCase.yaw, cameraCase.pitch,
+                            cameraCase.distance, cameraCase.target);
+            renderer.SetDebugMode(CloudDebugMode::Composite);
+            renderer.Render(camera, 0.0f);
+            if (renderer.LastCloudFrameHash() == 0)
+                return 3;
+        }
+
+        renderer.SetDebugMode(CloudDebugMode::CloudLayerEntryDistance);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t entryHash = renderer.LastCloudFrameHash();
+        renderer.SetDebugMode(CloudDebugMode::CloudLayerExitDistance);
+        renderer.Render(camera, 0.0f);
+        if (entryHash == 0 || renderer.LastCloudFrameHash() == 0)
+            return 4;
+
+        const std::filesystem::path exportRoot =
+            std::filesystem::temp_directory_path() / L"VolumetricCloudStage13Smoke";
+        if (!renderer.ExportNoiseLabSnapshot(exportRoot))
+            return 5;
+        bool foundDomain = false;
+        std::error_code exportError;
+        for (const auto& entry :
+             std::filesystem::recursive_directory_iterator(exportRoot, exportError))
+        {
+            if (exportError) return 6;
+            if (entry.path().filename() != L"noise-settings.json") continue;
+            std::string metadata;
+            if (ReadTextFile(entry.path(), metadata) &&
+                metadata.find("\"schemaVersion\": 13") != std::string::npos &&
+                metadata.find("\"cloudDomain\": \"cameraCenteredPlanarLayer\"") != std::string::npos &&
+                metadata.find("\"weatherMapWorldSize\": 32000") != std::string::npos)
+                foundDomain = true;
+        }
+        if (!foundDomain || sizeof(CloudParameters) != 128u)
+            return 7;
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 

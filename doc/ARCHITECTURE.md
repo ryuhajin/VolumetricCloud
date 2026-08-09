@@ -1,6 +1,7 @@
 # 아키텍처
 
-현재는 재구축 단계 9이다. 단계 8 조명 결과를 유지하면서 합성 경로의 빈 표본과 불필요한 후반 적분을 줄인다.
+현재는 단계 9를 보류하고 재구축 단계 13을 선행한다. 단계 8 조명과 단계 9 계측
+경로를 보존한 채 유한 AABB를 인디 오픈월드용 대규모 평면 구름층으로 교체한다.
 
 ## 모듈과 책임
 
@@ -9,7 +10,7 @@
 | `Window` / `Camera` | Win32 입력, 오빗 카메라, 고정 검증 시점, view/projection 제공 |
 | `Renderer` | D3D11 장치, 진단 장면, 구름·Noise Lab 패스와 원자적 셰이더 핫리로드 |
 | `NoiseLab` | ImGui 조절, 세 축 512² 단면 타깃, WIC PNG와 JSON 내보내기 |
-| `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
+| `CloudParameters` | 128바이트 평면층·Base·Detail·Weather·추적 거리 설정과 디버그 모드 |
 | `LightParameters` | 64바이트 태양·Light Ray·Dual-lobe Phase 설정 |
 | `EnvironmentParameters` | 64바이트 하늘·지면·AO·다중 산란 설정 |
 | `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, EMA 성능 통계 |
@@ -29,17 +30,18 @@
 | `Stage6LightMath.h` | 광학 깊이, Base 선택과 단일 산란 CPU 기준 구현 |
 | `Stage7PhaseMath.h` | HG, 방향 내적, Dual-lobe와 안전 범위 CPU 기준 구현 |
 | `Stage8AmbientMath.h` | 높이 가중치, AO와 multiple octave CPU 기준 구현 |
+| `Stage13CloudLayerMath.h` | 평면층 교차, 거리 fade와 Weather wrap CPU 기준 구현 |
 
 ## 프레임 순서
 
 1. `Renderer`가 진단 장면을 `R16G16B16A16_FLOAT` 색상 타깃과 `D32_FLOAT` 깊이에 렌더링한다.
 2. 깊이 타깃을 DSV에서 해제하고 `R32_FLOAT` SRV로 전환한다.
 3. 풀스크린 삼각형이 장면 색상과 깊이를 읽어 월드 레이, 월드 위치와 장면 거리를 복원한다.
-4. 레이와 AABB의 진입·이탈 거리를 구하고 이탈을 Scene Depth 거리로 제한한다.
+4. 레이와 Y 평면 구름층의 진입·이탈 거리를 구하고 Scene Depth와 50km 상한으로 제한한다.
 5. 각 월드 샘플을 바람이 적용된 noise UVW로 바꾸고 단일 value noise를 계산한다.
 6. 월드 XZ로 Weather Map R/G/B를 읽고 종류별 높이 cutoff로 수평 footprint를 만든 뒤 coverage·높이·밀도 배율을 적용한다.
 7. Weather Base가 있을 때만 Detail Noise로 깎는다.
-8. 최종 밀도가 있는 View 표본에서 태양 방향 AABB 이탈까지 Base Density를 적분한다.
+8. 최종 밀도가 있는 View 표본에서 태양 방향 평면층 이탈 또는 20km까지 Base Density를 적분한다.
 9. 카메라→표본과 표본→태양 방향 내적으로 픽셀당 Dual-lobe Phase Factor를 한 번 계산한다.
 10. 높이·밀도로 하늘/지면 환경광과 AO를 계산하고 기존 광학 깊이로 다중 산란을 근사한다.
 11. Direct/Sky/Ground/Multiple을 같은 View 구간에 누적한다.
@@ -74,14 +76,14 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경�
 
 | 묶음 | 필드 | 기본값과 현재 역할 |
 |---|---|---|
-| 0 | `cloudBoundsMin(float3)`, `densityMultiplier` | `(-8,-1,-8)m`, `1.0`; 실행 기본 넓은 경계 최소와 threshold 뒤 밀도 배율 |
-| 1 | `cloudBoundsMax(float3)`, `stepSize` | `(8,2,8)m`, `0.10m`; 실행 기본 넓은 경계 최대와 목표 간격 |
-| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `128`, `1.0`, `0.01`, `0`; threshold만 단계 9 예약 |
-| 3 | `baseNoiseScale`, `coverage`, `windSpeed`, `noiseOffset` | `0.35 cycle/m`, `0.55`, `0.25m/s`, `0`; noise 형태·이동 |
+| 0 | `cloudBottomAltitude`, `cloudLayerThickness`, `maxViewTraceDistance`, `densityMultiplier` | `1500m`, `3000m`, `50000m`, `1.0`; 구름층과 View 반경 |
+| 1 | `maxLightTraceDistance`, `noiseLabPreviewWorldSize`, `stepSize`, `viewTraceFadeStartDistance` | `20000m`, `32000m`, `100m`, `40000m`; Light 상한·미리보기·View 표본·fade |
+| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `256`, `0.01/m`, `0.01`, `0`; 기준 표본과 단계 9 Early Exit 임계값 |
+| 3 | `baseNoiseScale`, `coverage`, `windSpeed`, `noiseOffset` | `0.0015 cycle/m`, `0.55`, `12m/s`, `0`; km 규모 형태·이동 |
 | 4 | `windDirection(float3)`, `bottomFadeEnd` | 정규화 `(0.9701,0,0.2425)`, `0.20`; 월드 바람 방향과 바닥 fade 종료 높이 |
 | 5 | `topFadeStart`, `heightProfilePadding(float3)` | `0.80`, `(0,0,0)`; 꼭대기 fade 시작 높이와 정렬 예약 값 |
-| 6 | `detailNoiseScale`, `detailErosionStrength`, `detailWindSpeed`, `detailNoiseOffset` | `2.5 cycle/m`, `0.25`, `0.45m/s`, `17.3`; 독립 표면 침식 |
-| 7 | `weatherMapWorldSize`, `weatherMapWindSpeed`, `weatherMapOffset(float2)` | `16m`, `0.10m/s`, `(0,0)`; Weather 반복 크기·이동·UV offset |
+| 6 | `detailNoiseScale`, `detailErosionStrength`, `detailWindSpeed`, `detailNoiseOffset` | `0.012 cycle/m`, `0.25`, `18m/s`, `17.3`; 독립 표면 침식 |
+| 7 | `weatherMapWorldSize`, `weatherMapWindSpeed`, `weatherMapOffset(float2)` | `32000m`, `8m/s`, `(0,0)`; Weather 반복 크기·이동·UV offset |
 
 구조체는 16바이트 묶음 여덟 개다. `transmittanceThreshold`는 단계 9 early exit 전까지 읽지 않고 `heightProfilePadding`은 GPU 정렬에만 사용한다.
 
@@ -91,7 +93,7 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경�
 |---|---|---|
 | 0 | `directionToSun(float3)`, `sunIntensity` | normalize `(0.45,0.80,0.35)`, `1.0`; 표본→태양 월드 방향과 세기 |
 | 1 | `sunColor(float3)`, `scatteringCoefficient` | `(1,0.95,0.85)`, `1.0`; linear RGB와 직접 산란 강도 |
-| 2 | `maxLightSteps`, `lightStepSize`, `lightRayBias`, `phaseEnabled` | `16`, `0.25m`, `0.01m`, `0`; Light 품질과 Phase Off 기본값 |
+| 2 | `maxLightSteps`, `lightStepSize`, `lightRayBias`, `phaseEnabled` | `32`, `250m`, `1m`, `0`; 대규모 Light 품질과 Phase Off 기본값 |
 | 3 | `forwardScatteringG`, `backwardScatteringG`, `phaseBlend`, `phaseIntensity` | `0.65`, `-0.25`, `0.80`, `0.25`; 전방·후방 HG와 적용 강도 |
 
 LightCB는 CloudCB와 분리해 `b3`에 바인딩한다. 방향은 빛의 진행 방향이 아니라
@@ -133,18 +135,19 @@ F2~F4 전환이나 Noise Lab 생성기 변경은 먼저 `t2` 바인딩을 해제
 전용 `WeatherMapGeneratorSettings`이며 128바이트 CloudCB에는 들어가지 않는다.
 업로드 전 크기와 RGBA 길이를 검증하고 실패하면 기존 맵과 해시를 유지한다.
 
-### `NoiseLabParameters` / `NoiseLabCB` (`b2`, 32바이트)
+### `NoiseLabParameters` / `NoiseLabCB` (`b2`, 48바이트)
 
 | 묶음 | 필드 | 의미 |
 |---|---|---|
-| 0 | `normalizedSlicePosition(float3)`, `outputMode` | AABB 내부 교차점과 15개 density/Weather 출력 선택 |
+| 0 | `normalizedSlicePosition(float3)`, `outputMode` | 32km XZ/평면층 Y 단면 위치와 15개 density/Weather 출력 선택 |
 | 1 | `sliceAxis`, `effectiveTime`, `padding(float2)` | XY/XZ/YZ 축과 구름 패스와 공유하는 시간 |
+| 2 | `previewCenterXZ(float2)`, `padding(float2)` | 카메라 중심 32km XZ 미리보기 위치 |
 
 Noise Lab은 512² 단면 타깃 세 벌과 실제 Weather SRV를 사용한다. Periodic Perlin의
 R/G/B seed·주기·가중치·bias·contrast와 coverage threshold/softness, density의
 coverage influence를 편집한다. Live Update는 CPU 생성·업로드를 최대 10Hz로
 제한하고 조작이 끝난 값은 즉시 반영한다. 내보내기는 세 단면과 256²
-`weather-map.png`, 모든 생성 설정·맵 해시·Light/Environment 설정을 담은 schema 8 JSON을 기록한다.
+`weather-map.png`, 평면층·추적 거리·생성 설정·맵 해시·조명 설정을 담은 schema 13 JSON을 기록한다.
 Generator는 `Weather map`과 분리된 최상위 헤더로 기본 펼쳐지고, 그 안의 R/G/B
 채널은 각각 기본으로 접힌다. 헤더와 생성 설정은 F2/F4에서도 조작할 수 있으며,
 이때 바꾼 값은 보존되고 F3로 돌아오면 Periodic Perlin에 반영된다. 상위 헤더를
@@ -170,7 +173,7 @@ parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional lig
 | `2` | Scene Depth에서 복원한 월드 거리 |
 | `3` | 복원한 월드 위치의 반복 색상 밴드 |
 | `4` | 화면 UV |
-| `5` | AABB 진입 거리 |
+| `5` | 평면 구름층 진입 거리 |
 | `6` | Scene Depth로 제한한 이탈 거리 |
 | `7` | 실제 step count |
 | `8` | 최종 transmittance |
@@ -188,10 +191,10 @@ parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional lig
 | `Shift+C` / `Shift+V` | Backward HG lobe / 최종 Dual Phase Factor |
 | `Ctrl+J` | 누적 Direct |
 | `F2`~`F4` | Uniform Legacy / Periodic Perlin / Channel Debug Weather Map |
-| `F5`~`F7` / `F8` | 외부 고정 카메라 / AABB 내부 카메라 |
-| `Y` / `Q` | 실행 기본 넓은 XZ / 작은 수치 검증 AABB |
-| `W` / `E` | 얇은 Z / 두꺼운 Z AABB |
-| `R` / `T` | fine 0.025m / coarse 0.5m step |
+| `F5` / `F6` / `F7` / `F8` | 지상 상향 / 수평선 / 구름층 내부 / 상공 카메라 |
+| `Q` / `Y` | 기준 50km / 장거리 64km 추적 거리 |
+| `W` / `E` | 1.5km 얇은층 / 6km 두꺼운층 |
+| `R` / `T` | fine 50m / coarse 200m step |
 | `N`, `A`, `S` | 기본 / sparse / dense coverage |
 | `D`, `F` | 큰 / 작은 noise 덩어리 |
 | `G`, `H`, `K` | 바람 정지 / 빠른 바람 / noise offset |
@@ -206,10 +209,9 @@ parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional lig
 
 - 외부 Weather PNG 로딩·페인팅·precipitation, fBm/Worley와 shadow
 - Cube Map/IBL·실제 대기 입력, Light Ray Detail Erosion
-- `transmittanceThreshold` early exit와 adaptive stepping
+- 단계 9 재튜닝과 새 성능 게이트 승인
 - 저해상도, temporal reconstruction, 영구 캐시와 프리셋
 
-실행 기본 `Y` 볼륨은 X/Z `±8m`로 15×15m 진단 바닥을 덮는다. `Q`는 기존
-X/Z `±2m` 수치 검증 범위를 보존한다. 두 프리셋의 Y `-1~2m`와 높이 프로파일은
-같으며, 넓은 볼륨의 긴 레이는 128 step 상한 때문에 실제 간격이 `0.10m`보다
-커질 수 있다.
+실행 기본 `Q`는 Y `1500~4500m`, Weather 32km, View 50km인 평면층이다. XZ에는
+측면 경계가 없으며 Weather/Noise는 월드 좌표에 고정된다. 카메라 중심이라는 표현은
+각 카메라에서 50km만 추적한다는 뜻이고, 밀도장이 카메라를 따라 이동한다는 뜻이 아니다.

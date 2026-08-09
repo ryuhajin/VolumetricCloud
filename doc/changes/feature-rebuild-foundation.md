@@ -209,7 +209,7 @@
   단계 8을 승인 완료했다. 다음 작업은 단계 8 기준 실행본을 보존하고 레이마칭의
   불필요한 표본을 줄이는 단계 9 기본 최적화와 계측이다.
 
-## 12. 단계 9 레이마칭 기본 최적화 (사용자 검증 대기)
+## 12. 단계 9 레이마칭 기본 최적화 (보류)
 
 - `OptimizationCB(b5)`와 Off/Early Exit/Empty Space/Balanced 프리셋을 추가했다.
 - 합성 전용 `mainOptimized`와 진단·회귀용 `mainLegacy`를 분리하고 Release HLSL O3를 명시했다.
@@ -217,3 +217,19 @@
 - Ctrl+Shift+J/L/P/U/B 모드 38~42에서 실행 fine 표본, 건너뛴 거리, Early Exit 절약, support 생략과 상태 전환을 진단한다.
 - Release 벤치마크 CLI는 네 고정 장면에서 UI/VSync/애니메이션을 배제하고 원시 D3D11 timestamp CSV와 p50/p95 JSON을 기록한다.
 - `stage8-approved` 태그와 로컬 고정 worktree/runtime 번들을 만들어 승인된 8단계 실행 환경을 보존했다.
+- 2026-08-09 소규모 AABB `DenseExterior`에서 Balanced GPU Cloud p95가 -1.66%로 회귀해
+  15% 개선 기준을 통과하지 못했다. 구현과 벤치마크는 `7df6e88` 체크포인트에 보존하고,
+  단계 13 승인 후 새 평면층 기준으로 재측정한다.
+
+## 13. 단계 13 대규모 평면 구름층 (사용자 검증 대기)
+
+- 유한 XZ AABB를 바닥 1.5km, 상단 4.5km의 Y축 평면층으로 교체했다.
+- View 50km/40km fade, Light 20km의 독립 추적 상한을 추가하고 하늘 픽셀을 카메라 far plane과 분리했다.
+- Weather 32km, Base/Detail `0.0015/0.012 cycle/m`, 바람 `12/18/8m/s`의 meter 기반 기본값을 적용했다.
+- CloudCB는 128바이트를 유지하면서 AABB 여섯 값을 평면층·추적 거리·Noise Lab 폭 값으로 교체했다.
+- Light Ray도 Y 평면 이탈과 20km 상한을 사용하며 Light step 기본값은 250m, 최대 32회다.
+- Noise Lab은 카메라 XZ 중심 32km 단면과 schema 13 도메인 정보를 내보낸다.
+- `Stage13CloudLayerMath` CPU 기준과 아래/내부/위·평행·깊이·거리·fade·Weather 고정 회귀 테스트를 추가했다.
+- 구형 셸, 대기 산란, 원점 재배치와 단계 9~12 최적화는 이 단계에서 제외한다.
+- 2026-08-09 Debug/Release 빌드, 양 구성 CTest 26/26, Legacy/Optimized Od/O3 런타임 HLSL,
+  schema 13 export와 D3D11 error/corruption 부재를 확인했다. 화면 품질은 사용자 승인을 기다린다.

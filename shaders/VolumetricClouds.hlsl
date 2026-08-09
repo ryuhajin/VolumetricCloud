@@ -26,7 +26,7 @@ cbuffer cbCamera : register(b0)
     float time;           // CPU time. 초 단위, 단계 2 바람 이동에 사용한다.
     float2 renderSize;    // CPU renderSize. 현재 백버퍼 크기(pixel), 현재 예약 값.
     float nearPlane;      // CPU nearPlane. 카메라 근평면 거리(m), 현재 예약 값.
-    float farPlane;       // CPU farPlane. 하늘 픽셀의 최대 추적 거리(m).
+    float farPlane;       // CPU 투영 far plane(m). 단계 13 구름 추적 상한과는 독립.
 };
 
 // cbCamera의 time 선언 뒤 포함해야 Light Ray가 같은 애니메이션 시간을 사용한다.
@@ -57,7 +57,7 @@ struct CloudResult
 // 단계 1 교차, 단계 2 noise와 단계 3 높이 적분이 사용한 대표값 진단 자료.
 struct CloudMarchDebug
 {
-    float entryDistance;   // Scene Depth 제한 전 AABB 진입을 0 이상으로 자른 거리(m).
+    float entryDistance;   // 평면 구름층 진입을 0 이상으로 자른 거리(m).
     float exitDistance;    // Scene Depth로 제한된 실제 이탈 거리(m).
     float stepCount;       // 실제 반복 횟수. 색 출력 편의를 위해 float로 보관.
     float sampledDensity;  // 대표 중간 위치의 최종 noise 밀도. hit가 없으면 0.
@@ -130,9 +130,9 @@ float3 SkyColor(float3 rayDirection)
     return lerp(float3(0.55, 0.63, 0.72), float3(0.12, 0.27, 0.52), height);
 }
 
-// 현재 CloudCB의 월드 AABB와 레이를 교차하고 실제 적분 구간을 만든다.
+// 단계 13의 XZ 무한 평면 구름층과 레이를 교차하고 실제 적분 구간을 만든다.
 // sceneDistance(m)는 첫 불투명 표면까지 거리이며 그 뒤쪽 안개를 보이지 않게 자른다.
-// 카메라가 박스 안이면 raw tNear가 음수이므로 tStart를 0으로 고정한다.
+// 카메라가 층 안이면 raw tNear가 음수이므로 tStart를 0으로 고정한다.
 bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
                           float sceneDistance,
                           out float tStart, out float tEnd)
@@ -140,25 +140,48 @@ bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
     tStart = 0.0;
     tEnd = 0.0;
 
-    // 1. AABB 자체의 진입/이탈 거리를 구한다.
-    float tNear = 0.0;
-    float tFar = 0.0;
-    bool intersectsAabb = IntersectRayAABB(
-        rayOrigin, rayDirection, cloudBoundsMin, cloudBoundsMax, tNear, tFar);
+    float topAltitude = cloudBottomAltitude + cloudLayerThickness;
+    float directionLengthSquared = dot(rayDirection, rayDirection);
+    float traceLimit = min(max(sceneDistance, 0.0),
+                           max(maxViewTraceDistance, 0.0));
+    bool valid = cloudLayerThickness > 1e-5 &&
+                 directionLengthSquared > 1e-8 && traceLimit > 0.0;
+    if (!valid)
+        return false;
 
-    // 2. 뒤쪽 진입은 카메라 위치부터, 이탈은 첫 불투명 물체까지만 허용한다.
-    //    tStart가 커지면 안개가 더 멀리서 시작하고, tEnd가 작아지면 보이는 두께가 줄어든다.
-    if (intersectsAabb)
+    float directionY = rayDirection.y;
+    bool originInside = rayOrigin.y >= cloudBottomAltitude &&
+                        rayOrigin.y <= topAltitude;
+    if (abs(directionY) <= 1e-6)
     {
-        tStart = max(tNear, 0.0);
-        tEnd = min(tFar, sceneDistance);
+        if (!originInside)
+            return false;
+        tEnd = traceLimit;
+        return tEnd > tStart;
     }
 
-    // 3. 물체가 볼륨 앞에 있거나 접점뿐이면 계산할 부피가 없다.
-    return intersectsAabb && tEnd > tStart;
+    float bottomDistance = (cloudBottomAltitude - rayOrigin.y) / directionY;
+    float topDistance = (topAltitude - rayOrigin.y) / directionY;
+    float layerNear = min(bottomDistance, topDistance);
+    float layerFar = max(bottomDistance, topDistance);
+    tStart = max(layerNear, 0.0);
+    tEnd = min(layerFar, traceLimit);
+    return tEnd > tStart;
 }
 
-// AABB의 유효 구간을 noise × 높이 프로파일 밀도로 레이 마칭한다.
+// 평면층은 수평선에서 자연 이탈점이 없을 수 있으므로 최대 거리 직전에 밀도를
+// 부드럽게 0으로 줄인다. Weather/Noise 좌표 자체는 월드에 고정되어 움직이지 않는다.
+float EvaluateViewDistanceFade(float sampleDistance)
+{
+    float safeMaximum = max(maxViewTraceDistance, 0.0);
+    float safeStart = clamp(viewTraceFadeStartDistance, 0.0, safeMaximum);
+    float width = safeMaximum - safeStart;
+    return width > 1e-4
+        ? 1.0 - smoothstep(safeStart, safeMaximum, max(sampleDistance, 0.0))
+        : (sampleDistance < safeMaximum ? 1.0 : 0.0);
+}
+
+// Cloud Layer의 유효 구간을 noise × 높이 프로파일 밀도로 레이 마칭한다.
 // 입력은 월드 위치(m), 정규화 월드 방향, 장면 거리(m)이고 출력은 합성 가능한
 // CloudResult와 관찰용 CloudMarchDebug다. 모든 실패 경로는 산란 0, 투과율 1의
 // 중립 결과를 반환해 배경을 바꾸지 않는다.
@@ -172,7 +195,7 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
 
     debugData = (CloudMarchDebug)0;
 
-    // 1. 물체 폐색까지 반영된 AABB 구간을 구한다.
+    // 1. 물체 폐색까지 반영된 Cloud Layer 구간을 구한다.
     float tStart = 0.0;
     float tEnd = 0.0;
     bool hasSegment = IntersectCloudVolume(
@@ -247,7 +270,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             float sampleDistance = tStart + ((float)stepIndex + 0.5) * actualStepLength;
             float3 samplePosition = rayOrigin + rayDirection * sampleDistance;
             CloudDensitySample densitySample = SampleCloudDensity(samplePosition, time);
-            float sampledDensity = densitySample.finalDensity;
+            float sampledDensity = densitySample.finalDensity *
+                EvaluateViewDistanceFade(sampleDistance);
             float sampledStepTransmittance = exp(
                 -sampledDensity * extinction * actualStepLength);
 
@@ -387,7 +411,8 @@ void RaymarchCloudOptimized(
         optimizationDebug.supportPrecheckRejects += baseSample.supportRejected;
         CloudDensitySample densitySample = ApplyDetailErosion(
             baseSample, samplePosition, time);
-        float density = densitySample.finalDensity;
+        float density = densitySample.finalDensity *
+            EvaluateViewDistanceFade(sampleDistance);
 
         if (density > 0.0)
         {
@@ -448,15 +473,16 @@ float4 mainLegacy(VSOut input) : SV_TARGET
     // 2. 카메라에서 픽셀로 나가는 월드 레이를 복원한다.
     float3 rayDirection = ReconstructWorldRay(uv);
 
-    // 3. 깊이가 있으면 월드 표면과 meter 거리를 복원하고, 하늘이면 farPlane을 쓴다.
+    // 3. 불투명 표면만 Scene Depth로 제한한다. 하늘은 투영 far plane과 분리된
+    //    단계 13 최대 추적 거리를 사용한다.
     float3 worldPosition = hasGeometry
         ? ReconstructWorldPosition(uv, deviceDepth)
-        : cameraPos + rayDirection * farPlane;
+        : cameraPos + rayDirection * maxViewTraceDistance;
     float sceneDistance = hasGeometry
         ? length(worldPosition - cameraPos)
-        : farPlane;
+        : maxViewTraceDistance;
 
-    // 4. AABB 교차와 Scene Depth 제한 뒤 noise × 높이 프로파일 밀도를 적분한다.
+    // 4. Cloud Layer 교차와 Scene Depth 제한 뒤 noise × 높이 프로파일 밀도를 적분한다.
     CloudMarchDebug marchDebug;
     CloudResult cloud = RaymarchCloud(
         cameraPos, rayDirection, sceneDistance, marchDebug);
@@ -493,9 +519,11 @@ float4 mainLegacy(VSOut input) : SV_TARGET
 
     // 6. 단계 1 디버그 5~9는 교차·step·투과율·밀도를 각각 분리해 보여 준다.
     if (debugMode == 5)
-        return float4((marchDebug.hit * saturate(marchDebug.entryDistance / 20.0)).xxx, 1.0);
+        return float4((marchDebug.hit * saturate(
+            marchDebug.entryDistance / max(maxViewTraceDistance, 1.0))).xxx, 1.0);
     if (debugMode == 6)
-        return float4((marchDebug.hit * saturate(marchDebug.exitDistance / 20.0)).xxx, 1.0);
+        return float4((marchDebug.hit * saturate(
+            marchDebug.exitDistance / max(maxViewTraceDistance, 1.0))).xxx, 1.0);
     if (debugMode == 7)
         return float4((marchDebug.hit * saturate(marchDebug.stepCount / max((float)maxViewSteps, 1.0))).xxx, 1.0);
     if (debugMode == 8)
@@ -632,10 +660,10 @@ float4 mainOptimized(VSOut input) : SV_TARGET
     float3 rayDirection = ReconstructWorldRay(uv);
     float3 worldPosition = hasGeometry
         ? ReconstructWorldPosition(uv, deviceDepth)
-        : cameraPos + rayDirection * farPlane;
+        : cameraPos + rayDirection * maxViewTraceDistance;
     float sceneDistance = hasGeometry
         ? length(worldPosition - cameraPos)
-        : farPlane;
+        : maxViewTraceDistance;
 
     OptimizationMarchDebug ignoredDebug;
     CloudResult marched;

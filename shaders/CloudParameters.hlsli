@@ -10,10 +10,14 @@
 
 cbuffer CloudCB : register(b1)
 {
-    float3 cloudBoundsMin;      // CPU cloudBoundsMin. AABB 최소 월드 위치(m), y가 구름 바닥.
-    float densityMultiplier;   // CPU densityMultiplier. 최종 밀도 배율, 단위 없음.
-    float3 cloudBoundsMax;      // CPU cloudBoundsMax. AABB 최대 월드 위치(m), y가 구름 천장.
+    float cloudBottomAltitude;  // CPU cloudBottomAltitude. 평면 구름층 바닥 월드 Y(m).
+    float cloudLayerThickness;  // CPU cloudLayerThickness. 바닥부터 상단까지 두께(m).
+    float maxViewTraceDistance; // CPU maxViewTraceDistance. 카메라별 최대 추적 반경(m).
+    float densityMultiplier;    // CPU densityMultiplier. 최종 밀도 배율, 단위 없음.
+    float maxLightTraceDistance;// CPU maxLightTraceDistance. 태양 레이 최대 추적 거리(m).
+    float noiseLabPreviewWorldSize;// CPU Noise Lab XZ 미리보기 폭(m).
     float stepSize;             // CPU stepSize. 목표 view-ray 표본 간격(m).
+    float viewTraceFadeStartDistance;// CPU 원거리 밀도 fade 시작 거리(m).
     uint maxViewSteps;          // CPU maxViewSteps. 한 픽셀의 최대 반복 횟수.
     float extinctionCoefficient;// CPU extinctionCoefficient. meter당 빛 소멸 강도.
     float transmittanceThreshold;// CPU 예약값. 단계 9 Early Exit 전에는 사용하지 않는다.

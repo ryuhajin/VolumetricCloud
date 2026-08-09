@@ -2,7 +2,7 @@
 //  NoiseLab.hlsl - 단계 5 Weather/Base/Detail의 XY/XZ/YZ 고정 단면 출력
 // ----------------------------------------------------------------------------
 //  1. CPU NoiseLabCB의 정규화 단면 위치를 받는다.
-//  2. 화면 UV를 AABB 안의 월드 위치(m)로 바꾼다.
+//  2. 화면 UV를 카메라 중심 32km 미리보기와 평면층 높이로 바꾼다.
 //  3. 실제 구름과 같은 SampleCloudDensity를 호출한다.
 //  4. 선택한 Base/Detail/erosion 중간값을 회색조로 출력한다.
 // ============================================================================
@@ -15,6 +15,8 @@ cbuffer NoiseLabCB : register(b2)
     uint noiseSliceAxis;            // CPU NoiseSliceAxis. 0=XY, 1=XZ, 2=YZ.
     float effectiveTime;            // CPU Noise Lab 시간(s). 구름 바람과 동일한 시간.
     float2 noiseLabPadding;         // 16바이트 정렬용 예약 값.
+    float2 previewCenterXZ;         // CPU 카메라의 월드 XZ(m).
+    float2 noiseLabPreviewPadding;  // 16바이트 정렬용 예약 값.
 };
 
 struct VSOut
@@ -34,7 +36,12 @@ float3 SliceWorldPosition(float2 uv)
         normalizedPosition.xz = plane;
     else                           // YZ, X 고정: 가로 Z, 세로 Y
         normalizedPosition.zy = plane;
-    return lerp(cloudBoundsMin, cloudBoundsMax, saturate(normalizedPosition));
+    float previewSize = max(noiseLabPreviewWorldSize, 1.0);
+    float2 worldXZ = previewCenterXZ +
+        (saturate(normalizedPosition.xz) - 0.5.xx) * previewSize;
+    float worldY = cloudBottomAltitude +
+        saturate(normalizedPosition.y) * max(cloudLayerThickness, 0.0);
+    return float3(worldXZ.x, worldY, worldXZ.y);
 }
 
 float4 main(VSOut input) : SV_TARGET

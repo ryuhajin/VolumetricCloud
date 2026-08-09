@@ -96,15 +96,14 @@ struct NoiseFieldSample
     float3 uvw;
 };
 
-// 월드 Y 위치(m)를 구름층 안의 0~1 높이로 바꾼다.
-// cloudBoundsMax.y <= cloudBoundsMin.y인 잘못된 AABB는 두께가 없으므로 0을 반환한다.
+// 월드 Y 위치(m)를 평면 구름층 안의 0~1 높이로 바꾼다.
+// 두께가 0 이하인 잘못된 층은 나누지 않고 0을 반환한다.
 // 이 분기는 0 나눗셈과 NaN이 검정 화면이나 번쩍임으로 번지는 것을 막는다.
 float EvaluateHeightFraction(float worldY)
 {
-    float cloudThickness = cloudBoundsMax.y - cloudBoundsMin.y;
-    float validThickness = cloudThickness > 1e-6 ? 1.0 : 0.0;
-    float safeThickness = max(cloudThickness, 1e-6);
-    return saturate((worldY - cloudBoundsMin.y) / safeThickness) * validThickness;
+    float validThickness = cloudLayerThickness > 1e-6 ? 1.0 : 0.0;
+    float safeThickness = max(cloudLayerThickness, 1e-6);
+    return saturate((worldY - cloudBottomAltitude) / safeThickness) * validThickness;
 }
 
 // 정규화 높이에서 바닥 fade와 꼭대기 fade를 곱해 구름층 마스크를 만든다.

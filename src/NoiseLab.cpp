@@ -310,6 +310,40 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     const LightParameters lightBefore = lightParameters;
     m_weatherPreset = weatherPreset;
     m_weatherMapPreviewSrv = weatherMapSrv;
+    if (ImGui::CollapsingHeader("Stage 13 Cloud Layer",
+                                ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::SliderFloat("Layer Bottom", &cloudParameters.cloudBottomAltitude,
+                           0.0f, 10000.0f, "%.2f m");
+        ImGui::SliderFloat("Layer Thickness", &cloudParameters.cloudLayerThickness,
+                           100.0f, 10000.0f, "%.2f m");
+        ImGui::SliderFloat("View Trace Max", &cloudParameters.maxViewTraceDistance,
+                           1000.0f, 100000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("View Fade Start", &cloudParameters.viewTraceFadeStartDistance,
+                           0.0f, cloudParameters.maxViewTraceDistance, "%.2f m");
+        ImGui::SliderFloat("Light Trace Max", &cloudParameters.maxLightTraceDistance,
+                           1000.0f, 50000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Noise Lab Width", &cloudParameters.noiseLabPreviewWorldSize,
+                           1000.0f, 64000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::Text("Layer: %.2f - %.2f km | View: %.1f km",
+                    cloudParameters.cloudBottomAltitude / 1000.0f,
+                    (cloudParameters.cloudBottomAltitude +
+                     cloudParameters.cloudLayerThickness) / 1000.0f,
+                    cloudParameters.maxViewTraceDistance / 1000.0f);
+    }
+    cloudParameters.cloudBottomAltitude = std::max(
+        cloudParameters.cloudBottomAltitude, 0.0f);
+    cloudParameters.cloudLayerThickness = std::max(
+        cloudParameters.cloudLayerThickness, 100.0f);
+    cloudParameters.maxViewTraceDistance = std::max(
+        cloudParameters.maxViewTraceDistance, 1000.0f);
+    cloudParameters.viewTraceFadeStartDistance = std::clamp(
+        cloudParameters.viewTraceFadeStartDistance, 0.0f,
+        cloudParameters.maxViewTraceDistance);
+    cloudParameters.maxLightTraceDistance = std::max(
+        cloudParameters.maxLightTraceDistance, 1000.0f);
+    cloudParameters.noiseLabPreviewWorldSize = std::max(
+        cloudParameters.noiseLabPreviewWorldSize, 1000.0f);
     if (ImGui::CollapsingHeader("Weather map", ImGuiTreeNodeFlags_DefaultOpen))
     {
         const char* presets[] = {
@@ -329,15 +363,15 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                 ImVec2(256.0f, 256.0f));
         }
         ImGui::SliderFloat("Weather World Size", &cloudParameters.weatherMapWorldSize,
-                           4.0f, 128.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
+                           1000.0f, 64000.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Weather Wind Speed", &cloudParameters.weatherMapWindSpeed,
-                           0.0f, 2.0f, "%.2f m/s");
+                           0.0f, 40.0f, "%.2f m/s");
         ImGui::DragFloat2("Weather Offset", &cloudParameters.weatherMapOffset.x,
                           0.01f, -10.0f, 10.0f, "%.2f cycle");
         if (ImGui::Button("Reset Weather Transform"))
         {
-            cloudParameters.weatherMapWorldSize = 16.0f;
-            cloudParameters.weatherMapWindSpeed = 0.10f;
+            cloudParameters.weatherMapWorldSize = 32000.0f;
+            cloudParameters.weatherMapWindSpeed = 8.0f;
             cloudParameters.weatherMapOffset = { 0.0f, 0.0f };
         }
     }
@@ -437,7 +471,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
             "Shared cloud parameters", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::SliderFloat("Noise Scale", &cloudParameters.baseNoiseScale,
-                           0.01f, 2.0f, "%.3f cycle/m", ImGuiSliderFlags_Logarithmic);
+                           0.0001f, 0.02f, "%.5f cycle/m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Coverage", &cloudParameters.coverage, 0.0f, 1.0f);
         ImGui::SliderFloat("Density", &cloudParameters.densityMultiplier, 0.0f, 4.0f);
         ImGui::DragFloat("Noise Offset", &cloudParameters.noiseOffset,
@@ -445,7 +479,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::DragFloat3("Wind Direction", &cloudParameters.windDirection.x,
                           0.01f, -1.0f, 1.0f);
         ImGui::SliderFloat("Wind Speed", &cloudParameters.windSpeed,
-                           0.0f, 3.0f, "%.2f m/s");
+                           0.0f, 40.0f, "%.2f m/s");
     }
 
     if (ImGui::CollapsingHeader("Height profile", ImGuiTreeNodeFlags_DefaultOpen))
@@ -471,11 +505,12 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::PlotLines("Profile curve", profileCurve.data(),
                          static_cast<int>(profileCurve.size()), 0,
                          "bottom 0 -> top 1", 0.0f, 1.0f, ImVec2(0.0f, 80.0f));
-        const float selectedWorldY = cloudParameters.cloudBoundsMin.y +
-            (cloudParameters.cloudBoundsMax.y - cloudParameters.cloudBoundsMin.y) *
+        const float selectedWorldY = cloudParameters.cloudBottomAltitude +
+            cloudParameters.cloudLayerThickness *
             m_parameters.normalizedSlicePosition.y;
         const float selectedHeight = stage3::EvaluateHeightFraction(
-            selectedWorldY, cloudParameters.cloudBoundsMin.y, cloudParameters.cloudBoundsMax.y);
+            selectedWorldY, cloudParameters.cloudBottomAltitude,
+            cloudParameters.cloudBottomAltitude + cloudParameters.cloudLayerThickness);
         const float selectedProfile = stage3::EvaluateHeightProfileFromFraction(
             selectedHeight, cloudParameters.bottomFadeEnd, cloudParameters.topFadeStart);
         ImGui::Text("Selected Y: fraction %.3f, profile %.3f",
@@ -492,23 +527,23 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     if (ImGui::CollapsingHeader("Detail erosion", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::SliderFloat("Detail Scale", &cloudParameters.detailNoiseScale,
-                           0.1f, 16.0f, "%.3f cycle/m", ImGuiSliderFlags_Logarithmic);
+                           0.001f, 0.1f, "%.4f cycle/m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Erosion Strength", &cloudParameters.detailErosionStrength,
                            0.0f, 1.0f, "%.3f");
         ImGui::SliderFloat("Detail Wind Speed", &cloudParameters.detailWindSpeed,
-                           0.0f, 3.0f, "%.2f m/s");
+                           0.0f, 60.0f, "%.2f m/s");
         ImGui::DragFloat("Detail Offset", &cloudParameters.detailNoiseOffset,
                          0.01f, -50.0f, 50.0f, "%.2f cycle");
         if (ImGui::Button("Reset Detail"))
         {
-            cloudParameters.detailNoiseScale = 2.5f;
+            cloudParameters.detailNoiseScale = 0.012f;
             cloudParameters.detailErosionStrength = 0.25f;
-            cloudParameters.detailWindSpeed = 0.45f;
+            cloudParameters.detailWindSpeed = 18.0f;
             cloudParameters.detailNoiseOffset = 17.3f;
         }
         ImGui::TextDisabled("F9 Off / F10 Default / F11 Fine / F12 Strong");
     }
-    cloudParameters.detailNoiseScale = std::max(cloudParameters.detailNoiseScale, 0.1f);
+    cloudParameters.detailNoiseScale = std::max(cloudParameters.detailNoiseScale, 0.001f);
     cloudParameters.detailErosionStrength = std::clamp(
         cloudParameters.detailErosionStrength, 0.0f, 1.0f);
     cloudParameters.detailWindSpeed = std::max(cloudParameters.detailWindSpeed, 0.0f);
@@ -672,7 +707,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
             lightChanged = true;
         }
         int lightSteps = static_cast<int>(lightParameters.maxLightSteps);
-        if (ImGui::SliderInt("Max Light Steps", &lightSteps, 1, 32))
+        if (ImGui::SliderInt("Max Light Steps", &lightSteps, 1, 64))
         {
             lightParameters.maxLightSteps = static_cast<std::uint32_t>(lightSteps);
             lightChanged = true;
@@ -680,24 +715,24 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##LightSteps"))
         {
-            lightParameters.maxLightSteps = 16;
+            lightParameters.maxLightSteps = 32;
             lightChanged = true;
         }
         lightChanged |= ImGui::SliderFloat("Light Step Size", &lightParameters.lightStepSize,
-                                            0.05f, 1.0f, "%.3f m",
+                                            10.0f, 2000.0f, "%.1f m",
                                             ImGuiSliderFlags_Logarithmic);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##LightStepSize"))
         {
-            lightParameters.lightStepSize = 0.25f;
+            lightParameters.lightStepSize = 250.0f;
             lightChanged = true;
         }
         lightChanged |= ImGui::SliderFloat("Light Ray Bias", &lightParameters.lightRayBias,
-                                            0.001f, 0.05f, "%.3f m");
+                                            0.01f, 10.0f, "%.2f m");
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##LightBias"))
         {
-            lightParameters.lightRayBias = 0.01f;
+            lightParameters.lightRayBias = 1.0f;
             lightChanged = true;
         }
         if (lightChanged)
@@ -1051,11 +1086,11 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::SameLine();
         if (ImGui::Button("Reset Noise"))
         {
-            cloudParameters.baseNoiseScale = 0.35f;
+            cloudParameters.baseNoiseScale = 0.0015f;
             cloudParameters.coverage = 0.55f;
             cloudParameters.densityMultiplier = 1.0f;
             cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-            cloudParameters.windSpeed = 0.25f;
+            cloudParameters.windSpeed = 12.0f;
             cloudParameters.noiseOffset = 0.0f;
         }
         ImGui::SameLine();
@@ -1288,10 +1323,12 @@ void NoiseLab::DrawPerformanceOverlay(const FrameTimingSnapshot& timing,
         }
 
         ImGui::Separator();
-        ImGui::Text("View   %u @ %.3f m",
-                    cloudParameters.maxViewSteps, cloudParameters.stepSize);
-        ImGui::Text("Light  %u @ %.3f m",
-                    lightParameters.maxLightSteps, lightParameters.lightStepSize);
+        ImGui::Text("View   %u @ %.1f m / %.1f km",
+                    cloudParameters.maxViewSteps, cloudParameters.stepSize,
+                    cloudParameters.maxViewTraceDistance / 1000.0f);
+        ImGui::Text("Light  %u @ %.1f m / %.1f km",
+                    lightParameters.maxLightSteps, lightParameters.lightStepSize,
+                    cloudParameters.maxLightTraceDistance / 1000.0f);
         ImGui::Text("VSync  %s", vsyncEnabled ? "On" : "Off");
     }
     ImGui::End();
@@ -1603,7 +1640,26 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 9,\n"
+           << "  \"schemaVersion\": 13,\n"
+           << "  \"cloudDomain\": \"cameraCenteredPlanarLayer\",\n"
+           << "  \"internalDistanceUnit\": \"meter\",\n"
+           << "  \"cloudBottomAltitudeMeters\": "
+           << cloud.cloudBottomAltitude << ",\n"
+           << "  \"cloudLayerThicknessMeters\": "
+           << cloud.cloudLayerThickness << ",\n"
+           << "  \"cloudTopAltitudeMeters\": "
+           << cloud.cloudBottomAltitude + cloud.cloudLayerThickness << ",\n"
+           << "  \"maxViewTraceDistanceMeters\": "
+           << cloud.maxViewTraceDistance << ",\n"
+           << "  \"viewTraceFadeStartDistanceMeters\": "
+           << cloud.viewTraceFadeStartDistance << ",\n"
+           << "  \"maxLightTraceDistanceMeters\": "
+           << cloud.maxLightTraceDistance << ",\n"
+           << "  \"noiseLabPreviewWorldSizeMeters\": "
+           << cloud.noiseLabPreviewWorldSize << ",\n"
+           << "  \"noiseLabPreviewCenterXZMeters\": ["
+           << m_parameters.previewCenterXZ.x << ", "
+           << m_parameters.previewCenterXZ.y << "],\n"
            << "  \"output\": \"" << outputNames[outputIndex] << "\",\n"
            << "  \"detailPreset\": \"" << detailPresetNames[presetIndex] << "\",\n"
            << "  \"weatherPreset\": \"" << weatherPresetNames[weatherPresetIndex] << "\",\n"

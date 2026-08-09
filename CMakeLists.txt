@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 8: 분석적 환경광과 저비용 다중 산란
+#  재구축 단계 13: 인디 오픈월드용 대규모 평면 구름층
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -214,6 +214,19 @@ add_test(NAME VolumetricCloud.Stage9OptimizationMath
          COMMAND VolumetricCloud.Stage9OptimizationMathTests)
 add_test(NAME VolumetricCloud.Stage9Smoke
          COMMAND VolumetricCloud --stage9-smoke-test)
+
+# 단계 13의 평면 구름층 교차, 거리 fade와 32km Weather 좌표를 검사한다.
+add_executable(VolumetricCloud.Stage13CloudLayerMathTests
+    tests/Stage13CloudLayerMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage13CloudLayerMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13CloudLayerMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13CloudLayerMath
+         COMMAND VolumetricCloud.Stage13CloudLayerMathTests)
+add_test(NAME VolumetricCloud.Stage13Smoke
+         COMMAND VolumetricCloud --stage13-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

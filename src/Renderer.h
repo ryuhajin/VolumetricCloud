@@ -180,7 +180,7 @@ private:
     LightParameters m_lightParameters;
     EnvironmentParameters m_environmentParameters;
     OptimizationParameters m_optimizationParameters;
-    Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::WideVolume;
+    Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::DefaultVolume;
     Stage2NoisePreset m_noisePreset = Stage2NoisePreset::DefaultNoise;
     Stage4DetailPreset m_detailPreset = Stage4DetailPreset::DefaultDetail;
     Stage5WeatherPreset m_weatherPreset = Stage5WeatherPreset::ChannelDebug;

@@ -66,7 +66,7 @@ void Window::UpdateDebugTitle()
 
     static const wchar_t* debugNames[] = {
         L"0 합성", L"1 월드 레이", L"2 Scene Depth", L"3 월드 위치", L"4 화면 UV",
-        L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
+        L"5 구름층 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
         L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW",
         L"B 높이 비율", L"M 높이 Profile", L"J Base 밀도", L"L Detail Noise",
         L"P Erosion", L"U Detail Sample", L"I Weather Coverage", L"O Cloud Type",
@@ -84,8 +84,8 @@ void Window::UpdateDebugTitle()
         L"Ctrl+Shift+B State Transitions"
     };
     static const wchar_t* presetNames[] = {
-        L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
-        L"R Fine 0.025m", L"T Coarse 0.5m"
+        L"Q 기준 50km 층", L"Y 장거리 64km", L"W 얇은 1.5km", L"E 두꺼운 6km",
+        L"R Fine 50m", L"T Coarse 200m"
     };
     static const wchar_t* noisePresetNames[] = {
         L"N 기본 Noise", L"A Sparse", L"S Dense", L"D 큰 덩어리",
@@ -263,25 +263,23 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::ChannelDebug);
         else if (m_camera && wParam == VK_F5)
         {
-            m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
-            m_cameraPresetName = L"외부 기본(F5)";
+            m_camera->SetOrbit(0.0f, -0.73f, 3000.0f, { 0.0f, 2000.0f, 0.0f });
+            m_cameraPresetName = L"지상 상향(F5)";
         }
         else if (m_camera && wParam == VK_F6)
         {
-            m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"낮은 외부(F6)";
+            m_camera->SetOrbit(0.0f, -0.15f, 10000.0f, { 0.0f, 1500.0f, 0.0f });
+            m_cameraPresetName = L"지상 수평선(F6)";
         }
         else if (m_camera && wParam == VK_F7)
         {
-            m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"높은 외부(F7)";
+            m_camera->SetOrbit(0.0f, 0.0f, 100.0f, { 0.0f, 3000.0f, 0.0f });
+            m_cameraPresetName = L"구름층 내부(F7)";
         }
         else if (m_camera && wParam == VK_F8)
         {
-            // orbit의 눈 위치가 원점이 되도록 target을 -Z로 옮긴다. 따라서 얇은 W
-            // 프리셋에서도 카메라는 AABB 내부이고 raw tNear가 음수인 경로를 검증한다.
-            m_camera->SetOrbit(0.0f, 0.0f, 1.5f, { 0.0f, 0.0f, -1.5f });
-            m_cameraPresetName = L"AABB 내부(F8)";
+            m_camera->SetOrbit(0.0f, 0.75f, 3000.0f, { 0.0f, 3000.0f, 0.0f });
+            m_cameraPresetName = L"구름층 상공(F8)";
         }
         else if (m_renderer && wParam == VK_F9)
             m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::DetailOff);

@@ -53,9 +53,11 @@ struct alignas(16) NoiseLabParameters
     std::uint32_t sliceAxis = static_cast<std::uint32_t>(NoiseSliceAxis::XY);
     float effectiveTime = 0.0f;
     float padding[2] = {};
+    DirectX::XMFLOAT2 previewCenterXZ = { 0.0f, 0.0f };
+    float previewPadding[2] = {};
 };
 
-static_assert(sizeof(NoiseLabParameters) == 32,
+static_assert(sizeof(NoiseLabParameters) == 48,
               "NoiseLabParameters must match NoiseLabCB");
 
 class NoiseLab
@@ -104,6 +106,10 @@ public:
     void SetOutputMode(NoiseOutputMode mode)
     {
         m_parameters.outputMode = static_cast<std::uint32_t>(mode);
+    }
+    void SetPreviewCenterXZ(const DirectX::XMFLOAT3& cameraPosition)
+    {
+        m_parameters.previewCenterXZ = { cameraPosition.x, cameraPosition.z };
     }
     // 현재 출력 모드의 축 특성까지 고려해 GPU readback이 유효한지 검사한다.
     bool ValidatePreviewData();

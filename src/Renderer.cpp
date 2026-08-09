@@ -711,6 +711,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
         CaptureCloudFrameHash();
     if (m_renderNoiseLabPreviews)
     {
+        m_noiseLab.SetPreviewCenterXZ(camera.GetPosition());
         m_noiseLab.RenderPreviews(
             m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get(),
             m_weatherMapSrv.Get(), m_weatherLinearWrapSampler.Get());
@@ -787,36 +788,36 @@ CloudDebugMode Renderer::DebugMode() const
 
 void Renderer::ApplyStage1ValidationPreset(Stage1ValidationPreset preset)
 {
-    // 각 키는 다른 키의 잔여 상태가 결과를 흐리지 않도록 단계 1 기본값에서 시작한다.
-    m_cloudParameters.cloudBoundsMin = { -2.0f, -1.0f, -2.0f };
-    m_cloudParameters.cloudBoundsMax = { 2.0f, 2.0f, 2.0f };
+    // 단계 13 기준층에서 시작해 두께·거리·표본만 독립적으로 바꾼다.
+    m_cloudParameters.cloudBottomAltitude = 1500.0f;
+    m_cloudParameters.cloudLayerThickness = 3000.0f;
+    m_cloudParameters.maxViewTraceDistance = 50000.0f;
+    m_cloudParameters.maxLightTraceDistance = 20000.0f;
+    m_cloudParameters.noiseLabPreviewWorldSize = 32000.0f;
+    m_cloudParameters.viewTraceFadeStartDistance = 40000.0f;
     m_cloudParameters.densityMultiplier = 1.0f;
-    m_cloudParameters.stepSize = 0.10f;
-    m_cloudParameters.maxViewSteps = 128;
-    m_cloudParameters.extinctionCoefficient = 1.0f;
+    m_cloudParameters.stepSize = 100.0f;
+    m_cloudParameters.maxViewSteps = 256;
+    m_cloudParameters.extinctionCoefficient = 0.01f;
     m_cloudParameters.transmittanceThreshold = 0.01f;
 
     switch (preset)
     {
     case Stage1ValidationPreset::WideVolume:
-        m_cloudParameters.cloudBoundsMin.x = -8.0f;
-        m_cloudParameters.cloudBoundsMin.z = -8.0f;
-        m_cloudParameters.cloudBoundsMax.x = 8.0f;
-        m_cloudParameters.cloudBoundsMax.z = 8.0f;
+        m_cloudParameters.maxViewTraceDistance = 64000.0f;
+        m_cloudParameters.viewTraceFadeStartDistance = 52000.0f;
         break;
     case Stage1ValidationPreset::ThinVolume:
-        m_cloudParameters.cloudBoundsMin.z = -0.5f;
-        m_cloudParameters.cloudBoundsMax.z = 0.5f;
+        m_cloudParameters.cloudLayerThickness = 1500.0f;
         break;
     case Stage1ValidationPreset::ThickVolume:
-        m_cloudParameters.cloudBoundsMin.z = -4.0f;
-        m_cloudParameters.cloudBoundsMax.z = 4.0f;
+        m_cloudParameters.cloudLayerThickness = 6000.0f;
         break;
     case Stage1ValidationPreset::FineStep:
-        m_cloudParameters.stepSize = 0.025f;
+        m_cloudParameters.stepSize = 50.0f;
         break;
     case Stage1ValidationPreset::CoarseStep:
-        m_cloudParameters.stepSize = 0.5f;
+        m_cloudParameters.stepSize = 200.0f;
         break;
     case Stage1ValidationPreset::DefaultVolume:
     default:
@@ -833,12 +834,12 @@ Stage1ValidationPreset Renderer::ValidationPreset() const
 void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
 {
     // 프리셋을 누르는 순서와 무관하게 비교할 수 있도록 noise 관련 값만 기본화한다.
-    // AABB와 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
-    m_cloudParameters.baseNoiseScale = 0.35f;
+    // 평면층과 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
+    m_cloudParameters.baseNoiseScale = 0.0015f;
     m_cloudParameters.coverage = 0.55f;
     m_cloudParameters.densityMultiplier = 1.0f;
     m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    m_cloudParameters.windSpeed = 0.25f;
+    m_cloudParameters.windSpeed = 12.0f;
     m_cloudParameters.noiseOffset = 0.0f;
 
     switch (preset)
@@ -850,16 +851,16 @@ void Renderer::ApplyStage2NoisePreset(Stage2NoisePreset preset)
         m_cloudParameters.coverage = 0.75f;
         break;
     case Stage2NoisePreset::LargeBlobs:
-        m_cloudParameters.baseNoiseScale = 0.18f;
+        m_cloudParameters.baseNoiseScale = 0.0008f;
         break;
     case Stage2NoisePreset::SmallBlobs:
-        m_cloudParameters.baseNoiseScale = 0.70f;
+        m_cloudParameters.baseNoiseScale = 0.0030f;
         break;
     case Stage2NoisePreset::StoppedWind:
         m_cloudParameters.windSpeed = 0.0f;
         break;
     case Stage2NoisePreset::FastWind:
-        m_cloudParameters.windSpeed = 0.8f;
+        m_cloudParameters.windSpeed = 24.0f;
         break;
     case Stage2NoisePreset::OffsetNoise:
         m_cloudParameters.noiseOffset = 0.73f;
@@ -888,9 +889,9 @@ void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
 {
     // 프리셋 전환 순서와 무관하게 네 Detail 값만 기본화한다. Base noise, 높이와
     // Q/Y 볼륨은 그대로 두므로 큰 형태가 변하지 않는지 직접 비교할 수 있다.
-    m_cloudParameters.detailNoiseScale = 2.5f;
+    m_cloudParameters.detailNoiseScale = 0.012f;
     m_cloudParameters.detailErosionStrength = 0.25f;
-    m_cloudParameters.detailWindSpeed = 0.45f;
+    m_cloudParameters.detailWindSpeed = 18.0f;
     m_cloudParameters.detailNoiseOffset = 17.3f;
 
     switch (preset)
@@ -899,7 +900,7 @@ void Renderer::ApplyStage4DetailPreset(Stage4DetailPreset preset)
         m_cloudParameters.detailErosionStrength = 0.0f;
         break;
     case Stage4DetailPreset::FineDetail:
-        m_cloudParameters.detailNoiseScale = 6.0f;
+        m_cloudParameters.detailNoiseScale = 0.024f;
         break;
     case Stage4DetailPreset::StrongErosion:
         m_cloudParameters.detailErosionStrength = 0.55f;

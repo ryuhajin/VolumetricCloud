@@ -31,7 +31,7 @@ void Camera::Zoom(float wheelDelta)
 {
     // 휠 한 칸(120) 당 일정 비율로 거리 조절
     float factor = 1.0f - (wheelDelta / 120.0f) * 0.1f;
-    m_distance = std::clamp(m_distance * factor, 1.5f, 100.0f);
+    m_distance = std::clamp(m_distance * factor, 1.5f, 100000.0f);
 }
 
 void Camera::SetOrbit(float yaw, float pitch, float distance,
@@ -39,7 +39,7 @@ void Camera::SetOrbit(float yaw, float pitch, float distance,
 {
     m_yaw = yaw;
     m_pitch = std::clamp(pitch, -XM_PIDIV2 + 0.01f, XM_PIDIV2 - 0.01f);
-    m_distance = std::clamp(distance, 1.5f, 100.0f);
+    m_distance = std::clamp(distance, 1.5f, 100000.0f);
     m_target = target;
 }
 

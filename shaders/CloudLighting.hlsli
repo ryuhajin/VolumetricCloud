@@ -29,29 +29,46 @@ struct LightMarchResult
 
 // 현재 View 표본에서 태양까지 구름이 얼마나 빛을 가리는지 계산한다.
 // samplePosition은 월드 위치(m), lightDirection은 표본→태양 단위 방향이다.
-// 길이가 거의 0인 방향, 퇴화 AABB 또는 유효 이탈 구간이 없으면 빛을 막을
+// 길이가 거의 0인 방향, 퇴화 평면층 또는 유효 이탈 구간이 없으면 빛을 막을
 // 구름을 계산할 수 없으므로 중립값 transmittance=1을 반환한다.
 LightMarchResult ComputeLightTransmittance(
     float3 samplePosition, float3 lightDirection)
 {
     LightMarchResult result = { 1.0, 0.0, 0.0 };
     float directionLengthSquared = dot(lightDirection, lightDirection);
-    // 1. 잘못된 박스나 방향이면 아래 계산을 건너뛰고 중립값을 반환한다.
-    bool validInput = !any(cloudBoundsMax <= cloudBoundsMin) &&
+    // 1. 잘못된 평면층이나 방향이면 아래 계산을 건너뛰고 중립값을 반환한다.
+    bool validInput = cloudLayerThickness > 1e-5 &&
+                      maxLightTraceDistance > 0.0 &&
                       directionLengthSquared > 1e-8;
     if (validInput)
     {
         float3 safeDirection = lightDirection * rsqrt(directionLengthSquared);
 
         // 2. 현재 표면을 다시 맞히지 않도록 아주 조금 태양 쪽에서 시작한다.
-        float safeBias = clamp(lightRayBias, 0.0, 1.0);
+        float safeBias = clamp(lightRayBias, 0.0, 100.0);
         float3 rayOrigin = samplePosition + safeDirection * safeBias;
-        float tNear = 0.0;
-        float tFar = 0.0;
-        bool intersects = IntersectRayAABB(
-            rayOrigin, safeDirection, cloudBoundsMin, cloudBoundsMax, tNear, tFar);
-        float segmentStart = max(tNear, 0.0);
-        float segmentLength = tFar - segmentStart;
+        float layerTop = cloudBottomAltitude + cloudLayerThickness;
+        float segmentStart = 0.0;
+        float segmentEnd = 0.0;
+        bool intersects = false;
+        if (abs(safeDirection.y) <= 1e-6)
+        {
+            intersects = rayOrigin.y >= cloudBottomAltitude &&
+                         rayOrigin.y <= layerTop;
+            segmentEnd = maxLightTraceDistance;
+        }
+        else
+        {
+            float bottomDistance =
+                (cloudBottomAltitude - rayOrigin.y) / safeDirection.y;
+            float topDistance = (layerTop - rayOrigin.y) / safeDirection.y;
+            float layerNear = min(bottomDistance, topDistance);
+            float layerFar = max(bottomDistance, topDistance);
+            segmentStart = max(layerNear, 0.0);
+            segmentEnd = min(layerFar, maxLightTraceDistance);
+            intersects = segmentEnd > segmentStart;
+        }
+        float segmentLength = segmentEnd - segmentStart;
         if (intersects && segmentLength > 1e-5)
         {
             // 3. 전체 이탈 구간을 maxLightSteps 안에서 균등하게 다시 나눈다.
