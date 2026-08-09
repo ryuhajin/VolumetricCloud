@@ -71,8 +71,15 @@ LightMarchResult ComputeLightTransmittance(
                     ((float)stepIndex + 0.5) * actualStepLength;
                 float3 lightSamplePosition =
                     rayOrigin + safeDirection * sampleDistance;
-                float baseDensity = EvaluateBaseCloudDensity(
-                    lightSamplePosition, time).baseDensity;
+                // 단계 9: Height·Weather가 빈 곳에서는 비싼 3D Base Noise를 읽지 않는다.
+                // Light Ray는 여전히 단계 8과 같은 Base Density만 적분하며 step 수와
+                // 광학 깊이 수식은 바꾸지 않는다.
+                CloudDensitySample lightDensity = MakeEmptyCloudDensitySample();
+                if (supportPrecheckEnabled != 0u)
+                    EvaluateBaseCloudDensityFast(lightSamplePosition, time, lightDensity);
+                else
+                    lightDensity = EvaluateBaseCloudDensity(lightSamplePosition, time);
+                float baseDensity = lightDensity.baseDensity;
                 opticalDepth += max(baseDensity, 0.0) *
                                 safeExtinction * actualStepLength;
             }

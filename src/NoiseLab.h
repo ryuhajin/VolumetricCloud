@@ -18,6 +18,7 @@
 #include "LightParameters.h"
 #include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
+#include "OptimizationParameters.h"
 
 enum class NoiseSliceAxis : std::uint32_t
 {
@@ -78,6 +79,8 @@ public:
                     Stage7PhasePreset& phasePreset,
                     EnvironmentParameters& environmentParameters,
                     Stage8EnvironmentPreset& environmentPreset,
+                    OptimizationParameters& optimizationParameters,
+                    Stage9OptimizationPreset& optimizationPreset,
                     Stage5WeatherPreset weatherPreset,
                     const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                     ID3D11ShaderResourceView* weatherMapSrv,
@@ -112,6 +115,8 @@ public:
                         Stage7PhasePreset phasePreset,
                         const EnvironmentParameters& environmentParameters,
                         Stage8EnvironmentPreset environmentPreset,
+                        const OptimizationParameters& optimizationParameters,
+                        Stage9OptimizationPreset optimizationPreset,
                         Stage4DetailPreset detailPreset,
                         Stage5WeatherPreset weatherPreset,
                         const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -143,6 +148,8 @@ private:
                            Stage7PhasePreset& phasePreset,
                            EnvironmentParameters& environmentParameters,
                            Stage8EnvironmentPreset& environmentPreset,
+                           OptimizationParameters& optimizationParameters,
+                           Stage9OptimizationPreset& optimizationPreset,
                            Stage5WeatherPreset weatherPreset,
                            const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                            ID3D11ShaderResourceView* weatherMapSrv,
@@ -171,6 +178,8 @@ private:
                        Stage7PhasePreset phasePreset,
                        const EnvironmentParameters& environmentParameters,
                        Stage8EnvironmentPreset environmentPreset,
+                       const OptimizationParameters& optimizationParameters,
+                       Stage9OptimizationPreset optimizationPreset,
                        Stage4DetailPreset detailPreset,
                        Stage5WeatherPreset weatherPreset,
                        const WeatherMapGeneratorSettings& weatherGeneratorSettings,

@@ -203,6 +203,18 @@ add_test(NAME VolumetricCloud.Stage8AmbientMath
 add_test(NAME VolumetricCloud.Stage8Smoke
          COMMAND VolumetricCloud --stage8-smoke-test)
 
+add_executable(VolumetricCloud.Stage9OptimizationMathTests
+    tests/Stage9OptimizationMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage9OptimizationMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage9OptimizationMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage9OptimizationMath
+         COMMAND VolumetricCloud.Stage9OptimizationMathTests)
+add_test(NAME VolumetricCloud.Stage9Smoke
+         COMMAND VolumetricCloud --stage9-smoke-test)
+
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)
 #  빌드 후 build/<Config>/shaders/ 에 hlsl이 위치하게 됨

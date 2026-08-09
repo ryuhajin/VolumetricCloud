@@ -208,3 +208,12 @@
   AO, 1~4 multiple octave, Phase·Light Sample 불변성과 schema 8을 모두 확인하고
   단계 8을 승인 완료했다. 다음 작업은 단계 8 기준 실행본을 보존하고 레이마칭의
   불필요한 표본을 줄이는 단계 9 기본 최적화와 계측이다.
+
+## 12. 단계 9 레이마칭 기본 최적화 (사용자 검증 대기)
+
+- `OptimizationCB(b5)`와 Off/Early Exit/Empty Space/Balanced 프리셋을 추가했다.
+- 합성 전용 `mainOptimized`와 진단·회귀용 `mainLegacy`를 분리하고 Release HLSL O3를 명시했다.
+- 높이·Weather support 사전 검사, Base 결과 재사용, View Early Exit와 Search/Full adaptive march를 구현했다.
+- Ctrl+Shift+J/L/P/U/B 모드 38~42에서 실행 fine 표본, 건너뛴 거리, Early Exit 절약, support 생략과 상태 전환을 진단한다.
+- Release 벤치마크 CLI는 네 고정 장면에서 UI/VSync/애니메이션을 배제하고 원시 D3D11 timestamp CSV와 p50/p95 JSON을 기록한다.
+- `stage8-approved` 태그와 로컬 고정 worktree/runtime 번들을 만들어 승인된 8단계 실행 환경을 보존했다.

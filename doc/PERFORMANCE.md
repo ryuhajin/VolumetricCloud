@@ -48,5 +48,14 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 
 ## 현재 범위
 
-현재 오버레이는 실시간 관찰용이다. CSV 기록, 자동 벤치마크 비교, 중앙값·p95 통계는 단계 9
-성능 계측에서 추가한다.
+단계 9부터 Release CLI 벤치마크가 1920×1080, VSync Off, 시간 0, UI 제외 조건을 강제한다. 각 시나리오는 2초이자 120프레임 이상 워밍업한 뒤 원시 timestamp 300개를 3회 기록한다.
+
+```powershell
+.\tools\Run-Stage9Benchmark.ps1
+```
+
+Windows GUI 실행 파일은 PowerShell의 직접 호출이 종료를 기다리지 않을 수 있다. 위 스크립트는 `Start-Process -Wait`를 사용해 Off와 Balanced 측정이 동시에 실행되어 GPU 시간을 오염시키지 않게 한다.
+
+`raw.csv`에는 EMA 전의 GPU Cloud/Frame과 CPU Frame을 기록하고 `summary.json`에는 min/mean/p50/p95/max/표준편차를 기록한다. DenseExterior는 GPU Cloud p95 15% 이상 개선, 다른 장면은 3% 초과 회귀 없음이 기준이다. 승인된 원본은 `stage8-approved` 태그와 `captures/performance/baselines/stage8-approved` 로컬 번들로 보존한다.
+
+2026-08-09 1차 직렬 측정에서 Balanced의 GPU Cloud p95 개선율은 Dense -1.66%, Sparse +10.19%, DepthOccluded +2.18%, Inside +15.85%였다. Dense 15% 기준을 통과하지 못했으므로 단계 9는 사용자 승인 대기가 아니라 추가 최적화가 필요한 상태다. Early Exit Only와 Empty Space Only의 Dense p95도 각각 8.892ms, 9.625ms로 Off 8.657ms보다 느려, 단순 기능 조합 변경만으로는 해결되지 않았다.

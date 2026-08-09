@@ -207,6 +207,8 @@ void NoiseLab::BeginFrame(float applicationTime,
                           Stage7PhasePreset& phasePreset,
                           EnvironmentParameters& environmentParameters,
                           Stage8EnvironmentPreset& environmentPreset,
+                          OptimizationParameters& optimizationParameters,
+                          Stage9OptimizationPreset& optimizationPreset,
                           Stage5WeatherPreset weatherPreset,
                           const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                           ID3D11ShaderResourceView* weatherMapSrv,
@@ -231,7 +233,8 @@ void NoiseLab::BeginFrame(float applicationTime,
     ImGui::NewFrame();
     if (m_visible)
         DrawControlWindow(cloudParameters, lightParameters, sunPreset, phasePreset,
-                          environmentParameters, environmentPreset,
+                           environmentParameters, environmentPreset,
+                           optimizationParameters, optimizationPreset,
                           weatherPreset, weatherGeneratorSettings,
                           weatherMapSrv, weatherMapStatus, vsyncEnabled,
                           shaderGeneration,
@@ -246,6 +249,8 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                                  Stage7PhasePreset& phasePreset,
                                  EnvironmentParameters& environmentParameters,
                                  Stage8EnvironmentPreset& environmentPreset,
+                                 OptimizationParameters& optimizationParameters,
+                                 Stage9OptimizationPreset& optimizationPreset,
                                  Stage5WeatherPreset weatherPreset,
                                  const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                                  ID3D11ShaderResourceView* weatherMapSrv,
@@ -513,6 +518,79 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::Checkbox("VSync", &vsyncEnabled);
         ImGui::TextDisabled("CPU Frame includes Present/VSync wait.");
         ImGui::TextDisabled("GPU Frame excludes Present; compare ray cost with GPU Cloud.");
+    }
+
+    if (ImGui::CollapsingHeader("Stage 9 Optimization",
+                                ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        static const char* presetNames[] = {
+            "Off (Stage 8)", "Early Exit Only", "Empty Space Only",
+            "Balanced", "Custom"
+        };
+        const int presetIndex = std::clamp(
+            static_cast<int>(optimizationPreset), 0, 4);
+        ImGui::Text("Current: %s", presetNames[presetIndex]);
+        if (ImGui::Button("Optimization Off"))
+        {
+            stage9optimization::ApplyPreset(
+                optimizationParameters, Stage9OptimizationPreset::Off);
+            optimizationPreset = Stage9OptimizationPreset::Off;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Early Exit Only"))
+        {
+            stage9optimization::ApplyPreset(
+                optimizationParameters, Stage9OptimizationPreset::EarlyExitOnly);
+            optimizationPreset = Stage9OptimizationPreset::EarlyExitOnly;
+        }
+        if (ImGui::Button("Empty Space Only"))
+        {
+            stage9optimization::ApplyPreset(
+                optimizationParameters, Stage9OptimizationPreset::EmptySpaceOnly);
+            optimizationPreset = Stage9OptimizationPreset::EmptySpaceOnly;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Balanced Optimization"))
+        {
+            stage9optimization::ApplyPreset(
+                optimizationParameters, Stage9OptimizationPreset::Balanced);
+            optimizationPreset = Stage9OptimizationPreset::Balanced;
+        }
+
+        bool changed = false;
+        bool earlyExit = optimizationParameters.earlyExitEnabled != 0;
+        bool supportPrecheck = optimizationParameters.supportPrecheckEnabled != 0;
+        bool emptySkipping = optimizationParameters.emptySpaceSkippingEnabled != 0;
+        changed |= ImGui::Checkbox("View Early Exit", &earlyExit);
+        changed |= ImGui::Checkbox("Height/Weather Precheck", &supportPrecheck);
+        changed |= ImGui::Checkbox("Adaptive Empty-space", &emptySkipping);
+        changed |= ImGui::SliderFloat(
+            "Transmittance Threshold", &cloudParameters.transmittanceThreshold,
+            0.0f, 0.1f, "%.4f");
+        changed |= ImGui::SliderFloat(
+            "Base Density Epsilon", &optimizationParameters.baseDensityEpsilon,
+            0.000001f, 0.05f, "%.5f", ImGuiSliderFlags_Logarithmic);
+        changed |= ImGui::SliderFloat(
+            "Coarse Step Multiplier", &optimizationParameters.coarseStepMultiplier,
+            1.0f, 8.0f, "%.1fx");
+        int emptySamples = static_cast<int>(
+            optimizationParameters.emptySamplesBeforeCoarse);
+        if (ImGui::SliderInt("Empty Samples Before Coarse", &emptySamples, 1, 8))
+        {
+            optimizationParameters.emptySamplesBeforeCoarse =
+                static_cast<std::uint32_t>(emptySamples);
+            changed = true;
+        }
+        optimizationParameters.earlyExitEnabled = earlyExit ? 1u : 0u;
+        optimizationParameters.supportPrecheckEnabled = supportPrecheck ? 1u : 0u;
+        optimizationParameters.emptySpaceSkippingEnabled = emptySkipping ? 1u : 0u;
+        cloudParameters.transmittanceThreshold = std::clamp(
+            cloudParameters.transmittanceThreshold, 0.0f, 0.1f);
+        optimizationParameters = stage9optimization::Sanitize(
+            optimizationParameters);
+        if (changed)
+            optimizationPreset = Stage9OptimizationPreset::Custom;
+        ImGui::TextDisabled("Composite+On uses mainOptimized; debug/Off uses mainLegacy.");
     }
 
     if (ImGui::CollapsingHeader("Directional light", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1474,8 +1552,10 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const LightParameters& light,
                              Stage6SunPreset sunPreset,
                              Stage7PhasePreset phasePreset,
-                             const EnvironmentParameters& environment,
-                             Stage8EnvironmentPreset environmentPreset,
+                              const EnvironmentParameters& environment,
+                              Stage8EnvironmentPreset environmentPreset,
+                              const OptimizationParameters& optimization,
+                              Stage9OptimizationPreset optimizationPreset,
                              Stage4DetailPreset detailPreset,
                              Stage5WeatherPreset weatherPreset,
                              const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -1507,18 +1587,23 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
     static const char* environmentPresetNames[] = {
         "off", "balanced", "strongFill", "groundCheck", "custom"
     };
+    static const char* optimizationPresetNames[] = {
+        "off", "earlyExitOnly", "emptySpaceOnly", "balanced", "custom"
+    };
     const int presetIndex = std::clamp(static_cast<int>(detailPreset), 0, 4);
     const int weatherPresetIndex = std::clamp(static_cast<int>(weatherPreset), 0, 2);
     const int sunPresetIndex = std::clamp(static_cast<int>(sunPreset), 0, 3);
     const int phasePresetIndex = std::clamp(static_cast<int>(phasePreset), 0, 4);
     const int environmentPresetIndex = std::clamp(
         static_cast<int>(environmentPreset), 0, 4);
+    const int optimizationPresetIndex = std::clamp(
+        static_cast<int>(optimizationPreset), 0, 4);
     const std::uint32_t outputIndex = std::min(m_parameters.outputMode, 14u);
     const WeatherMapGeneratorSettings generator =
         SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 8,\n"
+           << "  \"schemaVersion\": 9,\n"
            << "  \"output\": \"" << outputNames[outputIndex] << "\",\n"
            << "  \"detailPreset\": \"" << detailPresetNames[presetIndex] << "\",\n"
            << "  \"weatherPreset\": \"" << weatherPresetNames[weatherPresetIndex] << "\",\n"
@@ -1526,6 +1611,23 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"phasePreset\": \"" << phasePresetNames[phasePresetIndex] << "\",\n"
            << "  \"environmentPreset\": \""
            << environmentPresetNames[environmentPresetIndex] << "\",\n"
+           << "  \"optimizationPreset\": \""
+           << optimizationPresetNames[optimizationPresetIndex] << "\",\n"
+           << "  \"optimizationShaderPath\": \"legacyOrCompositeOptimized\",\n"
+           << "  \"earlyExitEnabled\": "
+           << (optimization.earlyExitEnabled ? "true" : "false") << ",\n"
+           << "  \"supportPrecheckEnabled\": "
+           << (optimization.supportPrecheckEnabled ? "true" : "false") << ",\n"
+           << "  \"emptySpaceSkippingEnabled\": "
+           << (optimization.emptySpaceSkippingEnabled ? "true" : "false") << ",\n"
+           << "  \"transmittanceThreshold\": "
+           << cloud.transmittanceThreshold << ",\n"
+           << "  \"baseDensityEpsilon\": "
+           << optimization.baseDensityEpsilon << ",\n"
+           << "  \"coarseStepMultiplier\": "
+           << optimization.coarseStepMultiplier << ",\n"
+           << "  \"emptySamplesBeforeCoarse\": "
+           << optimization.emptySamplesBeforeCoarse << ",\n"
            << "  \"environmentSource\": \"analyticColorsNoExternalTexture\",\n"
            << "  \"ambientModel\": \"heightWeightedSkyGroundDensityAo\",\n"
            << "  \"directionConvention\": \"sampleToSunWorldDirection\",\n"
@@ -1632,8 +1734,10 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const LightParameters& lightParameters,
                               Stage6SunPreset sunPreset,
                               Stage7PhasePreset phasePreset,
-                              const EnvironmentParameters& environmentParameters,
-                              Stage8EnvironmentPreset environmentPreset,
+                               const EnvironmentParameters& environmentParameters,
+                               Stage8EnvironmentPreset environmentPreset,
+                               const OptimizationParameters& optimizationParameters,
+                               Stage9OptimizationPreset optimizationPreset,
                               Stage4DetailPreset detailPreset,
                               Stage5WeatherPreset weatherPreset,
                               const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -1656,8 +1760,9 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                          SaveTexturePng(directory / L"weather-map.png", weatherMapTexture) &&
                          WriteMetadata(directory / L"noise-settings.json",
                                        cloudParameters, lightParameters, sunPreset,
-                                       phasePreset, environmentParameters,
-                                       environmentPreset, detailPreset, weatherPreset,
+                                        phasePreset, environmentParameters,
+                                        environmentPreset, optimizationParameters,
+                                        optimizationPreset, detailPreset, weatherPreset,
                                        weatherGeneratorSettings, weatherMapHash,
                                        noiseSourcePath);
     m_exportStatus = success

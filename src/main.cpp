@@ -9,13 +9,18 @@
 #include <objbase.h>
 
 #include <cmath>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "Window.h"
 #include "Camera.h"
 #include "Renderer.h"
+#include "Stage9OptimizationMath.h"
 
 namespace
 {
@@ -33,6 +38,23 @@ bool ReadTextFile(const std::filesystem::path& path, std::string& text)
         return false;
     text.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     return input.good() || input.eof();
+}
+
+std::wstring CommandOption(const wchar_t* commandLine, const wchar_t* option)
+{
+    if (!commandLine) return {};
+    std::wstring line(commandLine), key(option);
+    const auto begin = line.find(key);
+    if (begin == std::wstring::npos) return {};
+    auto valueBegin = line.find_first_not_of(L" \t", begin + key.size());
+    if (valueBegin == std::wstring::npos) return {};
+    if (line[valueBegin] == L'\"')
+    {
+        const auto end = line.find(L'\"', ++valueBegin);
+        return line.substr(valueBegin, end - valueBegin);
+    }
+    const auto end = line.find_first_of(L" \t", valueBegin);
+    return line.substr(valueBegin, end - valueBegin);
 }
 }
 
@@ -53,13 +75,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage7-smoke-test") != nullptr;
     const bool requestedStage8Smoke = commandLine &&
         wcsstr(commandLine, L"--stage8-smoke-test") != nullptr;
+    const bool requestedStage9Smoke = commandLine &&
+        wcsstr(commandLine, L"--stage9-smoke-test") != nullptr;
+    const bool stage9Benchmark = commandLine &&
+        wcsstr(commandLine, L"--stage9-benchmark") != nullptr;
     const bool requestedPerformanceOverlaySmoke = commandLine &&
         wcsstr(commandLine, L"--performance-overlay-smoke-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
-        requestedStage8Smoke ||
+        requestedStage8Smoke || requestedStage9Smoke ||
         requestedPerformanceOverlaySmoke;
-    const int kWidth  = requestedSmallGpuSmoke ? 96 : 1280;
-    const int kHeight = requestedSmallGpuSmoke ? 54 : 720;
+    const int kWidth  = stage9Benchmark ? 1920 : (requestedSmallGpuSmoke ? 96 : 1280);
+    const int kHeight = stage9Benchmark ? 1080 : (requestedSmallGpuSmoke ? 54 : 720);
+
+    const std::wstring shaderRoot = CommandOption(commandLine, L"--shader-root");
+    if (!shaderRoot.empty())
+        SetEnvironmentVariableW(L"VCLOUD_SHADER_OVERRIDE_DIR", shaderRoot.c_str());
 
     const bool smokeTest = commandLine &&
         wcsstr(commandLine, L"--foundation-smoke-test") != nullptr;
@@ -76,6 +106,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage6SmokeTest = requestedStage6Smoke;
     const bool stage7SmokeTest = requestedStage7Smoke;
     const bool stage8SmokeTest = requestedStage8Smoke;
+    const bool stage9SmokeTest = requestedStage9Smoke;
     const bool performanceOverlaySmokeTest = requestedPerformanceOverlaySmoke;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
@@ -100,12 +131,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 8 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | Phase Off | Balanced Ambient | 외부 기본(F5)",
+                    L"VolumetricCloud - Stage 9 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | Phase Off | Balanced Ambient | Balanced Optimization | 외부 기본(F5)",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
+                    !stage9SmokeTest &&
                     !performanceOverlaySmokeTest &&
-                    !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
+                    !noiseLabSmokeTest && !shaderHotReloadSmokeTest && !stage9Benchmark);
     Camera   camera;
     Renderer renderer;
 
@@ -119,7 +151,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     // 않도록 낮은 표본 수를 적용한다. 일반 사용자 실행에는 영향을 주지 않는다.
     if (smokeTest || stage1SmokeTest || stage2SmokeTest || stage3SmokeTest ||
         stage4SmokeTest || stage5SmokeTest || stage6SmokeTest || stage7SmokeTest ||
-        stage8SmokeTest ||
+        stage8SmokeTest || stage9SmokeTest ||
         performanceOverlaySmokeTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest)
     {
@@ -130,6 +162,114 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     // 입력/리사이즈 연결
     window.SetCamera(&camera);
     window.SetRenderer(&renderer);
+
+    if (stage9Benchmark)
+    {
+        renderer.SetNoiseLabVisible(false);
+        renderer.EnableNoiseLabPreviews(false);
+        renderer.EnableFrameHashCapture(false);
+        renderer.SetVSyncEnabled(false);
+        renderer.SetDebugMode(CloudDebugMode::Composite);
+        renderer.SetViewSamplingForSmoke(128u, 0.1f);
+        renderer.SetLightSampling(16u, 0.25f);
+        renderer.ApplyStage4DetailPreset(Stage4DetailPreset::DefaultDetail);
+        renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
+        renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Balanced);
+        renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+
+        const std::wstring optimizationOption = CommandOption(commandLine, L"--optimization");
+        Stage9OptimizationPreset benchmarkPreset = Stage9OptimizationPreset::Balanced;
+        const char* benchmarkPresetName = "Balanced";
+        if (optimizationOption == L"off")
+        {
+            benchmarkPreset = Stage9OptimizationPreset::Off;
+            benchmarkPresetName = "Off";
+        }
+        else if (optimizationOption == L"early-exit")
+        {
+            benchmarkPreset = Stage9OptimizationPreset::EarlyExitOnly;
+            benchmarkPresetName = "EarlyExitOnly";
+        }
+        else if (optimizationOption == L"empty-space")
+        {
+            benchmarkPreset = Stage9OptimizationPreset::EmptySpaceOnly;
+            benchmarkPresetName = "EmptySpaceOnly";
+        }
+        renderer.ApplyStage9OptimizationPreset(benchmarkPreset);
+
+        std::filesystem::path outputRoot = CommandOption(commandLine, L"--output");
+        if (outputRoot.empty()) outputRoot = L"captures/performance/stage9/current";
+        std::error_code directoryError;
+        std::filesystem::create_directories(outputRoot, directoryError);
+        if (directoryError) return 20;
+        std::ofstream raw(outputRoot / L"raw.csv", std::ios::trunc);
+        raw << "scenario,repeat,sample,gpu_cloud_ms,gpu_frame_ms,cpu_frame_ms\n";
+        std::ostringstream summary;
+        summary << std::fixed << std::setprecision(6)
+                << "{\n  \"schemaVersion\": 1,\n  \"optimization\": \""
+                << benchmarkPresetName << "\",\n  \"scenarios\": [\n";
+
+        struct Scenario { const char* name; Stage5WeatherPreset weather; Stage2NoisePreset noise; bool inside; };
+        const Scenario scenarios[] = {
+            {"DenseExterior", Stage5WeatherPreset::UniformLegacy, Stage2NoisePreset::DenseCoverage, false},
+            {"SparseExterior", Stage5WeatherPreset::PeriodicPerlin, Stage2NoisePreset::SparseCoverage, false},
+            {"DepthOccluded", Stage5WeatherPreset::ChannelDebug, Stage2NoisePreset::DefaultNoise, false},
+            {"InsideVolume", Stage5WeatherPreset::UniformLegacy, Stage2NoisePreset::DenseCoverage, true}};
+        const std::wstring selectedScenario = CommandOption(commandLine, L"--scenario");
+        bool firstScenario = true;
+        for (const Scenario& scenario : scenarios)
+        {
+            std::wstring wideScenarioName;
+            for (const char* character = scenario.name; *character; ++character)
+                wideScenarioName.push_back(static_cast<wchar_t>(*character));
+            if (!selectedScenario.empty() && selectedScenario != L"all" &&
+                wideScenarioName != selectedScenario)
+                continue;
+            renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
+            renderer.ApplyStage5WeatherPreset(scenario.weather);
+            renderer.ApplyStage2NoisePreset(scenario.noise);
+            camera.SetOrbit(scenario.inside ? 0.0f : 0.55f,
+                            scenario.inside ? 0.0f : 0.30f,
+                            scenario.inside ? 1.5f : 12.0f,
+                            scenario.inside ? DirectX::XMFLOAT3{0,0,-1.5f} : DirectX::XMFLOAT3{0,-0.2f,0});
+
+            std::vector<double> allCloud;
+            std::vector<double> allFrame;
+            for (int repeat = 0; repeat < 3; ++repeat)
+            {
+                const auto warmupStart = std::chrono::steady_clock::now();
+                int warmupFrames = 0;
+                while (warmupFrames < 120 || std::chrono::steady_clock::now() - warmupStart < std::chrono::seconds(2))
+                { renderer.Render(camera, 0.0f); ++warmupFrames; }
+                std::uint64_t lastSample = renderer.TimingSnapshot().gpuSampleIndex;
+                int collected = 0;
+                while (collected < 300)
+                {
+                    renderer.Render(camera, 0.0f);
+                    const auto timing = renderer.TimingSnapshot();
+                    if (!timing.gpuValid || timing.gpuSampleIndex == lastSample) continue;
+                    lastSample = timing.gpuSampleIndex;
+                    raw << scenario.name << ',' << repeat << ',' << collected << ','
+                        << timing.rawGpuCloudMs << ',' << timing.rawGpuFrameMs << ','
+                        << timing.rawCpuFrameMs << '\n';
+                    allCloud.push_back(timing.rawGpuCloudMs);
+                    allFrame.push_back(timing.rawGpuFrameMs);
+                    ++collected;
+                }
+            }
+            const auto cloud = stage9::ComputeStatistics(allCloud);
+            const auto frame = stage9::ComputeStatistics(allFrame);
+            if (!firstScenario) summary << ",\n";
+            firstScenario = false;
+            summary << "    {\"name\":\"" << scenario.name << "\",\"samples\":" << cloud.validSamples
+                    << ",\"gpuCloud\":{\"min\":" << cloud.minimum << ",\"mean\":" << cloud.mean
+                    << ",\"p50\":" << cloud.p50 << ",\"p95\":" << cloud.p95 << ",\"max\":" << cloud.maximum
+                    << ",\"stddev\":" << cloud.standardDeviation << "},\"gpuFrameP95\":" << frame.p95 << "}";
+        }
+        summary << "\n  ]\n}\n";
+        if (!raw.good() || !WriteTextFile(outputRoot / L"summary.json", summary.str())) return 21;
+        return renderer.HasDebugLayerErrors() ? 22 : 0;
+    }
 
     if (smokeTest)
     {
@@ -488,6 +628,59 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         }
         if (!foundSchema8)
             return 8;
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
+    if (stage9SmokeTest)
+    {
+        renderer.SetNoiseLabVisible(false);
+        renderer.EnableNoiseLabPreviews(false);
+        renderer.EnableFrameHashCapture(true);
+        renderer.SetDebugMode(CloudDebugMode::Composite);
+        renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
+        renderer.ApplyStage5WeatherPreset(Stage5WeatherPreset::PeriodicPerlin);
+        renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Off);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t legacyHash = renderer.LastCloudFrameHash();
+
+        renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t optimizedHash = renderer.LastCloudFrameHash();
+        if (legacyHash == 0 || optimizedHash == 0 ||
+            sizeof(OptimizationParameters) != 32u)
+            return 3;
+
+        const CloudDebugMode diagnosticModes[] = {
+            CloudDebugMode::ExecutedViewSteps,
+            CloudDebugMode::CoarseSkippedRatio,
+            CloudDebugMode::EarlyExitSavings,
+            CloudDebugMode::SupportPrecheckMask,
+            CloudDebugMode::MarchStateTransitions };
+        for (CloudDebugMode mode : diagnosticModes)
+        {
+            renderer.SetDebugMode(mode);
+            renderer.Render(camera, 0.0f);
+            if (renderer.LastCloudFrameHash() == 0)
+                return 4;
+        }
+
+        const std::filesystem::path exportRoot =
+            std::filesystem::temp_directory_path() / L"VolumetricCloudStage9Smoke";
+        if (!renderer.ExportNoiseLabSnapshot(exportRoot))
+            return 5;
+        bool foundSchema9 = false;
+        std::error_code exportError;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(exportRoot, exportError))
+        {
+            if (exportError) return 6;
+            if (entry.path().filename() != L"noise-settings.json") continue;
+            std::string metadata;
+            if (ReadTextFile(entry.path(), metadata) &&
+                metadata.find("\"schemaVersion\": 9") != std::string::npos &&
+                metadata.find("\"optimizationPreset\"") != std::string::npos)
+                foundSchema9 = true;
+        }
+        if (!foundSchema9) return 7;
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 

@@ -20,6 +20,7 @@ void FrameTimingAccumulator::RecordCpuMilliseconds(double milliseconds)
     if (!std::isfinite(milliseconds) || milliseconds <= 0.0)
         return;
     m_lastRawCpuFrameMs = milliseconds;
+    m_snapshot.rawCpuFrameMs = milliseconds;
     m_snapshot.cpuFrameMs = m_snapshot.cpuValid
         ? m_snapshot.cpuFrameMs +
               kEmaAlpha * (milliseconds - m_snapshot.cpuFrameMs)
@@ -38,6 +39,9 @@ void FrameTimingAccumulator::RecordGpuMilliseconds(double frameMilliseconds,
         return;
     m_lastRawGpuFrameMs = frameMilliseconds;
     m_lastRawGpuCloudMs = cloudMilliseconds;
+    m_snapshot.rawGpuFrameMs = frameMilliseconds;
+    m_snapshot.rawGpuCloudMs = cloudMilliseconds;
+    ++m_snapshot.gpuSampleIndex;
     if (m_snapshot.gpuValid)
     {
         m_snapshot.gpuFrameMs += kEmaAlpha *

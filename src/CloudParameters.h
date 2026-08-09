@@ -41,6 +41,11 @@ enum class CloudDebugMode : std::int32_t
     BackwardPhaseLobe = 30,
     DualPhaseFactor = 31,
     AccumulatedDirectLighting = 32,
+    ExecutedViewSteps = 38,
+    CoarseSkippedRatio = 39,
+    EarlyExitSavings = 40,
+    SupportPrecheckMask = 41,
+    MarchStateTransitions = 42,
 };
 
 enum class Stage1ValidationPreset : std::int32_t

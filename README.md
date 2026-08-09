@@ -2,7 +2,7 @@
 
 DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 다시 구축하는 학습 프로젝트입니다.
 
-현재는 **재구축 단계 8**로, 분석적 하늘·지면 환경광과 저비용 다중 산란을 검증합니다.
+현재는 **재구축 단계 9**로, 승인된 단계 8 화면을 기준으로 레이마칭의 불필요한 표본을 줄이고 원시 GPU 시간으로 비교합니다.
 
 - 평면과 두 박스로 구성된 불투명 진단 장면
 - 샘플 가능한 Scene Depth와 월드 위치 복원
@@ -41,7 +41,7 @@ cmake --build build --config Debug
 .\build\Debug\VolumetricCloud.exe
 ```
 
-## 단계 8 조작
+## 단계 9 조작
 
 | 입력 | 동작 |
 |---|---|
@@ -71,6 +71,7 @@ cmake --build build --config Debug
 | `Shift+B` / `Shift+M` | Phase cosTheta / Forward HG lobe |
 | `Shift+C` / `Shift+V` | Backward HG lobe / 최종 Dual Phase Factor |
 | `Ctrl+J` | 누적 직접광 |
+| `Ctrl+Shift+J/L/P/U/B` | 실행 View 표본 / coarse 건너뜀 / Early Exit / support 생략 / 상태 전환 |
 | `F5`~`F7` | 외부 고정 검증 카메라 |
 | `F8` | AABB 내부 카메라 |
 | `Y` / `Q` | 넓은 XZ 볼륨 / 기본 수치 검증 볼륨 |
@@ -100,6 +101,8 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-`Foundation*`부터 `Stage7*`까지는 이전 단계 회귀를 검사합니다. `Stage8AmbientMath`는 높이 가중치·AO·octave 수식을, `Stage8Smoke`는 64바이트 EnvironmentCB, 환경광 프리셋·합성 차이와 schema 8을 검사합니다. 전체 목표는 22개 테스트입니다.
+`Foundation*`부터 `Stage8*`까지는 이전 단계 회귀를 검사합니다. `Stage9OptimizationMath`는 Early Exit·원시 timing 통계·성능 합격 판정을, `Stage9Smoke`는 Legacy/Optimized PS, `OptimizationCB(b5)`, 모드 38~42와 schema 9를 검사합니다. 전체 목표는 24개 테스트입니다.
+
+공식 벤치마크는 Release 실행 파일에 `--stage9-benchmark --scenario all --optimization off|balanced --output <폴더> --shader-root <고정 셰이더 폴더>`를 전달합니다. 화면 오버레이의 EMA가 아니라 `raw.csv`의 비동기 GPU timestamp로 p50/p95를 계산합니다.
 
 자세한 구조와 단계는 [아키텍처](doc/ARCHITECTURE.md), [AABB 레이 마칭](doc/RAYMARCHING.md), [로드맵](doc/ROADMAP.md)을 참고하세요.

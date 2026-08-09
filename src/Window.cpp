@@ -75,7 +75,13 @@ void Window::UpdateDebugTitle()
         L"Shift+P Total Light Samples", L"Shift+U Direct Single Scattering",
         L"Shift+B Phase CosTheta", L"Shift+M Forward Phase",
         L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor",
-        L"Ctrl+J Accumulated Direct"
+        L"Ctrl+J Accumulated Direct",
+        L"예약 33", L"예약 34", L"예약 35", L"예약 36", L"예약 37",
+        L"Ctrl+Shift+J Executed View Steps",
+        L"Ctrl+Shift+L Coarse Skipped Ratio",
+        L"Ctrl+Shift+P Early Exit Savings",
+        L"Ctrl+Shift+U Support Precheck",
+        L"Ctrl+Shift+B State Transitions"
     };
     static const wchar_t* presetNames[] = {
         L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
@@ -104,6 +110,10 @@ void Window::UpdateDebugTitle()
         L"Environment Off", L"Balanced Ambient", L"Strong Fill",
         L"Ground Check", L"Custom Environment"
     };
+    static const wchar_t* optimizationPresetNames[] = {
+        L"Optimization Off", L"Early Exit Only", L"Empty Space Only",
+        L"Balanced Optimization", L"Custom Optimization"
+    };
 
     const int debugIndex = static_cast<int>(m_renderer->DebugMode());
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
@@ -114,9 +124,11 @@ void Window::UpdateDebugTitle()
     const int phasePresetIndex = static_cast<int>(m_renderer->PhasePreset());
     const int environmentPresetIndex =
         static_cast<int>(m_renderer->EnvironmentPreset());
+    const int optimizationPresetIndex =
+        static_cast<int>(m_renderer->OptimizationPreset());
     wchar_t title[640] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 8 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 32) ? debugIndex : 0],
+    swprintf_s(title, L"VolumetricCloud - Stage 9 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 42) ? debugIndex : 0],
                presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
                detailPresetNames[(detailPresetIndex >= 0 && detailPresetIndex <= 4) ? detailPresetIndex : 1],
@@ -124,6 +136,7 @@ void Window::UpdateDebugTitle()
                sunPresetNames[(sunPresetIndex >= 0 && sunPresetIndex <= 3) ? sunPresetIndex : 3],
                phasePresetNames[(phasePresetIndex >= 0 && phasePresetIndex <= 4) ? phasePresetIndex : 0],
                environmentPresetNames[(environmentPresetIndex >= 0 && environmentPresetIndex <= 4) ? environmentPresetIndex : 1],
+               optimizationPresetNames[(optimizationPresetIndex >= 0 && optimizationPresetIndex <= 4) ? optimizationPresetIndex : 3],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
 }
@@ -150,6 +163,27 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // 단계 9 비용 진단은 Ctrl+Shift 조합을 먼저 처리해 기존 Ctrl+J와 Shift 조명을 보존한다.
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
+        (wParam == 'J' || wParam == 'L' || wParam == 'P' ||
+         wParam == 'U' || wParam == 'B'))
+    {
+        if (wParam == 'J')
+            m_renderer->SetDebugMode(CloudDebugMode::ExecutedViewSteps);
+        else if (wParam == 'L')
+            m_renderer->SetDebugMode(CloudDebugMode::CoarseSkippedRatio);
+        else if (wParam == 'P')
+            m_renderer->SetDebugMode(CloudDebugMode::EarlyExitSavings);
+        else if (wParam == 'U')
+            m_renderer->SetDebugMode(CloudDebugMode::SupportPrecheckMask);
+        else
+            m_renderer->SetDebugMode(CloudDebugMode::MarchStateTransitions);
+        UpdateDebugTitle();
+        return 0;
+    }
+
     // 대표 위치가 아닌 View Ray 전체의 직접광 누적값은 Ctrl+J로 확인한다.
     if (msg == WM_KEYDOWN && m_renderer &&
         (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&

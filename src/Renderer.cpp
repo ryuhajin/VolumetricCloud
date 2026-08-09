@@ -4,6 +4,7 @@
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -218,6 +219,9 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
 #ifdef _DEBUG
     compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+    // 성능 비교용 Release는 드라이버에 넘기기 전 HLSL 컴파일러의 최고 최적화를 고정한다.
+    compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
 
     ComPtr<ID3DBlob> errors;
@@ -242,12 +246,14 @@ bool Renderer::CreateShaders(bool showErrors)
 {
     m_shaderError.clear();
     ComPtr<ID3DBlob> fullscreenVsBlob;
-    ComPtr<ID3DBlob> cloudPsBlob;
+    ComPtr<ID3DBlob> cloudLegacyPsBlob;
+    ComPtr<ID3DBlob> cloudOptimizedPsBlob;
     ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
     if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudShaderPath, "main", "ps_5_0", cloudPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainLegacy", "ps_5_0", cloudLegacyPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors) ||
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors))
@@ -257,7 +263,8 @@ bool Renderer::CreateShaders(bool showErrors)
     }
 
     ComPtr<ID3D11VertexShader> fullscreenVs;
-    ComPtr<ID3D11PixelShader> cloudPs;
+    ComPtr<ID3D11PixelShader> cloudLegacyPs;
+    ComPtr<ID3D11PixelShader> cloudOptimizedPs;
     ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
@@ -267,8 +274,11 @@ bool Renderer::CreateShaders(bool showErrors)
             fullscreenVsBlob->GetBufferPointer(), fullscreenVsBlob->GetBufferSize(),
             nullptr, &fullscreenVs)) ||
         FAILED(m_device->CreatePixelShader(
-            cloudPsBlob->GetBufferPointer(), cloudPsBlob->GetBufferSize(),
-            nullptr, &cloudPs)) ||
+            cloudLegacyPsBlob->GetBufferPointer(), cloudLegacyPsBlob->GetBufferSize(),
+            nullptr, &cloudLegacyPs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudOptimizedPsBlob->GetBufferPointer(), cloudOptimizedPsBlob->GetBufferSize(),
+            nullptr, &cloudOptimizedPs)) ||
         FAILED(m_device->CreatePixelShader(
             noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
             nullptr, &noiseLabPs)) ||
@@ -301,7 +311,8 @@ bool Renderer::CreateShaders(bool showErrors)
     }
 
     m_fullscreenVs = fullscreenVs;
-    m_cloudPs = cloudPs;
+    m_cloudLegacyPs = cloudLegacyPs;
+    m_cloudOptimizedPs = cloudOptimizedPs;
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
@@ -484,6 +495,7 @@ bool Renderer::CreateConstantBuffers()
            createDynamicBuffer(sizeof(CloudParameters), &m_cloudCb) &&
            createDynamicBuffer(sizeof(LightParameters), &m_lightCb) &&
            createDynamicBuffer(sizeof(EnvironmentParameters), &m_environmentCb) &&
+           createDynamicBuffer(sizeof(OptimizationParameters), &m_optimizationCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -586,6 +598,19 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
                     sizeof(m_environmentParameters));
         m_context->Unmap(m_environmentCb.Get(), 0);
     }
+    m_cloudParameters.transmittanceThreshold = std::clamp(
+        std::isfinite(m_cloudParameters.transmittanceThreshold)
+            ? m_cloudParameters.transmittanceThreshold : 0.01f,
+        0.0f, 0.1f);
+    m_optimizationParameters = stage9optimization::Sanitize(
+        m_optimizationParameters);
+    if (SUCCEEDED(m_context->Map(
+            m_optimizationCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_optimizationParameters,
+                    sizeof(m_optimizationParameters));
+        m_context->Unmap(m_optimizationCb.Get(), 0);
+    }
 
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     m_context->OMSetRenderTargets(1, m_backBufferRtv.GetAddressOf(), nullptr);
@@ -596,13 +621,20 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
     m_context->IASetInputLayout(nullptr);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    m_context->PSSetShader(m_cloudPs.Get(), nullptr, 0);
+    const bool useOptimizedShader =
+        m_cloudParameters.debugMode == static_cast<std::int32_t>(CloudDebugMode::Composite) &&
+        m_optimizationPreset != Stage9OptimizationPreset::Off;
+    m_context->PSSetShader(
+        useOptimizedShader ? m_cloudOptimizedPs.Get() : m_cloudLegacyPs.Get(),
+        nullptr, 0);
     ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
     ID3D11Buffer* lightBuffer = m_lightCb.Get();
     m_context->PSSetConstantBuffers(3, 1, &lightBuffer);
     ID3D11Buffer* environmentBuffer = m_environmentCb.Get();
     m_context->PSSetConstantBuffers(4, 1, &environmentBuffer);
+    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
+    m_context->PSSetConstantBuffers(5, 1, &optimizationBuffer);
     ID3D11ShaderResourceView* resources[3] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get()
     };
@@ -630,8 +662,9 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     // 0으로 바꾼 검증에서 F10 Detail 프리셋 이름이 사라지면 안 된다.
     const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
     m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
-                          m_lightParameters, m_sunPreset, m_phasePreset,
-                          m_environmentParameters, m_environmentPreset,
+                           m_lightParameters, m_sunPreset, m_phasePreset,
+                           m_environmentParameters, m_environmentPreset,
+                           m_optimizationParameters, m_optimizationPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_frameProfiler.Snapshot(), m_vsyncEnabled,
@@ -692,8 +725,10 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
                                   m_lightParameters,
                                   m_sunPreset,
                                   m_phasePreset,
-                                  m_environmentParameters,
-                                  m_environmentPreset,
+                                   m_environmentParameters,
+                                   m_environmentPreset,
+                                   m_optimizationParameters,
+                                   m_optimizationPreset,
                                   m_detailPreset,
                                   m_weatherPreset,
                                   m_weatherGeneratorSettings,
@@ -924,6 +959,19 @@ void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
     m_environmentPreset = preset;
 }
 
+void Renderer::ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset)
+{
+    if (preset == Stage9OptimizationPreset::Custom)
+    {
+        m_optimizationParameters = stage9optimization::Sanitize(
+            m_optimizationParameters);
+        m_optimizationPreset = preset;
+        return;
+    }
+    stage9optimization::ApplyPreset(m_optimizationParameters, preset);
+    m_optimizationPreset = preset;
+}
+
 void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
 {
     m_lightParameters.maxLightSteps = maxSteps;
@@ -1053,6 +1101,7 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
     return m_noiseLab.ExportSnapshot(
         root, m_cloudParameters, m_lightParameters, m_sunPreset, m_phasePreset,
         m_environmentParameters, m_environmentPreset,
+        m_optimizationParameters, m_optimizationPreset,
         m_detailPreset, m_weatherPreset,
         m_weatherGeneratorSettings, m_weatherMapHash, m_weatherMapTexture.Get(),
         std::filesystem::path(m_shaderDir) / L"Noise.hlsli");

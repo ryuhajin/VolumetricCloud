@@ -339,3 +339,11 @@ multiple += sunRadiance × energy × octaveLightT × octavePhase
 
 Off는 Sky/Ground/Multiple을 정확히 0으로 만들어 단계 7 직접광을 보존한다. 이 근사는
 실제 간접광 맵이나 IBL이 아니며 단계 14에서 대기·Cube Map 입력으로 교체할 수 있다.
+
+## 단계 9: 계산을 생략하는 레이마칭
+
+최적화 합성 경로는 `높이/Weather support → Base Noise → Detail → Light → Environment` 순서로 평가한다. support가 0이면 비싼 3D Base Noise를 호출하지 않고, Base가 비면 Detail과 Light Ray도 호출하지 않는다. Base 표본은 Detail 함수에 넘겨 같은 위치의 Base Noise를 다시 계산하지 않는다.
+
+View 투과율이 `transmittanceThreshold` 이하가 되면 남은 배경 기여가 임계값보다 작으므로 뒤쪽 View·Light·Environment 반복을 종료한다. 빈 공간에서는 `coarseStepMultiplier × fineStep`으로 Base만 탐색하고, 후보를 만나면 직전 coarse 구간으로 되돌아가 fine 적분한다. 연속된 빈 표본이 `emptySamplesBeforeCoarse`에 도달하면 다시 Search 상태로 전환한다. 마지막 간격은 항상 `tEnd`로 잘라 AABB와 Scene Depth 경계를 넘지 않는다.
+
+Light Ray 표본 수와 단계 8 다중 산란 octave 수는 품질 저하를 피하기 위해 줄이지 않는다. 저해상도 렌더·Temporal·Light Cache는 단계 10~12의 별도 결정이다.

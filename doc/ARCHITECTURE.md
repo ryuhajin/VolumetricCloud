@@ -1,6 +1,6 @@
 # 아키텍처
 
-현재는 재구축 단계 8이다. 직접광에 분석적 하늘·지면 환경광과 저비용 다중 산란을 더한다.
+현재는 재구축 단계 9이다. 단계 8 조명 결과를 유지하면서 합성 경로의 빈 표본과 불필요한 후반 적분을 줄인다.
 
 ## 모듈과 책임
 
@@ -113,6 +113,14 @@ EnvironmentCB는 `b4`에 바인딩하며 외부 SRV나 sampler를 추가하지 �
 프리셋은 환경광을 켜고 Off는 Sky/Ground/Multiple을 0으로 만들어 단계 7 결과를 보존한다.
 Cube Map이나 실제 대기 입력은 단계 14에서 `skyColor` 평가만 교체할 수 있다.
 
+### `OptimizationParameters` / `OptimizationCB` (`b5`, 32바이트)
+
+| 16바이트 묶음 | CPU/HLSL 필드 |
+|---|---|
+| 0 | `earlyExitEnabled`, `supportPrecheckEnabled`, `emptySpaceSkippingEnabled`, `emptySamplesBeforeCoarse` |
+| 1 | `baseDensityEpsilon`, `coarseStepMultiplier`, padding 2개 |
+
+`b5`는 렌더 품질 파라미터와 분리된 실행 정책이다. 합성 모드 0과 Optimization On은 `mainOptimized`, Off 또는 진단 모드는 `mainLegacy`를 사용한다. 두 PS는 핫 리로드 시 모두 컴파일·생성된 경우에만 함께 교체된다. Release 런타임 컴파일은 O3, Debug는 Od를 사용한다.
 ### Weather Map 리소스
 
 `t2`는 CPU 생성 `DXGI_FORMAT_R8G8B8A8_UNORM` 256² Weather Map이고 `s1`은

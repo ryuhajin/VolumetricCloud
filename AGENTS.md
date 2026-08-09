@@ -50,6 +50,8 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
 | 조명 기준 | `src/Stage6LightMath.h` | 단계 6 CPU 회귀 검사용 광학 깊이·단일 산란 |
 | Phase 기준 | `src/Stage7PhaseMath.h` | 단계 7 CPU 회귀 검사용 HG·방향·Dual-lobe 수학 |
 | 환경광 기준 | `src/Stage8AmbientMath.h` | 단계 8 CPU 회귀 검사용 높이·AO·octave 수학 |
+| 최적화 설정 | `src/OptimizationParameters.h` | 32바이트 OptimizationCB, 프리셋과 안전 범위 |
+| 최적화 기준 | `src/Stage9OptimizationMath.h` | Early Exit·원시 timing 통계·성능 합격 판정 |
 
 ## 반드시 지킬 규칙
 

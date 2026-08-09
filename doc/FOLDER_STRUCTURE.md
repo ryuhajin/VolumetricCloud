@@ -22,8 +22,10 @@ VolumetricCloud/
 │  ├─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
 │  ├─ LightParameters.h            # CPU/HLSL 공유 태양광 설정과 프리셋
 │  ├─ EnvironmentParameters.h      # CPU/HLSL 공유 환경광·다중 산란 설정
+│  ├─ OptimizationParameters.h     # CPU/HLSL 공유 단계 9 실행 정책
 │  ├─ Stage7PhaseMath.h            # HG·방향 부호·Dual-lobe CPU 기준
 │  ├─ Stage8AmbientMath.h          # 높이·AO·octave CPU 기준
+│  ├─ Stage9OptimizationMath.h     # Early Exit·timing 통계·합격 판정 기준
 │  ├─ FrameProfiler.*              # CPU 시간·8-slot 비동기 GPU timestamp 계측
 │  ├─ Stage1VolumeMath.h           # AABB·상수 밀도 CPU 테스트 기준
 │  ├─ Stage2NoiseMath.h            # value noise·coverage CPU 테스트 기준
@@ -34,7 +36,7 @@ VolumetricCloud/
 ├─ shaders/
 │  ├─ DiagnosticScene.hlsl         # 불투명 평면·박스
 │  ├─ Fullscreen.hlsl              # SV_VertexID 풀스크린 삼각형
-│  ├─ VolumetricClouds.hlsl        # 단계 8 직접·환경·다중 산란 적분·합성 패스
+│  ├─ VolumetricClouds.hlsl        # 단계 9 Legacy/Optimized 적분·합성 패스
 │  ├─ NoiseLab.hlsl                # XY/XZ/YZ 고정 단면 픽셀 셰이더
 │  ├─ CloudParameters.hlsli        # CPU와 공유하는 128바이트 CloudCB
 │  ├─ Noise.hlsli                  # 구름과 Lab 공용 Base/Detail density 라이브러리
@@ -43,6 +45,7 @@ VolumetricCloud/
 │  ├─ CloudLighting.hlsli          # 태양 광학 깊이·직접 단일 산란
 │  ├─ PhaseFunction.hlsli          # 전방·후방 HG와 Phase Factor
 │  ├─ EnvironmentParameters.hlsli  # CPU와 공유하는 64바이트 EnvironmentCB(b4)
+│  ├─ OptimizationParameters.hlsli # CPU와 공유하는 32바이트 OptimizationCB(b5)
 │  ├─ CloudEnvironment.hlsli       # 하늘·지면·AO·다중 산란 근사
 │  └─ Ray.hlsli                    # 안전한 AABB 교차
 ├─ tests/
@@ -55,10 +58,15 @@ VolumetricCloud/
 │  ├─ Stage6LightMathTests.cpp     # 태양 투과율·단일 산란 회귀 테스트
 │  ├─ FrameProfilerMathTests.cpp   # EMA·FPS·입력 검증 회귀 테스트
 │  ├─ Stage7PhaseMathTests.cpp     # 방향·HG·프리셋·안정성 회귀 테스트
-│  └─ Stage8AmbientMathTests.cpp   # 환경광·AO·octave 회귀 테스트
+│  ├─ Stage8AmbientMathTests.cpp   # 환경광·AO·octave 회귀 테스트
+│  └─ Stage9OptimizationMathTests.cpp # 최적화·통계·합격 판정 회귀 테스트
+├─ tools/
+│  ├─ Run-Stage9Benchmark.ps1       # 두 GUI 벤치마크를 겹치지 않게 순차 실행
+│  └─ Compare-Stage9Performance.ps1 # 두 summary의 p50/p95 비교 보고서
 ├─ notes/                           # 로컬 단계 학습·사용자 검증 문서와 개인 메모, Git 제외
 ├─ third_party/imgui/              # Win32/DX11 개발 UI submodule
 ├─ captures/noise-lab/             # 로컬 PNG/JSON 출력, Git 제외
+├─ captures/performance/           # Stage 8 기준본과 Stage 9 raw/summary, Git 제외
 └─ build/                          # CMake 산출물, Git 제외
 ```
 

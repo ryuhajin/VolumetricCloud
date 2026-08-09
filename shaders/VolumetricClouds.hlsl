@@ -287,9 +287,158 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
     return result;
 }
 
+// 최종 합성 전용 경로가 반환하는 최소 통계다. 기존 CloudMarchDebug처럼 모든 중간
+// 물리값을 들고 있지 않아 일반 화면에서 레지스터 압력을 줄인다.
+struct OptimizationMarchDebug
+{
+    float executedFineSteps;
+    float skippedDistanceRatio;
+    float earlyExitSavings;
+    float supportPrecheckRejects;
+    float stateTransitions;
+    float hit;
+};
+
+// 단계 9 최종 합성용 레이마칭이다.
+// Search 모드는 빈 교실 복도를 빠르게 지나가듯 Base만 큰 간격으로 확인하고,
+// 구름 후보를 찾으면 한 coarse 구간을 되돌아가 Full 모드에서 정밀 적분한다.
+void RaymarchCloudOptimized(
+    float3 rayOrigin, float3 rayDirection, float sceneDistance,
+    out CloudResult output,
+    out OptimizationMarchDebug optimizationDebug)
+{
+    output.scattering = 0.0.xxx;
+    output.transmittance = 1.0;
+    output.representativeDepth = sceneDistance;
+    optimizationDebug.executedFineSteps = 0.0;
+    optimizationDebug.skippedDistanceRatio = 0.0;
+    optimizationDebug.earlyExitSavings = 0.0;
+    optimizationDebug.supportPrecheckRejects = 0.0;
+    optimizationDebug.stateTransitions = 0.0;
+    optimizationDebug.hit = 0.0;
+
+    float tStart = 0.0;
+    float tEnd = 0.0;
+    if (!IntersectCloudVolume(
+            rayOrigin, rayDirection, sceneDistance, tStart, tEnd))
+        return;
+
+    optimizationDebug.hit = 1.0;
+    float segmentLength = tEnd - tStart;
+    uint safeMaxSteps = max(maxViewSteps, 1u);
+    float targetFineStep = max(stepSize, 1e-4);
+    // maxViewSteps에 걸렸을 때도 전체 구간을 반드시 덮도록 fine 간격을 키운다.
+    float fineStep = max(targetFineStep, segmentLength / (float)safeMaxSteps);
+    float safeCoarseMultiplier = clamp(coarseStepMultiplier, 1.0, 8.0);
+    float coarseStep = fineStep * safeCoarseMultiplier;
+    float safeDensityEpsilon = clamp(baseDensityEpsilon, 0.0, 0.05);
+    uint safeEmptyLimit = clamp(emptySamplesBeforeCoarse, 1u, 8u);
+    float safeThreshold = clamp(transmittanceThreshold, 0.0, 0.1);
+    float extinction = max(extinctionCoefficient, 0.0);
+
+    PhaseSample phase = EvaluateDualLobePhase(rayDirection, directionToSun);
+    bool searchMode = emptySpaceSkippingEnabled != 0u;
+    uint consecutiveEmpty = 0u;
+    float distance = tStart;
+    float lastIntegratedDistance = tStart;
+    uint iteration = 0u;
+    uint maxIterations = safeMaxSteps * 3u + 16u;
+
+    [loop]
+    while (distance < tEnd && iteration < maxIterations)
+    {
+        ++iteration;
+        if (searchMode)
+        {
+            float searchLength = min(coarseStep, tEnd - distance);
+            float probeDistance = distance + searchLength * 0.5;
+            float3 probePosition = rayOrigin + rayDirection * probeDistance;
+            CloudDensitySample baseProbe = MakeEmptyCloudDensitySample();
+            if (supportPrecheckEnabled != 0u)
+                EvaluateBaseCloudDensityFast(probePosition, time, baseProbe);
+            else
+                baseProbe = EvaluateBaseCloudDensity(probePosition, time);
+            optimizationDebug.supportPrecheckRejects += baseProbe.supportRejected;
+
+            if (baseProbe.baseDensity <= safeDensityEpsilon)
+            {
+                optimizationDebug.skippedDistanceRatio += searchLength;
+                distance += searchLength;
+                continue;
+            }
+
+            // 후보를 찾으면 방금 건너뛴 구간의 시작으로 돌아가 얇은 경계를 다시 확인한다.
+            float rewind = max(tStart, distance - coarseStep);
+            distance = max(lastIntegratedDistance, rewind);
+            searchMode = false;
+            consecutiveEmpty = 0u;
+            optimizationDebug.stateTransitions += 1.0;
+            continue;
+        }
+
+        float viewStepLength = min(fineStep, tEnd - distance);
+        float sampleDistance = distance + viewStepLength * 0.5;
+        float3 samplePosition = rayOrigin + rayDirection * sampleDistance;
+        CloudDensitySample baseSample = MakeEmptyCloudDensitySample();
+        if (supportPrecheckEnabled != 0u)
+            EvaluateBaseCloudDensityFast(samplePosition, time, baseSample);
+        else
+            baseSample = EvaluateBaseCloudDensity(samplePosition, time);
+        optimizationDebug.supportPrecheckRejects += baseSample.supportRejected;
+        CloudDensitySample densitySample = ApplyDetailErosion(
+            baseSample, samplePosition, time);
+        float density = densitySample.finalDensity;
+
+        if (density > 0.0)
+        {
+            LightMarchResult light = ComputeLightTransmittance(
+                samplePosition, directionToSun);
+            EnvironmentLightingSample lighting = EvaluateEnvironmentLighting(
+                densitySample, light, phase, output.transmittance,
+                viewStepLength);
+            output.scattering += lighting.direct + lighting.skyAmbient +
+                                 lighting.groundBounce +
+                                 lighting.multipleScattering;
+        }
+
+        float stepTransmittance = exp(
+            -density * extinction * viewStepLength);
+        output.transmittance *= stepTransmittance;
+        optimizationDebug.executedFineSteps += 1.0;
+        distance += viewStepLength;
+        lastIntegratedDistance = distance;
+
+        if (baseSample.baseDensity <= safeDensityEpsilon)
+            ++consecutiveEmpty;
+        else
+            consecutiveEmpty = 0u;
+
+        if (earlyExitEnabled != 0u && safeThreshold > 0.0 &&
+            output.transmittance <= safeThreshold)
+        {
+            float remainingSteps = ceil(max(tEnd - distance, 0.0) / fineStep);
+            optimizationDebug.earlyExitSavings = remainingSteps;
+            break;
+        }
+
+        if (emptySpaceSkippingEnabled != 0u &&
+            consecutiveEmpty >= safeEmptyLimit && distance < tEnd)
+        {
+            searchMode = true;
+            consecutiveEmpty = 0u;
+            optimizationDebug.stateTransitions += 1.0;
+        }
+    }
+
+    output.transmittance = saturate(output.transmittance);
+    output.representativeDepth = (tStart + tEnd) * 0.5;
+    optimizationDebug.skippedDistanceRatio = saturate(
+        optimizationDebug.skippedDistanceRatio / max(segmentLength, 1e-5));
+}
+
 // 최종 풀스크린 픽셀 셰이더.
 // UV → 레이 → 깊이 → 교차 → 레이 마칭 → 디버그 → 합성 순서를 한곳에서 보여 준다.
-float4 main(VSOut input) : SV_TARGET
+float4 mainLegacy(VSOut input) : SV_TARGET
 {
     // 1. UV를 유효 범위로 제한하고 같은 픽셀의 Scene Depth를 읽는다.
     float2 uv = saturate(input.uv);
@@ -311,6 +460,23 @@ float4 main(VSOut input) : SV_TARGET
     CloudMarchDebug marchDebug;
     CloudResult cloud = RaymarchCloud(
         cameraPos, rayDirection, sceneDistance, marchDebug);
+    OptimizationMarchDebug optimizationDebug;
+    if (debugMode >= 38 && debugMode <= 42)
+    {
+        CloudResult ignoredCloud;
+        RaymarchCloudOptimized(
+            cameraPos, rayDirection, sceneDistance,
+            ignoredCloud, optimizationDebug);
+    }
+    else
+    {
+        optimizationDebug.executedFineSteps = 0.0;
+        optimizationDebug.skippedDistanceRatio = 0.0;
+        optimizationDebug.earlyExitSavings = 0.0;
+        optimizationDebug.supportPrecheckRejects = 0.0;
+        optimizationDebug.stateTransitions = 0.0;
+        optimizationDebug.hit = 0.0;
+    }
 
     // 5. 단계 0 디버그 1~4는 그대로 유지한다.
     if (debugMode == 1)
@@ -421,6 +587,32 @@ float4 main(VSOut input) : SV_TARGET
             (1.0.xxx + max(component, 0.0.xxx));
         return float4(mapped * marchDebug.hit, 1.0);
     }
+    if (debugMode == 38)
+    {
+        float value = sqrt(saturate(
+            optimizationDebug.executedFineSteps / max((float)maxViewSteps, 1.0)));
+        return float4(value * float3(0.0, 0.9, 0.8) * optimizationDebug.hit, 1.0);
+    }
+    if (debugMode == 39)
+        return float4((optimizationDebug.skippedDistanceRatio *
+                       optimizationDebug.hit).xxx, 1.0);
+    if (debugMode == 40)
+    {
+        float value = sqrt(saturate(
+            optimizationDebug.earlyExitSavings / max((float)maxViewSteps, 1.0)));
+        return float4(value * float3(1.0, 0.75, 0.08) * optimizationDebug.hit, 1.0);
+    }
+    if (debugMode == 41)
+    {
+        float value = saturate(optimizationDebug.supportPrecheckRejects /
+                               max((float)maxViewSteps, 1.0));
+        return float4(value * float3(0.15, 0.55, 1.0) * optimizationDebug.hit, 1.0);
+    }
+    if (debugMode == 42)
+    {
+        float value = saturate(optimizationDebug.stateTransitions / 8.0);
+        return float4(value * float3(0.85, 0.2, 1.0) * optimizationDebug.hit, 1.0);
+    }
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
@@ -428,4 +620,30 @@ float4 main(VSOut input) : SV_TARGET
         : SkyColor(rayDirection);
     float3 composite = cloud.scattering + background * cloud.transmittance;
     return float4(composite, 1.0);
+}
+
+// 최종 합성 모드 0 전용 엔트리 포인트다. 디버그 대표 표본과 CloudMarchDebug를
+// 만들지 않아 일반 실행에서 불필요한 분기와 레지스터 생존 범위를 제거한다.
+float4 mainOptimized(VSOut input) : SV_TARGET
+{
+    float2 uv = saturate(input.uv);
+    float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
+    bool hasGeometry = deviceDepth < 0.999999;
+    float3 rayDirection = ReconstructWorldRay(uv);
+    float3 worldPosition = hasGeometry
+        ? ReconstructWorldPosition(uv, deviceDepth)
+        : cameraPos + rayDirection * farPlane;
+    float sceneDistance = hasGeometry
+        ? length(worldPosition - cameraPos)
+        : farPlane;
+
+    OptimizationMarchDebug ignoredDebug;
+    CloudResult marched;
+    RaymarchCloudOptimized(
+        cameraPos, rayDirection, sceneDistance, marched, ignoredDebug);
+    float3 background = hasGeometry
+        ? sceneColorTexture.SampleLevel(pointClampSampler, uv, 0).rgb
+        : SkyColor(rayDirection);
+    return float4(marched.scattering +
+                  background * marched.transmittance, 1.0);
 }
