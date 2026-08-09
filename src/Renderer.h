@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 5 Weather Map/Cloud Type 렌더링
+//  Renderer.h - Direct3D 11 단계 7 방향성 단일 산란 렌더링
 // ============================================================================
 #pragma once
 
@@ -15,6 +15,8 @@
 #include <string>
 
 #include "CloudParameters.h"
+#include "FrameProfiler.h"
+#include "LightParameters.h"
 #include "NoiseLab.h"
 #include "WeatherMap.h"
 
@@ -46,6 +48,13 @@ public:
     bool ApplyWeatherGeneratorSettings(
         const WeatherMapGeneratorSettings& settings);
     Stage5WeatherPreset WeatherPreset() const { return m_weatherPreset; }
+    void ApplyStage6SunPreset(Stage6SunPreset preset);
+    void ApplyStage7PhasePreset(Stage7PhasePreset preset);
+    void SetLightSampling(std::uint32_t maxSteps, float stepSize);
+    void SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize);
+    Stage6SunPreset SunPreset() const { return m_sunPreset; }
+    Stage7PhasePreset PhasePreset() const { return m_phasePreset; }
+    const LightParameters& LightSettings() const { return m_lightParameters; }
     std::uint64_t WeatherMapHash() const { return m_weatherMapHash; }
     std::uintptr_t WeatherTextureIdentity() const
     {
@@ -63,6 +72,14 @@ public:
     std::uint64_t NoiseLabPreviewHash(std::size_t targetIndex);
     std::uint64_t ShaderGeneration() const { return m_shaderGeneration; }
     void EnableFrameHashCapture(bool enabled) { m_captureFrameHashes = enabled; }
+    void EnableNoiseLabPreviews(bool enabled) { m_renderNoiseLabPreviews = enabled; }
+    void SetNoiseLabVisible(bool visible) { m_noiseLab.SetVisible(visible); }
+    void SetVSyncEnabled(bool enabled) { m_vsyncEnabled = enabled; }
+    bool VSyncEnabled() const { return m_vsyncEnabled; }
+    const FrameTimingSnapshot& TimingSnapshot() const
+    {
+        return m_frameProfiler.Snapshot();
+    }
     std::uint64_t LastCloudFrameHash() const { return m_lastCloudFrameHash; }
 
 private:
@@ -135,6 +152,7 @@ private:
 
     ComPtr<ID3D11Buffer> m_cameraCb;
     ComPtr<ID3D11Buffer> m_cloudCb;
+    ComPtr<ID3D11Buffer> m_lightCb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
@@ -148,10 +166,13 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_weatherMapSrv;
 
     CloudParameters m_cloudParameters;
+    LightParameters m_lightParameters;
     Stage1ValidationPreset m_validationPreset = Stage1ValidationPreset::WideVolume;
     Stage2NoisePreset m_noisePreset = Stage2NoisePreset::DefaultNoise;
     Stage4DetailPreset m_detailPreset = Stage4DetailPreset::DefaultDetail;
     Stage5WeatherPreset m_weatherPreset = Stage5WeatherPreset::ChannelDebug;
+    Stage6SunPreset m_sunPreset = Stage6SunPreset::Custom;
+    Stage7PhasePreset m_phasePreset = Stage7PhasePreset::Off;
     WeatherMapGeneratorSettings m_weatherGeneratorSettings;
     std::uint64_t m_weatherMapHash = 0;
     std::string m_weatherMapStatus = "Not generated";
@@ -166,6 +187,9 @@ private:
     std::string m_shaderStatus = "Not compiled";
     std::string m_shaderError;
     bool m_captureFrameHashes = false;
+    bool m_renderNoiseLabPreviews = true;
+    bool m_vsyncEnabled = true;
     std::uint64_t m_lastCloudFrameHash = 0;
+    FrameProfiler m_frameProfiler;
     NoiseLab m_noiseLab;
 };

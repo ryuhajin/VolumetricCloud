@@ -147,3 +147,47 @@
 - 단계 5는 2026-08-04 사용자 수동 체크리스트 전체와 최종 승인을 통과했다.
 - 외부 Weather PNG/편집, precipitation, fBm/Worley와 early exit는 이후 단계로 남긴다.
 - 단계 6에서는 승인된 Weather 밀도장을 입력으로 태양 방향 Light Ray와 단일 산란을 구현한다.
+- 단계 6에서 CloudCB와 분리된 48바이트 LightCB(b3), Noon/Low East/Low West
+  방향 프리셋과 Noise Lab 조명 조절·schema 6 export를 추가했다.
+- View 표본에서 태양 방향 AABB 이탈까지 Base Density만 적분해 광학 깊이와
+  Beer-Lambert 태양 투과율을 계산한다. Detail, Phase Function, 환경광은 제외한다.
+- Shift+J/L/P/U에 태양 투과율·광학 깊이·Light Sample 비용·직접 산란 진단을 추가했다.
+- 단계 6 Debug/Release 빌드, 양 구성 CTest 18/18, HLSL 5/5가 통과했다.
+  Stage6Smoke는 조명 모드·태양·Weather·Q/Y pairwise와 8/16/32 Light Step,
+  schema 6 export 및 D3D11 error/corruption 부재를 확인한다.
+- 단계 6 보조 기능으로 `FrameProfiler`의 8-slot 비동기 D3D11 timestamp query ring과
+  우측 상단 성능 오버레이를 추가했다. CPU Frame은 Present/VSync를 포함하고 GPU Frame은
+  Present를 제외하며, GPU Cloud는 구름 패스만 측정한다.
+- Noise Lab에 Performance/VSync 설정을 추가했다. 오버레이는 F1로 Noise Lab을 숨겨도
+  유지되고, VSync Off는 `Present(0, 0)`을 사용한다.
+- `FrameProfilerMath`와 `PerformanceOverlaySmoke`를 추가해 전체 CTest를 18개로 확장했다.
+  동일 조건 비교 절차는 `doc/PERFORMANCE.md`에 고정했다.
+- 2026-08-07 사용자 수동 검증에서 단계 6 조명, 디버그 출력, Light Step 비용 변화,
+  F1 독립 성능 오버레이와 VSync On/Off를 모두 확인하고 단계 6을 승인 완료했다.
+- 다음 작업은 승인된 등방성 단일 산란을 보존한 채 단계 7 Dual-lobe
+  Henyey-Greenstein Phase Function을 추가하는 것이다.
+
+## 10. 단계 7 Dual-lobe Phase Function 구현 중
+
+- `LightParameters`와 HLSL `LightCB(b3)`를 64바이트로 확장하고 Phase Enable,
+  전방/후방 `g`, lobe 혼합 비율과 적용 강도를 추가했다. 기본 프리셋은 Off라서
+  승인된 단계 6 등방성 직접 산란을 그대로 보존한다.
+- `PhaseFunction.hlsli`와 `Stage7PhaseMath.h`에 `1 / 4π`를 생략한 isotropic-relative
+  Henyey-Greenstein 기준을 구현했다. 카메라→표본과 표본→태양이 같은 방향이면
+  `cosTheta=+1`이며 전방 산란이 강해지는 부호 규칙을 CPU/HLSL에 동일하게 적용한다.
+- 후방/전방 lobe를 독립 계산한 뒤 Blend하고, Phase Intensity로 등방성 1에서 결과로
+  전환한다. 잘못된 방향과 비정상 입력은 1로 복귀하며 최종 배율은 0~16으로 제한한다.
+- Phase는 픽셀당 한 번만 평가하고 직접 산란량에만 곱한다. View/Light 투과율,
+  광학 깊이와 Light Step 수는 변경하지 않는다.
+- Noise Lab에 Off/Balanced/Silver Lining/Backscatter Check 프리셋, 파라미터 편집과
+  128개 각도 표본 곡선을 추가했다. 태양 프리셋과 Phase 프리셋 상태는 독립적이다.
+- Shift+B/M/C/V에 cosTheta, Forward/Backward HG, 최종 Phase Factor 진단을 추가하고
+  export를 schema 7로 확장했다. 기존 15개 공간 단면과 PNG 4장은 유지한다.
+- `Stage7PhaseMath`와 `Stage7Smoke`를 추가해 전체 테스트 목표를 양 구성 20/20으로
+  확장했다. 2026-08-07 Debug/Release 빌드, 양 구성 CTest 20/20, HLSL 5/5
+  `/Od /WX`와 D3D11 error/corruption 부재를 확인했다. 사용자 수동 렌더 승인을
+  기다리며 단계 7 변경은 커밋하지 않는다.
+- 2026-08-07 사용자 수동 검증에서 Phase Off 회귀, 전방·후방 lobe, 태양 방향,
+  디버그 출력, Light Ray 불변성과 schema 7을 확인하고 단계 7을 승인 완료했다.
+- 다음 작업은 외부 Cube Map 없이 분석적 하늘·지면 환경광과 기존 광학 깊이를
+  재사용하는 저비용 다중 산란 근사를 추가하는 단계 8이다.

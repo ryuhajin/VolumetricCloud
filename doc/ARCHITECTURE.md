@@ -1,6 +1,6 @@
 # 아키텍처
 
-현재는 재구축 단계 5다. CPU 생성 RGBA Weather Map으로 넓은 구름 배치·종류·밀도를 제어한다.
+현재는 재구축 단계 7이다. 태양과 카메라 방향으로 Dual-lobe HG Phase Factor를 계산한다.
 
 ## 모듈과 책임
 
@@ -10,16 +10,22 @@
 | `Renderer` | D3D11 장치, 진단 장면, 구름·Noise Lab 패스와 원자적 셰이더 핫리로드 |
 | `NoiseLab` | ImGui 조절, 세 축 512² 단면 타깃, WIC PNG와 JSON 내보내기 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
+| `LightParameters` | 64바이트 태양·Light Ray·Dual-lobe Phase 설정 |
+| `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, EMA 성능 통계 |
 | `WeatherMap` | 256² RGBA8 Uniform/2-scale Periodic Perlin/Channel Debug 픽셀 생성과 해시 |
 | `DiagnosticScene.hlsl` | 평면·박스의 불투명 색상과 장치 깊이 출력 |
 | `Ray.hlsli` | 평행축 0 나누기를 피하는 slab Ray-AABB 교차 |
 | `CloudParameters.hlsli` / `Noise.hlsli` / `Weather.hlsli` | 공유 128바이트 설정과 Base/Detail/Weather 밀도 함수 |
+| `LightParameters.hlsli` / `CloudLighting.hlsli` | 공유 64바이트 조명 설정과 Base-only Light Ray |
+| `PhaseFunction.hlsli` | 방향 부호를 고정한 전방·후방 HG와 적용 배율 |
 | `VolumetricClouds.hlsl` / `NoiseLab.hlsl` | Beer-Lambert 구름 합성 / XY·XZ·YZ 단면 출력 |
 | `Stage1VolumeMath.h` | GPU와 독립적으로 같은 경계 조건과 투과율을 검사하는 CPU 기준 구현 |
 | `Stage2NoiseMath.h` | value noise, coverage와 바람 좌표의 CPU 기준 구현 |
 | `Stage3HeightMath.h` | 정규화 높이, 상·하단 smoothstep과 밀도 결합의 CPU 기준 구현 |
 | `Stage4DetailMath.h` | Detail 좌표·바람, subtractive erosion과 샘플 생략 CPU 기준 구현 |
 | `Stage5WeatherMath.h` | Weather UV, coverage remap과 cloud type 프로파일 CPU 기준 구현 |
+| `Stage6LightMath.h` | 광학 깊이, Base 선택과 단일 산란 CPU 기준 구현 |
+| `Stage7PhaseMath.h` | HG, 방향 내적, Dual-lobe와 안전 범위 CPU 기준 구현 |
 
 ## 프레임 순서
 
@@ -30,8 +36,22 @@
 5. 각 월드 샘플을 바람이 적용된 noise UVW로 바꾸고 단일 value noise를 계산한다.
 6. 월드 XZ로 Weather Map R/G/B를 읽고 종류별 높이 cutoff로 수평 footprint를 만든 뒤 coverage·높이·밀도 배율을 적용한다.
 7. Weather Base가 있을 때만 Detail Noise로 깎는다.
-8. Noise Lab이 같은 CloudCB·Weather SRV·시간으로 15개 단면 출력을 갱신한다.
-9. ImGui가 단면과 실제 RGBA 맵을 그리고 백버퍼를 Present한다.
+8. 최종 밀도가 있는 View 표본에서 태양 방향 AABB 이탈까지 Base Density를 적분한다.
+9. 카메라→표본과 표본→태양 방향 내적으로 픽셀당 Dual-lobe Phase Factor를 한 번 계산한다.
+10. 태양·View 투과율과 Phase Factor로 직접 단일 산란을 누적한다.
+11. Noise Lab이 단면·조명·Phase UI와 성능 오버레이를 그린다.
+12. GPU Frame timestamp를 닫은 뒤 VSync 설정에 따라 `Present(1, 0)` 또는 `Present(0, 0)`을 호출한다.
+
+## 프레임 성능 계측
+
+`FrameProfiler`의 CPU 범위는 `Renderer::Render` 시작부터 `Present` 반환까지라서 VSync 대기를
+포함한다. GPU Frame 범위는 진단 장면 직전부터 ImGui draw 직후까지이며 Present는 포함하지
+않는다. GPU Cloud는 그 안의 `RenderCloudPass`만 측정한다.
+
+GPU 시간은 8개 query 슬롯을 순환하며 완료된 과거 프레임만
+`D3D11_ASYNC_GETDATA_DONOTFLUSH`로 읽는다. 준비되지 않은 query 때문에 CPU나 GPU를 기다리지
+않으며, ring이 모두 사용 중이면 해당 프레임 계측만 생략한다. 리사이즈 시 통계를 reset하고
+이전 세대 결과를 폐기한다. 자세한 비교 절차는 [PERFORMANCE.md](PERFORMANCE.md)를 따른다.
 
 ## 상수버퍼
 
@@ -48,7 +68,7 @@
 
 CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경한다.
 
-| 묶음 | 필드 | 기본값과 단계 5 역할 |
+| 묶음 | 필드 | 기본값과 현재 역할 |
 |---|---|---|
 | 0 | `cloudBoundsMin(float3)`, `densityMultiplier` | `(-8,-1,-8)m`, `1.0`; 실행 기본 넓은 경계 최소와 threshold 뒤 밀도 배율 |
 | 1 | `cloudBoundsMax(float3)`, `stepSize` | `(8,2,8)m`, `0.10m`; 실행 기본 넓은 경계 최대와 목표 간격 |
@@ -60,6 +80,21 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경�
 | 7 | `weatherMapWorldSize`, `weatherMapWindSpeed`, `weatherMapOffset(float2)` | `16m`, `0.10m/s`, `(0,0)`; Weather 반복 크기·이동·UV offset |
 
 구조체는 16바이트 묶음 여덟 개다. `transmittanceThreshold`는 단계 9 early exit 전까지 읽지 않고 `heightProfilePadding`은 GPU 정렬에만 사용한다.
+
+### `LightParameters` / `LightCB` (`b3`, 64바이트)
+
+| 묶음 | 필드 | 기본값과 역할 |
+|---|---|---|
+| 0 | `directionToSun(float3)`, `sunIntensity` | normalize `(0.45,0.80,0.35)`, `1.0`; 표본→태양 월드 방향과 세기 |
+| 1 | `sunColor(float3)`, `scatteringCoefficient` | `(1,0.95,0.85)`, `1.0`; linear RGB와 직접 산란 강도 |
+| 2 | `maxLightSteps`, `lightStepSize`, `lightRayBias`, `phaseEnabled` | `16`, `0.25m`, `0.01m`, `0`; Light 품질과 Phase Off 기본값 |
+| 3 | `forwardScatteringG`, `backwardScatteringG`, `phaseBlend`, `phaseIntensity` | `0.65`, `-0.25`, `0.80`, `0.25`; 전방·후방 HG와 적용 강도 |
+
+LightCB는 CloudCB와 분리해 `b3`에 바인딩한다. 방향은 빛의 진행 방향이 아니라
+현재 표본에서 태양으로 나가는 방향이다. CPU는 방향을 정규화하고 음수·비정상
+값을 안전 범위로 제한한다. Light Ray는 `EvaluateBaseCloudDensity`만 호출한다. Phase는
+직접 산란량에만 적용하며 Light 투과율과 광학 깊이를 바꾸지 않는다. Phase Off에서는
+최종 배율이 정확히 1이다.
 
 ### Weather Map 리소스
 
@@ -84,7 +119,7 @@ Noise Lab은 512² 단면 타깃 세 벌과 실제 Weather SRV를 사용한다. 
 R/G/B seed·주기·가중치·bias·contrast와 coverage threshold/softness, density의
 coverage influence를 편집한다. Live Update는 CPU 생성·업로드를 최대 10Hz로
 제한하고 조작이 끝난 값은 즉시 반영한다. 내보내기는 세 단면과 256²
-`weather-map.png`, 모든 생성 설정과 맵 해시를 담은 schema 5 JSON을 기록한다.
+`weather-map.png`, 모든 생성 설정·맵 해시·LightCB와 태양·Phase 프리셋을 담은 schema 7 JSON을 기록한다.
 Generator는 `Weather map`과 분리된 최상위 헤더로 기본 펼쳐지고, 그 안의 R/G/B
 채널은 각각 기본으로 접힌다. 헤더와 생성 설정은 F2/F4에서도 조작할 수 있으며,
 이때 바꾼 값은 보존되고 F3로 돌아오면 Periodic Perlin에 반영된다. 상위 헤더를
@@ -92,7 +127,7 @@ Generator는 `Weather map`과 분리된 최상위 헤더로 기본 펼쳐지고,
 처리는 표시 상태와 독립적으로 계속된다.
 
 XY/XZ/YZ 단면과 Output·Slice 조작부는 항상 표시한다. 그 아래 `Shared cloud
-parameters`, `Height profile`, `Detail erosion`, `Animation` 네 대분류는 독립적으로
+parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional light`, `Phase Function`, `Animation` 대분류는 독립적으로
 접고 펼칠 수 있고 최초에는 모두 펼쳐진다. 헤더를 접어도 CPU 시간, Slice
 애니메이션, CloudParameters와 3D preview 갱신은 중단하지 않는다.
 
@@ -122,6 +157,10 @@ parameters`, `Height profile`, `Detail erosion`, `Animation` 네 대분류는 �
 | `P` / `U` | Erosion 양 / Detail 함수 실행 마스크 |
 | `I` / `O` | Weather Coverage R / Cloud Type G |
 | `Shift+I` / `Shift+O` | Weather Threshold / Typed Height Profile |
+| `Shift+J` / `Shift+L` | Light Transmittance / Light Optical Depth |
+| `Shift+P` / `Shift+U` | Total Light Samples heatmap / Direct Single Scattering |
+| `Shift+B` / `Shift+M` | Phase cosTheta / Forward HG lobe |
+| `Shift+C` / `Shift+V` | Backward HG lobe / 최종 Dual Phase Factor |
 | `F2`~`F4` | Uniform Legacy / Periodic Perlin / Channel Debug Weather Map |
 | `F5`~`F7` / `F8` | 외부 고정 카메라 / AABB 내부 카메라 |
 | `Y` / `Q` | 실행 기본 넓은 XZ / 작은 수치 검증 AABB |
@@ -139,7 +178,8 @@ parameters`, `Height profile`, `Detail erosion`, `Animation` 네 대분류는 �
 
 ## 의도적으로 제외한 기능
 
-- 외부 Weather PNG 로딩·페인팅·precipitation, fBm/Worley, 태양광, phase function과 shadow
+- 외부 Weather PNG 로딩·페인팅·precipitation, fBm/Worley와 shadow
+- 환경광과 다중 산란, Light Ray Detail Erosion
 - `transmittanceThreshold` early exit와 adaptive stepping
 - 저해상도, temporal reconstruction, 영구 캐시와 프리셋
 

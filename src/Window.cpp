@@ -70,7 +70,11 @@ void Window::UpdateDebugTitle()
         L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW",
         L"B 높이 비율", L"M 높이 Profile", L"J Base 밀도", L"L Detail Noise",
         L"P Erosion", L"U Detail Sample", L"I Weather Coverage", L"O Cloud Type",
-        L"Shift+I Weather Threshold", L"Shift+O Typed Height"
+        L"Shift+I Weather Threshold", L"Shift+O Typed Height",
+        L"Shift+J Light Transmittance", L"Shift+L Light Optical Depth",
+        L"Shift+P Total Light Samples", L"Shift+U Direct Single Scattering",
+        L"Shift+B Phase CosTheta", L"Shift+M Forward Phase",
+        L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor"
     };
     static const wchar_t* presetNames[] = {
         L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
@@ -88,19 +92,30 @@ void Window::UpdateDebugTitle()
     static const wchar_t* weatherPresetNames[] = {
         L"F2 Uniform Weather", L"F3 Periodic Perlin", L"F4 Channel Debug"
     };
+    static const wchar_t* sunPresetNames[] = {
+        L"Noon Sun", L"Low East Sun", L"Low West Sun", L"Custom Sun"
+    };
+    static const wchar_t* phasePresetNames[] = {
+        L"Phase Off", L"Balanced Phase", L"Silver Lining Phase",
+        L"Backscatter Check", L"Custom Phase"
+    };
 
     const int debugIndex = static_cast<int>(m_renderer->DebugMode());
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
     const int noisePresetIndex = static_cast<int>(m_renderer->NoisePreset());
     const int detailPresetIndex = static_cast<int>(m_renderer->DetailPreset());
     const int weatherPresetIndex = static_cast<int>(m_renderer->WeatherPreset());
+    const int sunPresetIndex = static_cast<int>(m_renderer->SunPreset());
+    const int phasePresetIndex = static_cast<int>(m_renderer->PhasePreset());
     wchar_t title[512] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 5 | %ls | %ls | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 23) ? debugIndex : 0],
+    swprintf_s(title, L"VolumetricCloud - Stage 7 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 31) ? debugIndex : 0],
                presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
                detailPresetNames[(detailPresetIndex >= 0 && detailPresetIndex <= 4) ? detailPresetIndex : 1],
                weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 2],
+               sunPresetNames[(sunPresetIndex >= 0 && sunPresetIndex <= 3) ? sunPresetIndex : 3],
+               phasePresetNames[(phasePresetIndex >= 0 && phasePresetIndex <= 4) ? phasePresetIndex : 0],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
 }
@@ -127,6 +142,42 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // 단계 7 Phase 진단은 기존 B/M/C/V의 높이·밀도 출력을 보존하고 Shift 조합으로 추가한다.
+    // Noise Lab이 키보드를 캡처해도 방향 비교가 즉시 되도록 ImGui 처리보다 먼저 받는다.
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
+        (wParam == 'B' || wParam == 'M' || wParam == 'C' || wParam == 'V'))
+    {
+        if (wParam == 'B')
+            m_renderer->SetDebugMode(CloudDebugMode::PhaseCosTheta);
+        else if (wParam == 'M')
+            m_renderer->SetDebugMode(CloudDebugMode::ForwardPhaseLobe);
+        else if (wParam == 'C')
+            m_renderer->SetDebugMode(CloudDebugMode::BackwardPhaseLobe);
+        else
+            m_renderer->SetDebugMode(CloudDebugMode::DualPhaseFactor);
+        UpdateDebugTitle();
+        return 0;
+    }
+
+    // 단계 4의 J/L/P/U는 그대로 두고 Shift 조합만 단계 6 조명 진단으로 확장한다.
+    // Noise Lab이 키보드를 캡처해도 조명 비교는 항상 작동하도록 UI보다 먼저 처리한다.
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
+        (wParam == 'J' || wParam == 'L' || wParam == 'P' || wParam == 'U'))
+    {
+        if (wParam == 'J')
+            m_renderer->SetDebugMode(CloudDebugMode::LightTransmittance);
+        else if (wParam == 'L')
+            m_renderer->SetDebugMode(CloudDebugMode::LightOpticalDepth);
+        else if (wParam == 'P')
+            m_renderer->SetDebugMode(CloudDebugMode::TotalLightSamples);
+        else
+            m_renderer->SetDebugMode(CloudDebugMode::DirectSingleScattering);
+        UpdateDebugTitle();
+        return 0;
+    }
+
     // Weather 비교 키는 Noise Lab이 기본으로 열린 상태에서도 즉시 작동해야 한다.
     // Shift 조합은 같은 중간값의 "입력 지도"와 "적용 결과"를 짝으로 보여 준다.
     if (msg == WM_KEYDOWN && m_renderer && (wParam == 'I' || wParam == 'O'))

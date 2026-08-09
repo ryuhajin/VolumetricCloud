@@ -237,3 +237,78 @@ B = lerp(adjustedB, R, coverageInfluence)
 
 G는 독립 Type field다. R이 1/255 이하인 빈 곳의 G/B는 중립 0.5로 저장하며
 A는 항상 1이다. F4는 canonical 채널 검증을 위해 기존 원형 R과 G/B 띠를 유지한다.
+
+## 단계 6: 태양 Light Ray와 단일 산란
+
+View Ray의 최종 밀도가 0보다 큰 위치에서만 현재 표본→태양 방향으로 보조 레이를
+만든다. AABB 이탈점까지의 구간을 최대 16개로 다시 나누며, 고주파 Detail을 제외한
+`EvaluateBaseCloudDensity`만 읽는다. 따라서 Weather 배치·Cloud Type·Height가 만든
+큰 그늘은 보존하면서 Detail 샘플 비용과 고주파 깜박임은 분리된다.
+
+```text
+lightOpticalDepth = Σ(baseDensity × extinctionCoefficient × actualLightStep)
+lightTransmittance = exp(-lightOpticalDepth)
+```
+
+View 구간의 투과율은 이전 단계와 같고, 직접 산란 적분에는 작은 extinction에서
+0으로 나누지 않는 분석적 구간 적분을 쓴다.
+
+```text
+viewStepT = exp(-finalDensity × extinction × viewStepLength)
+densityIntegral = extinction > epsilon
+    ? (1 - viewStepT) / extinction
+    : finalDensity × viewStepLength
+
+stepScattering = viewTransmittance
+    × sunColor × sunIntensity
+    × lightTransmittance
+    × scatteringCoefficient
+    × densityIntegral
+```
+
+`directionToSun`은 빛이 내려오는 방향이 아니라 표본에서 태양으로 향하는 정규화
+월드 방향이다. Light Ray 시작점은 그 방향으로 기본 `0.01m` 이동해 경계 자기
+교차를 피한다. 단계 6은 등방성 직접광만 계산한다. 시선/태양 각도의 Phase
+Function은 단계 7, 환경광·다중 산란은 단계 8, Early Exit는 단계 9에서 추가한다.
+
+## 단계 7: Dual-lobe Henyey-Greenstein Phase Function
+
+Phase Function은 빛이 구름 표본에서 어느 방향으로 잘 흩어지는지를 정한다. 방향은
+다음 두 월드 단위 벡터로 고정한다.
+
+```text
+viewRayDirection = 카메라 → 구름 표본
+directionToSun   = 구름 표본 → 태양
+cosTheta = dot(viewRayDirection, directionToSun)
+```
+
+카메라가 태양을 바라보면 두 벡터가 나란하므로 `cosTheta=+1`이다. 이는 태양에서
+표본으로 온 광자가 카메라 방향으로 계속 진행하는 전방 산란에 해당한다. 태양 반대편은
+`-1`, 직각은 `0`이다. 코드와 디버그 출력은 이 부호를 반대로 바꾸지 않는다.
+
+`1/(4π)`를 생략한 isotropic-relative Henyey-Greenstein 식을 사용한다. 따라서 `g=0`은
+모든 각도에서 정확히 1이며 단계 6 등방성 밝기를 기준으로 비교할 수 있다.
+
+```text
+HG(cosTheta, g) =
+    (1 - g²) / max(1 + g² - 2g cosTheta, 1e-4)^(3/2)
+
+forward  = HG(cosTheta, clamp(forwardG, 0, 0.95))
+backward = HG(cosTheta, clamp(backwardG, -0.95, 0))
+dual     = lerp(backward, forward, saturate(phaseBlend))
+```
+
+`g`가 +1에 가까우면 태양을 바라보는 좁은 영역에 전방 봉우리가 생기고, -1에 가까우면
+반대 방향에 후방 봉우리가 생긴다. 정확히 ±1은 분모가 0이 될 수 있으므로 ±0.95로 제한한다.
+
+```text
+phaseFactor = phaseEnabled
+    ? lerp(1, clamp(dual, 0, 16), saturate(phaseIntensity))
+    : 1
+
+stepScattering = stage6StepScattering × phaseFactor
+```
+
+Phase Off나 Intensity 0은 배율 1이므로 단계 6 결과를 보존한다. Phase는 직접 산란량만
+바꾸고 View/Light 투과율, 광학 깊이와 step 수에는 영향을 주지 않는다. 방향은 View Ray
+전체에서 일정하므로 픽셀당 한 번만 계산한다. 환경광과 다중 산란은 단계 8에서 별도로 더한다.

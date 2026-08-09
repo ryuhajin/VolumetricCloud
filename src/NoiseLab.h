@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.h - 단계 5 Weather/Base/Detail 단면과 개발용 ImGui UI
+//  NoiseLab.h - 단계 7 밀도·태양광·Phase Function 개발용 ImGui UI
 // ============================================================================
 #pragma once
 
@@ -15,6 +15,8 @@
 #include <string>
 
 #include "WeatherMap.h"
+#include "LightParameters.h"
+#include "FrameProfiler.h"
 
 enum class NoiseSliceAxis : std::uint32_t
 {
@@ -64,15 +66,21 @@ public:
     void Shutdown();
     bool HandleWindowMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     void ToggleVisible();
+    void SetVisible(bool visible) { m_visible = visible; }
     bool IsVisible() const { return m_visible; }
 
     // UI 명령을 먼저 만든 뒤 동일 프레임에서 preview texture를 갱신한다.
     void BeginFrame(float applicationTime,
                     CloudParameters& cloudParameters,
+                    LightParameters& lightParameters,
+                    Stage6SunPreset& sunPreset,
+                    Stage7PhasePreset& phasePreset,
                     Stage5WeatherPreset weatherPreset,
                     const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                     ID3D11ShaderResourceView* weatherMapSrv,
                     const std::string& weatherMapStatus,
+                    const FrameTimingSnapshot& timing,
+                    bool& vsyncEnabled,
                     std::uint64_t shaderGeneration,
                     const std::string& shaderStatus,
                     const std::string& shaderError);
@@ -96,6 +104,9 @@ public:
     std::uint64_t PreviewHash(std::size_t targetIndex);
     bool ExportSnapshot(const std::filesystem::path& root,
                         const CloudParameters& cloudParameters,
+                        const LightParameters& lightParameters,
+                        Stage6SunPreset sunPreset,
+                        Stage7PhasePreset phasePreset,
                         Stage4DetailPreset detailPreset,
                         Stage5WeatherPreset weatherPreset,
                         const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -122,14 +133,22 @@ private:
     bool CreatePreviewTargets();
     bool CreateConstantBuffer();
     void DrawControlWindow(CloudParameters& cloudParameters,
+                           LightParameters& lightParameters,
+                           Stage6SunPreset& sunPreset,
+                           Stage7PhasePreset& phasePreset,
                            Stage5WeatherPreset weatherPreset,
                            const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                            ID3D11ShaderResourceView* weatherMapSrv,
                            const std::string& weatherMapStatus,
+                           bool& vsyncEnabled,
                            std::uint64_t shaderGeneration,
                            const std::string& shaderStatus,
                            const std::string& shaderError);
     void DrawSlice(const char* label, NoiseSliceAxis axis, SliceTarget& target);
+    void DrawPerformanceOverlay(const FrameTimingSnapshot& timing,
+                                const CloudParameters& cloudParameters,
+                                const LightParameters& lightParameters,
+                                bool vsyncEnabled);
     bool DrawPeriodicChannelFields(const char* label,
                                    PeriodicChannelSettings& settings);
     void QueueWeatherGeneratorRequest(bool force);
@@ -140,6 +159,9 @@ private:
     std::uint64_t HashFile(const std::filesystem::path& path) const;
     bool WriteMetadata(const std::filesystem::path& path,
                        const CloudParameters& cloudParameters,
+                       const LightParameters& lightParameters,
+                       Stage6SunPreset sunPreset,
+                       Stage7PhasePreset phasePreset,
                        Stage4DetailPreset detailPreset,
                        Stage5WeatherPreset weatherPreset,
                        const WeatherMapGeneratorSettings& weatherGeneratorSettings,
