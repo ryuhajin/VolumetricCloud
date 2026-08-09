@@ -246,3 +246,15 @@
   Legacy/Optimized 런타임 HLSL 컴파일, Detail LOD/호출 생략 출력, schema 13 export와
   D3D11 error/corruption 부재를 재검증했다. F5~F8 자동 캡처에서는 이전의 전면 흰색
   포화와 검정 화면이 재현되지 않았으며 최종 화질 승인은 사용자가 수행한다.
+
+## 15. 단계 13 품질 재검증 — 동일 축 Noise Lab 진단
+
+- `Equal Axis Diagnostic`으로 Noise Lab XZ 폭을 평면층 Y 두께와 같게 설정해 세 단면을
+  동일한 월드 길이 비율로 비교할 수 있게 했다.
+- XY/XZ/YZ의 km 범위와 XY/YZ의 Y 표시 확대율을 UI에 표시하고 32km 복귀 버튼을 추가했다.
+- CloudCB·NoiseLabCB와 실제 noise 월드 좌표는 변경하지 않아 진단 UI가 렌더 형태에 개입하지 않는다.
+- 사용자 검증 피드백에 따라 두 버튼이 메인 렌더에 영향을 주지 않는 미리보기 전용이고,
+  동일 축은 Layer Bottom이 아닌 Layer Thickness를 기준으로 한다는 설명을 UI와 문서에 추가했다.
+- 2026-08-09 Debug/Release 빌드와 CTest를 각각 26/26 통과했으며 NoiseLabSmoke와
+  ShaderHotReloadSmoke도 양 구성에서 통과했다.
+- 화면 축 매핑과 단면 연속성은 사용자 승인 뒤 다음 품질 보정 단계로 진행한다.

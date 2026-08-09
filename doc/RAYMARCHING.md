@@ -121,7 +121,14 @@ coverage가 0이면 별도 분기로 밀도를 0으로 만든다. coverage가 �
 
 ### Noise Lab 단면과 실제 구름의 관계
 
-3D noise는 한 장의 이미지가 아니라 `noise(x,y,z)` 함수다. Noise Lab은 AABB를 정규화한 교차점에서 XY, XZ, YZ 평면을 각각 512×512로 잘라 같은 `SampleCloudDensity(worldPosition, effectiveTime)` 함수를 평가한다. 세 화면의 빨간 crosshair는 같은 3D 위치를 가리킨다.
+3D noise는 한 장의 이미지가 아니라 `noise(x,y,z)` 함수다. Noise Lab은 카메라 중심 XZ 범위와
+평면 구름층 Y 범위에서 XY, XZ, YZ 평면을 각각 512×512로 잘라 같은
+`SampleCloudDensity(worldPosition, effectiveTime)` 함수를 평가한다. 세 화면의 빨간 crosshair는
+같은 3D 위치를 가리킨다. 기본 32km 폭과 3km 층에서는 XY/YZ의 Y 1m가 화면에서 X/Z 1m보다
+약 10.7배 크게 표시된다. `Equal Axis Diagnostic`은 폭을 층 두께와 같게 만들어 이 표시 왜곡과
+실제 축 매핑 오류를 구분하며 noise 함수와 월드 좌표 자체는 변경하지 않는다.
+따라서 동일 축/32km 복귀 버튼을 눌러도 메인 구름이 바뀌지 않는 것이 정상이다. Layer Bottom은
+구름층 전체의 월드 고도만 옮기고, 단면의 축 비율은 XZ 폭과 Layer Thickness의 비율로 결정된다.
 
 ImGui의 scale·coverage·density·offset·wind 값은 CPU `CloudParameters`를 바꾸므로 재컴파일 없이 단면과 구름에 같은 프레임에 반영된다. hash와 보간 코드는 `Noise.hlsli` 하나에 있고, 저장 시 Noise Lab PS와 Cloud PS를 함께 컴파일·교체한다.
 

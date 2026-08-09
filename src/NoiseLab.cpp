@@ -324,7 +324,29 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
         ImGui::SliderFloat("Light Trace Max", &cloudParameters.maxLightTraceDistance,
                            1000.0f, 50000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Noise Lab Width", &cloudParameters.noiseLabPreviewWorldSize,
-                           1000.0f, 64000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
+                           100.0f, 64000.0f, "%.2f m", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::Button("Equal Axis Diagnostic"))
+            cloudParameters.noiseLabPreviewWorldSize =
+                cloudParameters.cloudLayerThickness;
+        ImGui::SameLine();
+        if (ImGui::Button("Restore 32km Preview"))
+            cloudParameters.noiseLabPreviewWorldSize = 32000.0f;
+
+        const float previewWidth = std::max(
+            cloudParameters.noiseLabPreviewWorldSize, 1.0f);
+        const float previewHeight = std::max(
+            cloudParameters.cloudLayerThickness, 1.0f);
+        const float verticalDisplayStretch = previewWidth / previewHeight;
+        ImGui::Text("XY: %.2f x %.2f km | XZ: %.2f x %.2f km",
+                    previewWidth / 1000.0f, previewHeight / 1000.0f,
+                    previewWidth / 1000.0f, previewWidth / 1000.0f);
+        ImGui::Text("YZ: %.2f x %.2f km | XY/YZ Y stretch: %.2fx",
+                    previewWidth / 1000.0f, previewHeight / 1000.0f,
+                    verticalDisplayStretch);
+        ImGui::TextDisabled(
+            "Preview only: these buttons do not change cloud rendering or world noise.");
+        ImGui::TextDisabled(
+            "Equal Axis matches Layer Thickness, not Layer Bottom (cloud altitude)." );
         ImGui::SliderFloat("Extinction", &cloudParameters.extinctionCoefficient,
                            0.0001f, 0.005f, "%.6f /m", ImGuiSliderFlags_Logarithmic);
         const float referenceOpticalDepth = 0.5f *
@@ -350,7 +372,7 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
     cloudParameters.maxLightTraceDistance = std::max(
         cloudParameters.maxLightTraceDistance, 1000.0f);
     cloudParameters.noiseLabPreviewWorldSize = std::max(
-        cloudParameters.noiseLabPreviewWorldSize, 1000.0f);
+        cloudParameters.noiseLabPreviewWorldSize, 100.0f);
     cloudParameters.extinctionCoefficient = std::clamp(
         cloudParameters.extinctionCoefficient, 0.0001f, 0.005f);
     if (ImGui::CollapsingHeader("Weather map", ImGuiTreeNodeFlags_DefaultOpen))

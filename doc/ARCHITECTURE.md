@@ -150,6 +150,11 @@ R/G/B seed·주기·가중치·bias·contrast와 coverage threshold/softness, de
 coverage influence를 편집한다. Live Update는 CPU 생성·업로드를 최대 10Hz로
 제한하고 조작이 끝난 값은 즉시 반영한다. 내보내기는 세 단면과 256²
 `weather-map.png`, 평면층·추적 거리·생성 설정·맵 해시·조명 설정을 담은 schema 13 JSON을 기록한다.
+Stage 13 패널의 `Equal Axis Diagnostic`은 미리보기 XZ 폭을 구름층 Y 두께와 같게 만들어
+XY/XZ/YZ를 같은 월드 길이 비율로 비교한다. 단면 아래에는 각 축의 km 범위와 정사각형
+화면에서 발생하는 XY/YZ의 Y 표시 확대율을 함께 표시하며 실제 noise 좌표는 바꾸지 않는다.
+두 버튼은 Noise Lab 전용 폭만 바꾸므로 메인 구름 렌더가 변하지 않는 것이 정상이다. Layer Bottom은
+구름의 월드 고도이고 종횡비와 무관하며, 동일 축 폭은 Layer Thickness를 기준으로 정한다.
 Generator는 `Weather map`과 분리된 최상위 헤더로 기본 펼쳐지고, 그 안의 R/G/B
 채널은 각각 기본으로 접힌다. 헤더와 생성 설정은 F2/F4에서도 조작할 수 있으며,
 이때 바꾼 값은 보존되고 F3로 돌아오면 Periodic Perlin에 반영된다. 상위 헤더를
