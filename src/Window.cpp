@@ -74,7 +74,8 @@ void Window::UpdateDebugTitle()
         L"Shift+J Light Transmittance", L"Shift+L Light Optical Depth",
         L"Shift+P Total Light Samples", L"Shift+U Direct Single Scattering",
         L"Shift+B Phase CosTheta", L"Shift+M Forward Phase",
-        L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor"
+        L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor",
+        L"Ctrl+J Accumulated Direct"
     };
     static const wchar_t* presetNames[] = {
         L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
@@ -99,6 +100,10 @@ void Window::UpdateDebugTitle()
         L"Phase Off", L"Balanced Phase", L"Silver Lining Phase",
         L"Backscatter Check", L"Custom Phase"
     };
+    static const wchar_t* environmentPresetNames[] = {
+        L"Environment Off", L"Balanced Ambient", L"Strong Fill",
+        L"Ground Check", L"Custom Environment"
+    };
 
     const int debugIndex = static_cast<int>(m_renderer->DebugMode());
     const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
@@ -107,15 +112,18 @@ void Window::UpdateDebugTitle()
     const int weatherPresetIndex = static_cast<int>(m_renderer->WeatherPreset());
     const int sunPresetIndex = static_cast<int>(m_renderer->SunPreset());
     const int phasePresetIndex = static_cast<int>(m_renderer->PhasePreset());
-    wchar_t title[512] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 7 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 31) ? debugIndex : 0],
+    const int environmentPresetIndex =
+        static_cast<int>(m_renderer->EnvironmentPreset());
+    wchar_t title[640] = {};
+    swprintf_s(title, L"VolumetricCloud - Stage 8 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
+               debugNames[(debugIndex >= 0 && debugIndex <= 32) ? debugIndex : 0],
                presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
                noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
                detailPresetNames[(detailPresetIndex >= 0 && detailPresetIndex <= 4) ? detailPresetIndex : 1],
                weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 2],
                sunPresetNames[(sunPresetIndex >= 0 && sunPresetIndex <= 3) ? sunPresetIndex : 3],
                phasePresetNames[(phasePresetIndex >= 0 && phasePresetIndex <= 4) ? phasePresetIndex : 0],
+               environmentPresetNames[(environmentPresetIndex >= 0 && environmentPresetIndex <= 4) ? environmentPresetIndex : 1],
                m_cameraPresetName);
     SetWindowTextW(m_hwnd, title);
 }
@@ -142,6 +150,16 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // 대표 위치가 아닌 View Ray 전체의 직접광 누적값은 Ctrl+J로 확인한다.
+    if (msg == WM_KEYDOWN && m_renderer &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        wParam == 'J')
+    {
+        m_renderer->SetDebugMode(CloudDebugMode::AccumulatedDirectLighting);
+        UpdateDebugTitle();
+        return 0;
+    }
+
     // 단계 7 Phase 진단은 기존 B/M/C/V의 높이·밀도 출력을 보존하고 Shift 조합으로 추가한다.
     // Noise Lab이 키보드를 캡처해도 방향 비교가 즉시 되도록 ImGui 처리보다 먼저 받는다.
     if (msg == WM_KEYDOWN && m_renderer &&

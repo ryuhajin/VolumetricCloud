@@ -1,8 +1,8 @@
 // ============================================================================
-//  VolumetricClouds.hlsl - 단계 7 Dual-lobe Phase 단일 산란 합성
+//  VolumetricClouds.hlsl - 단계 8 환경광·다중 산란 합성
 // ----------------------------------------------------------------------------
 //  한 프레임의 렌더링 순서
-//  1. CPU가 Camera/Cloud/Light 데이터를 b0/b1/b3 상수버퍼에 복사한다.
+//  1. CPU가 Camera/Cloud/Light/Environment를 b0/b1/b3/b4에 복사한다.
 //  2. 앞선 DiagnosticScene 패스가 불투명 Scene Color와 Scene Depth를 만든다.
 //  3. 이 풀스크린 PS가 UV → 월드 레이 → 깊이 거리 순으로 복원한다.
 //  4. 레이와 AABB의 교차 구간을 구하고 Scene Depth보다 뒤를 잘라 낸다.
@@ -10,10 +10,11 @@
 //  6. Base가 비어 있지 않을 때만 Detail로 깎는다.
 //  7. 밀도가 있는 View 표본에서 태양 방향 Light Ray로 광학 깊이를 잰다.
 //  8. 카메라→표본과 표본→태양 방향으로 Dual-lobe Phase Factor를 구한다.
-//  9. 태양 투과율과 Phase를 직접 단일 산란에 곱하고 View 투과율을 누적한다.
-// 10. 디버그 모드면 중간 값을, 모드 0이면 장면과 구름 합성을 출력한다.
+//  9. 직접광에 하늘·지면 환경광과 광학 깊이 기반 다중 산란을 더한다.
+// 10. 각 조명 성분을 View 투과율과 함께 누적해 장면 위에 합성한다.
+// 11. 디버그 모드면 선택한 중간 조명 성분을 출력한다.
 //
-//  단계 8 환경광/다중 산란과 단계 9 Early Exit는 아직 없다.
+//  단계 9 Early Exit와 단계 14 실제 대기/Cube Map 입력은 아직 없다.
 //  Light Ray는 비용을 분리하기 위해 Detail이 아닌 Base Density만 샘플링한다.
 // ============================================================================
 
@@ -29,7 +30,7 @@ cbuffer cbCamera : register(b0)
 };
 
 // cbCamera의 time 선언 뒤 포함해야 Light Ray가 같은 애니메이션 시간을 사용한다.
-#include "CloudLighting.hlsli"
+#include "CloudEnvironment.hlsli"
 
 // t0: 앞선 DiagnosticScene PS가 R16G16B16A16_FLOAT에 쓴 linear RGB 장면색.
 Texture2D<float4> sceneColorTexture : register(t0);
@@ -85,6 +86,7 @@ struct CloudMarchDebug
     float forwardPhaseLobe;   // 양의 g를 사용한 전방 HG 값.
     float backwardPhaseLobe;  // 음의 g를 사용한 후방 HG 값.
     float dualPhaseFactor;    // 직접 산란에 실제로 적용한 최종 [0,16] 배율.
+    float3 accumulatedDirect; // View Ray 전체의 직접 태양광 누적값.
 };
 
 // 화면 UV를 DirectX NDC로 바꾼다.
@@ -249,20 +251,27 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             float sampledStepTransmittance = exp(
                 -sampledDensity * extinction * actualStepLength);
 
-            // 5. 밀도가 있을 때만 태양 방향 Base Density를 추가로 적분한다.
-            //    Light Ray에서 Detail을 생략해 큰 구름 그늘과 비용을 먼저 검증한다.
-            // 기존 1~23 디버그는 조명 결과를 표시하지 않으므로 Light Ray를 생략한다.
-            // 합성(0)과 단계 6 조명 디버그(24~27)만 실제 조명 비용을 실행한다.
-            bool requiresLighting = debugMode == 0 || debugMode == 26;
+            // 5. 최종 합성, Light 비용과 누적 직접광 모드에서만 조명 적분을 실행한다.
+            bool requiresLighting = debugMode == 0 || debugMode == 26 ||
+                                    debugMode == 32;
             if (sampledDensity > 0.0 && requiresLighting)
             {
-                LightMarchResult light = ComputeLightTransmittance(
-                    samplePosition, directionToSun);
-                result.scattering += IntegrateSingleScattering(
-                    sampledDensity, light.transmittance,
-                    result.transmittance, actualStepLength,
-                    phase.phaseFactor);
-                debugData.totalLightSamples += light.stepCount;
+                LightMarchResult light = { 1.0, 0.0, 0.0 };
+                bool needsLightRay = debugMode == 0 || debugMode == 26 ||
+                                     debugMode == 32;
+                if (needsLightRay)
+                {
+                    light = ComputeLightTransmittance(
+                        samplePosition, directionToSun);
+                    debugData.totalLightSamples += light.stepCount;
+                }
+                EnvironmentLightingSample lighting = EvaluateEnvironmentLighting(
+                    densitySample, light, phase, result.transmittance,
+                    actualStepLength);
+                debugData.accumulatedDirect += lighting.direct;
+                result.scattering += lighting.direct + lighting.skyAmbient +
+                                     lighting.groundBounce +
+                                     lighting.multipleScattering;
             }
             result.transmittance *= sampledStepTransmittance;
             // 단계 9 Early Exit 자리: 현재는 transmittanceThreshold를 사용하지 않고
@@ -404,6 +413,13 @@ float4 main(VSOut input) : SV_TARGET
             : lerp(1.0.xxx, float3(1.0, 0.82, 0.08),
                    saturate((factor - 1.0) / 3.0));
         return float4(factorColor * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 32)
+    {
+        float3 component = marchDebug.accumulatedDirect;
+        float3 mapped = max(component, 0.0.xxx) /
+            (1.0.xxx + max(component, 0.0.xxx));
+        return float4(mapped * marchDebug.hit, 1.0);
     }
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.

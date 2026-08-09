@@ -153,7 +153,7 @@ bool Renderer::Init(HWND hwnd, int width, int height)
         !CreateWeatherMapTexture(m_weatherPreset) ||
         !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
     {
-        MessageBoxW(hwnd, L"단계 6 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, L"단계 8 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -483,6 +483,7 @@ bool Renderer::CreateConstantBuffers()
     return createDynamicBuffer(sizeof(CameraCB), &m_cameraCb) &&
            createDynamicBuffer(sizeof(CloudParameters), &m_cloudCb) &&
            createDynamicBuffer(sizeof(LightParameters), &m_lightCb) &&
+           createDynamicBuffer(sizeof(EnvironmentParameters), &m_environmentCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -578,6 +579,13 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
         std::memcpy(mapped.pData, &m_lightParameters, sizeof(m_lightParameters));
         m_context->Unmap(m_lightCb.Get(), 0);
     }
+    m_environmentParameters = stage8environment::Sanitize(m_environmentParameters);
+    if (SUCCEEDED(m_context->Map(m_environmentCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_environmentParameters,
+                    sizeof(m_environmentParameters));
+        m_context->Unmap(m_environmentCb.Get(), 0);
+    }
 
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     m_context->OMSetRenderTargets(1, m_backBufferRtv.GetAddressOf(), nullptr);
@@ -593,6 +601,8 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds)
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
     ID3D11Buffer* lightBuffer = m_lightCb.Get();
     m_context->PSSetConstantBuffers(3, 1, &lightBuffer);
+    ID3D11Buffer* environmentBuffer = m_environmentCb.Get();
+    m_context->PSSetConstantBuffers(4, 1, &environmentBuffer);
     ID3D11ShaderResourceView* resources[3] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get()
     };
@@ -621,6 +631,7 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
     const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
     m_noiseLab.BeginFrame(timeSeconds, m_cloudParameters,
                           m_lightParameters, m_sunPreset, m_phasePreset,
+                          m_environmentParameters, m_environmentPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_frameProfiler.Snapshot(), m_vsyncEnabled,
@@ -681,6 +692,8 @@ void Renderer::Render(const Camera& camera, float timeSeconds)
                                   m_lightParameters,
                                   m_sunPreset,
                                   m_phasePreset,
+                                  m_environmentParameters,
+                                  m_environmentPreset,
                                   m_detailPreset,
                                   m_weatherPreset,
                                   m_weatherGeneratorSettings,
@@ -898,6 +911,19 @@ void Renderer::ApplyStage7PhasePreset(Stage7PhasePreset preset)
     m_phasePreset = preset;
 }
 
+void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
+{
+    if (preset == Stage8EnvironmentPreset::Custom)
+    {
+        m_environmentParameters =
+            stage8environment::Sanitize(m_environmentParameters);
+        m_environmentPreset = preset;
+        return;
+    }
+    stage8environment::ApplyPreset(m_environmentParameters, preset);
+    m_environmentPreset = preset;
+}
+
 void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
 {
     m_lightParameters.maxLightSteps = maxSteps;
@@ -1026,6 +1052,7 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
         root, m_cloudParameters, m_lightParameters, m_sunPreset, m_phasePreset,
+        m_environmentParameters, m_environmentPreset,
         m_detailPreset, m_weatherPreset,
         m_weatherGeneratorSettings, m_weatherMapHash, m_weatherMapTexture.Get(),
         std::filesystem::path(m_shaderDir) / L"Noise.hlsli");

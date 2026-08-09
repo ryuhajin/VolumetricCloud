@@ -2,7 +2,7 @@
 
 DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 다시 구축하는 학습 프로젝트입니다.
 
-현재는 **재구축 단계 7**로, 태양과 카메라 각도에 따른 Dual-lobe HG 방향성 산란을 검증합니다.
+현재는 **재구축 단계 8**로, 분석적 하늘·지면 환경광과 저비용 다중 산란을 검증합니다.
 
 - 평면과 두 박스로 구성된 불투명 진단 장면
 - 샘플 가능한 Scene Depth와 월드 위치 복원
@@ -24,6 +24,8 @@ DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 �
 - 태양색·세기·산란계수를 적용한 직접 단일 산란
 - Phase Off에서 단계 6을 보존하는 Dual-lobe Henyey-Greenstein Phase Function
 - 독립적인 전방·후방 g, 혼합 비율과 Phase 강도
+- 별도 64바이트 EnvironmentCB와 외부 텍스처 없는 하늘·지면 환경광
+- 높이 가중치, 밀도 기반 Ambient Occlusion과 광학 깊이 재사용 다중 산란
 - 우측 상단 FPS·CPU/GPU Frame·GPU Cloud 실시간 성능 오버레이
 - 원본 noise, threshold, 최종 밀도와 noise UVW 디버그
 - ImGui Noise Lab의 XY/XZ/YZ 동기 단면, 높이 출력과 프로파일 곡선
@@ -39,7 +41,7 @@ cmake --build build --config Debug
 .\build\Debug\VolumetricCloud.exe
 ```
 
-## 단계 7 조작
+## 단계 8 조작
 
 | 입력 | 동작 |
 |---|---|
@@ -68,6 +70,7 @@ cmake --build build --config Debug
 | `Shift+P` / `Shift+U` | 전체 Light Sample 비용 / 직접 단일 산란 |
 | `Shift+B` / `Shift+M` | Phase cosTheta / Forward HG lobe |
 | `Shift+C` / `Shift+V` | Backward HG lobe / 최종 Dual Phase Factor |
+| `Ctrl+J` | 누적 직접광 |
 | `F5`~`F7` | 외부 고정 검증 카메라 |
 | `F8` | AABB 내부 카메라 |
 | `Y` / `Q` | 넓은 XZ 볼륨 / 기본 수치 검증 볼륨 |
@@ -81,9 +84,9 @@ cmake --build build --config Debug
 | `F9` / `F10` | Detail Off / 기본 Detail |
 | `F11` / `F12` | Fine Detail / Strong Erosion |
 
-현재 Base와 Detail은 각각 단일 절차적 Value Noise를 사용합니다. Weather Map은 CPU가 만드는 실제 RGBA8 Texture2D이며 외부 PNG 로딩은 하지 않습니다. Light Ray는 Weather·Type·Height가 적용된 Base만 읽고 Detail은 생략합니다. Phase는 직접 산란량만 바꾸며 환경광·다중 산란과 early exit는 이후 단계까지 의도적으로 구현하지 않습니다.
+현재 Base와 Detail은 각각 단일 절차적 Value Noise를 사용합니다. Weather Map은 CPU가 만드는 실제 RGBA8 Texture2D이며 외부 PNG 로딩은 하지 않습니다. Light Ray는 Weather·Type·Height가 적용된 Base만 읽고 Detail은 생략합니다. Phase는 직접광에만 적용합니다. 환경광은 Cube Map 없이 상수색·높이·밀도로 계산하며, 다중 산란은 추가 Light Ray 없이 기존 광학 깊이를 재사용합니다.
 
-Noise Lab은 실제 구름 위에 떠 있는 개발 창입니다. 15개 밀도·Weather 출력과 실제 RGBA 맵, 태양 설정뿐 아니라 Phase Off/Balanced/Silver Lining/Backscatter Check 프리셋과 HG 곡선을 제공합니다. 기본은 Phase Off이며 `Export 4 PNG + JSON`은 schema 7 방향 정의와 Phase 설정을 저장합니다.
+Noise Lab은 실제 구름 위에 떠 있는 개발 창입니다. 기존 밀도·Weather·Phase 도구와 함께 Environment Off/Balanced/Strong Fill/Ground Check 프리셋, 높이 가중치 곡선과 다중 산란 설정을 제공합니다. 기본은 Balanced Ambient이며 `Export 4 PNG + JSON`은 schema 8 환경광 설정을 저장합니다.
 
 우측 상단 성능 오버레이는 `F1`로 Noise Lab을 숨겨도 유지됩니다. Noise Lab의 `Performance`
 항목에서 VSync를 켜거나 끌 수 있습니다. CPU Frame은 `Present`와 VSync 대기를 포함하지만
@@ -97,6 +100,6 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-`Foundation*`부터 `Stage6*`까지는 이전 단계 회귀를 검사합니다. `Stage7PhaseMath`는 방향 부호·HG·Dual-lobe와 안정성을, `Stage7Smoke`는 64바이트 LightCB, Phase 디버그·프리셋과 schema 7을 검사합니다. `FrameProfilerMath`와 `PerformanceOverlaySmoke`는 비동기 GPU 계측 회귀를 유지합니다.
+`Foundation*`부터 `Stage7*`까지는 이전 단계 회귀를 검사합니다. `Stage8AmbientMath`는 높이 가중치·AO·octave 수식을, `Stage8Smoke`는 64바이트 EnvironmentCB, 환경광 프리셋·합성 차이와 schema 8을 검사합니다. 전체 목표는 22개 테스트입니다.
 
 자세한 구조와 단계는 [아키텍처](doc/ARCHITECTURE.md), [AABB 레이 마칭](doc/RAYMARCHING.md), [로드맵](doc/ROADMAP.md)을 참고하세요.

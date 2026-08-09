@@ -34,7 +34,7 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 ## 고정 비교 절차
 
 1. Release 빌드를 사용한다.
-2. 창 해상도, 카메라 프리셋, Weather Map, Detail, 태양 방향과 밀도 설정을 동일하게 맞춘다.
+2. 창 해상도, 카메라, Weather, Detail, 태양·Phase·Environment 설정을 동일하게 맞춘다.
 3. Noise Lab의 Animation을 정지한다.
 4. Noise Lab의 Performance에서 VSync를 Off로 설정한다.
 5. 설정 변경 후 최소 2초 동안 워밍업한다.
@@ -43,6 +43,8 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 
 예를 들어 Light Step 8/16/32의 비용을 비교할 때 카메라와 나머지 설정을 고정한다. FPS는
 운영체제·Present·다른 앱의 영향을 함께 받으므로 보조 지표로만 사용한다.
+단계 8 Off/Balanced 또는 Multiple Octaves 0~4를 비교할 때도 한 번에 해당 설정만 바꾸고
+`Shift+P`의 Light Sample 출력이 동일한지 함께 확인한다.
 
 ## 현재 범위
 

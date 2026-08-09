@@ -6,14 +6,14 @@
 ## 이 프로젝트가 무엇인가
 
 DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류메트릭 클라우드**를 렌더링하는
-학습 프로젝트입니다. 현재는 **재구축 단계 7**을 진행하며, 승인된 태양 단일 산란에
-Dual-lobe Henyey-Greenstein Phase Function을 추가합니다. 기본 실행은 Phase Off입니다.
+학습 프로젝트입니다. 현재는 **재구축 단계 9**를 진행하며, 승인된 단계 8 화면을 보존한 채
+빈 공간과 거의 불투명한 뒤쪽 구간의 불필요한 레이마칭 계산을 줄입니다.
 
 ## 빠른 사실 (Quick Facts)
 
 - **언어/환경:** C++17, HLSL(shader model 5.0), DirectX 11, Win32, Windows
 - **빌드:** CMake (`cmake -B build -G "Visual Studio 17 2022" -A x64` → `cmake --build build --config Debug`)
-- **실행:** `build/Debug/VolumetricCloud.exe` (Shift+J/L/P/U 조명, Shift+B/M/C/V Phase 진단)
+- **실행:** `build/Debug/VolumetricCloud.exe` (Shift 조명·Phase, Ctrl+J 누적 직접광 진단)
 - **셰이더:** 런타임 컴파일(`D3DCompileFromFile`) + 실행 중 핫-리로드.
   개발 중에는 소스 `shaders/`를 우선 읽고, 없으면 exe 옆 `shaders/`로 폴백
 - **렌더 방식:** 정점 버퍼 없이 풀스크린 삼각형 1개를 그리고, 픽셀 셰이더에서 레이마칭
@@ -32,6 +32,7 @@ Dual-lobe Henyey-Greenstein Phase Function을 추가합니다. 기본 실행은 
 | 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA 프리셋 생성과 해시 |
 | 조명 설정 | `src/LightParameters.h` | 64바이트 LightCB와 태양·Phase 프리셋·sanitize |
+| 환경광 설정 | `src/EnvironmentParameters.h` | 64바이트 EnvironmentCB와 환경광 프리셋·sanitize |
 | 성능 계측 | `src/FrameProfiler.*` | 8-slot 비동기 D3D11 timestamp와 CPU/GPU EMA |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
@@ -40,6 +41,7 @@ Dual-lobe Henyey-Greenstein Phase Function을 추가합니다. 기본 실행은 
 | Noise | `shaders/Noise.hlsli` | 교체 가능한 Base/Detail noise, 높이와 erosion 밀도 함수 |
 | Lighting | `shaders/CloudLighting.hlsli` | Base-only 태양 Light Ray와 직접 단일 산란 |
 | Phase | `shaders/PhaseFunction.hlsli` | 방향 부호가 고정된 Dual-lobe HG와 안전한 Phase Factor |
+| Environment | `shaders/CloudEnvironment.hlsli` | 하늘·지면·AO와 광학 깊이 재사용 다중 산란 |
 | 수치 기준 | `src/Stage1VolumeMath.h` | 단계 1 CPU 회귀 검사용 교차·적분 |
 | Noise 기준 | `src/Stage2NoiseMath.h` | 단계 2 CPU 회귀 검사용 noise·밀도·바람 좌표 |
 | 높이 기준 | `src/Stage3HeightMath.h` | 단계 3 CPU 회귀 검사용 높이·fade·최종 밀도 |
@@ -47,6 +49,7 @@ Dual-lobe Henyey-Greenstein Phase Function을 추가합니다. 기본 실행은 
 | Weather 기준 | `src/Stage5WeatherMath.h` | 단계 5 CPU 회귀 검사용 UV·coverage·구름 종류 프로파일 |
 | 조명 기준 | `src/Stage6LightMath.h` | 단계 6 CPU 회귀 검사용 광학 깊이·단일 산란 |
 | Phase 기준 | `src/Stage7PhaseMath.h` | 단계 7 CPU 회귀 검사용 HG·방향·Dual-lobe 수학 |
+| 환경광 기준 | `src/Stage8AmbientMath.h` | 단계 8 CPU 회귀 검사용 높이·AO·octave 수학 |
 
 ## 반드시 지킬 규칙
 
@@ -55,7 +58,7 @@ Dual-lobe Henyey-Greenstein Phase Function을 추가합니다. 기본 실행은 
    **세 곳을 동시에** 맞춥니다.
 2. **브랜치/커밋 규칙**을 따릅니다 → [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md)
 3. **빌드가 깨지지 않게** 유지합니다. 변경 후 위 빌드 명령으로 확인하세요.
-4. 현재 단계 7 범위 밖(환경광·다중 산란, 그림자 맵, early exit, temporal)은 다음 단계로 분리합니다.
+4. 현재 단계 9 범위 밖(저해상도 렌더, temporal, Cloud Shadow, Cube Map/IBL)은 다음 단계로 분리합니다.
 
 ## 로컬 단계별 구현 문서 규칙
 

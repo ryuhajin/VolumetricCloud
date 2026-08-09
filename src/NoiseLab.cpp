@@ -15,6 +15,7 @@
 #include "backends/imgui_impl_win32.h"
 #include "Stage3HeightMath.h"
 #include "Stage7PhaseMath.h"
+#include "Stage8AmbientMath.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -204,6 +205,8 @@ void NoiseLab::BeginFrame(float applicationTime,
                           LightParameters& lightParameters,
                           Stage6SunPreset& sunPreset,
                           Stage7PhasePreset& phasePreset,
+                          EnvironmentParameters& environmentParameters,
+                          Stage8EnvironmentPreset& environmentPreset,
                           Stage5WeatherPreset weatherPreset,
                           const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                           ID3D11ShaderResourceView* weatherMapSrv,
@@ -228,6 +231,7 @@ void NoiseLab::BeginFrame(float applicationTime,
     ImGui::NewFrame();
     if (m_visible)
         DrawControlWindow(cloudParameters, lightParameters, sunPreset, phasePreset,
+                          environmentParameters, environmentPreset,
                           weatherPreset, weatherGeneratorSettings,
                           weatherMapSrv, weatherMapStatus, vsyncEnabled,
                           shaderGeneration,
@@ -240,6 +244,8 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                                  LightParameters& lightParameters,
                                  Stage6SunPreset& sunPreset,
                                  Stage7PhasePreset& phasePreset,
+                                 EnvironmentParameters& environmentParameters,
+                                 Stage8EnvironmentPreset& environmentPreset,
                                  Stage5WeatherPreset weatherPreset,
                                  const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                                  ID3D11ShaderResourceView* weatherMapSrv,
@@ -758,6 +764,195 @@ void NoiseLab::DrawControlWindow(CloudParameters& cloudParameters,
                          ImVec2(0.0f, 70.0f));
         ImGui::TextDisabled(
             "cosTheta +1: camera looks toward sun / -1: opposite direction");
+    }
+
+    if (ImGui::CollapsingHeader(
+            "Environment & Multiple Scattering", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        static const char* presetNames[] = {
+            "Off", "Balanced", "Strong Fill", "Ground Check", "Custom"
+        };
+        const int presetIndex = std::clamp(
+            static_cast<int>(environmentPreset), 0, 4);
+        ImGui::Text("Current: %s", presetNames[presetIndex]);
+
+        if (ImGui::Button("Environment Off"))
+        {
+            stage8environment::ApplyPreset(
+                environmentParameters, Stage8EnvironmentPreset::Off);
+            environmentPreset = Stage8EnvironmentPreset::Off;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Balanced Ambient"))
+        {
+            stage8environment::ApplyPreset(
+                environmentParameters, Stage8EnvironmentPreset::Balanced);
+            environmentPreset = Stage8EnvironmentPreset::Balanced;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Strong Fill"))
+        {
+            stage8environment::ApplyPreset(
+                environmentParameters, Stage8EnvironmentPreset::StrongFill);
+            environmentPreset = Stage8EnvironmentPreset::StrongFill;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Ground Check"))
+        {
+            stage8environment::ApplyPreset(
+                environmentParameters, Stage8EnvironmentPreset::GroundCheck);
+            environmentPreset = Stage8EnvironmentPreset::GroundCheck;
+        }
+
+        bool edited = false;
+        edited |= ImGui::ColorEdit3(
+            "Sky Color", &environmentParameters.skyColor.x,
+            ImGuiColorEditFlags_Float);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##SkyColor"))
+        {
+            environmentParameters.skyColor = { 0.35f, 0.50f, 0.75f };
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Sky Strength", &environmentParameters.skyStrength,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##SkyStrength"))
+        {
+            environmentParameters.skyStrength = 0.20f;
+            edited = true;
+        }
+        edited |= ImGui::ColorEdit3(
+            "Ground Color", &environmentParameters.groundColor.x,
+            ImGuiColorEditFlags_Float);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##GroundColor"))
+        {
+            environmentParameters.groundColor = { 0.18f, 0.12f, 0.08f };
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Ground Strength", &environmentParameters.groundStrength,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##GroundStrength"))
+        {
+            environmentParameters.groundStrength = 0.08f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Ambient Occlusion Strength",
+            &environmentParameters.ambientOcclusionStrength,
+            0.0f, 8.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##AmbientOcclusion"))
+        {
+            environmentParameters.ambientOcclusionStrength = 1.25f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Ambient Height Influence",
+            &environmentParameters.ambientHeightInfluence,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##AmbientHeight"))
+        {
+            environmentParameters.ambientHeightInfluence = 0.65f;
+            edited = true;
+        }
+
+        bool multipleEnabled =
+            environmentParameters.multipleScatteringEnabled >= 0.5f;
+        if (ImGui::Checkbox("Enable Multiple Scattering", &multipleEnabled))
+        {
+            environmentParameters.multipleScatteringEnabled =
+                multipleEnabled ? 1.0f : 0.0f;
+            edited = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##MultipleEnabled"))
+        {
+            environmentParameters.multipleScatteringEnabled = 1.0f;
+            edited = true;
+        }
+        int octaves = static_cast<int>(
+            environmentParameters.multipleScatteringOctaves);
+        if (ImGui::SliderInt("Scattering Octaves", &octaves, 0, 4))
+        {
+            environmentParameters.multipleScatteringOctaves =
+                static_cast<std::uint32_t>(octaves);
+            edited = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringOctaves"))
+        {
+            environmentParameters.multipleScatteringOctaves = 2u;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Scattering Attenuation",
+            &environmentParameters.multipleScatteringAttenuation,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringAttenuation"))
+        {
+            environmentParameters.multipleScatteringAttenuation = 0.35f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Scattering Extinction Factor",
+            &environmentParameters.multipleScatteringExtinctionFactor,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringExtinction"))
+        {
+            environmentParameters.multipleScatteringExtinctionFactor = 0.50f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Scattering Phase Factor",
+            &environmentParameters.multipleScatteringPhaseFactor,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringPhase"))
+        {
+            environmentParameters.multipleScatteringPhaseFactor = 0.50f;
+            edited = true;
+        }
+        if (ImGui::Button("Reset All Environment"))
+        {
+            stage8environment::ApplyPreset(
+                environmentParameters, Stage8EnvironmentPreset::Balanced);
+            environmentPreset = Stage8EnvironmentPreset::Balanced;
+        }
+
+        environmentParameters =
+            stage8environment::Sanitize(environmentParameters);
+        if (edited)
+            environmentPreset = Stage8EnvironmentPreset::Custom;
+
+        std::array<float, 64> skyWeights = {};
+        std::array<float, 64> groundWeights = {};
+        for (std::size_t index = 0; index < skyWeights.size(); ++index)
+        {
+            const float height = static_cast<float>(index) /
+                static_cast<float>(skyWeights.size() - 1);
+            const stage8::Weights weights = stage8::EvaluateWeights(
+                height, 0.0f, environmentParameters);
+            skyWeights[index] = weights.sky;
+            groundWeights[index] = weights.ground;
+        }
+        ImGui::PlotLines("Sky Height Weight", skyWeights.data(),
+                         static_cast<int>(skyWeights.size()), 0,
+                         "bottom 0 -> top 1", 0.0f, 1.0f,
+                         ImVec2(0.0f, 60.0f));
+        ImGui::PlotLines("Ground Height Weight", groundWeights.data(),
+                         static_cast<int>(groundWeights.size()), 0,
+                         "bottom 0 -> top 1", 0.0f, 1.0f,
+                         ImVec2(0.0f, 60.0f));
+        ImGui::TextDisabled(
+            "Analytic colors only; no Cube Map or indirect-light texture.");
     }
 
     if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1279,6 +1474,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const LightParameters& light,
                              Stage6SunPreset sunPreset,
                              Stage7PhasePreset phasePreset,
+                             const EnvironmentParameters& environment,
+                             Stage8EnvironmentPreset environmentPreset,
                              Stage4DetailPreset detailPreset,
                              Stage5WeatherPreset weatherPreset,
                              const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -1307,21 +1504,30 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
     static const char* phasePresetNames[] = {
         "off", "balanced", "silverLining", "backscatterCheck", "custom"
     };
+    static const char* environmentPresetNames[] = {
+        "off", "balanced", "strongFill", "groundCheck", "custom"
+    };
     const int presetIndex = std::clamp(static_cast<int>(detailPreset), 0, 4);
     const int weatherPresetIndex = std::clamp(static_cast<int>(weatherPreset), 0, 2);
     const int sunPresetIndex = std::clamp(static_cast<int>(sunPreset), 0, 3);
     const int phasePresetIndex = std::clamp(static_cast<int>(phasePreset), 0, 4);
+    const int environmentPresetIndex = std::clamp(
+        static_cast<int>(environmentPreset), 0, 4);
     const std::uint32_t outputIndex = std::min(m_parameters.outputMode, 14u);
     const WeatherMapGeneratorSettings generator =
         SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 7,\n"
+           << "  \"schemaVersion\": 8,\n"
            << "  \"output\": \"" << outputNames[outputIndex] << "\",\n"
            << "  \"detailPreset\": \"" << detailPresetNames[presetIndex] << "\",\n"
            << "  \"weatherPreset\": \"" << weatherPresetNames[weatherPresetIndex] << "\",\n"
            << "  \"sunPreset\": \"" << sunPresetNames[sunPresetIndex] << "\",\n"
            << "  \"phasePreset\": \"" << phasePresetNames[phasePresetIndex] << "\",\n"
+           << "  \"environmentPreset\": \""
+           << environmentPresetNames[environmentPresetIndex] << "\",\n"
+           << "  \"environmentSource\": \"analyticColorsNoExternalTexture\",\n"
+           << "  \"ambientModel\": \"heightWeightedSkyGroundDensityAo\",\n"
            << "  \"directionConvention\": \"sampleToSunWorldDirection\",\n"
            << "  \"phaseDirectionConvention\": "
               "\"cosTheta=dot(cameraToSample,sampleToSun)\",\n"
@@ -1342,6 +1548,27 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"phaseBlend\": " << light.phaseBlend << ",\n"
            << "  \"phaseIntensity\": " << light.phaseIntensity << ",\n"
            << "  \"maxPhaseFactor\": 16.000000,\n"
+           << "  \"skyColorLinear\": [" << environment.skyColor.x << ", "
+           << environment.skyColor.y << ", " << environment.skyColor.z << "],\n"
+           << "  \"skyStrength\": " << environment.skyStrength << ",\n"
+           << "  \"groundColorLinear\": [" << environment.groundColor.x << ", "
+           << environment.groundColor.y << ", " << environment.groundColor.z << "],\n"
+           << "  \"groundStrength\": " << environment.groundStrength << ",\n"
+           << "  \"ambientOcclusionStrength\": "
+           << environment.ambientOcclusionStrength << ",\n"
+           << "  \"ambientHeightInfluence\": "
+           << environment.ambientHeightInfluence << ",\n"
+           << "  \"multipleScatteringModel\": \"reusedLightOpticalDepthOctaves\",\n"
+           << "  \"multipleScatteringEnabled\": "
+           << (environment.multipleScatteringEnabled >= 0.5f ? "true" : "false") << ",\n"
+           << "  \"multipleScatteringOctaves\": "
+           << environment.multipleScatteringOctaves << ",\n"
+           << "  \"multipleScatteringAttenuation\": "
+           << environment.multipleScatteringAttenuation << ",\n"
+           << "  \"multipleScatteringExtinctionFactor\": "
+           << environment.multipleScatteringExtinctionFactor << ",\n"
+           << "  \"multipleScatteringPhaseFactor\": "
+           << environment.multipleScatteringPhaseFactor << ",\n"
            << "  \"weatherMapResolution\": [256, 256],\n"
            << "  \"weatherChannels\": {\"R\": \"coverage\", \"G\": \"cloudType\", "
               "\"B\": \"densityModifierSource\", \"A\": \"reserved\"},\n"
@@ -1405,6 +1632,8 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const LightParameters& lightParameters,
                               Stage6SunPreset sunPreset,
                               Stage7PhasePreset phasePreset,
+                              const EnvironmentParameters& environmentParameters,
+                              Stage8EnvironmentPreset environmentPreset,
                               Stage4DetailPreset detailPreset,
                               Stage5WeatherPreset weatherPreset,
                               const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -1427,7 +1656,8 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                          SaveTexturePng(directory / L"weather-map.png", weatherMapTexture) &&
                          WriteMetadata(directory / L"noise-settings.json",
                                        cloudParameters, lightParameters, sunPreset,
-                                       phasePreset, detailPreset, weatherPreset,
+                                       phasePreset, environmentParameters,
+                                       environmentPreset, detailPreset, weatherPreset,
                                        weatherGeneratorSettings, weatherMapHash,
                                        noiseSourcePath);
     m_exportStatus = success

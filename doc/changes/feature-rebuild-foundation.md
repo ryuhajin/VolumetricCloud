@@ -167,7 +167,7 @@
 - 다음 작업은 승인된 등방성 단일 산란을 보존한 채 단계 7 Dual-lobe
   Henyey-Greenstein Phase Function을 추가하는 것이다.
 
-## 10. 단계 7 Dual-lobe Phase Function 구현 중
+## 10. 단계 7 Dual-lobe Phase Function 구현 및 승인 완료
 
 - `LightParameters`와 HLSL `LightCB(b3)`를 64바이트로 확장하고 Phase Enable,
   전방/후방 `g`, lobe 혼합 비율과 적용 강도를 추가했다. 기본 프리셋은 Off라서
@@ -191,3 +191,20 @@
   디버그 출력, Light Ray 불변성과 schema 7을 확인하고 단계 7을 승인 완료했다.
 - 다음 작업은 외부 Cube Map 없이 분석적 하늘·지면 환경광과 기존 광학 깊이를
   재사용하는 저비용 다중 산란 근사를 추가하는 단계 8이다.
+
+## 11. 단계 8 환경광과 다중 산란 구현 및 승인 완료
+
+- 64바이트 `EnvironmentParameters`/`EnvironmentCB(b4)`를 추가하고 LightCB와 책임을 분리했다.
+- 외부 Cube Map·간접광 텍스처 없이 높이 기반 Sky/Ground와 밀도 기반 AO를 계산한다.
+- 기존 Light Ray 광학 깊이를 최대 네 octave로 재사용해 추가 레이 없는 다중 산란을 근사한다.
+- Environment Off/Balanced/Strong Fill/Ground Check와 Custom UI, 높이 곡선을 추가했다.
+- Ctrl+J 모드 32에서 레이 전체의 누적 직접광을 확인한다. 가시성이 낮았던
+  Sky/Ground/Multiple/AO/전체 간접광 Ctrl 디버그 모드는 제거했다.
+- Noise Lab export를 schema 8로 올리고 Environment 입력과 근사 모델을 기록한다.
+- `Stage8AmbientMath`와 `Stage8Smoke`를 추가해 전체 테스트 목표를 22개로 확장했다.
+- 2026-08-09 Debug/Release 빌드와 양 구성 CTest 22/22, HLSL 5/5,
+  schema 8 export 및 D3D11 error/corruption 부재를 재확인했다.
+- 2026-08-09 사용자 수동 검증에서 Off 회귀, Balanced 환경광, 높이별 Sky/Ground,
+  AO, 1~4 multiple octave, Phase·Light Sample 불변성과 schema 8을 모두 확인하고
+  단계 8을 승인 완료했다. 다음 작업은 단계 8 기준 실행본을 보존하고 레이마칭의
+  불필요한 표본을 줄이는 단계 9 기본 최적화와 계측이다.

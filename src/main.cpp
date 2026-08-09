@@ -2,7 +2,7 @@
 //  main.cpp  —  진입점 (WinMain)
 // ----------------------------------------------------------------------------
 //  창(Window) · 카메라(Camera) · 렌더러(Renderer)를 생성·연결하고,
-//  메인 루프에서 진단 장면과 단계 7 방향성 단일 산란 구름 패스를 그린다.
+//  메인 루프에서 진단 장면과 단계 8 환경광·다중 산란 구름 패스를 그린다.
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -51,9 +51,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage6-smoke-test") != nullptr;
     const bool requestedStage7Smoke = commandLine &&
         wcsstr(commandLine, L"--stage7-smoke-test") != nullptr;
+    const bool requestedStage8Smoke = commandLine &&
+        wcsstr(commandLine, L"--stage8-smoke-test") != nullptr;
     const bool requestedPerformanceOverlaySmoke = commandLine &&
         wcsstr(commandLine, L"--performance-overlay-smoke-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
+        requestedStage8Smoke ||
         requestedPerformanceOverlaySmoke;
     const int kWidth  = requestedSmallGpuSmoke ? 96 : 1280;
     const int kHeight = requestedSmallGpuSmoke ? 54 : 720;
@@ -72,6 +75,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage5-smoke-test") != nullptr;
     const bool stage6SmokeTest = requestedStage6Smoke;
     const bool stage7SmokeTest = requestedStage7Smoke;
+    const bool stage8SmokeTest = requestedStage8Smoke;
     const bool performanceOverlaySmokeTest = requestedPerformanceOverlaySmoke;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
@@ -96,10 +100,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 7 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | Phase Off | 외부 기본(F5)",
+                    L"VolumetricCloud - Stage 8 | 0 합성 | Y 넓은 볼륨 | N 기본 Noise | F10 기본 Detail | F4 Channel Debug | Custom Sun | Phase Off | Balanced Ambient | 외부 기본(F5)",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
-                    !stage6SmokeTest && !stage7SmokeTest &&
+                    !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
                     !performanceOverlaySmokeTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
@@ -115,6 +119,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     // 않도록 낮은 표본 수를 적용한다. 일반 사용자 실행에는 영향을 주지 않는다.
     if (smokeTest || stage1SmokeTest || stage2SmokeTest || stage3SmokeTest ||
         stage4SmokeTest || stage5SmokeTest || stage6SmokeTest || stage7SmokeTest ||
+        stage8SmokeTest ||
         performanceOverlaySmokeTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest)
     {
@@ -322,7 +327,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 7") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 8") != std::string::npos &&
                 metadata.find("\"lightRayDensitySource\": \"baseDensityWithoutDetailErosion\"") != std::string::npos)
                 foundCurrentSchema = true;
         }
@@ -407,13 +412,82 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 7") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 8") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
                 metadata.find("\"phaseDirectionConvention\": \"cosTheta=dot(cameraToSample,sampleToSun)\"") != std::string::npos)
                 foundSchema7 = true;
         }
         if (!foundSchema7)
             return 7;
+        return renderer.HasDebugLayerErrors() ? 2 : 0;
+    }
+
+    if (stage8SmokeTest)
+    {
+        renderer.EnableNoiseLabPreviews(false);
+        renderer.SetViewSamplingForSmoke(8u, 2.0f);
+        renderer.SetLightSampling(4u, 1.0f);
+        renderer.SetDebugMode(CloudDebugMode::AccumulatedDirectLighting);
+        renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+        renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
+        renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
+        renderer.Render(camera, 0.0f);
+
+        // Environment 프리셋은 Phase와 태양 프리셋을 바꾸지 않는다.
+        renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
+        renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Balanced);
+        renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::StrongFill);
+        if (renderer.SunPreset() != Stage6SunPreset::Noon ||
+            renderer.PhasePreset() != Stage7PhasePreset::Balanced ||
+            renderer.EnvironmentPreset() != Stage8EnvironmentPreset::StrongFill ||
+            sizeof(EnvironmentParameters) != 64u)
+            return 3;
+
+        renderer.EnableFrameHashCapture(true);
+        renderer.ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
+        renderer.SetDebugMode(CloudDebugMode::Composite);
+        renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Off);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t offHash = renderer.LastCloudFrameHash();
+        renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t balancedHash = renderer.LastCloudFrameHash();
+        if (offHash == 0 || balancedHash == 0 || offHash == balancedHash)
+            return 4;
+
+        // 다중 산란은 기존 Light Ray를 재사용하므로 비용 출력 해시가 같아야 한다.
+        renderer.SetDebugMode(CloudDebugMode::TotalLightSamples);
+        renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Off);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t samplesOffHash = renderer.LastCloudFrameHash();
+        renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t samplesOnHash = renderer.LastCloudFrameHash();
+        if (samplesOffHash == 0 || samplesOffHash != samplesOnHash)
+            return 5;
+
+        const std::filesystem::path exportRoot =
+            std::filesystem::temp_directory_path() / L"VolumetricCloudStage8Smoke";
+        if (!renderer.ExportNoiseLabSnapshot(exportRoot))
+            return 6;
+        bool foundSchema8 = false;
+        std::error_code exportError;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                 exportRoot, exportError))
+        {
+            if (exportError)
+                return 7;
+            if (entry.path().filename() != L"noise-settings.json")
+                continue;
+            std::string metadata;
+            if (ReadTextFile(entry.path(), metadata) &&
+                metadata.find("\"schemaVersion\": 8") != std::string::npos &&
+                metadata.find("\"environmentSource\": \"analyticColorsNoExternalTexture\"") != std::string::npos &&
+                metadata.find("\"multipleScatteringModel\": \"reusedLightOpticalDepthOctaves\"") != std::string::npos)
+                foundSchema8 = true;
+        }
+        if (!foundSchema8)
+            return 8;
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 

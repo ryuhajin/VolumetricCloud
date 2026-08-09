@@ -1,5 +1,5 @@
 // ============================================================================
-//  NoiseLab.h - 단계 7 밀도·태양광·Phase Function 개발용 ImGui UI
+//  NoiseLab.h - 단계 8 밀도·태양광·환경광 개발용 ImGui UI
 // ============================================================================
 #pragma once
 
@@ -16,6 +16,7 @@
 
 #include "WeatherMap.h"
 #include "LightParameters.h"
+#include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
 
 enum class NoiseSliceAxis : std::uint32_t
@@ -75,6 +76,8 @@ public:
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
                     Stage7PhasePreset& phasePreset,
+                    EnvironmentParameters& environmentParameters,
+                    Stage8EnvironmentPreset& environmentPreset,
                     Stage5WeatherPreset weatherPreset,
                     const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                     ID3D11ShaderResourceView* weatherMapSrv,
@@ -107,6 +110,8 @@ public:
                         const LightParameters& lightParameters,
                         Stage6SunPreset sunPreset,
                         Stage7PhasePreset phasePreset,
+                        const EnvironmentParameters& environmentParameters,
+                        Stage8EnvironmentPreset environmentPreset,
                         Stage4DetailPreset detailPreset,
                         Stage5WeatherPreset weatherPreset,
                         const WeatherMapGeneratorSettings& weatherGeneratorSettings,
@@ -136,6 +141,8 @@ private:
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
                            Stage7PhasePreset& phasePreset,
+                           EnvironmentParameters& environmentParameters,
+                           Stage8EnvironmentPreset& environmentPreset,
                            Stage5WeatherPreset weatherPreset,
                            const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                            ID3D11ShaderResourceView* weatherMapSrv,
@@ -162,6 +169,8 @@ private:
                        const LightParameters& lightParameters,
                        Stage6SunPreset sunPreset,
                        Stage7PhasePreset phasePreset,
+                       const EnvironmentParameters& environmentParameters,
+                       Stage8EnvironmentPreset environmentPreset,
                        Stage4DetailPreset detailPreset,
                        Stage5WeatherPreset weatherPreset,
                        const WeatherMapGeneratorSettings& weatherGeneratorSettings,

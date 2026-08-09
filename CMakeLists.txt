@@ -1,6 +1,6 @@
 # ============================================================================
 #  VolumetricCloud - DirectX11 + HLSL 레이마칭 학습 프로젝트
-#  재구축 단계 7: Dual-lobe Henyey-Greenstein Phase Function
+#  재구축 단계 8: 분석적 환경광과 저비용 다중 산란
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -189,6 +189,19 @@ add_test(NAME VolumetricCloud.Stage7PhaseMath
          COMMAND VolumetricCloud.Stage7PhaseMathTests)
 add_test(NAME VolumetricCloud.Stage7Smoke
          COMMAND VolumetricCloud --stage7-smoke-test)
+
+# 단계 8의 분석적 환경광, AO와 광학 깊이 재사용 다중 산란을 검사한다.
+add_executable(VolumetricCloud.Stage8AmbientMathTests
+    tests/Stage8AmbientMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage8AmbientMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage8AmbientMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage8AmbientMath
+         COMMAND VolumetricCloud.Stage8AmbientMathTests)
+add_test(NAME VolumetricCloud.Stage8Smoke
+         COMMAND VolumetricCloud --stage8-smoke-test)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

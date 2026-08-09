@@ -312,3 +312,30 @@ stepScattering = stage6StepScattering × phaseFactor
 Phase Off나 Intensity 0은 배율 1이므로 단계 6 결과를 보존한다. Phase는 직접 산란량만
 바꾸고 View/Light 투과율, 광학 깊이와 step 수에는 영향을 주지 않는다. 방향은 View Ray
 전체에서 일정하므로 픽셀당 한 번만 계산한다. 환경광과 다중 산란은 단계 8에서 별도로 더한다.
+
+## 단계 8: 분석적 환경광과 저비용 다중 산란
+
+외부 Cube Map 없이 현재 표본의 정규화 높이 `h`와 최종 밀도로 하늘·지면광을 만든다.
+
+```text
+skyWeight = lerp(1, h, ambientHeightInfluence)
+groundWeight = 1 - h
+ambientOcclusion = exp(-finalDensity × ambientOcclusionStrength)
+sky = skyColor × skyStrength × skyWeight × ambientOcclusion
+ground = groundColor × groundStrength × groundWeight × ambientOcclusion
+```
+
+하늘·지면광은 방향이 없는 근사이므로 Phase를 적용하지 않는다. 각 색은 직접광과 같은
+`viewTransmittance × densityIntegral × scatteringCoefficient`로 적분한다.
+
+다중 산란은 추가 Light Ray를 쏘지 않고 이미 계산된 `lightOpticalDepth`를 최대 네 번
+다른 감쇠율로 재해석한다. 반복할수록 에너지, 소멸과 Phase 방향성이 감소한다.
+
+```text
+octaveLightT = exp(-lightOpticalDepth × extinctionScale)
+octavePhase = lerp(1, phaseFactor, phaseScale)
+multiple += sunRadiance × energy × octaveLightT × octavePhase
+```
+
+Off는 Sky/Ground/Multiple을 정확히 0으로 만들어 단계 7 직접광을 보존한다. 이 근사는
+실제 간접광 맵이나 IBL이 아니며 단계 14에서 대기·Cube Map 입력으로 교체할 수 있다.

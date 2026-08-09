@@ -1,6 +1,6 @@
 # 아키텍처
 
-현재는 재구축 단계 7이다. 태양과 카메라 방향으로 Dual-lobe HG Phase Factor를 계산한다.
+현재는 재구축 단계 8이다. 직접광에 분석적 하늘·지면 환경광과 저비용 다중 산란을 더한다.
 
 ## 모듈과 책임
 
@@ -11,6 +11,7 @@
 | `NoiseLab` | ImGui 조절, 세 축 512² 단면 타깃, WIC PNG와 JSON 내보내기 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
 | `LightParameters` | 64바이트 태양·Light Ray·Dual-lobe Phase 설정 |
+| `EnvironmentParameters` | 64바이트 하늘·지면·AO·다중 산란 설정 |
 | `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, EMA 성능 통계 |
 | `WeatherMap` | 256² RGBA8 Uniform/2-scale Periodic Perlin/Channel Debug 픽셀 생성과 해시 |
 | `DiagnosticScene.hlsl` | 평면·박스의 불투명 색상과 장치 깊이 출력 |
@@ -18,6 +19,7 @@
 | `CloudParameters.hlsli` / `Noise.hlsli` / `Weather.hlsli` | 공유 128바이트 설정과 Base/Detail/Weather 밀도 함수 |
 | `LightParameters.hlsli` / `CloudLighting.hlsli` | 공유 64바이트 조명 설정과 Base-only Light Ray |
 | `PhaseFunction.hlsli` | 방향 부호를 고정한 전방·후방 HG와 적용 배율 |
+| `CloudEnvironment.hlsli` | 높이 환경광, 밀도 AO와 광학 깊이 재사용 octave |
 | `VolumetricClouds.hlsl` / `NoiseLab.hlsl` | Beer-Lambert 구름 합성 / XY·XZ·YZ 단면 출력 |
 | `Stage1VolumeMath.h` | GPU와 독립적으로 같은 경계 조건과 투과율을 검사하는 CPU 기준 구현 |
 | `Stage2NoiseMath.h` | value noise, coverage와 바람 좌표의 CPU 기준 구현 |
@@ -26,6 +28,7 @@
 | `Stage5WeatherMath.h` | Weather UV, coverage remap과 cloud type 프로파일 CPU 기준 구현 |
 | `Stage6LightMath.h` | 광학 깊이, Base 선택과 단일 산란 CPU 기준 구현 |
 | `Stage7PhaseMath.h` | HG, 방향 내적, Dual-lobe와 안전 범위 CPU 기준 구현 |
+| `Stage8AmbientMath.h` | 높이 가중치, AO와 multiple octave CPU 기준 구현 |
 
 ## 프레임 순서
 
@@ -38,9 +41,10 @@
 7. Weather Base가 있을 때만 Detail Noise로 깎는다.
 8. 최종 밀도가 있는 View 표본에서 태양 방향 AABB 이탈까지 Base Density를 적분한다.
 9. 카메라→표본과 표본→태양 방향 내적으로 픽셀당 Dual-lobe Phase Factor를 한 번 계산한다.
-10. 태양·View 투과율과 Phase Factor로 직접 단일 산란을 누적한다.
-11. Noise Lab이 단면·조명·Phase UI와 성능 오버레이를 그린다.
-12. GPU Frame timestamp를 닫은 뒤 VSync 설정에 따라 `Present(1, 0)` 또는 `Present(0, 0)`을 호출한다.
+10. 높이·밀도로 하늘/지면 환경광과 AO를 계산하고 기존 광학 깊이로 다중 산란을 근사한다.
+11. Direct/Sky/Ground/Multiple을 같은 View 구간에 누적한다.
+12. Noise Lab이 단면·조명·환경광 UI와 성능 오버레이를 그린다.
+13. GPU Frame timestamp를 닫은 뒤 VSync 설정에 따라 Present한다.
 
 ## 프레임 성능 계측
 
@@ -96,6 +100,19 @@ LightCB는 CloudCB와 분리해 `b3`에 바인딩한다. 방향은 빛의 진행
 직접 산란량에만 적용하며 Light 투과율과 광학 깊이를 바꾸지 않는다. Phase Off에서는
 최종 배율이 정확히 1이다.
 
+### `EnvironmentParameters` / `EnvironmentCB` (`b4`, 64바이트)
+
+| 묶음 | 필드 | 기본값과 역할 |
+|---|---|---|
+| 0 | `skyColor(float3)`, `skyStrength` | `(0.35,0.50,0.75)`, `0.20`; linear 하늘색과 세기 |
+| 1 | `groundColor(float3)`, `groundStrength` | `(0.18,0.12,0.08)`, `0.08`; linear 지면색과 세기 |
+| 2 | `ambientOcclusionStrength`, `ambientHeightInfluence`, `multipleScatteringEnabled`, `multipleScatteringOctaves` | `1.25`, `0.65`, `1`, `2`; AO·높이·octave 제어 |
+| 3 | `multipleScatteringAttenuation`, `multipleScatteringExtinctionFactor`, `multipleScatteringPhaseFactor`, padding | `0.35`, `0.50`, `0.50`, `0`; 반복 에너지·광학 깊이·방향성 감소 |
+
+EnvironmentCB는 `b4`에 바인딩하며 외부 SRV나 sampler를 추가하지 않는다. 기본 Balanced
+프리셋은 환경광을 켜고 Off는 Sky/Ground/Multiple을 0으로 만들어 단계 7 결과를 보존한다.
+Cube Map이나 실제 대기 입력은 단계 14에서 `skyColor` 평가만 교체할 수 있다.
+
 ### Weather Map 리소스
 
 `t2`는 CPU 생성 `DXGI_FORMAT_R8G8B8A8_UNORM` 256² Weather Map이고 `s1`은
@@ -119,7 +136,7 @@ Noise Lab은 512² 단면 타깃 세 벌과 실제 Weather SRV를 사용한다. 
 R/G/B seed·주기·가중치·bias·contrast와 coverage threshold/softness, density의
 coverage influence를 편집한다. Live Update는 CPU 생성·업로드를 최대 10Hz로
 제한하고 조작이 끝난 값은 즉시 반영한다. 내보내기는 세 단면과 256²
-`weather-map.png`, 모든 생성 설정·맵 해시·LightCB와 태양·Phase 프리셋을 담은 schema 7 JSON을 기록한다.
+`weather-map.png`, 모든 생성 설정·맵 해시·Light/Environment 설정을 담은 schema 8 JSON을 기록한다.
 Generator는 `Weather map`과 분리된 최상위 헤더로 기본 펼쳐지고, 그 안의 R/G/B
 채널은 각각 기본으로 접힌다. 헤더와 생성 설정은 F2/F4에서도 조작할 수 있으며,
 이때 바꾼 값은 보존되고 F3로 돌아오면 Periodic Perlin에 반영된다. 상위 헤더를
@@ -127,7 +144,7 @@ Generator는 `Weather map`과 분리된 최상위 헤더로 기본 펼쳐지고,
 처리는 표시 상태와 독립적으로 계속된다.
 
 XY/XZ/YZ 단면과 Output·Slice 조작부는 항상 표시한다. 그 아래 `Shared cloud
-parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional light`, `Phase Function`, `Animation` 대분류는 독립적으로
+parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional light`, `Phase Function`, `Environment & Multiple Scattering`, `Animation` 대분류는 독립적으로
 접고 펼칠 수 있고 최초에는 모두 펼쳐진다. 헤더를 접어도 CPU 시간, Slice
 애니메이션, CloudParameters와 3D preview 갱신은 중단하지 않는다.
 
@@ -161,6 +178,7 @@ parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional lig
 | `Shift+P` / `Shift+U` | Total Light Samples heatmap / Direct Single Scattering |
 | `Shift+B` / `Shift+M` | Phase cosTheta / Forward HG lobe |
 | `Shift+C` / `Shift+V` | Backward HG lobe / 최종 Dual Phase Factor |
+| `Ctrl+J` | 누적 Direct |
 | `F2`~`F4` | Uniform Legacy / Periodic Perlin / Channel Debug Weather Map |
 | `F5`~`F7` / `F8` | 외부 고정 카메라 / AABB 내부 카메라 |
 | `Y` / `Q` | 실행 기본 넓은 XZ / 작은 수치 검증 AABB |
@@ -179,7 +197,7 @@ parameters`, `Height profile`, `Detail erosion`, `Performance`, `Directional lig
 ## 의도적으로 제외한 기능
 
 - 외부 Weather PNG 로딩·페인팅·precipitation, fBm/Worley와 shadow
-- 환경광과 다중 산란, Light Ray Detail Erosion
+- Cube Map/IBL·실제 대기 입력, Light Ray Detail Erosion
 - `transmittanceThreshold` early exit와 adaptive stepping
 - 저해상도, temporal reconstruction, 영구 캐시와 프리셋
 

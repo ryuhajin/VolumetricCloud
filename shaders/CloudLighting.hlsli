@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudLighting.hlsli - 단계 6 Light Ray와 단계 7 방향성 단일 산란
+//  CloudLighting.hlsli - 단계 6 Light Ray와 단계 7 방향성 단일 산란 기반
 // ----------------------------------------------------------------------------
 //  렌더링 흐름에서의 위치
 //  1. View Ray가 현재 구름 표본의 최종 밀도를 구한다.
@@ -9,7 +9,8 @@
 //  5. 단계 7 Phase Factor를 방향성 산란량에 곱해 View Ray에 더한다.
 //
 //  Detail Erosion은 비용과 고주파 깜박임을 분리하기 위해 Light Ray에서 생략한다.
-//  단계 8 환경광/다중 산란, 단계 9 Early Exit는 아직 없다.
+//  단계 8 환경광/다중 산란은 CloudEnvironment.hlsli가 이 결과 위에 더한다.
+//  단계 9 Early Exit는 아직 없다.
 // ============================================================================
 #ifndef VCLOUD_CLOUD_LIGHTING_HLSLI
 #define VCLOUD_CLOUD_LIGHTING_HLSLI
