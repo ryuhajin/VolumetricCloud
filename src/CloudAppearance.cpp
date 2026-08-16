@@ -400,6 +400,23 @@ float EvaluateAppearanceBaseDensity(float globalCoverage,
         std::max(weatherDensityModifier, 0.0f);
 }
 
+float EvaluateAppearanceLightBaseDensity(float globalCoverage,
+                                         float weatherCoverage, float rawNoise,
+                                         float typedFootprintScale,
+                                         float typedVerticalProfile,
+                                         float densityMultiplier,
+                                         float weatherDensityModifier,
+                                         bool insideLocalColumn)
+{
+    if (!insideLocalColumn || typedVerticalProfile <= 0.0f ||
+        EvaluateAppearanceWeatherSupport(weatherCoverage) <= 0.0f)
+        return 0.0f;
+    return EvaluateAppearanceBaseDensity(
+        globalCoverage, weatherCoverage, rawNoise, typedFootprintScale,
+        typedVerticalProfile, densityMultiplier, weatherDensityModifier,
+        insideLocalColumn);
+}
+
 float ResolvePipelineComparisonTime(bool comparisonActive,
                                     float normalEffectiveTime)
 {

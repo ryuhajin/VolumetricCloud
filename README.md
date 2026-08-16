@@ -21,7 +21,7 @@ Planar Layer, 1.5~7.5km 전역 층과 XZ별 1~6km 로컬 두께, 64km Periodic P
 - 안전한 slab 방식 Ray-AABB 교차와 카메라 내부 처리
 - 별도 32바이트 DomainCB로 선택하는 AABB 회귀 모드와 Open World 1.5~7.5km Y 평면층 교차
 - View 50km·40~50km fade·Light 20km 유한 추적과 교차 구간 디버그 출력
-- Open World Light `125m/160` 품질 budget과 `62.5m/320` reference GPU 비교
+- Open World Light `250m/80` 기본 budget과 `62.5m/320` reference GPU 비교
 - 길이·step·바람 `×S`, noise 주파수·extinction `÷S`를 함께 적용하는 13-2 상사 프리셋
 - Scene Depth보다 뒤쪽 안개를 제외하는 구간 제한
 - 월드 위치 기반 단일 저주파 3D value noise

@@ -267,13 +267,19 @@ lightT   = exp(-lightTau)
 | 용도 | Light step | 최대 steps | Base 최소 521.74m 파장당 표본 |
 |---|---:|---:|---:|
 | fine reference | 62.5m | 320 | 8.35 |
-| Open World 품질 기본 | 125m | 160 | 4.17 |
-| 이전 기준 비교 | 250m | 80 | 2.09 |
+| 이전 품질 비교 | 125m | 160 | 4.17 |
+| Open World 기본 | 250m | 80 | 2.09 |
 
-96×54 Ground Horizon GPU 비교에서 품질 기본은 reference 대비 Light T MAE
-`0.00000584`, 누적 직접광 MAE `0.00000070`, Composite MAE `0.00000115`였다. 250m 비교는
-각각 `0.00002203`, `0.00000350`, `0.00000575`로 더 큰 오차를 보여 125m/160을 현재
-Open World 기본으로 선택했다. 이는 정확성 budget이며 단계 9의 early exit나 coarse march가 아니다.
+2026-08-17 사용자 화면 비교에서 세 후보의 형상 차이가 크지 않고 `250m/80`이 가장
+빨라 새 기본으로 선택했다. 새 Dense/Stratus/Cumulus F6의 `62.5m/320` reference 대비
+Composite MAE는 각각 `0.00002579/0.00000912/0.00001599`, P99는
+`0.00029521/0.00010890/0.00017973`로 기존 `0.01/0.03` gate를 통과했다.
+
+Light Ray는 먼저 Weather support, 로컬 높이와 세로 profile이 명백히 0인지 검사해 Base
+Texture3D fetch를 생략한다. 나머지는 View Base와 같은 수식을 적분하며, 누적 `lightTau`가
+`-ln(0.0001)=9.21034`에 도달하면 중단한다. 반환값은 0으로 강제하지 않고
+`exp(-lightTau)`를 유지한다. 이 최적화는 2026-08-17 사용자가 13-5 Light 범위로 승인한
+예외이며, View early exit·coarse march는 단계 9까지 미룬다.
 
 Local Inspector는 Base world size가 90m라 가장 짧은 파장이 약 3.91m다. 따라서 km 후보를
 적용하면 62.5m조차 파장당 한 표본보다 작아 그림자 방향이 달라지는 alias가 생긴다. Local은

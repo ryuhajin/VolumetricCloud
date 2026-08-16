@@ -17,10 +17,12 @@ namespace stage13optics
 constexpr double kOpenWorldLightTraceMeters = 20000.0;
 constexpr double kReferenceLightStepMeters = 62.5;
 constexpr std::uint32_t kReferenceLightSteps = 320u;
-constexpr double kQualityLightStepMeters = 125.0;
-constexpr std::uint32_t kQualityLightSteps = 160u;
-constexpr double kBaselineLightStepMeters = 250.0;
-constexpr std::uint32_t kBaselineLightSteps = 80u;
+constexpr double kPreviousQualityLightStepMeters = 125.0;
+constexpr std::uint32_t kPreviousQualityLightSteps = 160u;
+constexpr double kDefaultLightStepMeters = 250.0;
+constexpr std::uint32_t kDefaultLightSteps = 80u;
+constexpr double kLightEarlyExitTransmittance = 1.0e-4;
+constexpr double kLightEarlyExitOpticalDepth = 9.210340371976184;
 constexpr double kSmallestBaseWavelengthMeters = 12000.0 / 23.0;
 constexpr double kSmallestDetailWavelengthMeters = 2000.0 / 5.0;
 constexpr double kDisplayShoulderKnee = 0.80;

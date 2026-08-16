@@ -55,6 +55,17 @@ int main()
             Near(steps16.transmittance, steps32.transmittance, 1e-5f),
             "constant density must converge for 8/16/32 light steps");
 
+    const auto earlyExit = MarchConstantDensity(
+        20000.0f, 2.0f, 0.001f, 250.0f, 80u, 1.0e-4f);
+    Require(earlyExit.stepCount < 80u && earlyExit.transmittance > 0.0f &&
+            earlyExit.transmittance <= 1.0e-4f,
+            "opaque Light rays must stop after reaching the fixed cutoff");
+    const auto sparseFull = MarchConstantDensity(
+        20000.0f, 0.01f, 0.0001f, 250.0f, 80u, 1.0e-4f);
+    Require(sparseFull.stepCount == 80u &&
+            Near(sparseFull.transmittance, std::exp(-0.02f), 1e-5f),
+            "sparse Light rays must preserve the full Beer-Lambert integral");
+
     const float scattering = IntegrateSingleScattering(
         0.5f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 0.75f);
     Require(scattering > 0.0f && std::isfinite(scattering),

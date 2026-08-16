@@ -116,6 +116,19 @@ int main()
               EvaluateAppearanceHorizontalCoverage(0.68f, 0.8f, 0.1f)))
         Fail("vertical profile must multiply density once, not shrink threshold");
 
+    const float lightReference = EvaluateAppearanceLightBaseDensity(
+        0.45f, 0.8f, 0.95f, 0.5f, 0.75f, 1.25f, 1.1f, true);
+    const float baseReference = EvaluateAppearanceBaseDensity(
+        0.45f, 0.8f, 0.95f, 0.5f, 0.75f, 1.25f, 1.1f, true);
+    if (!Near(lightReference, baseReference, 1.0e-6f) ||
+        EvaluateAppearanceLightBaseDensity(
+            0.40f, 0.0f, 0.95f, 0.5f, 0.75f, 1.20f, 1.0f, true) != 0.0f ||
+        EvaluateAppearanceLightBaseDensity(
+            0.40f, 0.8f, 0.95f, 0.5f, 0.0f, 1.20f, 1.0f, true) != 0.0f ||
+        EvaluateAppearanceLightBaseDensity(
+            0.45f, 0.8f, 0.95f, 0.5f, 0.75f, 1.25f, 1.0f, false) != 0.0f)
+        Fail("Light-only Base Density must match or reject proven empty samples");
+
     WeatherMapGeneratorSettings generator;
     generator.coverage.seed = 987654u;
     generator.coverage.macroPeriod = 7u;

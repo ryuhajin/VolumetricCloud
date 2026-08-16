@@ -76,7 +76,7 @@ F1의 상태는 다음 다섯 가지다.
 
 Stratus는 낮고 넓은 층과 완만한 상단, Cumulus는 더 높은 돔과 뚜렷한 중심 질량을 보여야
 한다. 타입 전환은 Weather seed/period, Texture3D, wind/offset, 카메라·도메인, 태양·Phase·
-환경광, View `512×100m`, Light `160×125m`를 바꾸지 않는다.
+환경광, View `512×100m`, Light `80×250m`를 바꾸지 않는다.
 
 2026-08-17 사용자 검증에서 기존 Coverage `0.72/0.68`은 양의 밀도 표본을 지나치게 넓혀
 Stratus와 Cumulus를 하나의 큰 덩어리처럼 보이게 했다. 새 `0.40/0.45`는 Weather 배치와

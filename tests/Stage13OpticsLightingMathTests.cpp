@@ -36,22 +36,26 @@ int main()
                           kReferenceLightStepMeters,
                           kReferenceLightSteps) == kReferenceLightSteps &&
             RequiredSteps(kOpenWorldLightTraceMeters,
-                          kQualityLightStepMeters,
-                          kQualityLightSteps) == kQualityLightSteps &&
+                          kPreviousQualityLightStepMeters,
+                          kPreviousQualityLightSteps) == kPreviousQualityLightSteps &&
             RequiredSteps(kOpenWorldLightTraceMeters,
-                          kBaselineLightStepMeters,
-                          kBaselineLightSteps) == kBaselineLightSteps,
+                          kDefaultLightStepMeters,
+                          kDefaultLightSteps) == kDefaultLightSteps,
             "62.5/125/250m candidates must cover the 20km Light trace");
     Require(Near(SamplesPerWavelength(kSmallestBaseWavelengthMeters,
                                       kReferenceLightStepMeters),
                  8.34782608695652, 1e-12) &&
             Near(SamplesPerWavelength(kSmallestBaseWavelengthMeters,
-                                      kQualityLightStepMeters),
+                                      kPreviousQualityLightStepMeters),
                  4.17391304347826, 1e-12) &&
             Near(SamplesPerWavelength(kSmallestBaseWavelengthMeters,
-                                      kBaselineLightStepMeters),
+                                      kDefaultLightStepMeters),
                  2.08695652173913, 1e-12),
             "Light candidates must expose the shortest Base wavelength budget");
+    Require(Near(kLightEarlyExitTransmittance, 1.0e-4) &&
+            Near(kLightEarlyExitOpticalDepth,
+                 -std::log(kLightEarlyExitTransmittance), 1.0e-12),
+            "Light early exit must use the fixed 0.01 percent threshold");
     Require(Near(SamplesPerWavelength(kSmallestDetailWavelengthMeters, 100.0),
                  4.0),
             "100m View steps must retain four samples per shortest Detail wave");

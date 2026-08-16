@@ -23,7 +23,7 @@
 - [x] 13-4C: F1~F4 역할 분리와 Local Cloud Inspector — 입력 우선순위, 장면 이동·복원, 5단계 파이프라인 비교와 Weather/Base/Thickness 품질 재조정 — 2026-08-16 사용자 승인
 - [ ] 13-4D: Local Inspector를 대체하는 단일 포트폴리오 디버깅 씬 — 구현 이력 보존, 사용자 검증의 점유율·형상·명암 피드백은 13-4E가 대체
 - [ ] 13-4E: Dense Broken-Sky와 Stratus/Cumulus/Custom — density 결합·결정적 Compare·schema 29 구현 및 자동 검증, 사용자 렌더 승인 대기
-- [ ] 13-5: km 광학, 조명과 Detail 거리 LOD — 기존 결과는 보존하되 13-4E Dense Mixed F6 재승인 대기
+- [ ] 13-5: km 광학, 조명과 Detail 거리 LOD — Light `80×250m`·전용 precheck/조기 종료 자동 검증 완료, Silver Lining 외곽광 재승인 대기
 - [ ] 13-6: Earth-scale 구형 shell 비교
 - [ ] 13-7: 평면/구형 성능 판정과 사용자 최종 승인
 
@@ -32,7 +32,7 @@
 
 ## 단계 13 승인 후
 
-- [ ] 단계 9: Weather/Base precheck, empty-space skip, early exit와 거리별 step
+- [ ] 단계 9: View Weather/Base precheck, empty-space skip, View early exit와 거리별 step
 - [ ] 단계 10: 저해상도 구름 타깃과 depth/transmittance-aware 업샘플링
 - [ ] 단계 11: Jitter, Temporal Reprojection과 history rejection
 - [ ] 단계 12: Cloud Shadow Map과 Light Cache

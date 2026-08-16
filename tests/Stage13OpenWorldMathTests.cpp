@@ -39,7 +39,7 @@ int main()
             Near(value.maxLightTraceMeters, 20000.0),
             "view, fade, and light distances must match the km contract");
     Require(Near(value.viewStepMeters, 100.0) && value.maxViewSteps == 512u &&
-            Near(value.lightStepMeters, 125.0) && value.maxLightSteps == 160u &&
+            Near(value.lightStepMeters, 250.0) && value.maxLightSteps == 80u &&
             Near(value.lightRayBiasMeters, 1.0),
             "view and light sampling budgets must match the 13-3 contract");
     Require(Near(value.baseNoiseCyclesPerMeter, 0.00035) &&
@@ -86,10 +86,10 @@ int main()
             RequiredSteps(value.maxViewTraceMeters, value.viewStepMeters) <=
                 value.maxViewSteps,
             "50 km view trace must fit in the 512-step budget");
-    Require(RequiredSteps(value.maxLightTraceMeters, value.lightStepMeters) == 160u &&
+    Require(RequiredSteps(value.maxLightTraceMeters, value.lightStepMeters) == 80u &&
             RequiredSteps(value.maxLightTraceMeters, value.lightStepMeters) <=
                 value.maxLightSteps,
-            "20 km light trace must fit exactly in the 160-step quality budget");
+            "20 km light trace must fit exactly in the 80-step default budget");
     Require(Near(WeatherTexelMeters(value), 250.0),
             "64 km / 256 weather map must equal 250 m per texel");
     Require(Near(ViewDistanceFade(40000.0, value), 1.0) &&
@@ -102,8 +102,8 @@ int main()
     light.lightStepSize = static_cast<float>(value.lightStepMeters);
     light.lightRayBias = static_cast<float>(value.lightRayBiasMeters);
     light = stage6light::Sanitize(light);
-    Require(light.maxLightSteps == 160u &&
-            Near(light.lightStepSize, 125.0) && Near(light.lightRayBias, 1.0),
+    Require(light.maxLightSteps == 80u &&
+            Near(light.lightStepSize, 250.0) && Near(light.lightRayBias, 1.0),
             "Light sanitize must preserve the open-world sampling budget");
 
     std::cout << "Stage13OpenWorldMath passed\n";

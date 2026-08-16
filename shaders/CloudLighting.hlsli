@@ -10,7 +10,8 @@
 //
 //  Detail Erosion은 비용과 고주파 깜박임을 분리하기 위해 Light Ray에서 생략한다.
 //  단계 8 환경광/다중 산란은 CloudEnvironment.hlsli가 이 결과 위에 더한다.
-//  단계 9 Early Exit는 아직 없다.
+//  13-5 Light 전용 공백 precheck와 T<=0.0001 조기 종료를 사용한다.
+//  View Ray early exit와 coarse march는 단계 9까지 미룬다.
 // ============================================================================
 #ifndef VCLOUD_CLOUD_LIGHTING_HLSLI
 #define VCLOUD_CLOUD_LIGHTING_HLSLI
@@ -20,11 +21,13 @@
 #include "LightParameters.hlsli"
 #include "PhaseFunction.hlsli"
 
+static const float kLightEarlyExitOpticalDepth = 9.21034037;
+
 struct LightMarchResult
 {
     float transmittance; // 태양빛 생존 비율. 1=막힘 없음, 0=완전히 소멸.
     float opticalDepth;  // Base Density × 소멸계수 × 거리의 누적값.
-    float stepCount;     // 실제 Light Ray 표본 수. 디버그 표시를 위해 float로 보관.
+    float stepCount;     // 조기 종료까지 실제 실행한 Light 표본 수. float로 보관.
 };
 
 // 현재 View 표본에서 태양까지 구름이 얼마나 빛을 가리는지 계산한다.
@@ -65,6 +68,7 @@ LightMarchResult ComputeLightTransmittance(
 
             // 4. Weather·Cloud Type·Height를 포함한 Base만 누적한다.
             float opticalDepth = 0.0;
+            uint executedStepCount = 0u;
             [loop]
             for (uint stepIndex = 0u; stepIndex < stepCount; ++stepIndex)
             {
@@ -72,16 +76,19 @@ LightMarchResult ComputeLightTransmittance(
                     ((float)stepIndex + 0.5) * actualStepLength;
                 float3 lightSamplePosition =
                     rayOrigin + safeDirection * sampleDistance;
-                float baseDensity = EvaluateBaseCloudDensity(
-                    lightSamplePosition, time).baseDensity;
+                float baseDensity = EvaluateLightCloudDensity(
+                    lightSamplePosition, time);
                 opticalDepth += max(baseDensity, 0.0) *
                                 safeExtinction * actualStepLength;
+                executedStepCount = stepIndex + 1u;
+                if (opticalDepth >= kLightEarlyExitOpticalDepth)
+                    break;
             }
 
             // 5. 광학 깊이가 클수록 지수적으로 태양빛이 줄어든다.
             result.opticalDepth = max(opticalDepth, 0.0);
             result.transmittance = saturate(exp(-result.opticalDepth));
-            result.stepCount = (float)stepCount;
+            result.stepCount = (float)executedStepCount;
         }
     }
     return result;

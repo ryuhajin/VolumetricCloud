@@ -83,6 +83,14 @@ float EvaluateAppearanceBaseDensity(float globalCoverage,
                                     float densityMultiplier,
                                     float weatherDensityModifier,
                                     bool insideLocalColumn);
+float EvaluateAppearanceLightBaseDensity(float globalCoverage,
+                                         float weatherCoverage,
+                                         float rawNoise,
+                                         float typedFootprintScale,
+                                         float typedVerticalProfile,
+                                         float densityMultiplier,
+                                         float weatherDensityModifier,
+                                         bool insideLocalColumn);
 float ResolvePipelineComparisonTime(bool comparisonActive,
                                     float normalEffectiveTime);
 

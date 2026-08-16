@@ -96,7 +96,8 @@ Depth, Accumulated Direct, View Transmittance, Light Transmittance다. 기존 HL
 `0.68/1.15/0.00035m^-1/0.18`이며 결정적 Weather의 R non-zero/core 점유율은
 `79.62%/49.11%`다. Stratus는 `87.31%/56.60%`, Cumulus는 `73.82%/42.07%`다.
 세 외형은 seed·period, Texture3D, wind/offset, camera/domain, sun/phase/environment와
-View `512×100m`·Light `160×125m`를 변경하지 않는다.
+View `512×100m`·Light `80×250m`를 변경하지 않는다. Stratus/Cumulus Coverage는
+2026-08-17 사용자 피드백에 따라 `0.40/0.45`로 낮췄다.
 
 F1 `Cloud Type Settings`는 Stratus, Cumulus, Custom과 `Save Current as Custom`을 제공한다.
 외형 소유 슬라이더를 움직이면 `Custom Unsaved`가 되며 자동 저장하지 않는다. 저장 파일은
@@ -192,7 +193,7 @@ Physical에서는 읽지 않는다. 따라서 Coverage·Type·Thickness 경계�
 상사 검증용이다.
 
 13-4E/13-5 Open World는 Planar `1500~7500m`, View/Fade/Light `50/40/20km`, View
-`100m/512`, Light `125m/160`, Weather `64km`, Base/Detail `0.00035/0.0025 cycle/m`,
+`100m/512`, Light `250m/80`, Weather `64km`, Base/Detail `0.00035/0.0025 cycle/m`,
 density `1.15`, extinction `0.00035/m`, albedo `1`을 원자적으로 적용한다. 최대 6km의
 단순 extinction scale은 τ=2.1이며 실제 τ에는 density/noise/profile이 들어간다. 일반 실행만 이
 프리셋과 Periodic Perlin으로 시작하며 숨김 자동 테스트는 Stage 8 AABB 기본값을 보존한다.
@@ -280,7 +281,7 @@ Similarity 프리셋은 LOD를 꺼 상사 회귀 화면을 보존한다.
 |---|---|---|
 | 0 | `directionToSun(float3)`, `sunIntensity` | normalize `(0.45,0.80,0.35)`, `1.0`; 표본→태양 월드 방향과 세기 |
 | 1 | `sunColor(float3)`, `singleScatteringAlbedo` | `(1,0.95,0.85)`, `1.0`; linear RGB와 `ω=σs/σt` 무차원 산란 비율 `[0,1]` |
-| 2 | `maxLightSteps`, `lightStepSize`, `lightRayBias`, `phaseEnabled` | Stage 8 `16/0.25m/0.01m`, Open World `160/125m/1m`; Phase Off 기본값 |
+| 2 | `maxLightSteps`, `lightStepSize`, `lightRayBias`, `phaseEnabled` | Stage 8 `16/0.25m/0.01m`, Open World `80/250m/1m`; Phase Off 기본값 |
 | 3 | `forwardScatteringG`, `backwardScatteringG`, `phaseBlend`, `phaseIntensity` | `0.65`, `-0.25`, `0.80`, `0.25`; 전방·후방 HG와 적용 강도 |
 
 LightCB는 CloudCB와 분리해 `b3`에 바인딩한다. 방향은 빛의 진행 방향이 아니라
@@ -289,8 +290,11 @@ LightCB는 CloudCB와 분리해 `b3`에 바인딩한다. 방향은 빛의 진행
 는 `1/m`, `singleScatteringAlbedo=ω=σs/σt`는 무차원이고 `σs=ωσt`다.
 13-2의 1000× `lightStepSize=250m`, `lightRayBias=10m`와 13-5 reference `320 steps`를
 보존하도록 길이 필드의 sanitize 상한은 각각 1000m와 100m이며 step 수 상한은 512다.
-HLSL bias도 CPU와 같은 0~100m 범위를 사용한다. Light Ray는
-`EvaluateBaseCloudDensity`만 호출한다. Phase는
+HLSL bias도 CPU와 같은 0~100m 범위를 사용한다. Open World Light Ray는
+Weather support·로컬 높이·세로 profile이 0인 표본을 Base Texture3D 조회 전에 거르고,
+나머지는 View Base와 같은 수식을 사용한다. 누적 광학 깊이가 `9.21034`에 도달해
+투과율이 `0.0001` 이하가 되면 해당 Light Ray만 종료하며 `Total Light Samples`는 실제
+실행 횟수를 표시한다. Phase는
 직접 산란량에만 적용하며 Light 투과율과 광학 깊이를 바꾸지 않는다. Phase Off에서는
 최종 배율이 정확히 1이다. raw HG/dual 진단은 16까지 보존하지만 LDR 합성에 적용하는 최종
 배율은 2.5로 제한한다. Silver Lining은 `g=0.75`, blend `0.90`, intensity `0.10`으로

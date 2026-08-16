@@ -1017,19 +1017,19 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextDisabled(
-            "Unified 50km scene: reference 62.5m, quality 125m, baseline 250m.");
+            "Unified 50km scene: reference 62.5m, previous 125m, default 250m.");
         if (ImGui::Button("Reference 62.5m / 320"))
         {
             lightParameters.lightStepSize = 62.5f;
             lightParameters.maxLightSteps = 320u;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Quality 125m / 160"))
+        if (ImGui::Button("Previous Quality 125m / 160"))
         {
             lightParameters.lightStepSize = 125.0f;
             lightParameters.maxLightSteps = 160u;
         }
-        if (ImGui::Button("Baseline 250m / 80"))
+        if (ImGui::Button("Default 250m / 80"))
         {
             lightParameters.lightStepSize = 250.0f;
             lightParameters.maxLightSteps = 80u;
@@ -1285,7 +1285,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##LightSteps"))
         {
-            lightParameters.maxLightSteps = 160u;
+            lightParameters.maxLightSteps = 80u;
             lightChanged = true;
         }
         lightChanged |= ImGui::SliderFloat("Light Step Size", &lightParameters.lightStepSize,
@@ -1294,7 +1294,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##LightStepSize"))
         {
-            lightParameters.lightStepSize = 125.0f;
+            lightParameters.lightStepSize = 250.0f;
             lightChanged = true;
         }
         lightChanged |= ImGui::SliderFloat("Light Ray Bias", &lightParameters.lightRayBias,

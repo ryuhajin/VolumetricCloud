@@ -15,7 +15,8 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
 **단계 13-4C 개발 UI와 Local Cloud Inspector**는 2026-08-16 사용자 승인을 받았습니다.
 13-4C 이력은 보존하되 현재 런타임은 **단계 13-4D 단일 포트폴리오 디버깅 씬**이
 Local Inspector를 대체합니다. 현재는 **단계 13-4E Dense Broken-Sky와 구름 타입 프리셋**의
-자동 검증을 완료하고 사용자 렌더 승인과 새 Dense Mixed F6 기준 13-5 재승인을 기다립니다.
+Coverage 보정과 13-5 Light Ray 비용 보완을 진행했으며, Silver Lining 외곽 입체감 해결과
+사용자 렌더 재승인을 기다립니다.
 실행 순서는 `13 → 9 → 10 → 11 → 12 → 14 → 15`입니다.
 
 ## 빠른 사실 (Quick Facts)
@@ -80,8 +81,8 @@ Local Inspector를 대체합니다. 현재는 **단계 13-4E Dense Broken-Sky와
 2. **브랜치/커밋 규칙**을 따릅니다 → [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md)
 3. **빌드가 깨지지 않게** 유지합니다. 변경 후 위 빌드 명령으로 확인하세요.
 4. [포트폴리오 계획](doc/VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md)의 단계 경계와 사용자 승인
-   게이트를 지킵니다. 현재는 13-4E 사용자 렌더 승인과 Dense Mixed 기준 13-5 km 광학·조명·
-   Detail 거리 LOD 재승인을 기다리며, 두 사용자 승인 전에는 13-6 shell이나 단계 9 이후 최적화·저해상도·temporal·
+   게이트를 지킵니다. 2026-08-17 사용자가 승인한 13-5 Light 전용 precheck/조기 종료 외에,
+   13-4E/13-5 사용자 렌더 승인 전에는 13-6 shell이나 단계 9의 View 최적화·저해상도·temporal·
    Cloud Shadow를 구현하지 않습니다.
 
 ## 로컬 단계별 구현 문서 규칙

@@ -49,7 +49,7 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 ## 현재 범위와 보관된 측정
 
 현재 사용자 화질 승인 대상은 단계 13-4E Dense Broken-Sky와 그 기본값에서 다시 확인하는 단계 13-5다.
-View 512와 Light 160은 품질 시작값이며 GPU 시간과 Texture3D 생성 시간은 텍스트로 기록하되 13-5의
+View 512와 Light 80은 품질 시작값이며 GPU 시간과 Texture3D 생성 시간은 텍스트로 기록하되 13-5의
 자동 실패 기준으로 사용하지 않는다.
 최적화 합격 판정은 사용자 화면 승인 뒤 단계 9에서 시작한다.
 두 모드의 공식 p95 비교는 형태·광학이 같은 입력을 공유하는 13-6~13-7에서 수행한다.
@@ -87,7 +87,7 @@ Cloud ms 절차를 그대로 따른다.
 ## 단계 13-3 Open World smoke
 
 `Stage13OpenWorldSmoke`는 96×54 숨김 float 타깃에서 View `100m/512`, Light
-`125m/160` 실제 budget을 실행한다. Ground Zenith/Horizon/Inside/Above의 Entry,
+`250m/80` 실제 budget을 실행한다. Ground Zenith/Horizon/Inside/Above의 Entry,
 Segment, Actual Step, Transmittance와 Composite가 유한하고 구분되는지만 검사하며 PNG를
 만들거나 성능 합격을 판정하지 않는다.
 
@@ -139,12 +139,22 @@ Base/Final Density, View τ, Light T가 finite·non-black이고 각 preset hash�
 ## 단계 13-5 km 광학·조명 smoke
 
 `Stage13OpticsLightingSmoke`는 단일 씬 F6 Ground Horizon 고정 장면에서 Light
-`62.5m/320`을 fine reference로 만들고 `125m/160`, `250m/80`의 Light Transmittance,
-누적 직접광과 Composite를 float readback 비교한다. 품질 기본 `125m/160`은 MAE와 P99
-각각 `0.01/0.03` 이하를 gate로 사용한다. 13-4E Dense Mixed 재측정의 Light T/누적 직접광/
-Composite MAE는 `0.00001641/0.00000270/0.00000508`, P99는
-`0.00024670/0.00002789/0.00005551`였다. `250m/80`은 역사 비교 보고만 남기며 같은 재측정의
-Composite MAE는 `0.00002579`다.
+`62.5m/320`을 fine reference로 만들고 기본 `250m/80`과 이전 품질 `125m/160`의 Light
+Transmittance, 누적 직접광과 Composite를 float readback 비교한다. Dense/Stratus/Cumulus
+모두 기본 후보의 MAE와 P99 `0.01/0.03` 이하를 gate로 사용한다. 새 기본의 Light T/Direct/
+Composite MAE는 Dense `0.00007532/0.00001377/0.00002579`, Stratus
+`0.00001735/0.00000548/0.00000912`, Cumulus
+`0.00008399/0.00000871/0.00001599`로 통과했다.
+
+Light 전용 scalar density 경로는 Weather/높이/profile 공백에서 Base fetch를 생략하고,
+`T≤0.0001`에서 실제 Light 반복을 종료한다. `Total Light Samples`는 예정 수가 아니라 실제
+실행 수다. View early exit와 coarse march는 여전히 단계 9 범위다.
+
+2026-08-17 Release 실측은 첨부 화면과 같은 `1920×925` client, VSync Off, 180-frame
+워밍업, 고정 time에서 수행했다. GPU Cloud EMA는 Stratus F5/F6 `7.8925/8.2290ms`,
+Cumulus F5/F6 `13.9028/14.7525ms`로 이번 변경의 `16.67ms` 게이트를 모두 통과했다.
+이는 단계 13-5 Light 비용 변경의 한정 게이트이며, 위의 단계 13-7 1080p p95 기준을
+대체하지 않는다.
 
 같은 smoke는 Detail LOD Off와 32~48km On의 factor 출력이 실제로 달라지고, compute 생성
 readback에서 계산한 weighted neutral mean이 유한한 `[0,1]`인지 검사한다. 기본 mean은

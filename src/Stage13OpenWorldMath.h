@@ -39,8 +39,8 @@ struct Parameters
     double maxLightTraceMeters = 20000.0;
     double viewStepMeters = 100.0;
     std::uint32_t maxViewSteps = 512;
-    double lightStepMeters = 125.0;
-    std::uint32_t maxLightSteps = 160;
+    double lightStepMeters = 250.0;
+    std::uint32_t maxLightSteps = 80;
     double lightRayBiasMeters = 1.0;
     double baseNoiseCyclesPerMeter = 0.00035;
     double detailNoiseCyclesPerMeter = 0.0025;

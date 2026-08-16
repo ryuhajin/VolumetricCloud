@@ -286,6 +286,56 @@ CloudDensitySample EvaluateBaseCloudDensity(float3 worldPosition, float timeSeco
     return sample;
 }
 
+// Light Ray는 최종 scalar Base Density만 필요하다. Physical Shape에서는 먼저
+// Weather와 로컬 높이를 검사해 확실히 빈 표본이면 Base Texture3D fetch를 생략한다.
+// 남은 표본은 EvaluateBaseCloudDensity와 같은 coverage/profile 식을 사용한다.
+float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
+{
+    float lightDensity = 0.0;
+
+    if (cloudShapeMode != kCloudShapeWeatherPhysicalThickness)
+    {
+        CloudDensitySample legacySample = (CloudDensitySample)0;
+        legacySample = EvaluateBaseCloudDensity(worldPosition, timeSeconds);
+        lightDensity = legacySample.baseDensity;
+    }
+    else
+    {
+        WeatherSample weather = (WeatherSample)0;
+        weather = SampleWeatherMap(worldPosition, timeSeconds);
+        float localThicknessMeters = EvaluatePhysicalLocalThickness(
+            weather.localThicknessPotential, weather.cloudType);
+        float localHeightFraction = EvaluatePhysicalLocalHeight(
+            worldPosition.y, localThicknessMeters);
+
+        if (localHeightFraction >= 0.0 && localHeightFraction <= 1.0)
+        {
+            float typedVerticalProfile = EvaluatePhysicalTypedVerticalProfile(
+                localHeightFraction, weather.cloudType);
+            float weatherSupport = smoothstep(0.02, 0.20, weather.coverage);
+
+            if (typedVerticalProfile > 0.0 && weatherSupport > 0.0)
+            {
+                float typedFootprintScale = EvaluatePhysicalTypedFootprintScale(
+                    localHeightFraction, weather.cloudType);
+                float weatherFactor = lerp(0.70, 1.00, weather.coverage);
+                float footprintFactor = lerp(0.80, 1.00, typedFootprintScale);
+                float effectiveShapeCoverage = saturate(
+                    coverage * weatherFactor * footprintFactor);
+                NoiseFieldSample baseNoise = (NoiseFieldSample)0;
+                baseNoise = SampleBaseShapeNoise(worldPosition, timeSeconds);
+                float thresholdDensity = RemapCoverage(
+                    baseNoise.value, effectiveShapeCoverage);
+                lightDensity = weatherSupport * thresholdDensity *
+                    typedVerticalProfile * max(densityMultiplier, 0.0) *
+                    weather.densityModifier;
+            }
+        }
+    }
+
+    return lightDensity;
+}
+
 // Base Shape 뒤에 선택적으로 Detail Erosion을 적용한다.
 // sampleDetail=false, 빈 Base, strength=0 경로는 Detail 함수 자체를 호출하지 않는다.
 // 이 조기 반환은 단계 4의 기능 요구이며 단계 9의 레이 스텝 최적화와는 별개다.

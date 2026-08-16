@@ -89,10 +89,12 @@ F6의 13-5 재승인을 기다리며, 그 전에는 단계 9의
 early exit/coarse march, 단계 10~12의 저해상도·temporal·Light Cache·Cloud Shadow와
 단계 14의 실제 대기 입력을 추가하지 않는다.
 
-13-5의 Open World 품질 기본은 View `100m/512`, Light `125m/160`이다. Light
-`62.5m/320` fine reference와 `250m/80` 이전 기준을 96×54 float readback으로 비교하며,
-품질 기본의 Light T/누적 직접광/Composite MAE는 각각 `0.00000584/0.00000070/
-0.00000115`로 자동 gate를 통과했다. HLSL Light bias는 CPU와 같은 `0~100m`를 사용해
+13-5의 Open World 품질 기본은 View `100m/512`, Light `250m/80`이다. Light
+`62.5m/320` fine reference와 `125m/160` 이전 품질을 96×54 float readback으로 비교하며,
+Dense/Stratus/Cumulus의 기본 Composite MAE는 각각
+`0.00002579/0.00000912/0.00001599`로 자동 gate를 통과했다. Light 전용 경로는 확실한
+Weather/높이/profile 공백을 Base fetch 전에 거르고 `T≤0.0001`에서만 종료한다.
+HLSL Light bias는 CPU와 같은 `0~100m`를 사용해
 1000× 상사 프리셋의 10m를 보존한다. Detail은 실제 `32³` weighted mean
 `0.44994098`로 32~48km에서 수렴하고 끝 거리 밖에서 texture fetch를 생략한다.
 

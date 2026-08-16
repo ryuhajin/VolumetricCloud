@@ -487,17 +487,6 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
         CloudDebugMode::AccumulatedDirectLighting,
         CloudDebugMode::Composite,
     };
-    std::map<CloudDebugMode, CloudDiagnosticFrame> reference;
-    renderer.SetLightSampling(
-        stage13optics::kReferenceLightSteps,
-        static_cast<float>(stage13optics::kReferenceLightStepMeters));
-    for (CloudDebugMode mode : modes)
-    {
-        if (!renderer.CaptureCloudDiagnosticFrame(
-                camera, 0.0f, mode, reference[mode]))
-            return 3;
-    }
-
     bool qualityPassed = true;
     const struct Candidate
     {
@@ -506,42 +495,70 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
         float stepMeters;
         bool gated;
     } candidates[] = {
-        { "Quality", stage13optics::kQualityLightSteps,
-          static_cast<float>(stage13optics::kQualityLightStepMeters), true },
-        { "Baseline", stage13optics::kBaselineLightSteps,
-          static_cast<float>(stage13optics::kBaselineLightStepMeters), false },
+        { "Default", stage13optics::kDefaultLightSteps,
+          static_cast<float>(stage13optics::kDefaultLightStepMeters), true },
+        { "PreviousQuality", stage13optics::kPreviousQualityLightSteps,
+          static_cast<float>(stage13optics::kPreviousQualityLightStepMeters), false },
     };
-    for (const Candidate& candidate : candidates)
+    const struct AppearanceCase
     {
-        renderer.SetLightSampling(candidate.steps, candidate.stepMeters);
+        const char* name;
+        CloudAppearancePreset preset;
+    } appearances[] = {
+        { "DenseMixed", CloudAppearancePreset::DenseMixedDefault },
+        { "Stratus", CloudAppearancePreset::Stratus },
+        { "Cumulus", CloudAppearancePreset::Cumulus },
+    };
+    for (const AppearanceCase& appearance : appearances)
+    {
+        if (!renderer.ApplyCloudAppearancePreset(appearance.preset))
+            return 3;
+        std::map<CloudDebugMode, CloudDiagnosticFrame> reference;
+        renderer.SetLightSampling(
+            stage13optics::kReferenceLightSteps,
+            static_cast<float>(stage13optics::kReferenceLightStepMeters));
         for (CloudDebugMode mode : modes)
         {
-            CloudDiagnosticFrame frame;
             if (!renderer.CaptureCloudDiagnosticFrame(
-                    camera, 0.0f, mode, frame))
+                    camera, 0.0f, mode, reference[mode]))
                 return 4;
-            const bool rgb = mode != CloudDebugMode::LightTransmittance;
-            const auto metric = stage13diagnostics::CompareFrames(
-                reference.at(mode), frame, nullptr, nullptr,
-                rgb ? ComparisonKind::Rgb : ComparisonKind::Scalar,
-                0.05, false);
-            const bool passed = metric.mae <= 0.01 && metric.p99 <= 0.03;
-            std::ostringstream line;
-            line << std::fixed << std::setprecision(8)
-                 << "[STAGE13-5][LIGHT][" << candidate.name << "]["
-                 << DebugModeName(mode) << "] MAE=" << metric.mae
-                 << " RMSE=" << metric.rmse << " P99=" << metric.p99
-                 << " MAX=" << metric.maximum << ' '
-                 << (candidate.gated ? (passed ? "PASS" : "FAIL") : "REPORT");
-            WriteDiagnosticLine(line.str());
-            if (candidate.gated)
-                qualityPassed = qualityPassed && passed;
+        }
+        for (const Candidate& candidate : candidates)
+        {
+            renderer.SetLightSampling(candidate.steps, candidate.stepMeters);
+            for (CloudDebugMode mode : modes)
+            {
+                CloudDiagnosticFrame frame;
+                if (!renderer.CaptureCloudDiagnosticFrame(
+                        camera, 0.0f, mode, frame))
+                    return 4;
+                const bool rgb = mode != CloudDebugMode::LightTransmittance;
+                const auto metric = stage13diagnostics::CompareFrames(
+                    reference.at(mode), frame, nullptr, nullptr,
+                    rgb ? ComparisonKind::Rgb : ComparisonKind::Scalar,
+                    0.05, false);
+                const bool passed = metric.mae <= 0.01 && metric.p99 <= 0.03;
+                std::ostringstream line;
+                line << std::fixed << std::setprecision(8)
+                     << "[STAGE13-5][LIGHT][" << appearance.name << "]["
+                     << candidate.name << "][" << DebugModeName(mode)
+                     << "] MAE=" << metric.mae << " RMSE=" << metric.rmse
+                     << " P99=" << metric.p99 << " MAX=" << metric.maximum
+                     << ' ' << (candidate.gated
+                         ? (passed ? "PASS" : "FAIL") : "REPORT");
+                WriteDiagnosticLine(line.str());
+                if (candidate.gated)
+                    qualityPassed = qualityPassed && passed;
+            }
         }
     }
 
+    if (!renderer.ApplyCloudAppearancePreset(
+            CloudAppearancePreset::DenseMixedDefault))
+        return 3;
     renderer.SetLightSampling(
-        stage13optics::kQualityLightSteps,
-        static_cast<float>(stage13optics::kQualityLightStepMeters));
+        stage13optics::kDefaultLightSteps,
+        static_cast<float>(stage13optics::kDefaultLightStepMeters));
     renderer.SetCloudLodForValidation(false, 32000.0f, 48000.0f);
     CloudDiagnosticFrame lodOff;
     if (!renderer.CaptureCloudDiagnosticFrame(
@@ -1506,6 +1523,7 @@ int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
         motionPassed
         ? 0 : 8;
 }
+
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
