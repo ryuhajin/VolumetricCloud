@@ -176,7 +176,8 @@
   Henyey-Greenstein 기준을 구현했다. 카메라→표본과 표본→태양이 같은 방향이면
   `cosTheta=+1`이며 전방 산란이 강해지는 부호 규칙을 CPU/HLSL에 동일하게 적용한다.
 - 후방/전방 lobe를 독립 계산한 뒤 Blend하고, Phase Intensity로 등방성 1에서 결과로
-  전환한다. 잘못된 방향과 비정상 입력은 1로 복귀하며 최종 배율은 0~16으로 제한한다.
+  전환한다. 잘못된 방향과 비정상 입력은 1로 복귀한다. raw 진단은 0~16이며 13-5의
+  LDR 합성 적용값은 별도 0~2.5 제한을 사용한다.
 - Phase는 픽셀당 한 번만 평가하고 직접 산란량에만 곱한다. View/Light 투과율,
   광학 깊이와 Light Step 수는 변경하지 않는다.
 - Noise Lab에 Off/Balanced/Silver Lining/Backscatter Check 프리셋, 파라미터 편집과
@@ -219,3 +220,405 @@
   HLSL 5/5, Stage8Smoke와 D3D11 error/corruption 부재를 재확인했다.
 - 단계 8의 2026-08-09 사용자 승인은 유지한다. 단계 9 이후의 순서·범위·성능 기준을
   새로 승인하기 전까지 렌더링 코드 변경을 중단한다.
+
+## 13. 포트폴리오 계획 승인과 단계 13-0 단위 계약
+
+- 실행 순서를 `13 → 9 → 10 → 11 → 12 → 14 → 15`로 확정하고 평면층 승인 뒤
+  Earth-scale 구형 shell을 같은 밀도장으로 비교한다.
+- `Stage13ScaleMath` CPU 기준을 추가해 길이 S배, cycle/m과 extinction 1/S배에서
+  noise 좌표, Weather UV, 광학 깊이와 파장당 표본 수가 보존되는지 검사한다.
+- 단계 13-0에서는 `src/`의 렌더러와 `shaders/`를 변경하지 않는다. 자동 검증과 사용자
+  문서 승인이 끝난 뒤에만 단계 13-1 평면층 교차를 시작한다.
+
+## 14. 단계 13-1 AABB/평면층 교차 분리
+
+- 2026-08-10 사용자가 단계 13-0을 승인해 단위 계약을 잠갔다.
+- 32바이트 `CloudDomainParameters`/`CloudDomainCB(b5)`를 추가하고 AABB Reference와
+  Planar Layer가 View/Light의 같은 교차 인터페이스를 사용하게 했다.
+- 평면층 시작값은 바닥 1,500m, 두께 3,000m, View 50km, 40~50km fade,
+  Light 20km다. 수평 레이, 내부 시작, Scene Depth와 비정상 입력을 유한하게 처리한다.
+- Noise Lab에서 도메인과 거리 값을 선택하고 Entry/Exit/Segment/Actual Step을 출력한다.
+  F5~F8은 선택한 도메인의 지상 위보기·수평선·내부·위쪽 카메라다. 기존 meter급 박스로는
+  Planar 폐색을 판정하기 어려워 주황 박스를 3m 층고 기준 `20×60×20m` 20층 건물로
+  확대하고, `Shift+F5`에 건물 뒤 평면층을 함께 보는 DOMAIN-DEPTH 카메라를 추가했다.
+- Noise Lab JSON을 schema 13으로 올려 도메인 종류와 meter 단위 범위를 기록한다.
+- `Stage13CloudDomainMath`와 `Stage13DomainSmoke`를 추가해 전체 CTest를 25개로 확장했다.
+  13-1에서는 교차만 분리하며 기존 density/noise/step/extinction의 km 재조정은 13-2 이후다.
+- 최종 코드 기준 Debug/Release 빌드, 양 구성 CTest 25/25, HLSL 5개 엔트리의
+  `/Od /WX`·`/O3 /WX`, D3D11 error/corruption 부재를 확인했다. 13-1 사용자 렌더
+  승인 전에는 13-2를 시작하지 않는다.
+
+## 15. 단계 13-2 기존 noise 단계적 상사 확대
+
+- 2026-08-10 사용자가 13-1 교차·DOMAIN-DEPTH 화면을 승인해 13-2를 시작했다.
+- Noise Lab에 순서 독립적인 1×/10×/100×/1000× 버튼과 파장·step·파장당 표본·대표
+  광학 깊이 진단을 추가했다. 프리셋은 Uniform Weather와 Stage 8 형태 기준을 다시 적용한다.
+- `Renderer::ApplyStage13SimilarityScale`은 AABB/평면층/추적 거리/View·Light step·bias·
+  Weather 크기·세 바람 속도를 S배하고 Base/Detail 주파수와 extinction을 1/S배한다.
+- `Ctrl+F5`는 원점의 진단 건물을 피한 `x=40×S` 위치를 같은 정규화 구도로 바라본다.
+  1000×의 `-1~2km` 층과 16km Weather는 비교값이며 13-3 실제값이 아니다.
+- `Stage13ScaleMath`는 도메인 거리·bias·바람 좌표 불변식까지 확장했고,
+  `Stage13DomainSmoke`가 네 b1/b3/b5 런타임 프리셋과 HLSL 실행을 검사한다.
+- Noise Lab export는 schema 14, `implementationStage=13-2`, `similarityScale`을 기록한다.
+- Debug/Release 빌드와 양 구성 전체 CTest 25/25가 통과했다. Debug 13.31초,
+  Release 17.90초였고 두 구성의 Stage13DomainSmoke와 D3D11 debug-layer가 통과했다.
+## 16. 단계 13-2 배율 블록화 코드 진단
+
+- PNG 없이 320×180 float GPU 출력을 readback해 Ray/Noise/Density/Lighting/Composite의
+  MAE, RMSE, P99, 최대 오차, mismatch 연결 영역을 CTest 텍스트로 기록한다.
+- `Stage13SimilarityCameraMath`와 `Stage13SimilarityGpu`를 추가해 전체 테스트는 27개다.
+- 첫 측정에서 현재 `x=40×S` 경로는 10×부터 GPU Ray 게이트가 실패하고 100×/1000×에서
+  오차가 확대됐다. 배율 clip만으로는 Noise/Density가 회복되지 않았고 원점 중심 조건에서
+  회복되어 `VIEW_PROJECTION_TRANSLATION_PRECISION`으로 분류했다.
+- 진단 테스트의 실패는 의도한 검출 결과이며 수정과 사용자 재검증 전에는 13-2를 승인하지 않는다.
+## 17. 단계 13-2 translation-free 카메라 레이
+
+- `CameraCB/cbCamera`를 224바이트로 확장해 `invProjection`과 translation이 제거된
+  `invViewRotation`을 추가했다. 기존 `invViewProj`는 Scene Depth 복원 전용으로 유지한다.
+- Cloud PS는 NDC를 View Space에서 역투영하고 `w=0` 방향에 카메라 회전만 적용한다.
+- 순수 상사 GPU 비교에서 고정 meter 진단 장면을 제외해 Scene Depth 비상사 영역이
+  Noise/Density 지표에 섞이지 않게 했다. 폐색은 기존 Stage13DomainSmoke가 검사한다.
+- 수정 후 1000× CPU/GPU Ray 최대 오차는 각각 `0.00001369°`, `0.00001625°`이며,
+  Final Density MAE `0.00000025`, 마스크·연결 mismatch 0으로 자동 게이트를 통과했다.
+- Lighting과 Composite는 계속 보고 전용이며 큰 배율 차이는 다음 원인 분석 대상으로 남긴다.
+  직접광 적분의 `1/extinction` 항은 S배 증가하지만 `scatteringCoefficient`가 유지되는 단위
+  불일치를 우선 원인 후보로 기록했다.
+
+## 18. 단계 13-2 단일 산란 알베도와 조명 상사
+
+- 단위가 불명확하던 `scatteringCoefficient`를 무차원
+  `singleScatteringAlbedo(ω=σs/σt)`로 교체하고 기본값 1, 범위 `[0,1]`로 고정했다.
+- `extinctionCoefficient=σt(1/m)`, `σs=ωσt(1/m)` 관계를 명시하고 직접광·Sky·Ground·
+  Multiple 공통 진폭을 `viewT × ω × (1-stepT)`로 바꿨다. `σt=0`이면 산란도 0이다.
+- 다중 산란 octave 모델은 유지하며 알베도는 카메라로 들어오는 최종 산란 사건에 한 번 적용한다.
+- 상사 프리셋은 알베도 1을 재설정하되 배율하지 않는다. Noise Lab slider는 `[0,1]`,
+  JSON은 schema 15와 `singleScatteringAlbedo`를 기록하며 이전 필드는 내보내지 않는다.
+- CPU는 알베도 선형성·sanitize·zero extinction·1×~1000× 상사와 `σs`의 `1/S` 변화를
+  검사한다. Debug GPU Current 1000× Accumulated Direct/Composite MAE는 각각
+  `0.00036347`/`0.00070073`으로 보고 목표 `0.01`을 통과했다.
+- Debug/Release 전체 CTest 27/27이 각각 15.17초/19.86초에 통과했으며 PNG는 생성하지 않았다.
+
+## 19. 단계 13-3 실제 오픈 월드 스케일
+
+- 2026-08-11 사용자가 13-2의 1×~1000× 화면 체크를 완료하고 최종 승인했다.
+- 일반 실행 기본값을 Planar `1500~4500m`, View `50km`, 40~50km fade, 64km
+  Periodic Perlin Weather와 지상 수평선 카메라로 전환했다. 자동 테스트는 이전 AABB
+  초기값을 유지한다.
+- `Stage13OpenWorldParameters`가 View `100m/512`, Light `250m/80`, Base/Detail
+  `0.00035/0.0025 cycle/m`, density `1`, extinction `0.0005/m`, albedo `1`과
+  Base/Detail/Weather 바람 `12/18/8m/s`를 한곳에서 정의한다.
+- Noise Lab은 `Open World` 버튼, Base/Detail 파장당 표본, View/Light budget, 수직 τ와
+  Weather texel 크기를 표시한다. Actual Step은 budget 안을 파랑→초록, 초과를 노랑→빨강으로 표시한다.
+- JSON은 schema 16, `implementationStage=13-3`, `stage13Preset`을 기록하며 Open
+  World/Custom의 `similarityScale`은 `null`이다.
+- `Stage13OpenWorldMath`와 `Stage13OpenWorldSmoke`를 추가해 전체 테스트를 29개로 확장했다.
+  Smoke는 임의 Weather seed·주기·가중치를 먼저 적용해도 Open World가 기본 Periodic
+  Perlin hash와 동일한 b1/b3/b5로 원자 복구되는지 검사한다.
+- 최종 코드 기준 Debug/Release 빌드와 CTest 29/29가 각각 15.99초/21.33초에 통과했다.
+  HLSL 5개 entry도 `/Od /WX`와 `/O3 /WX`에서 모두 통과했고 Open World smoke에
+  D3D11 error/corruption은 없었다.
+  3D texture, 거리 LOD, Early Exit와 조명 재설계는 현재 범위에 포함하지 않는다.
+
+## 20. 단계 13-4 Base/Detail Texture3D
+
+- 2026-08-11 사용자가 13-3 Open World의 카메라·Actual Step 화면을 확인하고 승인했다.
+- 일반 Open World는 seed 1337의 Base `128³ RGBA8`와 Detail `32³ RGBA8` Texture3D를
+  사용한다. Similarity 및 이전 단계 자동 회귀는 `ProceduralLegacy`를 유지한다.
+- `NoiseVolume.hlsl` compute shader가 periodic gradient Perlin-Worley와 Worley 대역을
+  생성한다. 현재 world scale은 Base XZ 8km/Y 6km, Detail 2km이고 GPU 메모리는 각각 8MiB와 0.125MiB다.
+- `NoiseVolumeCB(b6)` 96바이트, Base `t3`, Detail `t4`를 C++/HLSL/문서에 함께 추가했다.
+  핫리로드는 VS/PS/CS와 새 볼륨 생성이 모두 성공해야 원자적으로 교체한다.
+- Noise Lab은 source 전환·결정적 재생성, 채널/결합/타일 경계 진단, 규격·파장당 표본·
+  hash·생성 시간을 표시한다. JSON은 schema 18과 volume 규격·seed·hash, Base Y world size와 로컬 높이 설정을 기록한다.
+- `Stage13NoiseVolumeMath`와 `Stage13NoiseVolumeSmoke`를 추가해 전체 테스트는 31개다.
+  PNG 없이 CPU/GPU 기준 복셀, 분산·채널 hash, 재생성 결정성, seam, cache 왕복,
+  다섯 카메라의 유한·구분 출력을 텍스트로 검사한다.
+- 최종 코드 기준 Debug/Release CTest 31/31이 각각 53.27초/67.83초에 통과했다.
+  HLSL 7개 entry도 `/Od /WX`와 `/O3 /WX`에서 모두 통과했고 D3D11
+  error/corruption은 없었다. Debug GPU 생성/readback 보고값은 49.605ms였고
+  seam 실제 최대 차이는 `0.00027466`이었다.
+- 거리 LOD·mip·제품용 영구 cache·광학 재조정은 13-4 범위에서 제외하며 사용자 화면
+  승인 전에는 13-5로 넘어가지 않는다.
+- 2026-08-12 최초 Texture3D 동작 확인 뒤 사용자가 모든 구름의 두께가 같은 쿠키틀 모양을
+  피드백했다. Weather A를 `localHeightPotential`로 전환하고 A/G로 XZ별 로컬 상단을
+  계산하도록 보완했다. 밑면은 1,500m로 공유하고 Base UV는 XZ와 Y를 분리했다.
+- CloudCB 예약 float 3개를 minimum thickness/variation/cumulus boost로 교체해 128바이트를
+  유지했다. Weather Height/Local Top/Local Height 진단과 schema 18을 추가했고,
+  Stage5 CPU와 GPU smoke에서 A 결정성·seam·상단 단조성·비균일 Local Top을 검증한다.
+- 보완 후 Debug/Release CTest 31/31을 각각 56.34초/71.36초에 통과했고 HLSL 7 entry도
+  `/Od /WX`, `/O3 /WX`에서 통과했다. 자동 PNG는 생성하지 않았으며 사용자 화면 재승인을 기다린다.
+- 2026-08-12 사용자 F6 재검증에서 수평 질량에 비해 높이 변화가 여전히 작다는 피드백을
+  받았다. 64km Weather 배치는 반복 방지를 위해 유지하고 Base XZ만 16km→8km로 줄여
+  지배 파장을 XZ 1.6km/Y 1.2km(`4:3`)로 맞췄다. 최소 로컬 두께도 0.30→0.40,
+  즉 900m→1.2km로 올렸다.
+- 종횡비 보완 후 Debug/Release CTest 31/31을 각각 52.94초/68.16초에 통과했다.
+  Similarity GPU와 Noise Volume GPU smoke도 통과했으며 PNG는 생성하지 않았다.
+
+## 21. 단계 13-4B Weather 기반 물리 두께와 세로 형상
+
+- 쿠키틀처럼 상단이 비슷해 보이는 문제를 분포 테스트로 재현했다. Open World 전역 도메인을
+  `1,500~7,500m`로 넓히고 Weather A를 `Local Thickness Potential`로 재정의했다.
+- 밀도 경로를 `Weather → 타입별 1~6km 물리 두께 → Typed Vertical Profile → Base 3D
+  Shape → Detail 3D Erosion` 순서로 분리했다. Stratus/Mixed/Cumulus는 서로 다른 bottom/top
+  fade와 상부 질량을 사용하고 타입 구간에서 연속 보간한다.
+- `CloudShapeCB(b7)` 64바이트를 추가했다. Open World는 물리 두께 mode, Similarity와 구형
+  회귀는 Legacy mode를 사용한다. 기존 CloudCB의 로컬 상단 필드는 회귀 보존용으로 남겼다.
+- Base Texture3D는 XYZ `6,000m`, 주파수 `{3,6,9,12}`로 통일했고 Detail은 XYZ
+  `2,000m`, `{2,3,4,5}`로 조정했다. 100m View step에서 최소 samples/wavelength는
+  Base 5, Detail 4다. cache version은 2로 올려 구형 주파수 cache를 무효화했다.
+- 최대 6km 수직 경로에서도 대표 광학 깊이 `τ=1.5`를 유지하도록 Open World extinction을
+  `0.00025/m`로 조정했다. 조명 적분 모델과 step budget은 바꾸지 않았다.
+- JSON은 schema 19이며 Weather A 계약, 타입별 두께·프로파일, 새 Texture3D 주파수를 기록한다.
+  `Stage13WeatherShapeMath/Gpu`를 추가해 전체 테스트는 33개다. PNG는 생성하지 않고 CPU
+  분포와 실제 HLSL float 단면을 텍스트로 검사한다.
+- 최종 Debug/Release 빌드와 CTest는 각각 33/33을 통과했다. 전체 실행 시간은
+  71.10초/93.20초였고 HLSL 7개 entry도 `/Od /WX`, `/O3 /WX`에서 모두 통과했다.
+  Release GPU 단면은 상단 span `1854.75737m`, 표준편차 `600.08451m`, 천장 도달률
+  `0`, CPU/HLSL 두께 최대 오차 `0.00072m`, 프로파일 최대 오차 `0`을 보고했다.
+- 2026-08-13 사용자 피드백에서 F1과 단축키의 의미를 이해하기 어렵고 F6이 주황 건물
+  내부에서 시작하며 휠 줌이 너무 느리다는 문제가 확인됐다. `Stage13CameraPresets.h`로
+  F5~F8 position/target을 공통화하고 일반 Open World 카메라에서는 진단 장면을 숨겼다.
+  `Shift+F5`만 Scene Depth 건물을 켜며 일반/Shift 휠은 1.25×/2× 지수 줌을 사용한다.
+- `STAGE13_4B_DEBUGGING_GUIDE.md`에 전체 F1 UI·단축키·색 판독·형상 실습·원인표를
+  추가했고 `Stage13CameraControlMath`를 더해 전체 CTest는 34개가 됐다.
+- 최종 Debug/Release CTest `34/34`가 각각 `72.72초/92.00초`에 통과했다. HLSL 7개
+  entry도 `/Od /WX`, `/O3 /WX`에서 모두 통과했고 자동 PNG는 생성하지 않았다.
+
+## 22. 단계 13-4B 세로 옆면 shape threshold 보완
+
+- 사용자 렌더에서 가변 상단은 보이지만 구름 몸통의 세로 옆면이 직선으로 남는 문제를
+  확인했다. Local Thickness는 XZ 기둥의 상단만 바꾸고, 기존 profile은 threshold 뒤
+  밀도에 곱해져 0보다 큰 구간의 XZ support를 충분히 줄이지 못한 것이 원인이었다.
+- Physical mode의 밀도 경로를 `Typed Shape Profile → global×Weather shape coverage →
+  Base Noise remap → density multiplier → Detail erosion`으로 바꿨다. Profile은 경계에만
+  사용하며 Weather UV와 Base/Detail UVW, 고정 1,500m 밑면은 유지한다.
+- Stratus/Mixed/Cumulus footprint cutoff를 각각 `0.16/0.08/0.22@0.45`,
+  `0.22/0.04/0.38@0.50`, `0.32/0.03/0.62@0.58`로 정하고 전체 높이에 걸쳐 연결해
+  중간 plateau와 Weather R=1 수직 코어를 제거했다. Legacy mode 결과는 유지한다.
+- `Typed Shape Profile`, `Effective Shape Coverage`, `Base Support Before Density` 진단과
+  Noise Lab 출력 2개를 추가하고 JSON을 schema 20으로 올렸다. CloudShapeCB는 64바이트다.
+- CPU는 profile 0 제거, threshold 단조성, R=1 taper, 타입별 support와 plateau 부재를
+  검사한다. GPU는 CPU/HLSL 오차 0과 Mixed support `0.221/0.640/0.212`, Cumulus
+  `0.017/0.592/0.206`을 확인해 중간 폭의 바닥 대비 10%, 상단 대비 15% gate를 통과했다.
+- 최종 Debug/Release 전체 CTest `34/34`가 각각 `78.35초/106.33초`에 통과했다.
+  HLSL 7개 entry도 `/Od /WX`, `/O3 /WX`에서 통과했고 D3D11 error/corruption은 없었다.
+- 자동 검증은 수식과 support 분포만 합격 처리하며 최종 Composite의 직선 옆면 제거와
+  미적 품질은 사용자 재검증 전까지 승인하지 않는다.
+
+## 23. 단계 13-4B 시간 기반 구름 이동 복원
+
+- 과거 공통 `WindOffsetWorld`와 달리 재구축 Stage 5는 Base/Detail/Weather 속도를
+  분리했다. Open World Weather는 `64km/8m/s`로 정규화 이동도 느리고 Physical Shape의
+  외곽을 지배해, `windSpeed`를 바꿔도 고정된 실루엣 안에서 Base 밀도만 흐르는 문제가 났다.
+- Physical Shape에 공통 수평 변위
+  `normalizeOrZero(windDirection.xz) × windSpeed × effectiveTime`을 추가하고 Weather R/G/A,
+  Base, Detail 모두 같은 `f(p-vt)` 위치를 읽게 했다. Y는 고정하며 Legacy는 기존 세 독립
+  속도 수식을 보존한다. CloudCB 128바이트와 CloudShapeCB 64바이트는 변하지 않았다.
+- Physical UI는 `Cloud Wind Speed (Bulk)`를 표시하고 Weather/Detail 속도를 Legacy 전용으로
+  비활성화한다. Animation에는 Effective Time, 누적 Bulk 거리, Weather texel/s를 표시한다.
+- JSON을 schema 21로 올리고 `physicalAdvectionMode=rigidSharedWindSpeed`, Bulk 속도·누적
+  거리와 Legacy 속도 사용 여부를 기록한다.
+- CPU는 정지·비정상 입력, `p+vΔt,t+Δt` 좌표 불변식과 Pause/Resume 시간 연속성을 검사한다.
+  GPU는 이동 보정 프레임 MAE `0.00000001`, Legacy 속도 변경과 Bulk 정지 MAE `0`을 확인했다.
+  기존 Mixed/Cumulus support와 두께·상단 분포 gate도 그대로 통과했다.
+- 최종 Debug/Release 빌드와 전체 CTest `34/34`가 각각 `78.21초/105.71초`에 통과했다.
+  HLSL 7개 entry도 `/Od /WX`, `/O3 /WX`에서 통과했고 D3D11 debug-layer 오류는 없었다.
+  자동 PNG는 생성하지 않았으며 실제 이동 화면과 Pause/Resume은 사용자 승인을 기다린다.
+
+## 24. 단계 13-4B 승인과 13-4C 개발 UI 역할 분리
+
+- 2026-08-14 사용자가 Weather 기반 가변 두께·세로 형상과 강체 이동을 포함한 단계
+  13-4B 화면을 최종 승인했다. 13-5 광학 구현 전에 개발 UI만 정리하는 13-4C를 둔다.
+- 기존 단일 F1 창을 F1 Noise/Density/VSync/Time, F2 Weather Map/Generator,
+  F3 Directional/Phase/Environment, F4 Camera의 네 독립 창으로 분리했다. 각 대분류는
+  기존처럼 접고 펼칠 수 있고, F5~F12 검증 단축키는 유지한다.
+- 기존 F2~F4 Weather 즉시 전환은 제거하고 F2 창의 Weather Preset에서 Uniform Legacy,
+  Periodic Perlin, Channel Debug를 선택한다.
+- Camera가 20~120° 수직 FOV와 디버그 이름·수동 조정 상태를 제공한다. F4는 position,
+  target, distance, clip, FOV를 표시하고 F5~F8과 같은 네 버튼 및 메모리 북마크 저장·복원을
+  제공한다.
+- JSON은 schema 22로 올라가 현재 카메라와 저장 북마크의 position/target/FOV/clip/
+  진단 장면 상태를 기록한다. 북마크는 캡처 재현 정보이며 앱 시작 시 자동 로드하지 않는다.
+- Debug/Release 빌드와 전체 CTest `34/34`가 각각 `24.88초/31.27초`에 통과했다.
+  `Stage13CameraControlMath`는 FOV clamp·round-trip·디버그 상태를 검사한다.
+  `--stage8-smoke-test` export를 실제 JSON으로 파싱해 schema 22와 현재 카메라, 빈 저장
+  슬롯을 확인했고 실제 앱에서 F1~F4 네 창의 독립 타이틀·분류·카메라 값을 캡처했다.
+  사용자 최종 조작 승인은 남아 있다.
+
+## 25. 단계 13-4C Local Cloud Inspector
+
+- F1의 기술적인 `AABB Reference` 노출을 `Local Cloud Inspector`로 바꾸고
+  `Open World Layer`와 전환하도록 했다. 내부 `CloudDomainType::AabbReference`와 HLSL
+  `kCloudDomainAabb`는 기존 회귀 호환성을 위해 유지했다.
+- Inspector는 `(-100,5,-120)m~(100,55,80)m` AABB, 200m Weather, `90m/30m`
+  Base/Detail, View `0.5m×512`, Light `1m×256`, extinction `0.03/m`를 사용한다.
+  기존 필드와 20×60×20m 주황 건물 뒤에 약 140m 단일 구름을 배치해 Scene Depth를 본다.
+- `LocalInspector` Weather는 빈 테두리 안의 단일 연결 원이며 B=중립, A=최대 두께를
+  고정한다. Stratus/Mixed/Cumulus는 같은 Coverage·Noise에서 G와 `15~25m`/보간/
+  `30~50m` 물리 두께·세로 Profile만 바꾼다.
+- F5~F8은 장면에 따라 Inspector 초기 Depth/측면/상부/내부 또는 기존 Open World 네
+  시점을 사용한다. `Camera::TranslateRigLocal`과 메인 루프 delta로 Inspector에서만
+  `WASD 20m/s`, `Shift 80m/s`를 처리하며 ImGui keyboard capture 중에는 멈춘다.
+- Renderer가 두 장면의 공간 설정과 카메라를 따로 저장·복원한다. Noise 채널·주파수,
+  Detail erosion, 정규화 Profile, 태양·Phase·Environment·Time은 공통 상태로 유지한다.
+- JSON을 schema 23으로 올려 `cloudScene`, `inspectorCloudType`, 두 장면 상태와 카메라를
+  기록한다. CPU/HLSL 상수버퍼 크기와 별도 Inspector shader 분기는 추가하지 않았다.
+- `Stage5WeatherMath`, `Stage13CameraControlMath`, `Stage13InspectorMath`와
+  `Stage13InspectorSmoke`가 단일 구름, Type 채널 불변, rig 이동, 수치 계약, 여러 카메라와
+  Depth·Profile·Composite, Texture3D·Physical Shape·상태 왕복을 검사한다. 최종 화면과
+  360°·WASD 조작은 사용자 승인 대기다.
+
+## 26. Local/Open 입력·파라미터 통합
+
+- Local 이동과 동시에 `W/A/S/D`가 Thin Volume/Sparse/Dense/Large Blobs를 실행하던
+  중복 입력을 제거했다. 네 키는 두 도메인 공통 rig 이동 전용이며 기존 프리셋은 F1
+  `Legacy Validation Presets` 버튼으로 이동했다.
+- F4에 Move Speed `1~2000m/s`를 추가했다. 27절 변경 뒤 기본은 Local `20m/s`, Open
+  `1000m/s`, Shift는 4배이며 delta는 `0.1s`로 제한한다.
+- Renderer 상태를 공통 렌더 설정과 도메인별 AABB/Planar 기하·trace·카메라로 분리했다.
+  장면 전환은 Weather texture나 Noise·Shape·조명·sampling을 변경하지 않는다.
+- Cloud Type을 `Weather Map / Stratus / Mixed / Cumulus` 공통 모드로 확장했다. 고정
+  Type은 모든 Weather preset에서 G만 교체하고 R/B/A는 유지한다.
+- Planar modifier 카메라는 F4의 Building Depth/Scale Compare/Tile Wrap 버튼으로 옮겼고,
+  export는 이후 schema 25의 `sharedRenderState`, `domainStates`, `cloudTypeMode`,
+  `cameraMovement`를 기록한다. CPU/HLSL 상수버퍼와 교차 셰이더는 바꾸지 않았다.
+- 최종 Debug/Release 전체 빌드와 CTest `36/36`이 각각 `90.25초/118.90초`에 통과했다.
+  Inspector export JSON도 `ConvertFrom-Json`으로 파싱해 공통 렌더 상태,
+  Cloud Type, 이동 속도와 양쪽 valid domain camera를 확인했다.
+
+## 27. Open World 입력과 렌더 파이프라인 비교
+
+- ImGui의 일반 keyboard capture 대신 텍스트 입력·활성 item만 장면 입력을 차단한다. 전역
+  진단 키를 ImGui보다 먼저 분류하고 상단/숫자 패드 `0~9`를 같은 출력에 연결했으며 ImGui
+  keyboard navigation이 WASD를 선점하지 않게 했다.
+- WASD는 두 도메인에서 rig 이동만 수행한다. 이동 속도를 카메라와 같은 도메인 상태로 옮겨
+  Local `20m/s`, Open World `1000m/s`, Shift `4×`를 각각 저장·복원한다.
+- 최신 Open World를 기본으로 유지하면서 Legacy 1000x, Texture3D, Periodic Weather,
+  Physical Shape, Full Open World의 누적 비교 프리셋을 추가했다. 모든 단계는 현재 AABB/Planar
+  기하·카메라·이동 속도를 보존한다.
+- export는 schema 25로 올라가 `openWorldPipelinePreset`과 양 도메인 이동 속도를 기록한다.
+  CPU 입력 검사와 Open World smoke는 5단계×6개 출력을 렌더해 finite 값, 구분되는 hash,
+  도메인 불변성과 Full Open World 복원을 검사한다.
+- Debug/Release 전체 빌드와 CTest `36/36`이 각각 `101.23초/132.17초`에 통과했다. 실제
+  schema 25 JSON도 파싱해 Local 사용자값 `25m/s`와 Open World `1000m/s` 복원을 확인했다.
+
+## 28. Open World Weather·Base Noise 기본 품질 재조정
+
+- Coverage 기본 생성값을 seed `1013`, Macro/Detail `4/11`, Detail Weight `0.42`, Bias
+  `-0.02`, Contrast `1.15`, Threshold/Softness `0.56/0.14`로 바꿨다. 기본 256² 맵은
+  이전 `68.8% / 1개 / 68.8%`에서 Coverage 약 `43.8%`, 토러스 연결 성분 `10개`,
+  최대 성분 전체 면적 약 `31.2%`로 바뀌어 한 개의 큰 구름군 대신 여러 중소 구름군을 만든다.
+- CPU 전용 `thicknessCoverageInfluence`와 F2 `Thickness-Coverage Link`를 추가하고 기본을
+  `0.20`으로 정했다. Weather A는 독립 두께장 80%와 Coverage 중심 20%를 보간하며 빈
+  Coverage의 A=0, Uniform/Debug/Inspector 동작과 Cloud/HLSL 상수버퍼 배치는 유지한다.
+- Base Texture3D를 XYZ `12km`, 주파수 `{4,9,17,23}`으로 바꾸고 Perlin octave seed를
+  `seed + octave×173`으로 분리했다. 100m step 최소 표본은 약 `5.22/파장`이며 G/B/A
+  Worley, Detail `32³/2km`, Local Inspector `90m`, texture fetch 수는 그대로다.
+- 생성 알고리즘을 구형 파일과 분리하도록 cache version을 `3`, export schema를 `26`으로
+  올렸다. 회전 이중 샘플, domain warp, 구형 shell은 이번 범위에 넣지 않았다.
+- Weather 면적·연결 성분·R/A 상관·두께 분포, 12km wrap/6km 비반복, octave seed와 cache
+  v2 거부를 CPU 회귀로 고정했다. 기본 R/A 상관은 `0.56434`, 두께 P95-P05는
+  `2087.4m`, 상단 표준편차는 `593.7m`, 5.9km 천장 비율은 `0`이었다. 13-4B의
+  Weather·Base·Thickness 화면 판정은 재검증 대기다.
+- Debug/Release 빌드와 전체 CTest `36/36`이 각각 `95.25초/129.00초`에 통과했고 HLSL
+  7 entry도 `/Od /WX`, `/O3 /WX`에서 통과했다. Release Base 생성은 `112.076ms`, wrap
+  최대 차이는 `0.00015259`, D3D11 debug-layer 오류는 없었다. 런타임 shader의 Texture3D
+  조회 수는 바꾸지 않아 fetch 증분은 0이며, 동일 조건의 변경 전 GPU Cloud 기준 캡처는 없어
+  p95 전후 비교는 이번 기록에 만들지 않았다.
+
+## 29. 단계 13-4C 사용자 승인과 13-5 시작
+
+- F1~F4 역할 분리, Local Cloud Inspector, 양쪽 도메인 WASD·카메라 복원, Open World
+  5단계 파이프라인 비교와 Weather/Base/Thickness 기본 품질을 2026-08-16 사용자가
+  최종 승인했다.
+- 단계 13-5는 승인된 형상 입력을 고정하고 View/Light 광학 수렴, Base-only 자기 그림자,
+  Phase·환경광 성분 분리와 Detail 거리 LOD만 다룬다. 단계 9 이후 최적화와 13-6 shell은
+  계속 제외한다.
+
+## 30. 단계 13-5 km 광학·조명과 Detail 거리 LOD
+
+- `Stage13OpticsLightingMath`에 meter/1m Beer-Lambert, 1×~1000× τ 불변, Light
+  62.5/125/250m 후보와 Detail LOD 연속성·weighted mean 기준을 추가했다.
+- Open World Light 기본을 `250m/80`에서 `125m/160`으로 바꿨다. 96×54 Ground Horizon의
+  `62.5m/320` reference 대비 Light T/누적 직접광/Composite MAE는
+  `0.00000584/0.00000070/0.00000115`였다. 이전 250m 값은 비교 보고만 유지한다.
+- CPU는 100m까지 허용하면서 HLSL이 1m로 자르던 Light bias를 HLSL도 `0~100m`로 맞췄다.
+  따라서 1000× 상사 프리셋의 10m bias가 보존된다.
+- 새 16바이트 `CloudLodCB(b8)`는 기본 32~48km에서 Detail을 실제 `32³ RGBA8` weighted
+  mean `0.44994098`로 수렴시킨다. 끝 거리 밖에서는 `t4` fetch를 생략하되 평균 침식량은
+  유지한다. Similarity 프리셋은 LOD를 꺼 기존 회귀를 보존한다.
+- F3에 세 Light 후보, Quality/Balanced LOD와 View τ·Direct/Sky/Ground/Multiple·LOD factor
+  출력 버튼을 추가했고 export를 schema 27로 올렸다. 단계 9 이후 최적화와 실제 대기 입력은
+  추가하지 않았다.
+- Debug/Release 빌드와 전체 CTest `38/38`이 각각 `121.29초/157.15초`에 통과했다.
+  HLSL 7개 entry도 `/Od /WX`, `/O3 /WX`에서 총 `14/14` 통과했고 D3D11 debug-layer
+  오류·NaN·검정 프레임은 없었다. 최종 Composite의 조명 방향과 LOD 전환은 사용자 화면
+  승인 대기다.
+
+## 31. 단계 13-5 사용자 조명 피드백 보완
+
+- 사용자 검증에서 Open World `62.5/125/250m`는 같은 실루엣과 그림자 순서를 보였지만,
+  200m Local Inspector에 같은 km 후보를 적용하면 62.5m와 125/250m의 그림자 방향이
+  달라졌다. 이는 90m Base volume의 최소 파장 약 3.91m를 모두 undersample한 잘못된 비교다.
+  F3는 Local `0.5/1/2m`와 Open World `62.5/125/250m`를 장면별로 분리하고 Local에서
+  Detail 거리 LOD를 비활성 표시한다.
+- F3 Directional Light에 XZ 도식을 추가했다. 노란 Sun 위치, 주황 incoming light, 빨간
+  shadow-away 방향, 청록 camera forward와 현재 카메라 기준 Sun/Shadow 좌우 판정을 함께
+  표시한다. `directionToSun`과 실제 광선 진행 `-directionToSun`을 혼동하지 않게 했다.
+- 방향 변경 때 View τ는 불변이고 누적 Direct만 변한다는 사용자 결과를 GPU gate로 추가했다.
+  Low East/West의 View τ MAE는 `0`, Direct MAE는 `0.00234312`였다.
+- Silver Lining은 `g/intensity=0.75/0.10`, 최종 적용 Phase 상한 `2.5`로 낮췄다. Balanced
+  Sky/Ground/AO/Multiple energy/phase를 `0.12/0.05/1.50/0.20/0.25`로 재조정하고,
+  Composite peak 0.8 위에 hue-preserving LDR shoulder를 적용했다. 96×54 Silver Lining
+  최대 RGB는 Low East `0.93706274`, Low West `0.79763252`로 흰색 clip gate를 통과했다.
+- 최종 Debug/Release 전체 CTest `38/38`은 각각 `122.55초/154.68초`, HLSL 7개 entry의
+  `/Od /WX`와 `/O3 /WX`는 총 `14/14` 통과했다. 수정된 Local 수렴·Balanced 대비·Silver
+  Lining 화면은 사용자 재검증 대기다.
+
+## 32. 단계 13-4D 단일 포트폴리오 디버깅 씬
+
+- 13-4C의 사용자 승인 이력은 보존하되 Local Inspector 런타임, 전용 Weather, 장면
+  enum·저장/복원과 smoke를 제거했다. 일반 실행은 Planar 1.5~7.5km, View 50km,
+  Weather 64km의 단일 씬만 사용한다.
+- 불투명 장면은 Y=0의 10km×10km 실제 quad와 원점의 20×60×20m 건물 하나로 줄였다.
+  linear RGB는 각각 `(0.10,0.14,0.12)`, `(0.02,0.025,0.035)`이며 모든 일반 카메라에서
+  항상 색상과 깊이를 쓴다.
+- F5~F8을 Hero/건물 Depth, 지면 수평선, 구름 내부, 구름 위 하향으로 고정했다. 전역 입력은
+  숫자 0~9, F1~F8, WASD/Shift, 마우스 오빗·휠만 남겼다. HLSL ID 1~7과 문자/F9~F12
+  진단 키를 삭제하고 숫자는 기존 ID 0/10/20/16/17/12/52/32/8/24에 명시적으로 매핑했다.
+- F1/F3의 메인 출력은 두 Debug View 콤보로 통합했다. F2는 Periodic Perlin·Channel Debug와
+  공통 `CloudTypeMode`, F4는 카메라 네 개·수치·저장/복원·내보내기만 노출한다.
+- Stage1/2/4 사용자 preset enum·Renderer 상태/API는 제거하고 과거 smoke는 직접 값 fixture를
+  사용한다. AABB·Similarity·Procedural/Uniform legacy는 자동 회귀와 5단계 Pipeline Compare
+  내부에서만 유지한다.
+- export를 schema 28, `implementationStage=13-4D`로 올리고 `sceneContract`를 추가했다.
+  장면/도메인/preset/similarity/diagnostic 상태 필드는 제거했다. `Stage13SceneMath`와
+  `Stage13UnifiedSceneMath/Smoke`가 새 수학·입력·카메라·GPU·JSON 계약을 검사한다.
+- 기존 13-5 자동 측정값은 이력으로 보존하지만 새 F6에서 같은 허용 오차로 다시 측정하고,
+  13-4D 및 13-5 사용자 승인이 끝나기 전에는 13-6이나 단계 9 이후로 넘어가지 않는다.
+
+## 33. 단계 13-4E Dense Broken-Sky와 구름 타입 프리셋
+
+- 13-4D 사용자 검증에서 Full Open World가 특정 Weather 지역에만 존재하고, 세로 profile이
+  noise threshold를 다시 줄여 상단이 납작하며, `0.00025/m` 광학값에서 명암이 약한 문제가
+  확인됐다. 13-4D 단일 scene 이력은 보존하되 최종 외형은 13-4E가 대체한다.
+- Physical density를 Weather support, 70~100% Weather factor, 80~100% footprint factor,
+  Base noise, vertical profile의 독립 단계로 나눴다. Profile은 최종 Base 밀도에 한 번만
+  곱하고 Detail은 완성된 Base 경계만 침식한다.
+- 결정적 Dense Mixed/Stratus/Cumulus를 추가했다. 기본 Weather R non-zero/core는 각각
+  `79.62/49.11`, `87.31/56.60`, `73.82/42.07%`이며 Full Open World는 항상 Dense Mixed를
+  복원한다. View `512×100m`, Light `160×125m`, 태양·Phase·환경광은 바꾸지 않았다.
+- F1 `Cloud Type Settings`에 Stratus/Cumulus/Custom/Save를 추가하고 F2 타입 버튼은 읽기
+  전용 G mode로 교체했다. 외형 slider 편집은 `Custom Unsaved`, 명시적 저장만 Custom이 된다.
+- export를 schema 29/`13-4E`로 올렸다. 안정 Custom은
+  `captures/noise-lab/custom/noise-settings.json`에 원자 저장하며 엄격한 자체 parser가
+  누락·구버전·손상·비유한·범위 밖 값을 렌더 상태 변경 없이 거부한다.
+- Pipeline Compare UI의 main cloud pass는 effective time 0을 사용해 단계별 좌표를 고정한다.
+  일반 animation state는 건드리지 않으며 Compare 밖에서는 즉시 정상 time으로 복귀한다.
+- `CloudAppearanceTests`와 확장 `Stage13UnifiedSceneSmoke`가 점유율, density 0 조건, preset
+  불변 상태, Custom JSON, F5/F6 주요 출력의 finite/non-black/distinct hash를 검사한다.
+  Debug/Release 전체 CTest는 각각 `39/39`, HLSL 7개 entry의 `/Od /WX`·`/O3 /WX`는
+  총 `14/14` 통과했다. Dense Mixed F6의 13-5 품질 Light T/Direct/Composite MAE는
+  `0.00001641/0.00000270/0.00000508`로 기존 허용 오차를 유지했다.
+  최종 broken-sky 모양과 명암은 사용자 승인 대기이며 그 전에는 13-5 승인 또는 이후 단계로
+  넘어가지 않는다.

@@ -39,6 +39,10 @@ int main()
 
     const auto empty = MarchConstantDensity(5.0f, 0.0f, 1.0f, 0.25f, 16u);
     Require(Near(empty.transmittance, 1.0f), "empty density must be transparent");
+    const auto noExtinction = MarchConstantDensity(
+        5.0f, 0.5f, 0.0f, 0.25f, 16u);
+    Require(Near(noExtinction.transmittance, 1.0f),
+            "zero extinction must preserve full transmittance");
     Require(!ShouldTraceLightRay(0.0f) && ShouldTraceLightRay(0.01f),
             "empty view samples must skip the light ray entirely");
     Require(Near(SelectLightRayDensity(0.4f, 0.1f), 0.4f),
@@ -61,10 +65,18 @@ int main()
     Require(Near(IntegrateSingleScattering(
         0.5f, 0.6f, 0.4f, 0.2f, 1.0f, 2.0f, 0.75f), scattering * 0.5f),
         "view transmittance must scale scattering linearly");
+    const float albedoOne = IntegrateSingleScattering(
+        0.5f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 1.0f);
+    const float albedoHalf = IntegrateSingleScattering(
+        0.5f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 0.5f);
+    Require(Near(albedoHalf, albedoOne * 0.5f),
+            "single-scattering albedo must scale scattering linearly");
     Require(Near(IntegrateSingleScattering(
-        0.5f, 0.6f, 0.8f, 0.2f, 0.0f, 2.0f, 0.75f),
-        0.8f * 0.6f * 2.0f * 0.75f * 0.5f * 0.2f),
-        "zero extinction must use the finite rectangular fallback");
+        0.5f, 0.6f, 0.8f, 0.2f, 1.0f, 2.0f, 0.0f), 0.0f),
+        "zero albedo must produce no scattering");
+    Require(Near(IntegrateSingleScattering(
+        0.5f, 0.6f, 0.8f, 0.2f, 0.0f, 2.0f, 1.0f), 0.0f),
+        "zero extinction must preserve transmittance and produce no scattering");
 
     const auto invalid = MarchConstantDensity(
         std::numeric_limits<float>::quiet_NaN(), 1.0f, 1.0f, 0.0f, 0u);
@@ -77,6 +89,7 @@ int main()
     bad.sunIntensity = -1.0f;
     bad.maxLightSteps = 0;
     bad.lightStepSize = -1.0f;
+    bad.singleScatteringAlbedo = 2.0f;
     const LightParameters safe = stage6light::Sanitize(bad);
     const float directionLength = std::sqrt(
         safe.directionToSun.x * safe.directionToSun.x +
@@ -85,6 +98,14 @@ int main()
     Require(Near(directionLength, 1.0f, 1e-4f), "sun direction must be normalized");
     Require(safe.sunIntensity == 0.0f && safe.maxLightSteps >= 1u &&
             safe.lightStepSize > 0.0f, "invalid CPU light settings must be clamped");
+    Require(safe.singleScatteringAlbedo == 1.0f,
+            "single-scattering albedo above one must clamp to one");
+    bad.singleScatteringAlbedo = -0.5f;
+    Require(stage6light::Sanitize(bad).singleScatteringAlbedo == 0.0f,
+            "negative single-scattering albedo must clamp to zero");
+    bad.singleScatteringAlbedo = std::numeric_limits<float>::quiet_NaN();
+    Require(stage6light::Sanitize(bad).singleScatteringAlbedo == 1.0f,
+            "NaN single-scattering albedo must reset to the default");
 
     const auto east = stage6light::Preset(Stage6SunPreset::LowEast).directionToSun;
     const auto west = stage6light::Preset(Stage6SunPreset::LowWest).directionToSun;

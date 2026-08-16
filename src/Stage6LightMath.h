@@ -50,20 +50,19 @@ inline bool ShouldTraceLightRay(float finalDensity)
 inline float IntegrateSingleScattering(float density, float lightTransmittance,
                                        float viewTransmittance, float stepLength,
                                        float extinction, float sunIntensity,
-                                       float scatteringCoefficient)
+                                       float singleScatteringAlbedo)
 {
     const float safeDensity = std::max(density, 0.0f);
     const float safeLength = std::max(stepLength, 0.0f);
     const float safeExtinction = std::max(extinction, 0.0f);
     const float stepTransmittance = std::exp(
         -safeDensity * safeExtinction * safeLength);
-    const float densityIntegral = safeExtinction > 1e-6f
-        ? (1.0f - stepTransmittance) / safeExtinction
-        : safeDensity * safeLength;
+    const float interactionFraction = std::clamp(
+        1.0f - stepTransmittance, 0.0f, 1.0f);
     return std::clamp(viewTransmittance, 0.0f, 1.0f) *
            std::clamp(lightTransmittance, 0.0f, 1.0f) *
            std::max(sunIntensity, 0.0f) *
-           std::max(scatteringCoefficient, 0.0f) *
-           std::max(densityIntegral, 0.0f);
+           std::clamp(singleScatteringAlbedo, 0.0f, 1.0f) *
+           interactionFraction;
 }
 }

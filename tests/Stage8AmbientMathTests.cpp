@@ -62,14 +62,20 @@ int main()
 
     EnvironmentParameters one = balanced;
     one.multipleScatteringOctaves = 1;
-    const float expectedOne = 0.35f * std::exp(-2.0f * 0.5f) *
-        (1.0f + (3.0f - 1.0f) * 0.5f);
+    const float expectedOne = one.multipleScatteringAttenuation *
+        std::exp(-2.0f * one.multipleScatteringExtinctionFactor) *
+        (1.0f + (3.0f - 1.0f) * one.multipleScatteringPhaseFactor);
     Require(Near(stage8::MultipleScatteringFactor(2.0f, 3.0f, one), expectedOne),
             "one octave must match the documented analytic formula");
     EnvironmentParameters two = one;
     two.multipleScatteringOctaves = 2;
-    const float expectedTwo = expectedOne + 0.35f * 0.35f *
-        std::exp(-2.0f * 0.25f) * (1.0f + (3.0f - 1.0f) * 0.25f);
+    const float expectedTwo = expectedOne +
+        one.multipleScatteringAttenuation *
+        one.multipleScatteringAttenuation *
+        std::exp(-2.0f * one.multipleScatteringExtinctionFactor *
+                 one.multipleScatteringExtinctionFactor) *
+        (1.0f + (3.0f - 1.0f) * one.multipleScatteringPhaseFactor *
+         one.multipleScatteringPhaseFactor);
     Require(Near(stage8::MultipleScatteringFactor(2.0f, 3.0f, two), expectedTwo),
             "two octaves must reuse optical depth with decayed factors");
 

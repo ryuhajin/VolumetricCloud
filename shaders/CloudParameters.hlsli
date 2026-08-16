@@ -25,13 +25,15 @@ cbuffer CloudCB : register(b1)
     float3 windDirection;       // CPU windDirection. 정규화 전 월드 공간 바람 방향.
     float bottomFadeEnd;        // CPU bottomFadeEnd. 바닥 fade가 끝나는 정규화 높이(0~1).
     float topFadeStart;         // CPU topFadeStart. 꼭대기 fade가 시작되는 정규화 높이(0~1).
-    float3 heightProfilePadding;// 16바이트 정렬용 예약 필드. 현재 셰이더에서는 사용하지 않는다.
+    float minimumLocalThicknessFraction;// CPU minimumLocalThicknessFraction. 로컬 기둥의 최소 두께 비율.
+    float localHeightVariation; // CPU localHeightVariation. 0=기존 전체 높이, 1=Weather A 높이.
+    float cumulusTopBoost;      // CPU cumulusTopBoost. 적운 type이 로컬 상단을 위로 끌어올리는 비율.
     float detailNoiseScale;     // CPU detailNoiseScale. 표면 침식 noise 주파수(cycle/m).
     float detailErosionStrength;// CPU detailErosionStrength. Base에서 뺄 최대 밀도(0~1 권장).
-    float detailWindSpeed;      // CPU detailWindSpeed. Detail 무늬 이동 속도(m/s).
+    float detailWindSpeed;      // Legacy Detail 이동 속도. Physical은 windSpeed를 공유한다.
     float detailNoiseOffset;    // CPU detailNoiseOffset. Base와 분리할 noise 좌표 이동(cycle).
     float weatherMapWorldSize;  // CPU weatherMapWorldSize. Weather Map 한 반복의 월드 XZ 크기(m).
-    float weatherMapWindSpeed;  // CPU weatherMapWindSpeed. 대규모 배치 이동 속도(m/s).
+    float weatherMapWindSpeed;  // Legacy Weather 이동 속도. Physical은 windSpeed를 공유한다.
     float2 weatherMapOffset;    // CPU weatherMapOffset. Weather UV 수동 이동(cycle).
 };
 

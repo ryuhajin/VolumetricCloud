@@ -18,10 +18,12 @@
 //  Light Ray는 비용을 분리하기 위해 Detail이 아닌 Base Density만 샘플링한다.
 // ============================================================================
 
-// CPU Renderer::CameraCB와 같은 96바이트 b0 상수버퍼다.
+// CPU Renderer::CameraCB와 같은 224바이트 b0 상수버퍼다.
 cbuffer cbCamera : register(b0)
 {
     float4x4 invViewProj; // CPU invViewProj. UV/깊이를 월드 공간(m)으로 되돌린다.
+    float4x4 invProjection;   // NDC를 translation 없는 View Space로 복원한다.
+    float4x4 invViewRotation; // View 방향에 카메라 회전만 적용한다.
     float3 cameraPos;     // CPU cameraPos. 월드 공간(m), 모든 레이의 원점.
     float time;           // CPU time. 초 단위, 단계 2 바람 이동에 사용한다.
     float2 renderSize;    // CPU renderSize. 현재 백버퍼 크기(pixel), 현재 예약 값.
@@ -30,6 +32,7 @@ cbuffer cbCamera : register(b0)
 };
 
 // cbCamera의 time 선언 뒤 포함해야 Light Ray가 같은 애니메이션 시간을 사용한다.
+#include "CloudDomainParameters.hlsli"
 #include "CloudEnvironment.hlsli"
 
 // t0: 앞선 DiagnosticScene PS가 R16G16B16A16_FLOAT에 쓴 linear RGB 장면색.
@@ -57,8 +60,10 @@ struct CloudResult
 // 단계 1 교차, 단계 2 noise와 단계 3 높이 적분이 사용한 대표값 진단 자료.
 struct CloudMarchDebug
 {
-    float entryDistance;   // Scene Depth 제한 전 AABB 진입을 0 이상으로 자른 거리(m).
+    float entryDistance;   // 선택한 도메인의 진입을 0 이상으로 자른 거리(m).
     float exitDistance;    // Scene Depth로 제한된 실제 이탈 거리(m).
+    float segmentLength;   // 실제 적분 구간 길이(m).
+    float actualStepLength;// step 상한까지 반영한 실제 표본 간격(m).
     float stepCount;       // 실제 반복 횟수. 색 출력 편의를 위해 float로 보관.
     float sampledDensity;  // 대표 중간 위치의 최종 noise 밀도. hit가 없으면 0.
     float hit;             // 유효 적분 구간이면 1, 아니면 0.
@@ -74,7 +79,12 @@ struct CloudMarchDebug
     float cloudType;       // 대표 위치 Weather G.
     float weatherDensityModifier; // 대표 위치 Weather B의 0.5~1.5 배율.
     float weatherThresholdDensity;// Weather coverage 적용 threshold.
-    float typedHeightProfile; // Cloud Type 적용 높이 마스크.
+    float typedShapeProfile; // Cloud Type/높이가 정한 shape threshold 마스크.
+    float effectiveShapeCoverage; // profile까지 적용한 Base 통과 coverage.
+    float baseSupport;       // 밀도 배율·Detail 전 Base shape 존재 마스크.
+    float weatherThicknessPotential; // Weather A: 로컬 두께 보간값.
+    float localThicknessMeters;      // 해당 XZ 기둥의 물리 두께(m).
+    float localHeightFraction;    // 로컬 바닥 0, 로컬 상단 1.
     float3 noiseUvw;       // 대표 중간 위치의 연속 noise 좌표(cycle).
     float3 detailNoiseUvw; // 대표 Detail noise 좌표(cycle), 생략 시 0.
     float2 weatherUv;      // 대표 Weather Map UV(0~1).
@@ -87,6 +97,13 @@ struct CloudMarchDebug
     float backwardPhaseLobe;  // 음의 g를 사용한 후방 HG 값.
     float dualPhaseFactor;    // 직접 산란에 실제로 적용한 최종 [0,16] 배율.
     float3 accumulatedDirect; // View Ray 전체의 직접 태양광 누적값.
+    float3 accumulatedSky;    // View Ray 전체의 분석적 하늘 환경광.
+    float3 accumulatedGround; // View Ray 전체의 분석적 지면 반사 근사.
+    float3 accumulatedMultiple;// View Ray 전체의 다중 산란 근사.
+    float viewOpticalDepth;   // View Ray 전체의 final density 광학 깊이.
+    float detailLodFactor;    // 대표 위치의 Detail 거리 LOD, 1=원본, 0=평균.
+    float4 baseNoiseChannels; // 단계 13-4 Base Texture3D RGBA.
+    float4 detailNoiseChannels;// 단계 13-4 Detail Texture3D RGBA.
 };
 
 // 화면 UV를 DirectX NDC로 바꾼다.
@@ -101,14 +118,16 @@ float2 UvToNdc(float2 uv)
 // homogeneous w가 0에 가까울 때 안전값을 사용해 NaN을 막는다.
 float3 ReconstructWorldRay(float2 uv)
 {
-    // 1. far plane의 NDC 점을 inverse view-projection으로 월드에 되돌린다.
+    // 1. NDC far 점을 카메라가 원점인 View Space로 되돌린다.
     float2 ndc = UvToNdc(uv);
-    float4 farH = mul(float4(ndc, 1.0, 1.0), invViewProj);
-    float safeW = abs(farH.w) > 1e-6 ? farH.w : (farH.w < 0.0 ? -1e-6 : 1e-6);
-    float3 farPosition = farH.xyz / safeW;
+    float4 viewH = mul(float4(ndc, 1.0, 1.0), invProjection);
+    float safeW = abs(viewH.w) > 1e-6 ? viewH.w :
+        (viewH.w < 0.0 ? -1e-6 : 1e-6);
+    float3 viewDirection = normalize(viewH.xyz / safeW);
 
-    // 2. 카메라에서 그 점으로 향하는 화살표를 정규화한다.
-    return normalize(farPosition - cameraPos);
+    // 2. w=0 방향 벡터에 inverse View의 회전만 적용한다.
+    //    큰 camera/world translation은 이 계산에 들어오지 않는다.
+    return normalize(mul(float4(viewDirection, 0.0), invViewRotation).xyz);
 }
 
 // 장치 깊이와 화면 UV에서 불투명 표면의 월드 위치(m)를 복원한다.
@@ -130,9 +149,26 @@ float3 SkyColor(float3 rayDirection)
     return lerp(float3(0.55, 0.63, 0.72), float3(0.12, 0.27, 0.52), height);
 }
 
-// 현재 CloudCB의 월드 AABB와 레이를 교차하고 실제 적분 구간을 만든다.
-// sceneDistance(m)는 첫 불투명 표면까지 거리이며 그 뒤쪽 안개를 보이지 않게 자른다.
-// 카메라가 박스 안이면 raw tNear가 음수이므로 tStart를 0으로 고정한다.
+// 이전 단계의 0~0.8 합성값은 그대로 두고, LDR swap chain에서 1 초과값이
+// 통째로 흰색에 고정되는 구간만 hue를 유지한 채 부드럽게 압축한다.
+float3 ApplyLdrHighlightShoulder(float3 color)
+{
+    float3 safeColor = max(color, 0.0.xxx);
+    float peak = max(safeColor.r, max(safeColor.g, safeColor.b));
+    const float knee = 0.80;
+    float3 result = safeColor;
+    if (peak > knee)
+    {
+        float excess = peak - knee;
+        float mappedPeak = knee + excess * (1.0 - knee) /
+            (excess + (1.0 - knee));
+        result = safeColor * (mappedPeak / max(peak, 1e-6));
+    }
+    return result;
+}
+
+// AABB 비교 기준 또는 Y 평면층과 레이를 교차하고 실제 적분 구간을 만든다.
+// sceneDistance(m)는 첫 불투명 표면까지 거리이며 그 뒤쪽 구름을 보이지 않게 자른다.
 bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
                           float sceneDistance,
                           out float tStart, out float tEnd)
@@ -140,22 +176,8 @@ bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
     tStart = 0.0;
     tEnd = 0.0;
 
-    // 1. AABB 자체의 진입/이탈 거리를 구한다.
-    float tNear = 0.0;
-    float tFar = 0.0;
-    bool intersectsAabb = IntersectRayAABB(
-        rayOrigin, rayDirection, cloudBoundsMin, cloudBoundsMax, tNear, tFar);
-
-    // 2. 뒤쪽 진입은 카메라 위치부터, 이탈은 첫 불투명 물체까지만 허용한다.
-    //    tStart가 커지면 안개가 더 멀리서 시작하고, tEnd가 작아지면 보이는 두께가 줄어든다.
-    if (intersectsAabb)
-    {
-        tStart = max(tNear, 0.0);
-        tEnd = min(tFar, sceneDistance);
-    }
-
-    // 3. 물체가 볼륨 앞에 있거나 접점뿐이면 계산할 부피가 없다.
-    return intersectsAabb && tEnd > tStart;
+    return IntersectCloudDomain(
+        rayOrigin, rayDirection, sceneDistance, false, tStart, tEnd);
 }
 
 // AABB의 유효 구간을 noise × 높이 프로파일 밀도로 레이 마칭한다.
@@ -188,6 +210,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         uint safeMaxSteps = max(maxViewSteps, 1u);
         uint stepCount = min(safeMaxSteps, (uint)ceil(segmentLength / safeStepSize));
         float actualStepLength = segmentLength / (float)stepCount;
+        debugData.segmentLength = segmentLength;
+        debugData.actualStepLength = actualStepLength;
 
         // 3. View Ray 소멸계수와 대표 표본을 준비한다.
         float extinction = max(extinctionCoefficient, 0.0);
@@ -197,7 +221,8 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         float3 representativePosition =
             rayOrigin + rayDirection * representativeDistance;
         CloudDensitySample representativeSample =
-            SampleCloudDensity(representativePosition, time);
+            SampleCloudDensity(representativePosition, time, true,
+                               representativeDistance);
         debugData.rawNoise = representativeSample.rawNoise;
         debugData.thresholdDensity = representativeSample.thresholdDensity;
         debugData.heightFraction = representativeSample.heightFraction;
@@ -206,15 +231,23 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         debugData.detailNoise = representativeSample.detailNoise;
         debugData.erosion = representativeSample.erosion;
         debugData.detailSampled = representativeSample.detailSampled;
+        debugData.detailLodFactor = representativeSample.detailLodFactor;
         debugData.weatherCoverage = representativeSample.weatherCoverage;
         debugData.cloudType = representativeSample.cloudType;
         debugData.weatherDensityModifier = representativeSample.weatherDensityModifier;
         debugData.weatherThresholdDensity = representativeSample.weatherThresholdDensity;
-        debugData.typedHeightProfile = representativeSample.typedHeightProfile;
+        debugData.typedShapeProfile = representativeSample.typedShapeProfile;
+        debugData.effectiveShapeCoverage = representativeSample.effectiveShapeCoverage;
+        debugData.baseSupport = representativeSample.baseSupport;
+        debugData.weatherThicknessPotential = representativeSample.weatherThicknessPotential;
+        debugData.localThicknessMeters = representativeSample.localThicknessMeters;
+        debugData.localHeightFraction = representativeSample.localHeightFraction;
         debugData.sampledDensity = representativeSample.finalDensity;
         debugData.noiseUvw = representativeSample.noiseUvw;
         debugData.detailNoiseUvw = representativeSample.detailNoiseUvw;
         debugData.weatherUv = representativeSample.weatherUv;
+        debugData.baseNoiseChannels = representativeSample.baseNoiseChannels;
+        debugData.detailNoiseChannels = representativeSample.detailNoiseChannels;
 
         // Phase는 한 View Ray 안에서 방향이 변하지 않으므로 픽셀당 한 번만 계산한다.
         // viewRayDirection은 카메라→표본, directionToSun은 표본→태양이며 두 방향이
@@ -246,19 +279,25 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         {
             float sampleDistance = tStart + ((float)stepIndex + 0.5) * actualStepLength;
             float3 samplePosition = rayOrigin + rayDirection * sampleDistance;
-            CloudDensitySample densitySample = SampleCloudDensity(samplePosition, time);
+            CloudDensitySample densitySample = SampleCloudDensity(
+                samplePosition, time, true, sampleDistance);
+            float distanceFade = CloudViewDistanceFade(sampleDistance);
+            densitySample.baseDensity *= distanceFade;
+            densitySample.finalDensity *= distanceFade;
             float sampledDensity = densitySample.finalDensity;
             float sampledStepTransmittance = exp(
                 -sampledDensity * extinction * actualStepLength);
+            debugData.viewOpticalDepth += sampledDensity * extinction *
+                                          actualStepLength;
 
             // 5. 최종 합성, Light 비용과 누적 직접광 모드에서만 조명 적분을 실행한다.
             bool requiresLighting = debugMode == 0 || debugMode == 26 ||
-                                    debugMode == 32;
+                                    debugMode == 32 || debugMode == 53 ||
+                                    debugMode == 54 || debugMode == 55;
             if (sampledDensity > 0.0 && requiresLighting)
             {
                 LightMarchResult light = { 1.0, 0.0, 0.0 };
-                bool needsLightRay = debugMode == 0 || debugMode == 26 ||
-                                     debugMode == 32;
+                bool needsLightRay = requiresLighting;
                 if (needsLightRay)
                 {
                     light = ComputeLightTransmittance(
@@ -269,6 +308,9 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
                     densitySample, light, phase, result.transmittance,
                     actualStepLength);
                 debugData.accumulatedDirect += lighting.direct;
+                debugData.accumulatedSky += lighting.skyAmbient;
+                debugData.accumulatedGround += lighting.groundBounce;
+                debugData.accumulatedMultiple += lighting.multipleScattering;
                 result.scattering += lighting.direct + lighting.skyAmbient +
                                      lighting.groundBounce +
                                      lighting.multipleScattering;
@@ -307,31 +349,13 @@ float4 main(VSOut input) : SV_TARGET
         ? length(worldPosition - cameraPos)
         : farPlane;
 
-    // 4. AABB 교차와 Scene Depth 제한 뒤 noise × 높이 프로파일 밀도를 적분한다.
+    // 4. 선택한 구름 도메인과 Scene Depth 제한 뒤 밀도를 적분한다.
     CloudMarchDebug marchDebug;
     CloudResult cloud = RaymarchCloud(
         cameraPos, rayDirection, sceneDistance, marchDebug);
 
-    // 5. 단계 0 디버그 1~4는 그대로 유지한다.
-    if (debugMode == 1)
-        return float4(rayDirection * 0.5 + 0.5, 1.0);
-    if (debugMode == 2)
-        return float4(saturate(sceneDistance / 30.0).xxx, 1.0);
-    if (debugMode == 3)
-    {
-        float3 positionBands = frac(abs(worldPosition) * 0.2);
-        return float4(hasGeometry ? positionBands : 0.0.xxx, 1.0);
-    }
-    if (debugMode == 4)
-        return float4(uv, 0.0, 1.0);
-
-    // 6. 단계 1 디버그 5~9는 교차·step·투과율·밀도를 각각 분리해 보여 준다.
-    if (debugMode == 5)
-        return float4((marchDebug.hit * saturate(marchDebug.entryDistance / 20.0)).xxx, 1.0);
-    if (debugMode == 6)
-        return float4((marchDebug.hit * saturate(marchDebug.exitDistance / 20.0)).xxx, 1.0);
-    if (debugMode == 7)
-        return float4((marchDebug.hit * saturate(marchDebug.stepCount / max((float)maxViewSteps, 1.0))).xxx, 1.0);
+    // 5. 1~7은 13-4D에서 삭제한 사용자 디버그 ID다. CPU가 오래된 값을
+    // 전달해도 별도 분기로 들어가지 않고 아래 최종 Composite로 안전하게 폴백한다.
     if (debugMode == 8)
         return float4(cloud.transmittance.xxx, 1.0);
     if (debugMode == 9)
@@ -363,7 +387,7 @@ float4 main(VSOut input) : SV_TARGET
     if (debugMode == 22)
         return float4((marchDebug.weatherThresholdDensity * marchDebug.hit).xxx, 1.0);
     if (debugMode == 23)
-        return float4((marchDebug.typedHeightProfile * marchDebug.hit).xxx, 1.0);
+        return float4((marchDebug.typedShapeProfile * marchDebug.hit).xxx, 1.0);
     if (debugMode == 24)
         return float4((marchDebug.lightTransmittance * marchDebug.hit).xxx, 1.0);
     if (debugMode == 25)
@@ -421,11 +445,103 @@ float4 main(VSOut input) : SV_TARGET
             (1.0.xxx + max(component, 0.0.xxx));
         return float4(mapped * marchDebug.hit, 1.0);
     }
+    if (debugMode == 33)
+        return float4((marchDebug.hit * CloudDebugDistanceValue(
+            marchDebug.segmentLength)).xxx, 1.0);
+    if (debugMode == 34)
+    {
+        float ratio = marchDebug.actualStepLength / max(stepSize, 1e-4);
+        float3 withinBudget = lerp(
+            float3(0.05, 0.20, 1.0), float3(0.05, 0.90, 0.20),
+            saturate(ratio));
+        float3 overBudget = lerp(
+            float3(1.0, 0.85, 0.05), float3(1.0, 0.05, 0.02),
+            saturate((ratio - 1.0) / 3.0));
+        float3 budgetColor = ratio <= 1.0001 ? withinBudget : overBudget;
+        return float4(budgetColor * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 35)
+        return float4(marchDebug.hit.xxx, 1.0);
+    if (debugMode >= 36 && debugMode <= 39)
+        return float4((marchDebug.baseNoiseChannels[debugMode - 36] *
+                       marchDebug.hit).xxx, 1.0);
+    if (debugMode == 40)
+        return float4((marchDebug.rawNoise * marchDebug.hit).xxx, 1.0);
+    if (debugMode >= 41 && debugMode <= 44)
+        return float4((marchDebug.detailNoiseChannels[debugMode - 41] *
+                       marchDebug.hit).xxx, 1.0);
+    if (debugMode == 45)
+        return float4((marchDebug.detailNoise * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 46)
+    {
+        float3 baseUvw = marchDebug.noiseUvw;
+        float3 detailUvw = marchDebug.detailNoiseUvw;
+        float4 baseReference = baseNoiseVolumeTexture.SampleLevel(
+            weatherMapSampler, baseUvw, 0);
+        float4 detailReference = detailNoiseVolumeTexture.SampleLevel(
+            weatherMapSampler, detailUvw, 0);
+        float difference = 0.0;
+        difference = max(difference, max(max(abs(baseReference -
+            baseNoiseVolumeTexture.SampleLevel(weatherMapSampler,
+                baseUvw + float3(1,0,0), 0)).r,
+            abs(baseReference - baseNoiseVolumeTexture.SampleLevel(
+                weatherMapSampler, baseUvw + float3(0,1,0), 0)).g),
+            abs(baseReference - baseNoiseVolumeTexture.SampleLevel(
+                weatherMapSampler, baseUvw + float3(0,0,1), 0)).b));
+        difference = max(difference, max(max(abs(detailReference -
+            detailNoiseVolumeTexture.SampleLevel(weatherMapSampler,
+                detailUvw + float3(1,0,0), 0)).r,
+            abs(detailReference - detailNoiseVolumeTexture.SampleLevel(
+                weatherMapSampler, detailUvw + float3(0,1,0), 0)).g),
+            abs(detailReference - detailNoiseVolumeTexture.SampleLevel(
+                weatherMapSampler, detailUvw + float3(0,0,1), 0)).b));
+        return float4((saturate(difference * 255.0) * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 47)
+        return float4((marchDebug.weatherThicknessPotential * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 48)
+        return float4((saturate(marchDebug.localThicknessMeters / 6000.0) *
+                       marchDebug.hit).xxx, 1.0);
+    if (debugMode == 49)
+    {
+        float insideLocalColumn = marchDebug.localHeightFraction <= 1.0 ? 1.0 : 0.0;
+        return float4((saturate(marchDebug.localHeightFraction) *
+                       insideLocalColumn * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 50)
+        return float4((marchDebug.effectiveShapeCoverage * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 51)
+        return float4((marchDebug.baseSupport * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 52)
+    {
+        float mappedDepth = 1.0 - exp(-max(marchDebug.viewOpticalDepth, 0.0));
+        return float4((mappedDepth * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 53)
+    {
+        float3 mapped = max(marchDebug.accumulatedSky, 0.0.xxx) /
+            (1.0.xxx + max(marchDebug.accumulatedSky, 0.0.xxx));
+        return float4(mapped * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 54)
+    {
+        float3 mapped = max(marchDebug.accumulatedGround, 0.0.xxx) /
+            (1.0.xxx + max(marchDebug.accumulatedGround, 0.0.xxx));
+        return float4(mapped * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 55)
+    {
+        float3 mapped = max(marchDebug.accumulatedMultiple, 0.0.xxx) /
+            (1.0.xxx + max(marchDebug.accumulatedMultiple, 0.0.xxx));
+        return float4(mapped * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 56)
+        return float4((marchDebug.detailLodFactor * marchDebug.hit).xxx, 1.0);
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
         ? sceneColorTexture.SampleLevel(pointClampSampler, uv, 0).rgb
         : SkyColor(rayDirection);
     float3 composite = cloud.scattering + background * cloud.transmittance;
-    return float4(composite, 1.0);
+    return float4(ApplyLdrHighlightShoulder(composite), 1.0);
 }

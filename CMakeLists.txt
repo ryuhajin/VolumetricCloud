@@ -20,6 +20,7 @@ add_executable(VolumetricCloud WIN32
     src/main.cpp
     src/Window.cpp
     src/Renderer.cpp
+    src/CloudAppearance.cpp
     src/NoiseLab.cpp
     src/FrameProfiler.cpp
     src/WeatherMap.cpp
@@ -202,6 +203,137 @@ add_test(NAME VolumetricCloud.Stage8AmbientMath
          COMMAND VolumetricCloud.Stage8AmbientMathTests)
 add_test(NAME VolumetricCloud.Stage8Smoke
          COMMAND VolumetricCloud --stage8-smoke-test)
+
+# 단계 13-0은 렌더 경로를 바꾸기 전에 meter 기반 상사 변환의 단위 관계를 검사한다.
+add_executable(VolumetricCloud.Stage13ScaleMathTests
+    tests/Stage13ScaleMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage13ScaleMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13ScaleMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13ScaleMath
+         COMMAND VolumetricCloud.Stage13ScaleMathTests)
+
+# 단계 13-1의 Y 평면층 교차, 수평 레이, 깊이 제한과 거리 fade를 검사한다.
+add_executable(VolumetricCloud.Stage13CloudDomainMathTests
+    tests/Stage13CloudDomainMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage13CloudDomainMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13CloudDomainMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13CloudDomainMath
+         COMMAND VolumetricCloud.Stage13CloudDomainMathTests)
+add_test(NAME VolumetricCloud.Stage13DomainSmoke
+         COMMAND VolumetricCloud --stage13-domain-smoke-test)
+
+add_executable(VolumetricCloud.Stage13SimilarityCameraMathTests
+    tests/Stage13SimilarityCameraMathTests.cpp
+    src/Camera.cpp
+)
+target_include_directories(VolumetricCloud.Stage13SimilarityCameraMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13SimilarityCameraMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13SimilarityCameraMath
+         COMMAND VolumetricCloud.Stage13SimilarityCameraMathTests)
+add_test(NAME VolumetricCloud.Stage13SimilarityGpu
+         COMMAND VolumetricCloud --stage13-similarity-gpu-test)
+
+# 단계 13-3 실제 km 시작값, sampling budget과 네 고정 카메라 GPU 경로를 검사한다.
+add_executable(VolumetricCloud.Stage13OpenWorldMathTests
+    tests/Stage13OpenWorldMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage13OpenWorldMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13OpenWorldMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13OpenWorldMath
+         COMMAND VolumetricCloud.Stage13OpenWorldMathTests)
+add_test(NAME VolumetricCloud.Stage13OpenWorldSmoke
+         COMMAND VolumetricCloud --stage13-open-world-smoke-test)
+
+# 단계 13-4 periodic Base/Detail Texture3D 규격, seam, cache와 GPU 경로를 검사한다.
+add_executable(VolumetricCloud.Stage13NoiseVolumeMathTests
+    tests/Stage13NoiseVolumeMathTests.cpp
+    src/WeatherMap.cpp
+)
+target_include_directories(VolumetricCloud.Stage13NoiseVolumeMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13NoiseVolumeMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13NoiseVolumeMath
+         COMMAND VolumetricCloud.Stage13NoiseVolumeMathTests)
+add_test(NAME VolumetricCloud.Stage13NoiseVolumeSmoke
+         COMMAND VolumetricCloud --stage13-noise-volume-smoke-test)
+
+# 단계 13-4B Weather 기반 물리 두께, 타입 세로 프로파일과 GPU 단면을 검사한다.
+add_executable(VolumetricCloud.Stage13WeatherShapeMathTests
+    tests/Stage13WeatherShapeMathTests.cpp
+    src/WeatherMap.cpp
+)
+target_include_directories(VolumetricCloud.Stage13WeatherShapeMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13WeatherShapeMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13WeatherShapeMath
+         COMMAND VolumetricCloud.Stage13WeatherShapeMathTests)
+add_test(NAME VolumetricCloud.Stage13WeatherShapeGpu
+         COMMAND VolumetricCloud --stage13-weather-shape-gpu-test)
+
+# 단계 13-4E Dense Broken-Sky 외형, 점유율, density 결합과 Custom JSON을 검사한다.
+add_executable(VolumetricCloud.CloudAppearanceTests
+    tests/CloudAppearanceTests.cpp
+    src/CloudAppearance.cpp
+    src/WeatherMap.cpp
+)
+target_include_directories(VolumetricCloud.CloudAppearanceTests PRIVATE src)
+if(MSVC)
+    target_compile_options(VolumetricCloud.CloudAppearanceTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.CloudAppearance
+         COMMAND VolumetricCloud.CloudAppearanceTests)
+
+# 단계 13-4B 사용자 카메라 위치, 건물 분리와 일반/고속 휠 줌 수학을 검사한다.
+add_executable(VolumetricCloud.Stage13CameraControlMathTests
+    tests/Stage13CameraControlMathTests.cpp
+    src/Camera.cpp
+)
+target_include_directories(VolumetricCloud.Stage13CameraControlMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage13CameraControlMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13CameraControlMath
+         COMMAND VolumetricCloud.Stage13CameraControlMathTests)
+
+add_executable(VolumetricCloud.Stage13SceneMathTests
+    tests/Stage13SceneMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage13SceneMathTests PRIVATE src)
+if(MSVC)
+    target_compile_options(VolumetricCloud.Stage13SceneMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13UnifiedSceneMath
+         COMMAND VolumetricCloud.Stage13SceneMathTests)
+add_test(NAME VolumetricCloud.Stage13UnifiedSceneSmoke
+         COMMAND VolumetricCloud --stage13-unified-scene-smoke-test)
+set_tests_properties(VolumetricCloud.Stage13UnifiedSceneSmoke PROPERTIES TIMEOUT 120)
+
+# 단계 13-5 km 광학, Light sampling 후보와 Detail 거리 LOD 수학을 검사한다.
+add_executable(VolumetricCloud.Stage13OpticsLightingMathTests
+    tests/Stage13OpticsLightingMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage13OpticsLightingMathTests PRIVATE src)
+if(MSVC)
+    target_compile_options(VolumetricCloud.Stage13OpticsLightingMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage13OpticsLightingMath
+         COMMAND VolumetricCloud.Stage13OpticsLightingMathTests)
+add_test(NAME VolumetricCloud.Stage13OpticsLightingSmoke
+         COMMAND VolumetricCloud --stage13-optics-lighting-smoke-test)
+set_tests_properties(VolumetricCloud.Stage13OpticsLightingSmoke
+                     PROPERTIES TIMEOUT 180)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

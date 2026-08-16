@@ -13,7 +13,7 @@ cbuffer LightCB : register(b3)
     float3 directionToSun;       // CPU directionToSun. 표본에서 태양으로 향하는 단위 월드 방향.
     float sunIntensity;          // CPU sunIntensity. 태양 복사광 세기, 0이면 직접광이 없다.
     float3 sunColor;             // CPU sunColor. linear RGB 태양색.
-    float scatteringCoefficient;// CPU scatteringCoefficient. 밀도가 빛을 카메라로 흩는 비율.
+    float singleScatteringAlbedo;// CPU singleScatteringAlbedo. 소멸된 빛 중 산란되는 무차원 비율 ω=σs/σt.
     uint maxLightSteps;          // CPU maxLightSteps. 한 View 표본당 Light Ray 최대 반복 수.
     float lightStepSize;         // CPU lightStepSize. 목표 Light Ray 간격(m).
     float lightRayBias;          // CPU lightRayBias. 시작점 자기 교차 방지 거리(m).

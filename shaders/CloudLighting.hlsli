@@ -15,7 +15,7 @@
 #ifndef VCLOUD_CLOUD_LIGHTING_HLSLI
 #define VCLOUD_CLOUD_LIGHTING_HLSLI
 
-#include "Ray.hlsli"
+#include "CloudDomainParameters.hlsli"
 #include "Noise.hlsli"
 #include "LightParameters.hlsli"
 #include "PhaseFunction.hlsli"
@@ -36,22 +36,23 @@ LightMarchResult ComputeLightTransmittance(
 {
     LightMarchResult result = { 1.0, 0.0, 0.0 };
     float directionLengthSquared = dot(lightDirection, lightDirection);
-    // 1. 잘못된 박스나 방향이면 아래 계산을 건너뛰고 중립값을 반환한다.
-    bool validInput = !any(cloudBoundsMax <= cloudBoundsMin) &&
-                      directionLengthSquared > 1e-8;
+    // 1. 방향이 잘못되면 아래 계산을 건너뛰고 중립값을 반환한다.
+    bool validInput = directionLengthSquared > 1e-8;
     if (validInput)
     {
         float3 safeDirection = lightDirection * rsqrt(directionLengthSquared);
 
         // 2. 현재 표면을 다시 맞히지 않도록 아주 조금 태양 쪽에서 시작한다.
-        float safeBias = clamp(lightRayBias, 0.0, 1.0);
+        // CPU sanitize와 같은 0~100m 계약을 사용한다. 1000x 상사 프리셋의
+        // 10m bias가 1m로 잘리지 않아야 공간 배율별 그림자 시작점이 같다.
+        float safeBias = clamp(lightRayBias, 0.0, 100.0);
         float3 rayOrigin = samplePosition + safeDirection * safeBias;
-        float tNear = 0.0;
-        float tFar = 0.0;
-        bool intersects = IntersectRayAABB(
-            rayOrigin, safeDirection, cloudBoundsMin, cloudBoundsMax, tNear, tFar);
-        float segmentStart = max(tNear, 0.0);
-        float segmentLength = tFar - segmentStart;
+        float segmentStart = 0.0;
+        float segmentEnd = 0.0;
+        bool intersects = IntersectCloudDomain(
+            rayOrigin, safeDirection, 1e30, true,
+            segmentStart, segmentEnd);
+        float segmentLength = segmentEnd - segmentStart;
         if (intersects && segmentLength > 1e-5)
         {
             // 3. 전체 이탈 구간을 maxLightSteps 안에서 균등하게 다시 나눈다.
@@ -99,13 +100,10 @@ float3 IntegrateSingleScattering(
     float safeExtinction = max(extinctionCoefficient, 0.0);
     float stepTransmittance = exp(-safeDensity * safeExtinction * safeLength);
 
-    // extinction이 0에 가까우면 0으로 나누지 않고 직사각형 적분으로 되돌아간다.
-    float densityIntegral = safeExtinction > 1e-6
-        ? (1.0 - stepTransmittance) / safeExtinction
-        : safeDensity * safeLength;
+    float interactionFraction = saturate(1.0 - stepTransmittance);
     return saturate(viewTransmittance) * max(sunColor, 0.0.xxx) *
            max(sunIntensity, 0.0) * saturate(lightTransmittance) *
-           max(scatteringCoefficient, 0.0) * max(densityIntegral, 0.0) *
+           saturate(singleScatteringAlbedo) * interactionFraction *
            clamp(phaseFactor, 0.0, kMaxPhaseFactor);
 }
 

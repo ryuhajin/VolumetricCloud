@@ -42,7 +42,8 @@ float4 main(VSOut input) : SV_TARGET
     // Base/Height 전용 출력은 sampleDetail=false로 Detail 함수 자체를 생략한다.
     // Final/Detail/Erosion/Mask만 실제 침식 결과가 필요하다.
     bool requiresDetail = noiseOutputMode == 2u ||
-                          (noiseOutputMode >= 6u && noiseOutputMode <= 8u);
+                          (noiseOutputMode >= 6u && noiseOutputMode <= 8u) ||
+                          (noiseOutputMode >= 20u && noiseOutputMode <= 24u);
     CloudDensitySample sample = SampleCloudDensity(
         SliceWorldPosition(saturate(input.uv)), effectiveTime, requiresDetail);
     float value = sample.rawNoise;
@@ -71,8 +72,27 @@ float4 main(VSOut input) : SV_TARGET
     else if (noiseOutputMode == 12u)
         value = sample.weatherThresholdDensity;
     else if (noiseOutputMode == 13u)
-        value = sample.typedHeightProfile;
+        value = sample.typedShapeProfile;
     else if (noiseOutputMode == 14u)
         return float4(sample.weatherUv, 0.0, 1.0);
+    else if (noiseOutputMode >= 15u && noiseOutputMode <= 18u)
+        value = sample.baseNoiseChannels[noiseOutputMode - 15u];
+    else if (noiseOutputMode == 19u)
+        value = sample.rawNoise;
+    else if (noiseOutputMode >= 20u && noiseOutputMode <= 23u)
+        value = sample.detailNoiseChannels[noiseOutputMode - 20u];
+    else if (noiseOutputMode == 24u)
+        value = sample.detailNoise;
+    else if (noiseOutputMode == 25u)
+        value = sample.weatherThicknessPotential;
+    else if (noiseOutputMode == 26u)
+        value = saturate(sample.localThicknessMeters / 6000.0);
+    else if (noiseOutputMode == 27u)
+        value = sample.localHeightFraction <= 1.0
+            ? sample.localHeightFraction : 0.0;
+    else if (noiseOutputMode == 28u)
+        value = sample.effectiveShapeCoverage;
+    else if (noiseOutputMode == 29u)
+        value = sample.baseSupport;
     return float4(value.xxx, 1.0);
 }

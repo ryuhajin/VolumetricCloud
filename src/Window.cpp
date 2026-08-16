@@ -1,9 +1,13 @@
 #include "Window.h"
 #include "Camera.h"
 #include "Renderer.h"
+#include "Stage13CameraPresets.h"
+#include "Stage13SceneMath.h"
 
 #include <windowsx.h> // GET_X_LPARAM / GET_Y_LPARAM
 
+#include <algorithm>
+#include <cmath>
 #include <cwchar>
 
 static const wchar_t* kClassName = L"VolumetricCloudWindowClass";
@@ -59,39 +63,69 @@ bool Window::ProcessMessages()
     return true;
 }
 
+void Window::ApplyInitialPortfolioCamera()
+{
+    if (!m_camera)
+        return;
+    ApplyCameraPreset(
+        Stage13CameraPresetId::HeroDepth, L"포트폴리오 Hero/Depth(F5)");
+    UpdateDebugTitle();
+}
+
+void Window::ApplyCameraPreset(Stage13CameraPresetId id,
+                               const wchar_t* displayName)
+{
+    if (!m_camera)
+        return;
+    const Stage13CameraPreset& preset = stage13camera::Get(id);
+    m_camera->SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    m_camera->SetFovYDegrees(60.0f);
+    m_camera->SetLookAt(preset.position, preset.target);
+    SetCameraPresetName(displayName);
+}
+
+void Window::UpdateCameraMovement(float deltaSeconds)
+{
+    if (!m_camera || !m_renderer || m_renderer->DeveloperUiWantsKeyboard())
+        return;
+    const float moveDistance = stage13scene::MovementDistance(
+        deltaSeconds, (GetKeyState(VK_SHIFT) & 0x8000) != 0,
+        m_renderer->CameraMoveSpeed());
+    float forward = ((GetKeyState('W') & 0x8000) ? 1.0f : 0.0f) -
+                    ((GetKeyState('S') & 0x8000) ? 1.0f : 0.0f);
+    float right = ((GetKeyState('D') & 0x8000) ? 1.0f : 0.0f) -
+                  ((GetKeyState('A') & 0x8000) ? 1.0f : 0.0f);
+    const float inputLength = std::sqrt(forward * forward + right * right);
+    if (inputLength <= 1e-5f || moveDistance <= 0.0f)
+        return;
+    forward /= inputLength;
+    right /= inputLength;
+    m_camera->TranslateRigLocal(
+        forward * moveDistance, right * moveDistance);
+    MarkCameraManuallyAdjusted();
+}
+
+void Window::SetCameraPresetName(const wchar_t* displayName)
+{
+    if (m_camera)
+        m_camera->SetDebugName(displayName);
+}
+
+void Window::MarkCameraManuallyAdjusted()
+{
+    if (!m_camera || m_camera->WasManuallyAdjusted())
+        return;
+    m_camera->MarkManuallyAdjusted();
+    UpdateDebugTitle();
+}
+
 void Window::UpdateDebugTitle()
 {
     if (!m_renderer || !m_hwnd)
         return;
-
-    static const wchar_t* debugNames[] = {
-        L"0 합성", L"1 월드 레이", L"2 Scene Depth", L"3 월드 위치", L"4 화면 UV",
-        L"5 AABB 진입", L"6 제한 이탈", L"7 Step 수", L"8 투과율", L"9 샘플 밀도",
-        L"Z 원본 Noise", L"X Threshold", L"C 최종 밀도", L"V Noise UVW",
-        L"B 높이 비율", L"M 높이 Profile", L"J Base 밀도", L"L Detail Noise",
-        L"P Erosion", L"U Detail Sample", L"I Weather Coverage", L"O Cloud Type",
-        L"Shift+I Weather Threshold", L"Shift+O Typed Height",
-        L"Shift+J Light Transmittance", L"Shift+L Light Optical Depth",
-        L"Shift+P Total Light Samples", L"Shift+U Direct Single Scattering",
-        L"Shift+B Phase CosTheta", L"Shift+M Forward Phase",
-        L"Shift+C Backward Phase", L"Shift+V Dual Phase Factor",
-        L"Ctrl+J Accumulated Direct"
-    };
-    static const wchar_t* presetNames[] = {
-        L"Q 기본 볼륨", L"Y 넓은 볼륨", L"W 얇은 Z", L"E 두꺼운 Z",
-        L"R Fine 0.025m", L"T Coarse 0.5m"
-    };
-    static const wchar_t* noisePresetNames[] = {
-        L"N 기본 Noise", L"A Sparse", L"S Dense", L"D 큰 덩어리",
-        L"F 작은 덩어리", L"G 바람 정지", L"H 빠른 바람", L"K Noise Offset",
-        L"UI Custom"
-    };
-    static const wchar_t* detailPresetNames[] = {
-        L"F9 Detail Off", L"F10 기본 Detail", L"F11 Fine Detail",
-        L"F12 Strong Erosion", L"UI Custom Detail"
-    };
     static const wchar_t* weatherPresetNames[] = {
-        L"F2 Uniform Weather", L"F3 Periodic Perlin", L"F4 Channel Debug"
+        L"Uniform Legacy", L"Periodic Perlin", L"Channel Debug"
     };
     static const wchar_t* sunPresetNames[] = {
         L"Noon Sun", L"Low East Sun", L"Low West Sun", L"Custom Sun"
@@ -105,26 +139,27 @@ void Window::UpdateDebugTitle()
         L"Ground Check", L"Custom Environment"
     };
 
-    const int debugIndex = static_cast<int>(m_renderer->DebugMode());
-    const int presetIndex = static_cast<int>(m_renderer->ValidationPreset());
-    const int noisePresetIndex = static_cast<int>(m_renderer->NoisePreset());
-    const int detailPresetIndex = static_cast<int>(m_renderer->DetailPreset());
     const int weatherPresetIndex = static_cast<int>(m_renderer->WeatherPreset());
     const int sunPresetIndex = static_cast<int>(m_renderer->SunPreset());
     const int phasePresetIndex = static_cast<int>(m_renderer->PhasePreset());
     const int environmentPresetIndex =
         static_cast<int>(m_renderer->EnvironmentPreset());
-    wchar_t title[640] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 8 | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls | %ls",
-               debugNames[(debugIndex >= 0 && debugIndex <= 32) ? debugIndex : 0],
-               presetNames[(presetIndex >= 0 && presetIndex <= 5) ? presetIndex : 0],
-               noisePresetNames[(noisePresetIndex >= 0 && noisePresetIndex <= 8) ? noisePresetIndex : 0],
-               detailPresetNames[(detailPresetIndex >= 0 && detailPresetIndex <= 4) ? detailPresetIndex : 1],
-               weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 2],
+    const wchar_t* noiseSourceName =
+        m_renderer->CurrentNoiseSource() == NoiseSource::Texture3D
+            ? L"Texture3D" : L"Procedural Legacy";
+    wchar_t title[512] = {};
+    swprintf_s(title, L"VolumetricCloud - Stage 13-4E | %ls | Unified 50km Portfolio Scene | %ls | %ls | %ls | %ls | %ls | %ls | WASD %.0f m/s Shift 4x",
+               stage13scene::DebugModeName(m_renderer->DebugMode()),
+               noiseSourceName,
+               weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 1],
                sunPresetNames[(sunPresetIndex >= 0 && sunPresetIndex <= 3) ? sunPresetIndex : 3],
                phasePresetNames[(phasePresetIndex >= 0 && phasePresetIndex <= 4) ? phasePresetIndex : 0],
                environmentPresetNames[(environmentPresetIndex >= 0 && environmentPresetIndex <= 4) ? environmentPresetIndex : 1],
-               m_cameraPresetName);
+               m_camera
+                   ? (m_camera->GetDebugName() +
+                      (m_camera->WasManuallyAdjusted() ? L" · 수동 조정" : L"")).c_str()
+                    : L"카메라 없음",
+               m_renderer->CameraMoveSpeed());
     SetWindowTextW(m_hwnd, title);
 }
 
@@ -148,121 +183,65 @@ LRESULT CALLBACK Window::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+bool Window::HandleGlobalDebugShortcut(WPARAM virtualKey)
+{
+    if (!m_renderer)
+        return false;
+    const int debugDigit = stage13scene::DebugDigitFromVirtualKey(
+        static_cast<std::uint32_t>(virtualKey));
+    if (debugDigit < 0)
+        return false;
+    m_renderer->SetDebugMode(stage13scene::DebugModeFromDigit(debugDigit));
+    UpdateDebugTitle();
+    return true;
+}
+
 LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    // 대표 위치가 아닌 View Ray 전체의 직접광 누적값은 Ctrl+J로 확인한다.
-    if (msg == WM_KEYDOWN && m_renderer &&
-        (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
-        wParam == 'J')
+    const bool sceneKeyboardBlocked = m_renderer &&
+        m_renderer->DeveloperUiWantsKeyboard();
+    // F1~F4는 독립 개발 UI 창이다. F1은 NoiseLab 메시지 경로가 처리하고,
+    // F2~F4는 기존 Weather 프리셋 키 대신 Weather/Lighting/Camera 창을 토글한다.
+    if (msg == WM_KEYDOWN && m_renderer && !sceneKeyboardBlocked &&
+        wParam >= VK_F2 && wParam <= VK_F4)
     {
-        m_renderer->SetDebugMode(CloudDebugMode::AccumulatedDirectLighting);
-        UpdateDebugTitle();
-        return 0;
-    }
-
-    // 단계 7 Phase 진단은 기존 B/M/C/V의 높이·밀도 출력을 보존하고 Shift 조합으로 추가한다.
-    // Noise Lab이 키보드를 캡처해도 방향 비교가 즉시 되도록 ImGui 처리보다 먼저 받는다.
-    if (msg == WM_KEYDOWN && m_renderer &&
-        (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
-        (wParam == 'B' || wParam == 'M' || wParam == 'C' || wParam == 'V'))
-    {
-        if (wParam == 'B')
-            m_renderer->SetDebugMode(CloudDebugMode::PhaseCosTheta);
-        else if (wParam == 'M')
-            m_renderer->SetDebugMode(CloudDebugMode::ForwardPhaseLobe);
-        else if (wParam == 'C')
-            m_renderer->SetDebugMode(CloudDebugMode::BackwardPhaseLobe);
-        else
-            m_renderer->SetDebugMode(CloudDebugMode::DualPhaseFactor);
-        UpdateDebugTitle();
-        return 0;
-    }
-
-    // 단계 4의 J/L/P/U는 그대로 두고 Shift 조합만 단계 6 조명 진단으로 확장한다.
-    // Noise Lab이 키보드를 캡처해도 조명 비교는 항상 작동하도록 UI보다 먼저 처리한다.
-    if (msg == WM_KEYDOWN && m_renderer &&
-        (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
-        (wParam == 'J' || wParam == 'L' || wParam == 'P' || wParam == 'U'))
-    {
-        if (wParam == 'J')
-            m_renderer->SetDebugMode(CloudDebugMode::LightTransmittance);
-        else if (wParam == 'L')
-            m_renderer->SetDebugMode(CloudDebugMode::LightOpticalDepth);
-        else if (wParam == 'P')
-            m_renderer->SetDebugMode(CloudDebugMode::TotalLightSamples);
-        else
-            m_renderer->SetDebugMode(CloudDebugMode::DirectSingleScattering);
-        UpdateDebugTitle();
-        return 0;
-    }
-
-    // Weather 비교 키는 Noise Lab이 기본으로 열린 상태에서도 즉시 작동해야 한다.
-    // Shift 조합은 같은 중간값의 "입력 지도"와 "적용 결과"를 짝으로 보여 준다.
-    if (msg == WM_KEYDOWN && m_renderer && (wParam == 'I' || wParam == 'O'))
-    {
-        const bool shifted = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-        if (wParam == 'I')
-            m_renderer->SetDebugMode(shifted
-                ? CloudDebugMode::WeatherThresholdDensity
-                : CloudDebugMode::WeatherCoverage);
-        else
-            m_renderer->SetDebugMode(shifted
-                ? CloudDebugMode::TypedHeightProfile
-                : CloudDebugMode::CloudType);
-        UpdateDebugTitle();
-        return 0;
-    }
-
-    // Noise Lab은 기본으로 열려 있고 ImGui가 키보드를 캡처할 수 있다. F2~F12는
-    // 텍스트 편집에 쓰이지 않는 전역 검증 단축키이므로 UI보다 먼저 처리한다.
-    // 특히 F9~F12가 ImGui에 막히면 Detail 프리셋을 다시 선택할 수 없다.
-    // Windows는 F10을 메뉴 활성화 키로 취급해 WM_SYSKEYDOWN으로 보낼 수
-    // 있으므로 일반 키와 시스템 키 경로를 모두 받는다.
-    if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) &&
-        wParam >= VK_F2 && wParam <= VK_F12)
-    {
-        if (m_renderer && wParam == VK_F2)
-            m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::UniformLegacy);
-        else if (m_renderer && wParam == VK_F3)
-            m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::PeriodicPerlin);
-        else if (m_renderer && wParam == VK_F4)
-            m_renderer->ApplyStage5WeatherPreset(Stage5WeatherPreset::ChannelDebug);
-        else if (m_camera && wParam == VK_F5)
+        if ((lParam & (1ll << 30)) == 0)
         {
-            m_camera->SetOrbit(0.55f, 0.30f, 12.0f, { 0.0f, -0.2f, 0.0f });
-            m_cameraPresetName = L"외부 기본(F5)";
+            m_renderer->ToggleDeveloperUiPanel(static_cast<DeveloperUiPanel>(
+                static_cast<std::size_t>(wParam - VK_F1)));
         }
+        return 0;
+    }
+
+    // F5~F8은 단일 씬의 네 고정 카메라다.
+    if (msg == WM_KEYDOWN &&
+        !sceneKeyboardBlocked &&
+        wParam >= VK_F5 && wParam <= VK_F8)
+    {
+        if (m_camera && wParam == VK_F5)
+            ApplyCameraPreset(Stage13CameraPresetId::HeroDepth,
+                              L"포트폴리오 Hero/Depth(F5)");
         else if (m_camera && wParam == VK_F6)
-        {
-            m_camera->SetOrbit(-0.75f, 0.05f, 10.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"낮은 외부(F6)";
-        }
+            ApplyCameraPreset(Stage13CameraPresetId::GroundHorizon,
+                              L"지상 수평선(F6)");
         else if (m_camera && wParam == VK_F7)
-        {
-            m_camera->SetOrbit(0.0f, 0.65f, 14.0f, { 0.0f, -0.5f, 0.0f });
-            m_cameraPresetName = L"높은 외부(F7)";
-        }
+            ApplyCameraPreset(Stage13CameraPresetId::InsideLayer,
+                              L"구름 내부(F7)");
         else if (m_camera && wParam == VK_F8)
-        {
-            // orbit의 눈 위치가 원점이 되도록 target을 -Z로 옮긴다. 따라서 얇은 W
-            // 프리셋에서도 카메라는 AABB 내부이고 raw tNear가 음수인 경로를 검증한다.
-            m_camera->SetOrbit(0.0f, 0.0f, 1.5f, { 0.0f, 0.0f, -1.5f });
-            m_cameraPresetName = L"AABB 내부(F8)";
-        }
-        else if (m_renderer && wParam == VK_F9)
-            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::DetailOff);
-        else if (m_renderer && wParam == VK_F10)
-            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::DefaultDetail);
-        else if (m_renderer && wParam == VK_F11)
-            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::FineDetail);
-        else if (m_renderer && wParam == VK_F12)
-            m_renderer->ApplyStage4DetailPreset(Stage4DetailPreset::StrongErosion);
+            ApplyCameraPreset(Stage13CameraPresetId::AboveLayer,
+                              L"구름 위 하향(F8)");
         else
             return 0;
 
         UpdateDebugTitle();
         return 0;
     }
+
+    if (msg == WM_KEYDOWN && !sceneKeyboardBlocked &&
+        !stage13scene::IsCameraMovementKey(
+            static_cast<std::uint32_t>(wParam)) &&
+        HandleGlobalDebugShortcut(wParam))
+        return 0;
 
     if (m_renderer && m_renderer->HandleWindowMessage(hwnd, msg, wParam, lParam))
         return 0;
@@ -302,6 +281,8 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             int dx = x - m_lastMouseX;
             int dy = y - m_lastMouseY;
             m_camera->Rotate(static_cast<float>(dx), static_cast<float>(dy));
+            if (dx != 0 || dy != 0)
+                MarkCameraManuallyAdjusted();
             m_lastMouseX = x;
             m_lastMouseY = y;
         }
@@ -309,161 +290,20 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOUSEWHEEL:
         if (m_camera)
-            m_camera->Zoom(static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)));
+        {
+            m_camera->Zoom(
+                static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)),
+                CameraZoomSpeed::Normal);
+            MarkCameraManuallyAdjusted();
+        }
         return 0;
 
     case WM_KEYDOWN:
-        if (m_renderer && wParam >= '0' && wParam <= '9')
-        {
-            m_renderer->SetDebugMode(
-                static_cast<CloudDebugMode>(static_cast<int>(wParam - '0')));
-            UpdateDebugTitle();
+        // WASD는 polling 기반 카메라 이동 전용이다.
+        if (stage13scene::IsCameraMovementKey(
+                static_cast<std::uint32_t>(wParam)))
             return 0;
-        }
-        if (m_renderer && wParam == 'Z')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::RawNoise);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'X')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::ThresholdDensity);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'C')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::FinalDensity);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'V')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::NoiseUvw);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'B')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::HeightFraction);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'M')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::HeightProfile);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'J')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::BaseDensity);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'L')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::DetailNoise);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'P')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::Erosion);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'U')
-        {
-            m_renderer->SetDebugMode(CloudDebugMode::DetailSampleMask);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'Q')
-        {
-            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::DefaultVolume);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'Y')
-        {
-            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::WideVolume);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'W')
-        {
-            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::ThinVolume);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'E')
-        {
-            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::ThickVolume);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'R')
-        {
-            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::FineStep);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'T')
-        {
-            m_renderer->ApplyStage1ValidationPreset(Stage1ValidationPreset::CoarseStep);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'N')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::DefaultNoise);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'A')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::SparseCoverage);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'S')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::DenseCoverage);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'D')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::LargeBlobs);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'F')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::SmallBlobs);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'G')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::StoppedWind);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'H')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::FastWind);
-            UpdateDebugTitle();
-            return 0;
-        }
-        if (m_renderer && wParam == 'K')
-        {
-            m_renderer->ApplyStage2NoisePreset(Stage2NoisePreset::OffsetNoise);
-            UpdateDebugTitle();
-            return 0;
-        }
+        break;
     }
 
     return DefWindowProc(hwnd, msg, wParam, lParam);

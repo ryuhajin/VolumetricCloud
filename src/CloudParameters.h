@@ -9,13 +9,6 @@
 enum class CloudDebugMode : std::int32_t
 {
     Composite = 0,
-    RayDirection = 1,
-    SceneDepth = 2,
-    WorldPosition = 3,
-    ScreenUv = 4,
-    AabbEntryDistance = 5,
-    AabbExitDistance = 6,
-    ViewStepCount = 7,
     Transmittance = 8,
     ConstantDensity = 9,
     RawNoise = 10,
@@ -31,7 +24,7 @@ enum class CloudDebugMode : std::int32_t
     WeatherCoverage = 20,
     CloudType = 21,
     WeatherThresholdDensity = 22,
-    TypedHeightProfile = 23,
+    TypedShapeProfile = 23,
     LightTransmittance = 24,
     LightOpticalDepth = 25,
     TotalLightSamples = 26,
@@ -41,38 +34,30 @@ enum class CloudDebugMode : std::int32_t
     BackwardPhaseLobe = 30,
     DualPhaseFactor = 31,
     AccumulatedDirectLighting = 32,
-};
-
-enum class Stage1ValidationPreset : std::int32_t
-{
-    DefaultVolume,
-    WideVolume,
-    ThinVolume,
-    ThickVolume,
-    FineStep,
-    CoarseStep,
-};
-
-enum class Stage2NoisePreset : std::int32_t
-{
-    DefaultNoise,
-    SparseCoverage,
-    DenseCoverage,
-    LargeBlobs,
-    SmallBlobs,
-    StoppedWind,
-    FastWind,
-    OffsetNoise,
-    Custom,
-};
-
-enum class Stage4DetailPreset : std::int32_t
-{
-    DetailOff,
-    DefaultDetail,
-    FineDetail,
-    StrongErosion,
-    Custom,
+    CloudSegmentLength = 33,
+    ActualViewStepLength = 34,
+    CloudHitMask = 35,
+    BaseVolumeR = 36,
+    BaseVolumeG = 37,
+    BaseVolumeB = 38,
+    BaseVolumeA = 39,
+    BaseVolumeCombined = 40,
+    DetailVolumeR = 41,
+    DetailVolumeG = 42,
+    DetailVolumeB = 43,
+    DetailVolumeA = 44,
+    DetailVolumeCombined = 45,
+    TextureWrapDifference = 46,
+    WeatherThicknessPotential = 47,
+    LocalThickness = 48,
+    LocalHeightFraction = 49,
+    EffectiveShapeCoverage = 50,
+    BaseSupportBeforeDensity = 51,
+    ViewOpticalDepth = 52,
+    AccumulatedSkyAmbient = 53,
+    AccumulatedGroundBounce = 54,
+    AccumulatedMultipleScattering = 55,
+    DetailLodFactor = 56,
 };
 
 enum class Stage5WeatherPreset : std::int32_t
@@ -105,15 +90,17 @@ struct alignas(16) CloudParameters
     float bottomFadeEnd = 0.20f;
 
     float topFadeStart = 0.80f;
-    float heightProfilePadding[3] = {};
+    float minimumLocalThicknessFraction = 0.40f;
+    float localHeightVariation = 0.0f;
+    float cumulusTopBoost = 0.35f;
 
     float detailNoiseScale = 2.5f;
     float detailErosionStrength = 0.25f;
-    float detailWindSpeed = 0.45f;
+    float detailWindSpeed = 0.45f; // Legacy 전용. Physical은 windSpeed를 공유한다.
     float detailNoiseOffset = 17.3f;
 
     float weatherMapWorldSize = 16.0f;
-    float weatherMapWindSpeed = 0.10f;
+    float weatherMapWindSpeed = 0.10f; // Legacy 전용. Physical은 windSpeed를 공유한다.
     DirectX::XMFLOAT2 weatherMapOffset = { 0.0f, 0.0f };
 };
 

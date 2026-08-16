@@ -10,14 +10,32 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 
 #include "WeatherMap.h"
+#include "Stage13OpenWorldMath.h"
+#include "Stage13NoiseVolumeMath.h"
+#include "Stage13SceneMath.h"
+#include "CloudDomainParameters.h"
+#include "CloudLodParameters.h"
+#include "CloudShapeParameters.h"
+#include "CloudAppearance.h"
 #include "LightParameters.h"
 #include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
+
+class Camera;
+
+enum class DeveloperUiPanel : std::size_t
+{
+    Noise = 0,
+    Weather = 1,
+    Lighting = 2,
+    Camera = 3,
+};
 
 enum class NoiseSliceAxis : std::uint32_t
 {
@@ -41,8 +59,23 @@ enum class NoiseOutputMode : std::uint32_t
     CloudType = 10,
     WeatherDensityModifier = 11,
     WeatherThresholdDensity = 12,
-    TypedHeightProfile = 13,
+    TypedShapeProfile = 13,
     WeatherUv = 14,
+    BaseVolumeR = 15,
+    BaseVolumeG = 16,
+    BaseVolumeB = 17,
+    BaseVolumeA = 18,
+    BaseVolumeCombined = 19,
+    DetailVolumeR = 20,
+    DetailVolumeG = 21,
+    DetailVolumeB = 22,
+    DetailVolumeA = 23,
+    DetailVolumeCombined = 24,
+    WeatherThicknessPotential = 25,
+    LocalThickness = 26,
+    LocalHeightFraction = 27,
+    EffectiveShapeCoverage = 28,
+    BaseSupportBeforeDensity = 29,
 };
 
 struct alignas(16) NoiseLabParameters
@@ -66,13 +99,19 @@ public:
     bool Init(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context);
     void Shutdown();
     bool HandleWindowMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    bool WantsKeyboardCapture() const;
     void ToggleVisible();
-    void SetVisible(bool visible) { m_visible = visible; }
-    bool IsVisible() const { return m_visible; }
+    void TogglePanel(DeveloperUiPanel panel);
+    void SetVisible(bool visible) { m_panelVisible[0] = visible; }
+    bool IsVisible() const { return m_panelVisible[0]; }
 
     // UI 명령을 먼저 만든 뒤 동일 프레임에서 preview texture를 갱신한다.
     void BeginFrame(float applicationTime,
+                    Camera& camera,
                     CloudParameters& cloudParameters,
+                    CloudShapeParameters& cloudShapeParameters,
+                    CloudDomainParameters& cloudDomainParameters,
+                    CloudLodParameters& cloudLodParameters,
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
                     Stage7PhasePreset& phasePreset,
@@ -80,6 +119,16 @@ public:
                     Stage8EnvironmentPreset& environmentPreset,
                     Stage5WeatherPreset weatherPreset,
                     const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                    CloudTypeMode cloudTypeMode,
+                    CloudAppearancePreset cloudAppearancePreset,
+                    bool cloudAppearanceDirty,
+                    bool hasSavedCustomAppearance,
+                    const std::string& cloudAppearanceStatus,
+                    float& cameraMoveSpeedMetersPerSecond,
+                    NoiseVolumeParameters& noiseVolumeParameters,
+                    std::uint64_t baseNoiseVolumeHash,
+                    std::uint64_t detailNoiseVolumeHash,
+                    double noiseVolumeGenerationMilliseconds,
                     ID3D11ShaderResourceView* weatherMapSrv,
                     const std::string& weatherMapStatus,
                     const FrameTimingSnapshot& timing,
@@ -90,14 +139,30 @@ public:
     void RenderPreviews(ID3D11VertexShader* fullscreenVs,
                         ID3D11PixelShader* noiseLabPs,
                         ID3D11Buffer* cloudCb,
+                        ID3D11Buffer* noiseVolumeCb,
+                        ID3D11Buffer* cloudShapeCb,
                         ID3D11ShaderResourceView* weatherMapSrv,
+                        ID3D11ShaderResourceView* baseNoiseVolumeSrv,
+                        ID3D11ShaderResourceView* detailNoiseVolumeSrv,
                         ID3D11SamplerState* weatherSampler);
     void EndFrame(ID3D11RenderTargetView* backBufferRtv);
 
     float EffectiveTime() const { return m_effectiveTime; }
     bool ConsumeParametersChanged();
     bool ConsumeWeatherPresetRequest(Stage5WeatherPreset& preset);
+    bool ConsumeOpenWorldPipelinePresetRequest(OpenWorldPipelinePreset& preset);
+    bool ConsumeCloudAppearancePresetRequest(CloudAppearancePreset& preset);
+    bool ConsumeCloudAppearanceSaveRequest();
+    bool ConsumeCloudAppearanceEdited();
+    bool ConsumeNoiseVolumeRegenerateRequest();
+    bool ConsumeNoiseSourceRequest(NoiseSource& source);
     bool ConsumeWeatherGeneratorRequest(WeatherMapGeneratorSettings& settings);
+    void SynchronizeWeatherGeneratorSettings(
+        const WeatherMapGeneratorSettings& settings);
+    void SetOpenWorldPipelinePreset(OpenWorldPipelinePreset preset)
+    {
+        m_openWorldPipelinePreset = preset;
+    }
     void SetOutputMode(NoiseOutputMode mode)
     {
         m_parameters.outputMode = static_cast<std::uint32_t>(mode);
@@ -107,13 +172,23 @@ public:
     std::uint64_t PreviewHash(std::size_t targetIndex);
     bool ExportSnapshot(const std::filesystem::path& root,
                         const CloudParameters& cloudParameters,
+                        const CloudShapeParameters& cloudShapeParameters,
+                        const CloudDomainParameters& cloudDomainParameters,
+                        const CloudLodParameters& cloudLodParameters,
                         const LightParameters& lightParameters,
                         Stage6SunPreset sunPreset,
                         Stage7PhasePreset phasePreset,
                         const EnvironmentParameters& environmentParameters,
                         Stage8EnvironmentPreset environmentPreset,
-                        Stage4DetailPreset detailPreset,
                         Stage5WeatherPreset weatherPreset,
+                        CloudTypeMode cloudTypeMode,
+                        CloudAppearancePreset cloudAppearancePreset,
+                        bool cloudAppearanceDirty,
+                        bool hasSavedCustomAppearance,
+                        const CloudAppearanceSettings& savedCustomAppearance,
+                        const NoiseVolumeParameters& noiseVolumeParameters,
+                        std::uint64_t baseNoiseVolumeHash,
+                        std::uint64_t detailNoiseVolumeHash,
                         const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                         std::uint64_t weatherMapHash,
                         ID3D11Texture2D* weatherMapTexture,
@@ -133,11 +208,26 @@ private:
         ComPtr<ID3D11Texture2D> staging;
     };
 
+    struct CameraSnapshot
+    {
+        DirectX::XMFLOAT3 position = {};
+        DirectX::XMFLOAT3 target = {};
+        float fovYDegrees = 60.0f;
+        float nearPlaneMeters = 0.1f;
+        float farPlaneMeters = 60000.0f;
+        bool valid = false;
+    };
+
     static constexpr UINT kPreviewSize = 512;
 
     bool CreatePreviewTargets();
     bool CreateConstantBuffer();
-    void DrawControlWindow(CloudParameters& cloudParameters,
+    void DrawControlWindow(DeveloperUiPanel panel,
+                           Camera& camera,
+                           CloudParameters& cloudParameters,
+                           CloudShapeParameters& cloudShapeParameters,
+                           CloudDomainParameters& cloudDomainParameters,
+                           CloudLodParameters& cloudLodParameters,
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
                            Stage7PhasePreset& phasePreset,
@@ -145,6 +235,16 @@ private:
                            Stage8EnvironmentPreset& environmentPreset,
                            Stage5WeatherPreset weatherPreset,
                            const WeatherMapGeneratorSettings& weatherGeneratorSettings,
+                           CloudTypeMode cloudTypeMode,
+                           CloudAppearancePreset cloudAppearancePreset,
+                           bool cloudAppearanceDirty,
+                           bool hasSavedCustomAppearance,
+                           const std::string& cloudAppearanceStatus,
+                           float& cameraMoveSpeedMetersPerSecond,
+                           NoiseVolumeParameters& noiseVolumeParameters,
+                           std::uint64_t baseNoiseVolumeHash,
+                           std::uint64_t detailNoiseVolumeHash,
+                           double noiseVolumeGenerationMilliseconds,
                            ID3D11ShaderResourceView* weatherMapSrv,
                            const std::string& weatherMapStatus,
                            bool& vsyncEnabled,
@@ -160,19 +260,33 @@ private:
                                    PeriodicChannelSettings& settings);
     void QueueWeatherGeneratorRequest(bool force);
     void UpdateEffectiveTime(float applicationTime);
+    CameraSnapshot CaptureCamera(const Camera& camera) const;
+    void ApplyCameraSnapshot(const CameraSnapshot& snapshot,
+                             Camera& camera,
+                             const wchar_t* debugName);
     bool SaveTargetPng(const std::filesystem::path& path, SliceTarget& target);
     bool SaveTexturePng(const std::filesystem::path& path,
                         ID3D11Texture2D* texture);
     std::uint64_t HashFile(const std::filesystem::path& path) const;
     bool WriteMetadata(const std::filesystem::path& path,
                        const CloudParameters& cloudParameters,
+                       const CloudShapeParameters& cloudShapeParameters,
+                       const CloudDomainParameters& cloudDomainParameters,
+                       const CloudLodParameters& cloudLodParameters,
                        const LightParameters& lightParameters,
                        Stage6SunPreset sunPreset,
                        Stage7PhasePreset phasePreset,
                        const EnvironmentParameters& environmentParameters,
                        Stage8EnvironmentPreset environmentPreset,
-                       Stage4DetailPreset detailPreset,
                        Stage5WeatherPreset weatherPreset,
+                       CloudTypeMode cloudTypeMode,
+                       CloudAppearancePreset cloudAppearancePreset,
+                       bool cloudAppearanceDirty,
+                       bool hasSavedCustomAppearance,
+                       const CloudAppearanceSettings& savedCustomAppearance,
+                       const NoiseVolumeParameters& noiseVolumeParameters,
+                       std::uint64_t baseNoiseVolumeHash,
+                       std::uint64_t detailNoiseVolumeHash,
                        const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                        std::uint64_t weatherMapHash,
                        const std::filesystem::path& noiseSourcePath) const;
@@ -184,16 +298,26 @@ private:
     ComPtr<ID3D11Buffer> m_noiseLabCb;
 
     bool m_initialized = false;
-    bool m_visible = true;
+    std::array<bool, 4> m_panelVisible = { true, false, false, false };
     bool m_parametersChanged = false;
     bool m_exportRequested = false;
     int m_weatherPresetRequest = -1;
+    int m_openWorldPipelinePresetRequest = -1;
+    int m_cloudAppearancePresetRequest = -1;
+    bool m_cloudAppearanceSaveRequest = false;
+    bool m_cloudAppearanceEdited = false;
+    bool m_noiseVolumeRegenerateRequest = false;
+    int m_noiseSourceRequest = -1;
     bool m_weatherGeneratorRequestPending = false;
     bool m_weatherGeneratorDraftInitialized = false;
     bool m_weatherGeneratorDirty = false;
     bool m_weatherGeneratorLiveUpdate = true;
     float m_weatherGeneratorLastRequestTime = -1.0f;
     float m_currentApplicationTime = 0.0f;
+    float m_cameraMoveSpeedMetersPerSecond =
+        stage13scene::kMoveSpeedMetersPerSecond;
+    OpenWorldPipelinePreset m_openWorldPipelinePreset =
+        OpenWorldPipelinePreset::Custom;
     WeatherMapGeneratorSettings m_weatherGeneratorDraft;
     WeatherMapGeneratorSettings m_weatherGeneratorRequest;
     ID3D11ShaderResourceView* m_weatherMapPreviewSrv = nullptr;
@@ -208,5 +332,7 @@ private:
     float m_effectiveTime = 0.0f;
     bool m_hasApplicationTime = false;
     NoiseLabParameters m_parameters;
+    CameraSnapshot m_currentCamera;
+    CameraSnapshot m_savedCamera;
     std::string m_exportStatus;
 };

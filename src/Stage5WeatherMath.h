@@ -116,6 +116,31 @@ inline float EvaluateTypedHeightProfile(float heightFraction, float cloudType,
         : mixed + (cumulus - mixed) * ((type - 0.5f) * 2.0f);
 }
 
+inline float EvaluateLocalTopFraction(float localHeightPotential,
+                                      float cloudType,
+                                      float minimumThicknessFraction,
+                                      float heightVariation,
+                                      float cumulusTopBoost)
+{
+    const float minimumThickness = std::clamp(
+        std::isfinite(minimumThicknessFraction) ? minimumThicknessFraction : 0.40f,
+        0.10f, 1.0f);
+    const float rawTop = std::max(
+        minimumThickness, SaturateFinite(localHeightPotential));
+    const float cumulusAmount = Smoothstep(
+        0.5f, 1.0f, SaturateFinite(cloudType));
+    const float typedTop = rawTop + (1.0f - rawTop) *
+        SaturateFinite(cumulusTopBoost) * cumulusAmount;
+    return 1.0f + (typedTop - 1.0f) * SaturateFinite(heightVariation);
+}
+
+inline float EvaluateLocalHeightFraction(float globalHeightFraction,
+                                         float localTopFraction)
+{
+    return SaturateFinite(globalHeightFraction) /
+        std::max(SaturateFinite(localTopFraction), 1e-4f);
+}
+
 inline float EvaluateMixedFootprintCutoff(float heightFraction)
 {
     const float h = SaturateFinite(heightFraction);
@@ -159,15 +184,26 @@ inline float EvaluateWeatherBaseDensity(float rawNoise, float globalCoverage,
                                         float weatherCoverage, float cloudType,
                                         float weatherBlue, float heightFraction,
                                         float bottomFadeEnd, float topFadeStart,
-                                        float densityMultiplier)
+                                        float densityMultiplier,
+                                        float localHeightPotential = 1.0f,
+                                        float minimumThicknessFraction = 0.40f,
+                                        float heightVariation = 0.0f,
+                                        float cumulusTopBoost = 0.35f)
 {
+    const float localTop = EvaluateLocalTopFraction(
+        localHeightPotential, cloudType, minimumThicknessFraction,
+        heightVariation, cumulusTopBoost);
+    if (SaturateFinite(heightFraction) > localTop)
+        return 0.0f;
+    const float localHeight = EvaluateLocalHeightFraction(
+        heightFraction, localTop);
     const float shapedCoverage = EvaluateTypedWeatherCoverage(
-        weatherCoverage, heightFraction, cloudType);
+        weatherCoverage, localHeight, cloudType);
     const float effectiveCoverage = SaturateFinite(globalCoverage) *
         shapedCoverage;
     const float threshold = RemapCoverage(rawNoise, effectiveCoverage);
     const float profile = EvaluateTypedHeightProfile(
-        heightFraction, cloudType, bottomFadeEnd, topFadeStart);
+        localHeight, cloudType, bottomFadeEnd, topFadeStart);
     const float weatherDensity = 0.5f + DecodeCanonicalWeatherChannel(weatherBlue);
     return SaturateFinite(threshold * profile *
         std::max(densityMultiplier, 0.0f) * weatherDensity);
