@@ -18,10 +18,6 @@ struct FrameTimingSnapshot
     double cpuFrameMs = 0.0;
     double gpuFrameMs = 0.0;
     double gpuCloudMs = 0.0;
-    double rawCpuFrameMs = 0.0;
-    double rawGpuFrameMs = 0.0;
-    double rawGpuCloudMs = 0.0;
-    std::uint64_t gpuSampleIndex = 0;
     bool cpuValid = false;
     bool gpuValid = false;
 };

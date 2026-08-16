@@ -5,6 +5,22 @@
 
 namespace
 {
+float CloudTypeValue(CloudTypeMode type)
+{
+    switch (type)
+    {
+    case CloudTypeMode::Stratus: return 0.0f;
+    case CloudTypeMode::Cumulus: return 1.0f;
+    default: return 0.5f;
+    }
+}
+
+CloudTypeMode SanitizeCloudType(CloudTypeMode type)
+{
+    return static_cast<std::uint32_t>(type) <=
+        static_cast<std::uint32_t>(CloudTypeMode::WeatherMap)
+        ? type : CloudTypeMode::Mixed;
+}
 float Saturate(float value)
 {
     return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f;
@@ -125,12 +141,16 @@ WeatherMapGeneratorSettings SanitizeWeatherMapGeneratorSettings(
     sanitizeChannel(result.coverage);
     sanitizeChannel(result.cloudType);
     sanitizeChannel(result.density);
+    sanitizeChannel(result.localThickness);
     result.coverageThreshold = std::clamp(
-        FiniteOr(result.coverageThreshold, 0.52f), 0.0f, 1.0f);
+        FiniteOr(result.coverageThreshold, 0.56f), 0.0f, 1.0f);
     result.coverageSoftness = std::clamp(
-        FiniteOr(result.coverageSoftness, 0.22f), 0.02f, 0.8f);
+        FiniteOr(result.coverageSoftness, 0.14f), 0.02f, 0.8f);
     result.densityCoverageInfluence = std::clamp(
         FiniteOr(result.densityCoverageInfluence, 0.35f), 0.0f, 1.0f);
+    result.thicknessCoverageInfluence = std::clamp(
+        FiniteOr(result.thicknessCoverageInfluence, 0.20f), 0.0f, 1.0f);
+    result.cloudTypeMode = SanitizeCloudType(result.cloudTypeMode);
     return result;
 }
 
@@ -140,9 +160,12 @@ bool WeatherMapGeneratorSettingsEqual(const WeatherMapGeneratorSettings& a,
     return ChannelSettingsEqual(a.coverage, b.coverage) &&
            ChannelSettingsEqual(a.cloudType, b.cloudType) &&
            ChannelSettingsEqual(a.density, b.density) &&
+           ChannelSettingsEqual(a.localThickness, b.localThickness) &&
            a.coverageThreshold == b.coverageThreshold &&
            a.coverageSoftness == b.coverageSoftness &&
-           a.densityCoverageInfluence == b.densityCoverageInfluence;
+           a.densityCoverageInfluence == b.densityCoverageInfluence &&
+           a.thicknessCoverageInfluence == b.thicknessCoverageInfluence &&
+           a.cloudTypeMode == b.cloudTypeMode;
 }
 
 float SamplePeriodicPerlin2D(float u, float v, std::uint32_t period,
@@ -196,9 +219,11 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
             float coverage = 1.0f;
             float cloudType = 0.5f;
             float density = 0.5f;
+            float localThickness = 1.0f;
 
             if (preset == Stage5WeatherPreset::PeriodicPerlin)
             {
+                localThickness = 0.0f;
                 const float coverageField = AdjustField(
                     SampleTwoScale(u, v, safe.coverage), safe.coverage);
                 const float halfSoftness = safe.coverageSoftness * 0.5f;
@@ -216,6 +241,13 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
                     density = Saturate(densityField +
                         (coverage - densityField) *
                             safe.densityCoverageInfluence);
+                    const float thicknessField = AdjustField(
+                        SampleTwoScale(u, v, safe.localThickness),
+                        safe.localThickness);
+                    const float coverageCore = Smoothstep(0.05f, 0.95f, coverage);
+                    localThickness = Saturate(thicknessField +
+                        (coverageCore - thicknessField) *
+                            safe.thicknessCoverageInfluence);
                 }
             }
             else if (preset == Stage5WeatherPreset::ChannelDebug)
@@ -229,14 +261,21 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
                     (v < (2.0f / 3.0f) ? 0.5f : 1.0f);
                 density = u < (1.0f / 3.0f) ? 0.0f :
                     (u < (2.0f / 3.0f) ? 0.5f : 1.0f);
+                // 큰 섬은 낮고 넓게, 작은 섬은 높게 만들어 A 채널을 구분한다.
+                localThickness = coverage > 0.0f
+                    ? (smallIsland > largeIsland ? 0.85f : 0.35f) : 0.0f;
             }
+            // Cloud Type은 도메인이 아니라 공통 Weather 입력이다. 고정 모드는
+            // coverage/density/thickness를 건드리지 않고 G만 교체한다.
+            if (safe.cloudTypeMode != CloudTypeMode::WeatherMap)
+                cloudType = CloudTypeValue(safe.cloudTypeMode);
 
             const std::size_t index =
                 (static_cast<std::size_t>(y) * map.width + x) * 4u;
             map.rgba[index + 0] = ToUnorm(coverage);
             map.rgba[index + 1] = ToUnorm(cloudType);
             map.rgba[index + 2] = ToUnorm(density);
-            map.rgba[index + 3] = 255u;
+            map.rgba[index + 3] = ToUnorm(localThickness);
         }
     }
     return map;

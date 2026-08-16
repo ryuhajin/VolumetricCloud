@@ -17,6 +17,7 @@
 #include "LightParameters.hlsli"
 
 static const float kMaxPhaseFactor = 16.0;
+static const float kMaxAppliedPhaseFactor = 2.5;
 
 struct PhaseSample
 {
@@ -24,7 +25,7 @@ struct PhaseSample
     float forwardLobe;   // 양의 g를 사용한 전방 HG 값.
     float backwardLobe;  // 음의 g를 사용한 후방 HG 값.
     float dualLobe;      // phaseBlend로 두 lobe를 섞은 원본 값.
-    float phaseFactor;   // 직접 단일 산란에 실제로 곱할 안전한 [0,16] 배율.
+    float phaseFactor;   // 직접 단일 산란에 실제로 곱할 LDR 안전 [0,2.5] 배율.
 };
 
 // cosTheta와 비대칭도 g로 방향별 상대 산란량을 계산한다.
@@ -87,7 +88,8 @@ PhaseSample EvaluateDualLobePhase(
         result.phaseFactor = phaseEnabled >= 0.5
             ? lerp(1.0, boundedDual, safeIntensity)
             : 1.0;
-        result.phaseFactor = clamp(result.phaseFactor, 0.0, kMaxPhaseFactor);
+        result.phaseFactor = clamp(
+            result.phaseFactor, 0.0, kMaxAppliedPhaseFactor);
     }
     return result;
 }

@@ -9,6 +9,9 @@
 namespace stage7
 {
 constexpr float kMaxPhaseFactor = 16.0f;
+// 현재 swap chain은 LDR UNORM이므로 실제 조명에 적용하는 배율은 더 낮게
+// 제한한다. raw HG/dual 값은 16까지 유지해 진단 곡선의 방향성은 보존한다.
+constexpr float kMaxAppliedPhaseFactor = 2.5f;
 
 struct Direction3
 {
@@ -85,7 +88,8 @@ inline PhaseSample EvaluateDualLobePhase(
     result.phaseFactor = enabled
         ? 1.0f + (boundedDual - 1.0f) * safeIntensity
         : 1.0f;
-    result.phaseFactor = std::clamp(result.phaseFactor, 0.0f, kMaxPhaseFactor);
+    result.phaseFactor = std::clamp(
+        result.phaseFactor, 0.0f, kMaxAppliedPhaseFactor);
     return result;
 }
 }

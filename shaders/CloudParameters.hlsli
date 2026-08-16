@@ -10,14 +10,10 @@
 
 cbuffer CloudCB : register(b1)
 {
-    float cloudBottomAltitude;  // CPU cloudBottomAltitude. 평면 구름층 바닥 월드 Y(m).
-    float cloudLayerThickness;  // CPU cloudLayerThickness. 바닥부터 상단까지 두께(m).
-    float maxViewTraceDistance; // CPU maxViewTraceDistance. 카메라별 최대 추적 반경(m).
-    float densityMultiplier;    // CPU densityMultiplier. 최종 밀도 배율, 단위 없음.
-    float maxLightTraceDistance;// CPU maxLightTraceDistance. 태양 레이 최대 추적 거리(m).
-    float noiseLabPreviewWorldSize;// CPU Noise Lab XZ 미리보기 폭(m).
+    float3 cloudBoundsMin;      // CPU cloudBoundsMin. AABB 최소 월드 위치(m), y가 구름 바닥.
+    float densityMultiplier;   // CPU densityMultiplier. 최종 밀도 배율, 단위 없음.
+    float3 cloudBoundsMax;      // CPU cloudBoundsMax. AABB 최대 월드 위치(m), y가 구름 천장.
     float stepSize;             // CPU stepSize. 목표 view-ray 표본 간격(m).
-    float viewTraceFadeStartDistance;// CPU 원거리 밀도 fade 시작 거리(m).
     uint maxViewSteps;          // CPU maxViewSteps. 한 픽셀의 최대 반복 횟수.
     float extinctionCoefficient;// CPU extinctionCoefficient. meter당 빛 소멸 강도.
     float transmittanceThreshold;// CPU 예약값. 단계 9 Early Exit 전에는 사용하지 않는다.
@@ -29,15 +25,15 @@ cbuffer CloudCB : register(b1)
     float3 windDirection;       // CPU windDirection. 정규화 전 월드 공간 바람 방향.
     float bottomFadeEnd;        // CPU bottomFadeEnd. 바닥 fade가 끝나는 정규화 높이(0~1).
     float topFadeStart;         // CPU topFadeStart. 꼭대기 fade가 시작되는 정규화 높이(0~1).
-    float detailLodFadeStartDistance;// CPU Detail 원본을 유지하는 마지막 View 거리(m).
-    float detailLodFadeEndDistance;// CPU Detail 평균 필터 뒤 호출을 생략하는 거리(m).
-    float detailLodPadding;     // 16바이트 정렬 예약 값.
+    float minimumLocalThicknessFraction;// CPU minimumLocalThicknessFraction. 로컬 기둥의 최소 두께 비율.
+    float localHeightVariation; // CPU localHeightVariation. 0=기존 전체 높이, 1=Weather A 높이.
+    float cumulusTopBoost;      // CPU cumulusTopBoost. 적운 type이 로컬 상단을 위로 끌어올리는 비율.
     float detailNoiseScale;     // CPU detailNoiseScale. 표면 침식 noise 주파수(cycle/m).
     float detailErosionStrength;// CPU detailErosionStrength. Base에서 뺄 최대 밀도(0~1 권장).
-    float detailWindSpeed;      // CPU detailWindSpeed. Detail 무늬 이동 속도(m/s).
+    float detailWindSpeed;      // Legacy Detail 이동 속도. Physical은 windSpeed를 공유한다.
     float detailNoiseOffset;    // CPU detailNoiseOffset. Base와 분리할 noise 좌표 이동(cycle).
     float weatherMapWorldSize;  // CPU weatherMapWorldSize. Weather Map 한 반복의 월드 XZ 크기(m).
-    float weatherMapWindSpeed;  // CPU weatherMapWindSpeed. 대규모 배치 이동 속도(m/s).
+    float weatherMapWindSpeed;  // Legacy Weather 이동 속도. Physical은 windSpeed를 공유한다.
     float2 weatherMapOffset;    // CPU weatherMapOffset. Weather UV 수동 이동(cycle).
 };
 

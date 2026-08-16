@@ -22,19 +22,19 @@ enum class Stage8EnvironmentPreset : std::int32_t
 struct alignas(16) EnvironmentParameters
 {
     DirectX::XMFLOAT3 skyColor = { 0.35f, 0.50f, 0.75f };
-    float skyStrength = 0.20f;
+    float skyStrength = 0.12f;
 
     DirectX::XMFLOAT3 groundColor = { 0.18f, 0.12f, 0.08f };
-    float groundStrength = 0.08f;
+    float groundStrength = 0.05f;
 
-    float ambientOcclusionStrength = 1.25f;
+    float ambientOcclusionStrength = 1.50f;
     float ambientHeightInfluence = 0.65f;
     float multipleScatteringEnabled = 1.0f;
     std::uint32_t multipleScatteringOctaves = 2;
 
-    float multipleScatteringAttenuation = 0.35f;
+    float multipleScatteringAttenuation = 0.20f;
     float multipleScatteringExtinctionFactor = 0.50f;
-    float multipleScatteringPhaseFactor = 0.50f;
+    float multipleScatteringPhaseFactor = 0.25f;
     float environmentPadding = 0.0f;
 };
 
@@ -54,17 +54,17 @@ inline EnvironmentParameters Sanitize(EnvironmentParameters value)
     value.skyColor.y = SafeNonNegative(value.skyColor.y, 0.50f);
     value.skyColor.z = SafeNonNegative(value.skyColor.z, 0.75f);
     value.skyStrength = std::clamp(
-        std::isfinite(value.skyStrength) ? value.skyStrength : 0.20f,
+        std::isfinite(value.skyStrength) ? value.skyStrength : 0.12f,
         0.0f, 4.0f);
     value.groundColor.x = SafeNonNegative(value.groundColor.x, 0.18f);
     value.groundColor.y = SafeNonNegative(value.groundColor.y, 0.12f);
     value.groundColor.z = SafeNonNegative(value.groundColor.z, 0.08f);
     value.groundStrength = std::clamp(
-        std::isfinite(value.groundStrength) ? value.groundStrength : 0.08f,
+        std::isfinite(value.groundStrength) ? value.groundStrength : 0.05f,
         0.0f, 4.0f);
     value.ambientOcclusionStrength = std::clamp(
         std::isfinite(value.ambientOcclusionStrength)
-            ? value.ambientOcclusionStrength : 1.25f,
+            ? value.ambientOcclusionStrength : 1.50f,
         0.0f, 16.0f);
     value.ambientHeightInfluence = std::clamp(
         std::isfinite(value.ambientHeightInfluence)
@@ -77,7 +77,7 @@ inline EnvironmentParameters Sanitize(EnvironmentParameters value)
         std::min(value.multipleScatteringOctaves, 4u);
     value.multipleScatteringAttenuation = std::clamp(
         std::isfinite(value.multipleScatteringAttenuation)
-            ? value.multipleScatteringAttenuation : 0.35f,
+            ? value.multipleScatteringAttenuation : 0.20f,
         0.0f, 1.0f);
     value.multipleScatteringExtinctionFactor = std::clamp(
         std::isfinite(value.multipleScatteringExtinctionFactor)
@@ -85,7 +85,7 @@ inline EnvironmentParameters Sanitize(EnvironmentParameters value)
         0.0f, 1.0f);
     value.multipleScatteringPhaseFactor = std::clamp(
         std::isfinite(value.multipleScatteringPhaseFactor)
-            ? value.multipleScatteringPhaseFactor : 0.50f,
+            ? value.multipleScatteringPhaseFactor : 0.25f,
         0.0f, 1.0f);
     value.environmentPadding = 0.0f;
     return value;

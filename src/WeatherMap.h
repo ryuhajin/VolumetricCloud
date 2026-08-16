@@ -13,6 +13,14 @@
 
 constexpr std::uint32_t kWeatherMapSize = 256;
 
+enum class CloudTypeMode : std::uint32_t
+{
+    Stratus = 0,
+    Mixed = 1,
+    Cumulus = 2,
+    WeatherMap = 3,
+};
+
 struct PeriodicChannelSettings
 {
     std::uint32_t seed = 0;
@@ -26,7 +34,7 @@ struct PeriodicChannelSettings
 struct WeatherMapGeneratorSettings
 {
     PeriodicChannelSettings coverage = {
-        1013u, 2u, 5u, 0.28f, 0.0f, 1.0f
+        1013u, 4u, 11u, 0.42f, -0.02f, 1.15f
     };
     PeriodicChannelSettings cloudType = {
         2027u, 2u, 4u, 0.20f, 0.0f, 0.85f
@@ -34,9 +42,15 @@ struct WeatherMapGeneratorSettings
     PeriodicChannelSettings density = {
         3041u, 3u, 6u, 0.25f, 0.0f, 0.75f
     };
-    float coverageThreshold = 0.52f;
-    float coverageSoftness = 0.22f;
+    PeriodicChannelSettings localThickness = {
+        4051u, 2u, 5u, 0.20f, 0.0f, 0.90f
+    };
+    float coverageThreshold = 0.56f;
+    float coverageSoftness = 0.14f;
     float densityCoverageInfluence = 0.35f;
+    float thicknessCoverageInfluence = 0.20f;
+    // WeatherMap이면 생성된 G를 유지하고, 나머지는 모든 preset의 G만 고정한다.
+    CloudTypeMode cloudTypeMode = CloudTypeMode::WeatherMap;
 };
 
 struct WeatherMapData

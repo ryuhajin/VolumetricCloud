@@ -20,13 +20,13 @@ struct EnvironmentLightingSample
     float3 multipleScattering;
 };
 
-float ComputeStepAlpha(float density, float viewStepLength)
+float ComputeInteractionFraction(float density, float viewStepLength)
 {
     float safeDensity = max(density, 0.0);
     float safeLength = max(viewStepLength, 0.0);
     float safeExtinction = max(extinctionCoefficient, 0.0);
     float stepTransmittance = exp(-safeDensity * safeExtinction * safeLength);
-    return max(1.0 - stepTransmittance, 0.0);
+    return saturate(1.0 - stepTransmittance);
 }
 
 float ComputeMultipleScatteringFactor(float lightOpticalDepth,
@@ -67,9 +67,10 @@ EnvironmentLightingSample EvaluateEnvironmentLighting(
     float visibility = exp(-density * max(ambientOcclusionStrength, 0.0));
     float skyWeight = lerp(1.0, height, saturate(ambientHeightInfluence));
     float groundWeight = 1.0 - height;
-    float stepAlpha = ComputeStepAlpha(density, viewStepLength);
+    float interactionFraction = ComputeInteractionFraction(
+        density, viewStepLength);
     float common = saturate(viewTransmittance) *
-                   saturate(singleScatteringAlbedo) * stepAlpha;
+                   saturate(singleScatteringAlbedo) * interactionFraction;
 
     // Off 프리셋에서 단계 7과 같은 함수·연산 순서를 사용해 직접광을 보존한다.
     result.direct = IntegrateSingleScattering(

@@ -1,43 +1,42 @@
 # 단계별 재구축 로드맵
 
-한 단계의 자동 검증과 사용자 렌더 승인이 끝나야 다음 단계로 진행한다. 단계 번호는
-기존 학습 기록과 링크를 보존하고, 실행 순서만 아래처럼 바꾼다.
+한 단계의 자동 검증과 사용자 렌더 승인이 끝나야 다음 단계로 진행한다. 단계 번호는 기존
+학습 기록을 보존하며 실행 순서만 다음과 같이 확정한다.
 
 ```text
-0~8 완료 → 13 선행 → 9 재개 → 10 → 11 → 12 → 14 → 15
+0~8 완료 → 13 재구축 → 9 → 10 → 11 → 12 → 14 → 15
 ```
 
-## 목표 1~3: 승인 완료
+## 승인 완료
 
 - [x] 단계 0~1: 기반 구성과 상수 밀도 AABB
 - [x] 단계 2~5: Base/Detail/Weather 구름 형태
 - [x] 단계 6~8: 태양광, Phase, 환경광과 다중 산란
 
-## 현재 목표: 인디 오픈월드용 대규모 구름층
+## 현재 목표: 단계 13 대규모 구름 도메인
 
-- [ ] **단계 13: 대규모 평면 구름층 - 구현 완료, 사용자 검증 대기**
-  - 유한 AABB를 XZ 경계 없는 Y 평면층으로 교체
-  - 바닥 1.5km, 상단 4.5km, Weather 32km, View 50km 기준
-  - 40~50km 거리 fade와 Light 20km 상한
-  - 구름 아래·내부·위 카메라 지원
-  - km 광학값과 에너지 보존형 단일산란 알베도 보정
-  - 8~20km Detail LOD와 20km 이후 noise 호출 생략
+- [x] 13-0: Stage 8 기준선과 meter/cycle/m/1/m 단위 계약 — 2026-08-10 사용자 승인
+- [x] 13-1: AABB 비교 기준과 Y 평면층 교차 분리 — 2026-08-10 사용자 승인
+- [x] 13-2: 기존 noise의 1×/10×/100×/1000× 상사 확대 — 2026-08-11 사용자 승인
+- [x] 13-3: 1.5~4.5km 오픈 월드 층, 64km Weather와 50km 유한 추적 — 2026-08-11 사용자 승인
+- [x] 13-4B: Weather 기반 1~6km 물리 두께, 타입별 Vertical Profile, Base/Detail 3D texture — 2026-08-14 사용자 승인
+- [x] 13-4C: F1~F4 역할 분리와 Local Cloud Inspector — 입력 우선순위, 장면 이동·복원, 5단계 파이프라인 비교와 Weather/Base/Thickness 품질 재조정 — 2026-08-16 사용자 승인
+- [ ] 13-4D: Local Inspector를 대체하는 단일 포트폴리오 디버깅 씬 — 구현 이력 보존, 사용자 검증의 점유율·형상·명암 피드백은 13-4E가 대체
+- [ ] 13-4E: Dense Broken-Sky와 Stratus/Cumulus/Custom — density 결합·결정적 Compare·schema 29 구현 및 자동 검증, 사용자 렌더 승인 대기
+- [ ] 13-5: km 광학, 조명과 Detail 거리 LOD — Light `80×250m`·전용 precheck/조기 종료 자동 검증 완료, Silver Lining 외곽광 재승인 대기
+- [ ] 13-6: Earth-scale 구형 shell 비교
+- [ ] 13-7: 평면/구형 성능 판정과 사용자 최종 승인
 
-## 단계 13 승인 후 실시간 최적화
+중단된 단계 13 v1은 `feature/large-planar-cloud-layer`와 `stage13-paused-20260810`에
+보관한다. 새 구현은 코드를 병합하지 않고 수식·테스트·실패 기록만 참고한다.
 
-- [ ] 단계 9: 레이 마칭 기본 최적화와 계측 - 소규모 AABB 성능 기준 실패로 보류
-- [ ] 단계 10: 저해상도 렌더링과 depth-aware 업샘플링
-- [ ] 단계 11: Jitter와 Temporal Reprojection
-- [ ] 단계 12: 근거리 ray march와 Cloud Shadow Map 혼합
+## 단계 13 승인 후
 
-단계 9는 단계 13의 Optimization Off 출력을 새 기준으로 삼는다. 새 벤치마크는
-`GroundZenithDense`, `GroundHorizonDense`, `SparseHorizon`, `DepthOccluded`,
-`InsideLayer`이며, 수평 Dense p95 15% 개선과 나머지 3% 이내 회귀가 기준이다.
+- [ ] 단계 9: View Weather/Base precheck, empty-space skip, View early exit와 거리별 step
+- [ ] 단계 10: 저해상도 구름 타깃과 depth/transmittance-aware 업샘플링
+- [ ] 단계 11: Jitter, Temporal Reprojection과 history rejection
+- [ ] 단계 12: Cloud Shadow Map과 Light Cache
+- [ ] 단계 14: 하늘·태양·지면과 구름 조명 통합
+- [ ] 단계 15: Low/Medium/High, 1080p 성능, 최종 캡처와 포트폴리오 설명
 
-## 최종 통합
-
-- [ ] 단계 14: 대기와 지면 조명 통합
-- [ ] 단계 15: 품질 프리셋, 성능 조정과 신규 캐시 확정
-
-구형 행성, 지상→우주 전환과 원점 재배치는 포트폴리오 목표에서 제외한다. 단계 15의
-최종 목표는 Release High 1920×1080에서 Present 제외 전체 GPU p95 16.67ms 이하다.
+세부 결정과 수치는 [VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md](VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md)를 따른다.
