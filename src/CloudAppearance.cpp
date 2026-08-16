@@ -193,7 +193,7 @@ CloudAppearanceSettings StratusAppearance()
 {
     CloudAppearanceSettings value = DenseMixedAppearance();
     value.cloudTypeMode = CloudTypeMode::Stratus;
-    value.globalCoverage = 0.72f;
+    value.globalCoverage = 0.40f;
     value.densityMultiplier = 1.20f;
     value.extinctionPerMeter = 0.00042f;
     value.detailErosion = 0.12f;
@@ -214,7 +214,7 @@ CloudAppearanceSettings CumulusAppearance()
 {
     CloudAppearanceSettings value = DenseMixedAppearance();
     value.cloudTypeMode = CloudTypeMode::Cumulus;
-    value.globalCoverage = 0.68f;
+    value.globalCoverage = 0.45f;
     value.densityMultiplier = 1.25f;
     value.extinctionPerMeter = 0.00038f;
     value.detailErosion = 0.18f;

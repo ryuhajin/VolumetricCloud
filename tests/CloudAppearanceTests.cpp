@@ -72,11 +72,12 @@ int main()
         !Near(dense.cloudTypeBias, 0.08f))
         Fail("Dense Mixed exact contract changed");
     if (stratus.cloudTypeMode != CloudTypeMode::Stratus ||
-        !Near(stratus.globalCoverage, 0.72f) ||
+        !Near(stratus.globalCoverage, 0.40f) ||
         !Near(stratus.stratusMaximumThicknessMeters, 2800.0f) ||
         !Near(stratus.stratusBottomFadeEnd, 0.05f) ||
         !Near(stratus.stratusTopFadeStart, 0.72f) ||
         cumulus.cloudTypeMode != CloudTypeMode::Cumulus ||
+        !Near(cumulus.globalCoverage, 0.45f) ||
         !Near(cumulus.densityMultiplier, 1.25f) ||
         !Near(cumulus.cumulusTopFadeStart, 0.94f) ||
         !Near(cumulus.cumulusUpperMassBottom, 0.65f) ||

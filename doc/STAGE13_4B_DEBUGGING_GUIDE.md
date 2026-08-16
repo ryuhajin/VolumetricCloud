@@ -68,7 +68,7 @@ F1의 상태는 다음 다섯 가지다.
 | 값 | Dense Mixed | Stratus | Cumulus |
 |---|---:|---:|---:|
 | Weather R non-zero/core | 79.62/49.11% | 87.31/56.60% | 73.82/42.07% |
-| Coverage | 0.68 | 0.72 | 0.68 |
+| Coverage | 0.68 | 0.40 | 0.45 |
 | Density | 1.15 | 1.20 | 1.25 |
 | Extinction `/m` | 0.00035 | 0.00042 | 0.00038 |
 | Erosion | 0.18 | 0.12 | 0.18 |
@@ -77,6 +77,10 @@ F1의 상태는 다음 다섯 가지다.
 Stratus는 낮고 넓은 층과 완만한 상단, Cumulus는 더 높은 돔과 뚜렷한 중심 질량을 보여야
 한다. 타입 전환은 Weather seed/period, Texture3D, wind/offset, 카메라·도메인, 태양·Phase·
 환경광, View `512×100m`, Light `160×125m`를 바꾸지 않는다.
+
+2026-08-17 사용자 검증에서 기존 Coverage `0.72/0.68`은 양의 밀도 표본을 지나치게 넓혀
+Stratus와 Cumulus를 하나의 큰 덩어리처럼 보이게 했다. 새 `0.40/0.45`는 Weather 배치와
+광학값을 유지하면서 Base threshold만 좁혀 구름 덩어리 사이의 푸른 틈을 늘린다.
 
 ## 5. Custom 저장과 복원
 
