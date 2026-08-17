@@ -289,6 +289,8 @@ void NoiseLab::BeginFrame(float applicationTime,
                           CloudShapeParameters& cloudShapeParameters,
                           CloudDomainParameters& cloudDomainParameters,
                           CloudLodParameters& cloudLodParameters,
+                          OptimizationParameters& optimizationParameters,
+                          Stage9OptimizationPreset& optimizationPreset,
                           LightParameters& lightParameters,
                           Stage6SunPreset& sunPreset,
                           Stage7PhasePreset& phasePreset,
@@ -338,6 +340,7 @@ void NoiseLab::BeginFrame(float applicationTime,
                           cloudParameters,
                           cloudShapeParameters, cloudDomainParameters,
                           cloudLodParameters,
+                          optimizationParameters, optimizationPreset,
                           lightParameters, sunPreset, phasePreset,
                           environmentParameters, environmentPreset,
                           weatherPreset, weatherGeneratorSettings,
@@ -362,6 +365,8 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                                  CloudShapeParameters& cloudShapeParameters,
                                  CloudDomainParameters& cloudDomainParameters,
                                  CloudLodParameters& cloudLodParameters,
+                                 OptimizationParameters& optimizationParameters,
+                                 Stage9OptimizationPreset& optimizationPreset,
                                  LightParameters& lightParameters,
                                  Stage6SunPreset& sunPreset,
                                  Stage7PhasePreset& phasePreset,
@@ -496,6 +501,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     const CloudShapeParameters shapeBefore = cloudShapeParameters;
     const CloudDomainParameters domainBefore = cloudDomainParameters;
     const CloudLodParameters lodBefore = cloudLodParameters;
+    const OptimizationParameters optimizationBefore = optimizationParameters;
     const NoiseVolumeParameters noiseVolumeBefore = noiseVolumeParameters;
     const LightParameters lightBefore = lightParameters;
     const CloudAppearanceSettings appearanceBefore = CaptureCloudAppearance(
@@ -521,6 +527,97 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::Text("Current pipeline: %s",
             stage13openworld::PipelinePresetName(
                 m_openWorldPipelinePreset));
+    }
+
+    if (noisePanel && ImGui::CollapsingHeader(
+            "Optimization", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::TextDisabled(
+            "Every row is ordered left to right: lower GPU cost -> higher GPU cost.");
+        auto applyMaster = [&](Stage9OptimizationPreset preset)
+        {
+            stage9optimization::ApplyPreset(
+                optimizationParameters, preset,
+                cloudParameters.maxViewSteps, cloudParameters.stepSize,
+                lightParameters.maxLightSteps, lightParameters.lightStepSize,
+                cloudParameters.transmittanceThreshold);
+            optimizationPreset = preset;
+        };
+        const Stage9OptimizationPreset masterPresets[] = {
+            Stage9OptimizationPreset::Fast,
+            Stage9OptimizationPreset::Balanced,
+            Stage9OptimizationPreset::Conservative,
+            Stage9OptimizationPreset::ApprovedReference,
+            Stage9OptimizationPreset::FineReference,
+        };
+        ImGui::Text("Master: %s",
+                    stage9optimization::PresetName(optimizationPreset));
+        for (Stage9OptimizationPreset preset : masterPresets)
+        {
+            if (ImGui::Button(stage9optimization::PresetName(preset)))
+                applyMaster(preset);
+            if (preset != Stage9OptimizationPreset::FineReference)
+                ImGui::SameLine();
+        }
+
+        auto markCustom = [&]() { optimizationPreset = Stage9OptimizationPreset::Custom; };
+        ImGui::TextUnformatted("Empty Search:"); ImGui::SameLine();
+        if (ImGui::Button("4x##Empty")) { optimizationParameters.emptySpaceSkippingEnabled = 1u; optimizationParameters.coarseStepMultiplier = 4.0f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("2x##Empty")) { optimizationParameters.emptySpaceSkippingEnabled = 1u; optimizationParameters.coarseStepMultiplier = 2.0f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Off##Empty")) { optimizationParameters.emptySpaceSkippingEnabled = 0u; markCustom(); }
+
+        ImGui::TextUnformatted("Early Exit:"); ImGui::SameLine();
+        if (ImGui::Button("2%##Exit")) { optimizationParameters.viewEarlyExitEnabled = 1u; cloudParameters.transmittanceThreshold = 0.02f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("1%##Exit")) { optimizationParameters.viewEarlyExitEnabled = 1u; cloudParameters.transmittanceThreshold = 0.01f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("0.5%##Exit")) { optimizationParameters.viewEarlyExitEnabled = 1u; cloudParameters.transmittanceThreshold = 0.005f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Off##Exit")) { optimizationParameters.viewEarlyExitEnabled = 0u; markCustom(); }
+
+        ImGui::TextUnformatted("View:"); ImGui::SameLine();
+        if (ImGui::Button("100->200m")) { cloudParameters.stepSize = 100.0f; cloudParameters.maxViewSteps = 512u; optimizationParameters.distanceStepEnabled = 1u; optimizationParameters.farStepMultiplier = 2.0f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("100->150m")) { cloudParameters.stepSize = 100.0f; cloudParameters.maxViewSteps = 512u; optimizationParameters.distanceStepEnabled = 1u; optimizationParameters.farStepMultiplier = 1.5f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("100m Fixed")) { cloudParameters.stepSize = 100.0f; cloudParameters.maxViewSteps = 512u; optimizationParameters.distanceStepEnabled = 0u; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("50m Fine")) { cloudParameters.stepSize = 50.0f; cloudParameters.maxViewSteps = 1024u; optimizationParameters.distanceStepEnabled = 0u; markCustom(); }
+
+        ImGui::TextUnformatted("Light:"); ImGui::SameLine();
+        for (std::uint32_t taps : { 5u, 6u, 8u, 12u })
+        {
+            std::string label = "Cone " + std::to_string(taps) + "##Light";
+            if (ImGui::Button(label.c_str())) { optimizationParameters.lightSamplingMode = static_cast<std::uint32_t>(Stage9LightSamplingMode::DeterministicCone); optimizationParameters.coneSampleCount = taps; markCustom(); }
+            ImGui::SameLine();
+        }
+        if (ImGui::Button("Straight 80")) { optimizationParameters.lightSamplingMode = static_cast<std::uint32_t>(Stage9LightSamplingMode::StraightRay); lightParameters.maxLightSteps = 80u; lightParameters.lightStepSize = 250.0f; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Straight 320 Fine")) { optimizationParameters.lightSamplingMode = static_cast<std::uint32_t>(Stage9LightSamplingMode::StraightRay); lightParameters.maxLightSteps = 320u; lightParameters.lightStepSize = 62.5f; markCustom(); }
+
+        ImGui::TextUnformatted("Support Precheck:"); ImGui::SameLine();
+        if (ImGui::Button("On##Precheck")) { optimizationParameters.supportPrecheckEnabled = 1u; markCustom(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Off##Precheck")) { optimizationParameters.supportPrecheckEnabled = 0u; markCustom(); }
+
+        ImGui::TextUnformatted("Cone Angle (same cost):"); ImGui::SameLine();
+        for (float angle : { 4.0f, 3.0f, 2.0f, 1.0f })
+        {
+            std::string label = std::to_string(static_cast<int>(angle)) +
+                " deg##ConeAngle";
+            if (ImGui::Button(label.c_str())) { optimizationParameters.coneAngleDegrees = angle; markCustom(); }
+            if (angle != 1.0f) ImGui::SameLine();
+        }
+        ImGui::TextUnformatted("Cone Far Fraction (same cost):"); ImGui::SameLine();
+        for (float fraction : { 0.75f, 0.77f, 0.85f, 0.95f })
+        {
+            std::string label = std::to_string(static_cast<int>(fraction * 100.0f)) +
+                "%##ConeFar";
+            if (ImGui::Button(label.c_str())) { optimizationParameters.lightFarSampleFraction = fraction; markCustom(); }
+            if (fraction != 0.95f) ImGui::SameLine();
+        }
     }
 
     if (noisePanel && ImGui::CollapsingHeader(
@@ -563,6 +660,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             { "Local Height", CloudDebugMode::LocalHeightFraction },
             { "Effective Shape Coverage", CloudDebugMode::EffectiveShapeCoverage },
             { "Base Support Before Density", CloudDebugMode::BaseSupportBeforeDensity },
+            { "Executed View Samples", CloudDebugMode::ExecutedViewSamples },
+            { "Skipped Distance", CloudDebugMode::SkippedDistance },
+            { "Early Exit Savings", CloudDebugMode::EarlyExitSavings },
+            { "Support Precheck Skip", CloudDebugMode::SupportPrecheckSkip },
         };
         int selected = 0;
         const auto current = static_cast<CloudDebugMode>(cloudParameters.debugMode);
@@ -1892,6 +1993,8 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             ImGui::TextWrapped("%s", m_exportStatus.c_str());
     }
 
+    optimizationParameters = stage9optimization::Sanitize(
+        optimizationParameters);
     const CloudAppearanceSettings appearanceAfter = CaptureCloudAppearance(
         cloudParameters, cloudShapeParameters, m_weatherGeneratorDraft);
     if (!CloudAppearanceSettingsEqual(appearanceBefore, appearanceAfter))
@@ -1906,7 +2009,9 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         std::memcmp(&lodBefore, &cloudLodParameters,
                     sizeof(CloudLodParameters)) != 0 ||
         std::memcmp(&noiseVolumeBefore, &noiseVolumeParameters,
-                    sizeof(NoiseVolumeParameters)) != 0;
+                    sizeof(NoiseVolumeParameters)) != 0 ||
+        std::memcmp(&optimizationBefore, &optimizationParameters,
+                    sizeof(OptimizationParameters)) != 0;
     const bool sunSettingsChanged =
         lightBefore.directionToSun.x != lightParameters.directionToSun.x ||
         lightBefore.directionToSun.y != lightParameters.directionToSun.y ||
@@ -2478,6 +2583,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const CloudShapeParameters& cloudShape,
                              const CloudDomainParameters& domain,
                              const CloudLodParameters& lod,
+                             const OptimizationParameters& optimization,
+                             Stage9OptimizationPreset optimizationPreset,
                              const LightParameters& light,
                              Stage6SunPreset sunPreset,
                              Stage7PhasePreset phasePreset,
@@ -2527,9 +2634,7 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         "off", "balanced", "strongFill", "groundCheck",
         "portfolioHero", "custom"
     };
-    static const char* domainNames[] = {
-        "aabbReference", "planarLayer", "sphericalShell"
-    };
+    static const char* domainNames[] = { "aabbReference", "planarLayer" };
     const int weatherPresetIndex = std::clamp(static_cast<int>(weatherPreset), 0, 2);
     const int cloudTypeIndex = std::clamp(
         static_cast<int>(cloudTypeMode), 0, 3);
@@ -2541,7 +2646,7 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         sunPreset == Stage6SunPreset::LowEast &&
         phasePreset == Stage7PhasePreset::SilverLining &&
         environmentPreset == Stage8EnvironmentPreset::PortfolioHero;
-    const std::uint32_t domainIndex = std::min(domain.domainType, 2u);
+    const std::uint32_t domainIndex = std::min(domain.domainType, 1u);
     const std::uint32_t outputIndex = std::min(m_parameters.outputMode, 29u);
     const WeatherMapGeneratorSettings generator =
         SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
@@ -2560,8 +2665,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         : 0.0;
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 30,\n"
-           << "  \"implementationStage\": \"13-5\",\n"
+           << "  \"schemaVersion\": 31,\n"
+           << "  \"implementationStage\": \"9\",\n"
            << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\",\n"
            << "  \"physicalAdvectionMode\": \""
            << (physicalShape ? "rigidSharedWindSpeed"
@@ -2631,6 +2736,33 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << ", \"detailLodEnabled\": "
            << (lod.detailLodEnabled != 0u ? "true" : "false")
            << "},\n"
+           << "  \"optimization\": {\"preset\": \""
+           << stage9optimization::PresetName(optimizationPreset)
+           << "\", \"supportPrecheck\": "
+           << (optimization.supportPrecheckEnabled != 0u ? "true" : "false")
+           << ", \"emptySearch\": "
+           << (optimization.emptySpaceSkippingEnabled != 0u ? "true" : "false")
+           << ", \"earlyExit\": "
+           << (optimization.viewEarlyExitEnabled != 0u ? "true" : "false")
+           << ", \"distanceStep\": "
+           << (optimization.distanceStepEnabled != 0u ? "true" : "false")
+           << ", \"emptySamplesBeforeCoarse\": "
+           << optimization.emptySamplesBeforeCoarse
+           << ", \"baseDensityEpsilon\": " << optimization.baseDensityEpsilon
+           << ", \"coarseStepMultiplier\": " << optimization.coarseStepMultiplier
+           << ", \"maxSearchStepMeters\": " << optimization.maxSearchStepMeters
+           << ", \"distanceStepRangeMeters\": ["
+           << optimization.distanceStepStartMeters << ", "
+           << optimization.distanceStepEndMeters
+           << "], \"farStepMultiplier\": " << optimization.farStepMultiplier
+           << ", \"lightMode\": \""
+           << (optimization.lightSamplingMode == static_cast<std::uint32_t>(
+                   Stage9LightSamplingMode::DeterministicCone)
+                   ? "deterministicCone" : "straightRay")
+           << "\", \"coneSampleCount\": " << optimization.coneSampleCount
+           << ", \"coneAngleDegrees\": " << optimization.coneAngleDegrees
+           << ", \"lightFarSampleFraction\": "
+           << optimization.lightFarSampleFraction << "},\n"
            << "  \"camera\": {\n"
            << "    \"current\": ";
     if (m_currentCamera.valid)
@@ -2885,6 +3017,8 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const CloudShapeParameters& cloudShapeParameters,
                               const CloudDomainParameters& cloudDomainParameters,
                               const CloudLodParameters& cloudLodParameters,
+                              const OptimizationParameters& optimizationParameters,
+                              Stage9OptimizationPreset optimizationPreset,
                               const LightParameters& lightParameters,
                               Stage6SunPreset sunPreset,
                               Stage7PhasePreset phasePreset,
@@ -2921,6 +3055,8 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                                        cloudParameters, cloudShapeParameters,
                                        cloudDomainParameters,
                                        cloudLodParameters,
+                                       optimizationParameters,
+                                       optimizationPreset,
                                        lightParameters, sunPreset,
                                        phasePreset, environmentParameters,
                                        environmentPreset, weatherPreset,

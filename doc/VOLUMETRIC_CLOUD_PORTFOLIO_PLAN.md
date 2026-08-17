@@ -99,7 +99,7 @@ HLSL Light bias는 CPU와 같은 `0~100m`를 사용해
 13-5 외곽광 보완은 Light `250m/80`과 texture fetch 수를 유지한다. `Tsun` 거듭제곱으로
 직접광 대비와 Phase 적용 폭을 분리하고, 환경광 AO와 다중 산란도 같은 `Tsun`을 재사용한다.
 Portfolio Hero는 따뜻한 Low East 직접광, 표면 범위 Silver Lining과 차가운 내부 fill을 한 번에
-적용한다. CPU/HLSL의 LightCB/EnvironmentCB는 각각 80바이트이며 전체 snapshot은 schema 30,
+적용한다. CPU/HLSL의 LightCB/EnvironmentCB는 각각 80바이트였으며 단계 9 전체 snapshot은 schema 31,
 외형 Custom 원자 저장은 schema 29를 유지한다. 자동 smoke의 노출 외곽/내부 Silver 평균은
 `0.12536342/0.06037134`, `RGB peak≥0.98` 비율은 0이다. Cumulus F6 원시 GPU Cloud
 p95는 변경 전/후 `15.639552/15.785984ms`로 약 0.94% 증가해 +5%와 16.67ms gate를
@@ -127,3 +127,5 @@ camera/light에서 두께와 profile만 뚜렷하게 비교하며 Custom은 sche
 - 단위·교차·형태·광학·조명을 한 변경에서 동시에 조정하지 않는다.
 - 실패 실험은 별도 브랜치와 태그에 보존하되 승인 기준에 섞지 않는다.
 - 단계 9에서는 early exit와 coarse march만 다루고 저해상도와 temporal은 단계 10~11까지 미룬다.
+- 2026-08-17 자동 후보 측정에서 Balanced `6탭/2°/원거리 77%`가 세 외형 화질 gate와
+  1080p 일곱 장면 성능 gate를 통과했다. 사용자 화면 승인 전에는 Reference 시작값을 유지한다.

@@ -40,6 +40,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 노이즈 도구 | `src/NoiseLab.*` | ImGui 3축 단면, 파라미터 조절, PNG/JSON 내보내기 |
 | 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | 거리 LOD 설정 | `src/CloudLodParameters.h` | 16바이트 b8 Detail 거리 LOD와 측정 중립 평균 |
+| 최적화 설정 | `src/OptimizationParameters.h` | 64바이트 b9 View/Light 후보와 단계 9 preset |
 | 도메인 설정 | `src/CloudDomainParameters.h` | AABB/평면층 선택과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
 | 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 29 Custom 원자 저장/복원 |
@@ -71,6 +72,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 카메라 프리셋 | `src/Stage13CameraPresets.h` | 단일 씬 F5~F8 위치·타깃 기준 |
 | 단일 씬 기준 | `src/Stage13SceneMath.h` | 10km 지면·20층 건물·50km·입력·이동·숫자 매핑 기준 |
 | km 광학 기준 | `src/Stage13OpticsLightingMath.h` | Light 후보·Beer-Lambert·Detail LOD CPU 기준 |
+| 최적화 기준 | `src/Stage9OptimizationMath.h` | 가변 step·coarse 되감기·cone 구간 CPU 기준 |
 
 ## 반드시 지킬 규칙
 

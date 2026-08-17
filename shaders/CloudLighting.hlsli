@@ -77,7 +77,7 @@ float3 ComputeDirectInteractionColor(
 // samplePosition은 월드 위치(m), lightDirection은 표본→태양 단위 방향이다.
 // 길이가 거의 0인 방향, 퇴화 AABB 또는 유효 이탈 구간이 없으면 빛을 막을
 // 구름을 계산할 수 없으므로 중립값 transmittance=1을 반환한다.
-LightMarchResult ComputeLightTransmittance(
+LightMarchResult ComputeLightTransmittanceStraight(
     float3 samplePosition, float3 lightDirection)
 {
     LightMarchResult result = { 1.0, 0.0, 0.0 };
@@ -134,6 +134,86 @@ LightMarchResult ComputeLightTransmittance(
             result.stepCount = (float)executedStepCount;
         }
     }
+    return result;
+}
+
+float ConeBoundaryFraction(uint index, uint count)
+{
+    if (index >= count)
+        return 1.0;
+    float denominator = max((float)(count - 1u), 1.0);
+    return pow((float)index / denominator, 1.5) *
+        clamp(lightFarSampleFraction, 0.50, 0.98);
+}
+
+// 같은 태양 직선의 균일 표본이 만드는 평행 띠를 줄이기 위해 태양 축 주변을
+// golden-angle로 넓혀 읽는다. 각 표본은 담당 구간 길이를 그대로 가중치로 써
+// 균일 밀도에서는 Straight Ray와 같은 Beer-Lambert 광학 깊이를 만든다.
+LightMarchResult ComputeLightTransmittanceCone(
+    float3 samplePosition, float3 lightDirection)
+{
+    LightMarchResult result = { 1.0, 0.0, 0.0 };
+    float directionLengthSquared = dot(lightDirection, lightDirection);
+    if (directionLengthSquared <= 1e-8)
+        return result;
+
+    float3 safeDirection = lightDirection * rsqrt(directionLengthSquared);
+    float3 helper = abs(safeDirection.y) < 0.999
+        ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    float3 tangent = normalize(cross(helper, safeDirection));
+    float3 bitangent = cross(safeDirection, tangent);
+    float safeBias = clamp(lightRayBias, 0.0, 100.0);
+    float3 rayOrigin = samplePosition + safeDirection * safeBias;
+    float segmentStart = 0.0;
+    float segmentEnd = 0.0;
+    bool intersects = IntersectCloudDomain(
+        rayOrigin, safeDirection, 1e30, true, segmentStart, segmentEnd);
+    float segmentLength = segmentEnd - segmentStart;
+    if (!intersects || segmentLength <= 1e-5)
+        return result;
+
+    uint count = clamp(coneSampleCount, 5u, 12u);
+    float safeExtinction = max(extinctionCoefficient, 0.0);
+    float coneTangent = tan(radians(clamp(coneAngleDegrees, 0.0, 8.0)));
+    float opticalDepth = 0.0;
+    uint executedCount = 0u;
+    static const float goldenAngle = 2.39996323;
+    [loop]
+    for (uint index = 0u; index < count; ++index)
+    {
+        float beginFraction = ConeBoundaryFraction(index, count);
+        float endFraction = ConeBoundaryFraction(index + 1u, count);
+        float beginDistance = beginFraction * segmentLength;
+        float endDistance = endFraction * segmentLength;
+        float intervalLength = max(endDistance - beginDistance, 0.0);
+        float centerDistance = 0.5 * (beginDistance + endDistance);
+        float diskRadius = sqrt(((float)index + 0.5) / (float)count);
+        float angle = (float)index * goldenAngle;
+        float2 disk = diskRadius * float2(cos(angle), sin(angle));
+        float coneRadius = centerDistance * coneTangent;
+        float3 position = rayOrigin + safeDirection *
+            (segmentStart + centerDistance) +
+            (tangent * disk.x + bitangent * disk.y) * coneRadius;
+        float density = EvaluateLightCloudDensity(position, time);
+        opticalDepth += max(density, 0.0) * safeExtinction * intervalLength;
+        executedCount = index + 1u;
+        if (opticalDepth >= kLightEarlyExitOpticalDepth)
+            break;
+    }
+    result.opticalDepth = max(opticalDepth, 0.0);
+    result.transmittance = saturate(exp(-result.opticalDepth));
+    result.stepCount = (float)executedCount;
+    return result;
+}
+
+LightMarchResult ComputeLightTransmittance(
+    float3 samplePosition, float3 lightDirection)
+{
+    LightMarchResult result = { 1.0, 0.0, 0.0 };
+    if (lightSamplingMode == kLightSamplingDeterministicCone)
+        result = ComputeLightTransmittanceCone(samplePosition, lightDirection);
+    else
+        result = ComputeLightTransmittanceStraight(samplePosition, lightDirection);
     return result;
 }
 

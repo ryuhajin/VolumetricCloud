@@ -409,7 +409,8 @@ currentT *= stepT
 finalColor = cloudScattering + backgroundColor × cloudTransmittance
 ```
 
-`transmittanceThreshold=0.01`은 단계 9에서 충분히 불투명해진 레이를 일찍 끝내기 위한 예약 값이다. 단계 1에서는 정확한 전체 구간 비교를 위해 사용하지 않는다.
+`transmittanceThreshold=0.01`은 단계 9 Optimized View에서 충분히 불투명해진 레이를 일찍
+끝내는 값이다. Reference와 단계 1 회귀는 정확한 전체 구간 비교를 위해 사용하지 않는다.
 
 ## 단계 2: 월드 공간 단일 3D noise 밀도
 
@@ -732,3 +733,32 @@ Scene Depth와 건물 폐색은 별도 `Stage13DomainSmoke`가 계속 검사한�
 `ω×(1-stepTransmittance)`로 전환했다. S배 확대할 때 길이는 S배, `σt`는 `1/S`배,
 `ω`는 그대로이므로 직접광·환경광 공통 진폭도 상사 불변이다. Current 1000×의 보고 전용
 Accumulated Direct/Composite MAE는 각각 `0.00036347`/`0.00070073`으로 목표 `0.01` 이하다.
+
+## 단계 9: 평면층 View 기본 최적화와 deterministic Light cone
+
+단계 13 승인값 `100m/512 View`, `250m/80 Straight Light`는 `mainReference`에 그대로 남는다.
+`mainOptimized`만 다음 순서로 비용을 줄인다.
+
+1. Weather, 로컬 높이와 타입 세로 profile 중 Base 식에 곱해지는 값이 정확히 0이면
+   Base/Detail Texture3D를 읽지 않는다. 0이 아닐 때는 같은 Weather 표본과 새 Base 표본을
+   `ComposeBaseCloudDensity`에 넣어 Weather를 두 번 읽지 않는다.
+2. Full march에서 Base가 epsilon 이하인 표본이 기본 3회 이어지면 Search로 전환한다.
+   Search 간격은 `min(fullStep×multiplier, 400m)`이고 Base 후보만 평가한다. 후보를 만나면
+   coarse 한 구간을 되감고 Full로 돌아가 경계를 100m 간격으로 다시 읽는다.
+3. View 간격은 16~48km에서 `smoothstep`으로 `100m → farMultiplier×100m`가 된다.
+   마지막 구간은 `min(step,tEnd-cursor)`로 잘라 전체 거리를 빠짐없이 덮는다.
+4. 적분 뒤 `viewT <= transmittanceThreshold`이면 남은 배경 기여가 임계값 이하므로 끝낸다.
+
+각 실제 구간 길이 `Δs_i`를 사용하므로 균일 밀도에서는 가변 분할도
+`T = exp(-rho × sigma_t × sum(Δs_i))`와 같다.
+
+Light cone은 시간 jitter 없이 고정 golden angle `2.39996323 rad`를 사용한다. 5/6/8/12개
+구간을 근거리 쪽에 `pow(x,1.5)`로 모으고 마지막 표본이 나머지 거리를 담당한다. 각 표본은
+담당 길이 `w_i`를 곱하므로 `tau_light = sigma_t × sum(rho_i × w_i)`이고
+`sum(w_i)`는 Light 구간 길이와 같다. cone 반경은 `sampleDistance × tan(coneAngle)`이다.
+1~4°는 표본 수가 같아 계산량도 같고, 각도를 키우면 태양 직선 주변의 더 넓은 밀도 덩어리를
+읽어 평행 대각선 띠를 부드럽게 한다. 기존 Base-only Light 밀도와 `tau>=9.21034` 종료는
+유지한다. 자동 화질 스윕에서 6탭 4°/3°는 Cumulus Light T P99 기준을 넘었고, 동일한 6탭
+비용의 2°와 원거리 구간 비율 77%가 Dense/Stratus/Cumulus에서 처음으로 P99 0.03 이하를
+만족해 Balanced 값이 되었다. temporal jitter, 저해상도, Light Cache와 지면 Cloud Shadow
+Map은 단계 10~12 범위다.

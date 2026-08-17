@@ -117,7 +117,7 @@ F5~F8 플레이어 시야 변경은 품질 관찰용이다. `Stage13CameraContro
 `Stage13UnifiedSceneSmoke`는 320×180 숨김 타깃에서 F5~F8과 숫자 0~9의 float 출력을
 검사한다. 모든 출력은 finite이고 주요 기준 출력은 non-black이어야 하며 카메라별 Composite와
 파이프라인 출력 hash가 구분되어야 한다. Compare 1~5 중 지면·건물·domain·이동 기준은
-불변이고 Full Open World가 Dense Mixed+13-5 최종 입력을 복원해야 한다. 전체 snapshot schema 30 파싱과 제거 필드
+불변이고 Full Open World가 Dense Mixed+13-5 최종 입력을 복원해야 한다. 전체 snapshot schema 31 파싱과 제거 필드
 부재도 함께 검사한다. 실행 시간은 정확성 검사용이며 성능 gate가 아니다.
 
 ## 단계 13-4E 외형·Custom smoke
@@ -171,3 +171,33 @@ Direct/Silver MAE는 `0.03554698/0.03117338`로 태양 방향이 밀도 광학�
 `RGB peak≥0.98` 비율은 `0`이다. Shaped Sun Visibility 0.5를 기준으로 분리한 Silver 평균은
 노출 외곽/내부 `0.12536342/0.06037134`, Ambient Visibility 평균은 `0.46502053`으로
 외곽 선택성과 유한한 내부 fill gate를 통과했다.
+
+## 단계 9 Reference/후보 측정
+
+`Stage9OptimizationSmoke`는 96×54 float 타깃에서 Dense/Stratus/Cumulus의
+Approved Reference View와 `62.5m/320` Fine Light를 만든 뒤 Fast/Balanced/Conservative의
+Final Density, View τ, Light T를 비교한다. SSIM/RMSE와 Light MAE/P99를 보고하고 모든
+픽셀이 finite인지 gate로 검사한다. 미적 승인 전에는 실행 상태를 Approved Reference로 되돌린다.
+
+정식 성능 명령은 Release 실행 파일의 `--stage9-performance-test`다. 1920×1080,
+VSync/UI/preview Off, time 0, 120-frame 워밍업 뒤 장면별 원시 GPU timestamp 600개를 모은다.
+장면은 Dense Zenith/Horizon, Stratus Horizon, Cumulus Horizon/Inside, Above Layer,
+Depth Occluded 일곱 개다. Fast/Balanced/Conservative/Approved Reference를 같은 실행
+파일에서 순차 측정하며 결과는
+`captures/stage9/performance.csv`와 `.json`에
+DXGI adapter, driver version, 평균/p50/p95와 gate를 기록한다.
+
+Fine Reference는 `50m×1024 View`와 `62.5m×320 Light`를 함께 쓰는 오프라인 화질 기준이라
+1080p Composite 600프레임 실시간 후보에서는 제외한다. Stage9OptimizationSmoke의
+Light T 화질 reference로만 사용한다.
+
+후보 gate는 GPU Cloud p95 `10ms` 이하, Cumulus Horizon이 Approved Reference보다 15% 이상
+빠름, 나머지 장면 p95 회귀 3% 이하를 동시에 요구한다. 이 자동 gate와 사용자 렌더 검증을
+모두 통과하기 전에는 가장 싼 후보를 시작 기본값으로 자동 승격하지 않는다.
+
+2026-08-17 RTX 4080 SUPER/드라이버 `32.0.15.9186` 측정에서 자동 합격 Balanced
+(`6탭/2°/원거리 77%`)의 일곱 장면 p95는 `7.24/8.22/4.85/8.98/8.41/5.95/7.29ms`다.
+Cumulus Horizon은 Approved Reference `19.83ms`에서 `8.98ms`로 약 `54.7%` 개선됐고,
+나머지 장면도 Reference보다 빨라 3% 회귀 gate를 통과했다. 화질 측정의 Light T MAE/P99는
+Dense `0.00142/0.02814`, Stratus `0.00042/0.01250`, Cumulus `0.00167/0.02899`이며
+Final Density/View τ도 SSIM 0.99, RMSE 0.01 기준을 통과했다.

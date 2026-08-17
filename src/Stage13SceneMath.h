@@ -82,7 +82,7 @@ inline CloudDebugMode DebugModeFromDigit(int digit)
 inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
 {
     const std::int32_t value = static_cast<std::int32_t>(mode);
-    return value == 0 || (value >= 8 && value <= 59)
+    return value == 0 || (value >= 8 && value <= 63)
         ? mode : CloudDebugMode::Composite;
 }
 
@@ -143,6 +143,10 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::SilverLiningContribution: return L"Silver Lining Contribution";
     case CloudDebugMode::ShapedSunVisibility: return L"Shaped Sun Visibility";
     case CloudDebugMode::AmbientVisibility: return L"Ambient Visibility";
+    case CloudDebugMode::ExecutedViewSamples: return L"Executed View Samples";
+    case CloudDebugMode::SkippedDistance: return L"Skipped Distance";
+    case CloudDebugMode::EarlyExitSavings: return L"Early Exit Savings";
+    case CloudDebugMode::SupportPrecheckSkip: return L"Support Precheck Skip";
     default: return L"Composite";
     }
 }

@@ -4,7 +4,9 @@
 Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포트폴리오 씬으로 대체했다.
 13-4D 사용자 검증에서 발견한 낮은 Weather 점유율, 이중 profile threshold와 약한 광학
 대비를 13-4E Dense Broken-Sky로 교체했다. 13-5는 기존 Light Ray 예산을 유지한 채
-태양 노출 표면에 Phase를 제한하고 환경광을 자기 그림자에 결합했으며 사용자 재승인을 기다린다.
+태양 노출 표면에 Phase를 제한하고 환경광을 자기 그림자에 결합했으며 2026-08-17 승인됐다.
+단계 9는 이 평면층 승인 기준을 별도 Reference PS로 보존한 채 View 공백 탐색·조기 종료와
+deterministic Light cone 후보를 Optimized PS에 추가한다.
 
 ## 모듈과 책임
 
@@ -12,10 +14,11 @@ Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포�
 |---|---|
 | `Window` / `Camera` | Win32 입력, 숫자 0~9·F1~F8, 오빗/휠, WASD·Shift rig 이동, FOV·현재/저장 시점과 view/projection 제공 |
 | `Renderer` | D3D11 장치, 10km 지면·20층 건물, compute noise, 구름·Noise Lab 패스와 테스트 전용 legacy fixture |
-| `NoiseLab` | F1 외형/Noise, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 30 snapshot 내보내기 |
+| `NoiseLab` | F1 외형/Noise/Optimization, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 31 snapshot 내보내기 |
 | `CloudAppearance` | Dense Mixed/Stratus/Cumulus 외형 계약, Physical density CPU 기준, schema 29 Custom 원자 저장·엄격 로드 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
 | `CloudLodParameters` | 16바이트 Detail 거리 LOD 시작·끝과 실제 volume 중립 평균 |
+| `OptimizationParameters` | 64바이트 b9 View/Light 후보와 Fast~Fine Reference preset |
 | `CloudShapeParameters` | 64바이트 Legacy/Weather Physical 모드, 타입별 두께와 세로 프로파일 |
 | `CloudDomainParameters` | AABB/평면층 선택, 구름 고도·두께와 View/Light 추적 제한 |
 | `LightParameters` | 80바이트 태양·Light Ray·외곽 범위 Dual-lobe Phase 설정 |
@@ -43,6 +46,7 @@ Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포�
 | `Stage13CameraPresets.h` | 단일 씬 F5~F8 position/target, 60° FOV와 0.1m/60km clip의 기준 |
 | `Stage13SceneMath.h` | 10km 지면·20×60×20m 건물·50km 지원 반경, 입력·이동·숫자 Debug 매핑 기준 |
 | `Stage13OpticsLightingMath.h` | km Beer-Lambert, Light sampling 후보와 Detail LOD CPU 기준 |
+| `Stage9OptimizationMath.h` | 가변 View 구간, coarse 되감기와 weighted cone CPU 기준 |
 | `NoiseVolumeCache.h` | 테스트 전용 cache header·parameter/payload hash와 손상 거부 |
 | `Stage13CloudDomainMath.h` | 평면층의 아래·내부·위·수평·깊이 제한 교차 CPU 기준 |
 
@@ -83,8 +87,8 @@ Raw Noise, Weather Coverage, Base Density, Detail Noise, Final Density, View Opt
 Depth, Accumulated Direct, View Transmittance, Light Transmittance다. 기존 HLSL ID 1~7은
 삭제했으며 CPU에서 Composite로 sanitize한다. CloudCB는 여전히 128바이트다.
 
-13-4D 내보내기는 schema 28, 13-4E 전체 snapshot은 schema 29였다. 13-5 전체 snapshot은
-schema 30/`implementationStage=13-5`로 바뀌며 `lightingLook`과 새 조명 계수를 기록한다.
+13-4D 내보내기는 schema 28, 13-4E 전체 snapshot은 schema 29, 13-5는 schema 30이었다.
+단계 9 전체 snapshot은 schema 31/`implementationStage=9`이며 `optimization` preset과 b9 값을 기록한다.
 13-4E Custom 외형 전용 원자 저장 파일은 schema 29를 유지한다. snapshot은 `sceneContract`, 현재/저장 카메라,
 `cloudTypeMode`, `openWorldPipelinePreset`을 기록하며 `cloudScene`, `domainStates`,
 `stage13Preset`, `similarityScale`, `diagnosticSceneEnabled`와 Stage1/2/4 preset 상태는
@@ -92,15 +96,16 @@ schema 30/`implementationStage=13-5`로 바뀌며 `lightingLook`과 새 조명 �
 
 ## 단계 13-4E Dense Broken-Sky와 외형 상태
 
-일반 시작과 Pipeline Compare 5 `Full Open World`는 저장 Custom과 무관하게 항상
-`Dense Mixed Default`를 복원한다. 이 기본은 coverage/density/extinction/erosion
+일반 시작은 Stratus를 적용하고 Pipeline Compare 5 `Full Open World`는 저장 Custom과
+무관하게 `Dense Mixed Default`를 복원한다. 이 Dense 기준은 coverage/density/extinction/erosion
 `0.68/1.15/0.00035m^-1/0.18`이며 결정적 Weather의 R non-zero/core 점유율은
 `79.62%/49.11%`다. Stratus는 `87.31%/56.60%`, Cumulus는 `73.82%/42.07%`다.
 세 외형은 seed·period, Texture3D, wind/offset, camera/domain, sun/phase/environment와
 View `512×100m`·Light `80×250m`를 변경하지 않는다. Stratus/Cumulus Coverage는
 2026-08-17 사용자 피드백에 따라 `0.40/0.45`로 낮췄다.
 
-F1 `Cloud Type Settings`는 Stratus, Cumulus, Custom과 `Save Current as Custom`을 제공한다.
+F1 `Cloud Type Settings`는 Dense Mixed Default, Stratus, Cumulus, Custom과
+`Save Current as Custom`을 제공한다.
 외형 소유 슬라이더를 움직이면 `Custom Unsaved`가 되며 자동 저장하지 않는다. 저장 파일은
 `captures/noise-lab/custom/noise-settings.json`에 임시 파일을 완전히 쓴 뒤 원자 교체한다.
 시작 때 schema 29를 메모리 슬롯에만 읽고 자동 적용하지 않는다. 누락·구버전·손상·비유한·
@@ -151,14 +156,14 @@ CPU 구조체와 HLSL cbuffer의 16바이트 묶음을 항상 동시에 변경�
 |---|---|---|
 | 0 | `cloudBoundsMin(float3)`, `densityMultiplier` | `(-8,-1,-8)m`, `1.0`; 실행 기본 넓은 경계 최소와 threshold 뒤 밀도 배율 |
 | 1 | `cloudBoundsMax(float3)`, `stepSize` | `(8,2,8)m`, `0.10m`; 실행 기본 넓은 경계 최대와 목표 간격 |
-| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `128`, `1.0`, `0.01`, `0`; threshold만 단계 9 예약 |
+| 2 | `maxViewSteps`, `extinctionCoefficient`, `transmittanceThreshold`, `debugMode` | `128`, `1.0`, `0.01`, `0`; Optimized View의 early exit threshold |
 | 3 | `baseNoiseScale`, `coverage`, `windSpeed`, `noiseOffset` | `0.35 cycle/m`, `0.55`, `0.25m/s`, `0`; Physical 전체 구름의 Bulk 이동, Legacy Base 이동 |
 | 4 | `windDirection(float3)`, `bottomFadeEnd` | 정규화 `(0.9701,0,0.2425)`, `0.20`; 월드 바람 방향과 바닥 fade 종료 높이 |
 | 5 | `topFadeStart`, `minimumLocalThicknessFraction`, `localHeightVariation`, `cumulusTopBoost` | `0.80`, `0.40`, Open World `1.0`, `0.35`; 최소 1.2km 두께와 XZ별 로컬 상단 제어 |
 | 6 | `detailNoiseScale`, `detailErosionStrength`, `detailWindSpeed`, `detailNoiseOffset` | `2.5 cycle/m`, `0.25`, `0.45m/s`, `17.3`; 표면 침식, 속도는 Legacy 전용 |
 | 7 | `weatherMapWorldSize`, `weatherMapWindSpeed`, `weatherMapOffset(float2)` | `16m`, `0.10m/s`, `(0,0)`; Weather 반복 크기·UV offset, 속도는 Legacy 전용 |
 
-구조체는 16바이트 묶음 여덟 개다. `transmittanceThreshold`는 단계 9 early exit 전까지 읽지 않는다. `minimumLocalThicknessFraction/localHeightVariation/cumulusTopBoost`는 Similarity와 구형 회귀 전용이며 Open World는 b7을 사용한다.
+구조체는 16바이트 묶음 여덟 개다. `transmittanceThreshold`는 단계 9 Optimized View early exit가 읽는다. `minimumLocalThicknessFraction/localHeightVariation/cumulusTopBoost`는 Similarity와 구형 회귀 전용이며 Open World는 b7을 사용한다.
 
 Physical Shape의 이동은 `normalizeOrZero(windDirection.xz) × windSpeed × effectiveTime`을
 Weather/Base/Detail 샘플 위치에서 똑같이 빼는 강체 이동이다. Y는 바꾸지 않는다.
@@ -276,6 +281,27 @@ XYZ는 2km 타일이며 주파수 `2/3/4/5`의 표본 수가 `10/6.67/5/4`다. �
 전에는 원본 Detail, 32~48km에서는 `smoothstep`으로 평균에 수렴하고 48km 뒤에는 `t4`를
 읽지 않는다. 평균 침식은 계속 적용하므로 LOD 경계에서 구름 두께가 갑자기 변하지 않는다.
 Similarity 프리셋은 LOD를 꺼 상사 회귀 화면을 보존한다.
+
+### `OptimizationParameters` / `OptimizationCB` (`b9`, 64바이트)
+
+| 묶음 | 필드 | 기본값과 역할 |
+|---|---|---|
+| 0 | `supportPrecheckEnabled`, `emptySpaceSkippingEnabled`, `viewEarlyExitEnabled`, `distanceStepEnabled` | 네 최적화 축의 독립 On/Off |
+| 1 | `emptySamplesBeforeCoarse`, `baseDensityEpsilon`, `coarseStepMultiplier`, `maxSearchStepMeters` | `3`, `0.0001`, `2`, `400m`; 공백 판정과 탐색 상한 |
+| 2 | `distanceStepStartMeters`, `distanceStepEndMeters`, `farStepMultiplier`, padding | `16/48km`, `1`; smoothstep 거리 step |
+| 3 | `lightSamplingMode`, `coneSampleCount`, `coneAngleDegrees`, `lightFarSampleFraction` | 초기 fallback은 Straight, `6`, `3°`, `0.85`; 자동 합격 Balanced는 Cone `6`, `2°`, `0.77` |
+
+`Approved Reference`와 `Fine Reference`는 모든 View 최적화가 Off이고 Straight Light라서
+`mainReference`를 선택한다. Fast/Balanced/Conservative와 개별 Custom 조합은
+`mainOptimized`를 선택한다. Debug에서도 Reference는 `/Od`, 동적 Optimized는 실제 비용과
+D3D11 instruction 한도를 위해 `/O1`로 컴파일한다. 두 PS와 나머지 셰이더가 모두 성공해야
+핫 리로드 세대가 교체된다.
+
+F1 Optimization의 각 행은 왼쪽에서 오른쪽으로 계산량이 증가한다. 새 디버그 ID 60~63은
+Executed View Samples, Skipped Distance, Early Exit Savings, Support Precheck Skip이며
+숫자 0~9 단축키 표는 바꾸지 않는다. Cone Far Fraction은 탭 수가 같아 계산량이 같은
+`75/77/85/95%` 비교 버튼이며, 자동 스윕에서 4°→3°→2°와 77% 순으로 올린 첫 합격값을
+Balanced에 반영했다.
 
 ### `LightParameters` / `LightCB` (`b3`, 80바이트)
 
@@ -416,7 +442,7 @@ F1 `Noise/Weather/Shape/Sampling Debug View`와 F3 `Lighting/Phase/Environment D
 
 - 외부 Weather PNG 로딩·페인팅·precipitation, fBm/Worley와 shadow
 - Cube Map/IBL·실제 대기 입력, Light Ray Detail Erosion
-- `transmittanceThreshold` early exit와 adaptive stepping
+- 단계 9보다 더 복잡한 오차 기반 adaptive stepping
 - 저해상도, temporal reconstruction, 영구 캐시와 프리셋
 
 실행 기본 `Y` 볼륨은 X/Z `±8m`로 15×15m 진단 바닥을 덮는다. `Q`는 기존

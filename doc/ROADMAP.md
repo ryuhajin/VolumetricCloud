@@ -31,7 +31,8 @@
 
 ## 현재 목표: 단계 9 기본 최적화
 
-- [ ] 단계 9: View Weather/Base precheck, empty-space skip, View early exit와 거리별 step
+- [ ] 단계 9: View Weather/Base precheck, empty-space skip, View early exit, 거리별 step과
+  deterministic Light cone — 구현·자동 화질·Release 성능 gate 완료, 사용자 화질 승인 대기
 - [ ] 단계 10: 저해상도 구름 타깃과 depth/transmittance-aware 업샘플링
 - [ ] 단계 11: Jitter, Temporal Reprojection과 history rejection
 - [ ] 단계 12: Cloud Shadow Map과 Light Cache
