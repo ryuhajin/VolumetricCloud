@@ -1351,6 +1351,21 @@ void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
     m_environmentPreset = preset;
 }
 
+void Renderer::ApplyPortfolioHeroLighting()
+{
+    m_lightParameters.directionToSun = stage6light::Preset(
+        Stage6SunPreset::LowEast).directionToSun;
+    m_lightParameters.sunColor = { 1.0f, 0.78f, 0.62f };
+    m_lightParameters.sunIntensity = 1.15f;
+    stage6light::ApplyPhasePreset(
+        m_lightParameters, Stage7PhasePreset::SilverLining);
+    stage8environment::ApplyPreset(
+        m_environmentParameters, Stage8EnvironmentPreset::PortfolioHero);
+    m_sunPreset = Stage6SunPreset::LowEast;
+    m_phasePreset = Stage7PhasePreset::SilverLining;
+    m_environmentPreset = Stage8EnvironmentPreset::PortfolioHero;
+}
+
 void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
 {
     m_lightParameters.maxLightSteps = maxSteps;

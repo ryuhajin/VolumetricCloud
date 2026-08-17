@@ -26,8 +26,8 @@ bool Near(float a, float b, float epsilon = 1e-5f)
 
 int main()
 {
-    Require(sizeof(EnvironmentParameters) == 64u,
-            "EnvironmentCB CPU layout must remain 64 bytes");
+    Require(sizeof(EnvironmentParameters) == 80u,
+            "EnvironmentCB CPU layout must remain 80 bytes");
 
     EnvironmentParameters off;
     stage8environment::ApplyPreset(off, Stage8EnvironmentPreset::Off);
@@ -48,6 +48,9 @@ int main()
     const auto highDensity = stage8::EvaluateWeights(0.5f, 0.9f, balanced);
     Require(lowDensity.ambientOcclusion > highDensity.ambientOcclusion,
             "ambient visibility must decrease with density");
+    Require(Near(stage8::AmbientVisibility(0.4f, 0.1f, balanced),
+                 stage8::AmbientVisibility(0.4f, 1.0f, balanced)),
+            "neutral ambient shadow coupling must preserve stage 8 visibility");
 
     EnvironmentParameters doubledSky = balanced;
     doubledSky.skyStrength *= 2.0f;
@@ -90,6 +93,17 @@ int main()
     Require(ground.skyStrength == 0.0f && Near(ground.groundStrength, 0.35f) &&
                 ground.multipleScatteringEnabled == 0.0f,
             "Ground Check must isolate ground bounce");
+    EnvironmentParameters hero;
+    stage8environment::ApplyPreset(hero, Stage8EnvironmentPreset::PortfolioHero);
+    const float heroLit = stage8::AmbientVisibility(0.4f, 1.0f, hero);
+    const float heroShadow = stage8::AmbientVisibility(0.4f, 0.1f, hero);
+    Require(hero.ambientShadowCoupling > 0.0f &&
+                hero.multipleScatteringInteriorBlend > 0.0f &&
+                heroShadow < heroLit,
+            "Portfolio Hero must couple ambient fill to sun visibility");
+    Require(stage8::MultipleScatteringInteriorWeight(1.0f, hero) <
+                stage8::MultipleScatteringInteriorWeight(0.1f, hero),
+            "Portfolio Hero multiple scattering must favor occluded interiors");
 
     const auto lightBefore = stage6::MarchConstantDensity(
         3.0f, 0.4f, 1.0f, 0.25f, 16u);
@@ -109,6 +123,9 @@ int main()
     invalid.ambientHeightInfluence = -5.0f;
     invalid.multipleScatteringOctaves = 999u;
     invalid.multipleScatteringAttenuation = std::numeric_limits<float>::quiet_NaN();
+    invalid.ambientShadowCoupling = 10.0f;
+    invalid.ambientShadowExponent = -10.0f;
+    invalid.multipleScatteringInteriorBlend = 10.0f;
     invalid = stage8environment::Sanitize(invalid);
     const auto safeWeights = stage8::EvaluateWeights(
         std::numeric_limits<float>::quiet_NaN(),
@@ -117,6 +134,9 @@ int main()
         std::numeric_limits<float>::quiet_NaN(),
         std::numeric_limits<float>::infinity(), invalid);
     Require(invalid.multipleScatteringOctaves == 4u &&
+                invalid.ambientShadowCoupling == 1.0f &&
+                invalid.ambientShadowExponent == 0.1f &&
+                invalid.multipleScatteringInteriorBlend == 1.0f &&
                 std::isfinite(safeWeights.sky) &&
                 std::isfinite(safeWeights.ground) &&
                 std::isfinite(safeWeights.ambientOcclusion) &&

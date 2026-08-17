@@ -637,3 +637,23 @@
   `0.00029521/0.00010890/0.00017973`로 `0.01/0.03` gate를 통과했다.
 - Silver Lining을 켜도 외곽 입체감이 부족하다는 사용자 피드백은 재현됐으며 Phase/외곽광은
   이번 변경에서 건드리지 않고 다음 작업으로 분리했다.
+
+## 35. 단계 13-5 태양 노출 기반 외곽광과 환경광 보완
+
+- 추가 Light Ray나 texture fetch 없이 기존 `Tsun`을 재사용한다. 직접광은
+  `Tsun^shadowExponent`, Phase 범위는 `Tsun^edgeOpticalDepthScale`로 분리했으며 중립값은
+  기존 Stage 8/13-5 결과를 보존한다.
+- Silver Lining을 `g/blend/intensity=0.75/0.90/0.20`, 외곽 비율/폭/그림자 지수
+  `0.85/2.0/1.35`로 바꿨다. F3에 Portfolio Hero와 Silver Contribution, Shaped Sun,
+  Ambient Visibility 분리 출력을 추가했다.
+- 환경광은 밀도 AO에 태양 가시성을 선택적으로 결합하고 다중 산란을 차폐 내부로 옮긴다.
+  기존 Balanced는 중립, Portfolio Ambient는 coupling/exponent/interior blend
+  `0.55/0.50/0.75`다.
+- LightCB와 EnvironmentCB를 각각 80바이트로 확장하고 C++/HLSL/아키텍처 표를 동기화했다.
+  전체 snapshot은 schema 30/`13-5`, 외형 Custom 파일은 schema 29를 유지한다.
+- GPU smoke에서 View τ 방향 MAE `0`, Direct/Silver 방향 MAE
+  `0.03554698/0.03117338`, 노출 외곽/내부 Silver 평균 `0.12536342/0.06037134`,
+  near-white 비율 `0`으로 자동 gate를 통과했다. 미적 품질은 사용자 재승인 전까지 미완료다.
+- `1920×925` Cumulus F6 Noon/Balanced에서 원시 GPU Cloud 600표본 평균/p95는
+  변경 전 `13.688282/15.639552ms`, 변경 후 `13.867684/15.785984ms`다. 새 p95 증가는
+  약 `0.94%`로 +5%와 16.67ms gate를 모두 통과했다. 과거 UI EMA와 원시 p95는 섞지 않는다.

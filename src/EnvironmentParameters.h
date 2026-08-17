@@ -14,6 +14,7 @@ enum class Stage8EnvironmentPreset : std::int32_t
     Balanced,
     StrongFill,
     GroundCheck,
+    PortfolioHero,
     Custom,
 };
 
@@ -36,9 +37,15 @@ struct alignas(16) EnvironmentParameters
     float multipleScatteringExtinctionFactor = 0.50f;
     float multipleScatteringPhaseFactor = 0.25f;
     float environmentPadding = 0.0f;
+
+    // 13-5 외곽광 보완. 중립값(0, 1, 0)은 기존 환경광을 정확히 보존한다.
+    float ambientShadowCoupling = 0.0f;
+    float ambientShadowExponent = 1.0f;
+    float multipleScatteringInteriorBlend = 0.0f;
+    float lightingPadding = 0.0f;
 };
 
-static_assert(sizeof(EnvironmentParameters) == 64,
+static_assert(sizeof(EnvironmentParameters) == 80,
               "EnvironmentParameters must match EnvironmentCB");
 
 namespace stage8environment
@@ -87,7 +94,20 @@ inline EnvironmentParameters Sanitize(EnvironmentParameters value)
         std::isfinite(value.multipleScatteringPhaseFactor)
             ? value.multipleScatteringPhaseFactor : 0.25f,
         0.0f, 1.0f);
+    value.ambientShadowCoupling = std::clamp(
+        std::isfinite(value.ambientShadowCoupling)
+            ? value.ambientShadowCoupling : 0.0f,
+        0.0f, 1.0f);
+    value.ambientShadowExponent = std::clamp(
+        std::isfinite(value.ambientShadowExponent)
+            ? value.ambientShadowExponent : 1.0f,
+        0.1f, 8.0f);
+    value.multipleScatteringInteriorBlend = std::clamp(
+        std::isfinite(value.multipleScatteringInteriorBlend)
+            ? value.multipleScatteringInteriorBlend : 0.0f,
+        0.0f, 1.0f);
     value.environmentPadding = 0.0f;
+    value.lightingPadding = 0.0f;
     return value;
 }
 
@@ -121,6 +141,21 @@ inline void ApplyPreset(EnvironmentParameters& value,
         value.ambientOcclusionStrength = 0.0f;
         value.multipleScatteringEnabled = 0.0f;
         value.multipleScatteringOctaves = 0;
+        break;
+    case Stage8EnvironmentPreset::PortfolioHero:
+        value.skyColor = { 0.24f, 0.38f, 0.70f };
+        value.skyStrength = 0.10f;
+        value.groundColor = { 0.18f, 0.10f, 0.07f };
+        value.groundStrength = 0.025f;
+        value.ambientOcclusionStrength = 1.80f;
+        value.ambientHeightInfluence = 0.65f;
+        value.multipleScatteringOctaves = 2;
+        value.multipleScatteringAttenuation = 0.15f;
+        value.multipleScatteringExtinctionFactor = 0.50f;
+        value.multipleScatteringPhaseFactor = 0.15f;
+        value.ambientShadowCoupling = 0.55f;
+        value.ambientShadowExponent = 0.50f;
+        value.multipleScatteringInteriorBlend = 0.75f;
         break;
     case Stage8EnvironmentPreset::Balanced:
     default:

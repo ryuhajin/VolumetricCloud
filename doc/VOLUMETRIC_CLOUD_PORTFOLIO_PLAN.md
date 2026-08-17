@@ -63,8 +63,6 @@ samplesPerWavelength  = (1 / noiseFrequency) / stepLength
 | 13-4D | 단일 포트폴리오 디버깅 씬 | 10km 지면·20층 건물·50km 계약, 입력/카메라/Compare/schema 28 | F5 Depth·F6 수평선·F7 내부·F8 상공, 숫자 0~9와 정리된 F1~F4 |
 | 13-4E | Dense Broken-Sky와 구름 타입 프리셋 | Weather 점유율·분리 density 수식·결정적 Compare·Custom schema 29 | 전역 broken-sky, 층운/적운 차이, 명암, Custom 재실행 복원 |
 | 13-5 | km 광학과 조명 | View/Light 단위 일치, LOD 수치 | 자기 그림자·silver lining·환경광 |
-| 13-6 | Earth-scale shell 비교 | 구-레이·접선·정밀도·평면 근사 | 지평선·내부·위·월드 고정 비교 |
-| 13-7 | 대규모 도메인 승인 | Debug/Release·CTest·HLSL·D3D | 7개 고정 장면 최종 승인 |
 
 13-3의 시작값은 층 바닥 1,500m, 두께 3,000m, View 50km, fade 40~50km,
 Weather 64km, View `100m/512`, Light `250m/80`, density `1.0`, extinction
@@ -84,10 +82,10 @@ XYZ 12km와 주파수 `{4,9,17,23}`, octave별 seed 간격 173을 사용하고, 
 2026-08-16 사용자 승인을 받았다. 이 승인 이력은 보존하되 13-4D가 Local Inspector
 런타임을 50km 단일 평면 구름 씬으로 대체한다. 13-5의 기존 자동 결과를 보존하면서
 새 F6에서 같은 허용 오차로 재검증했다. 13-4D 사용자 검증에서 공간 점유율·납작한 형상·약한
-명암 문제가 발견되어 13-4E가 최종 기본 외형을 대체한다. 13-4E 사용자 승인과 새 Dense Mixed
-F6의 13-5 재승인을 기다리며, 그 전에는 단계 9의
-early exit/coarse march, 단계 10~12의 저해상도·temporal·Light Cache·Cloud Shadow와
-단계 14의 실제 대기 입력을 추가하지 않는다.
+명암 문제가 발견되어 13-4E가 최종 기본 외형을 대체했다. 13-4D/13-4E와 새 Dense Mixed
+F6의 13-5는 2026-08-17 사용자 승인을 받았다. PlanarLayer를 최종 대규모 도메인으로
+확정하고 구형 shell 비교는 포트폴리오 범위에서 제외했다. 이제 단계 9의 View/Light 기본
+최적화를 진행한다.
 
 13-5의 Open World 품질 기본은 View `100m/512`, Light `250m/80`이다. Light
 `62.5m/320` fine reference와 `125m/160` 이전 품질을 96×54 float readback으로 비교하며,
@@ -98,15 +96,20 @@ HLSL Light bias는 CPU와 같은 `0~100m`를 사용해
 1000× 상사 프리셋의 10m를 보존한다. Detail은 실제 `32³` weighted mean
 `0.44994098`로 32~48km에서 수렴하고 끝 거리 밖에서 texture fetch를 생략한다.
 
+13-5 외곽광 보완은 Light `250m/80`과 texture fetch 수를 유지한다. `Tsun` 거듭제곱으로
+직접광 대비와 Phase 적용 폭을 분리하고, 환경광 AO와 다중 산란도 같은 `Tsun`을 재사용한다.
+Portfolio Hero는 따뜻한 Low East 직접광, 표면 범위 Silver Lining과 차가운 내부 fill을 한 번에
+적용한다. CPU/HLSL의 LightCB/EnvironmentCB는 각각 80바이트이며 전체 snapshot은 schema 30,
+외형 Custom 원자 저장은 schema 29를 유지한다. 자동 smoke의 노출 외곽/내부 Silver 평균은
+`0.12536342/0.06037134`, `RGB peak≥0.98` 비율은 0이다. Cumulus F6 원시 GPU Cloud
+p95는 변경 전/후 `15.639552/15.785984ms`로 약 0.94% 증가해 +5%와 16.67ms gate를
+통과했고 2026-08-17 사용자 화면 승인을 받았다.
+
 13-4E Dense Mixed는 Weather non-zero/core `79.62%/49.11%`, global coverage `0.68`,
 density `1.15`, extinction `0.00035/m`, erosion `0.18`을 사용한다. Weather support,
 horizontal coverage와 vertical profile을 분리해 하늘 전역의 20~40% 푸른 틈, 둥근 상단과
 밝은 가장자리/어두운 내부를 동시에 목표로 한다. Stratus/Cumulus 버튼은 같은 seed·wind·
 camera/light에서 두께와 profile만 뚜렷하게 비교하며 Custom은 schema 29 원자 저장을 사용한다.
-
-13-6은 반지름 6,371,000m, 고도 1,500~4,500m의 shell을 사용한다. 카메라 주변 50km만
-지원하며 우주 전환과 행성 전체 이동은 제외한다. shell의 GPU Cloud p95가 평면 대비 3%
-이내이고 정밀도 문제가 없을 때만 최종 기본값으로 채택한다.
 
 ## 후속 성능과 최종 목표
 
@@ -116,11 +119,11 @@ camera/light에서 두께와 profile만 뚜렷하게 비교하며 Custom은 sche
 - 측정은 120프레임 워밍업 뒤 600프레임을 기록한다. GPU 어댑터·드라이버·seed·카메라·
   설정과 평균/p95를 JSON/CSV에 함께 남긴다.
 - 최종 고정 장면은 `GroundZenith`, `GroundHorizon`, `InsideLayer`, `AboveLayer`,
-  `FlightTraversal`, `DepthOccluded`, `PlanarVsShell`이다.
+  `FlightTraversal`, `DepthOccluded`, `CumulusHorizonStress`다.
 
 ## 단계 중단과 복구
 
 - 사용자 화면 게이트가 실패하면 다음 단계 기능을 추가하지 않고 같은 단계에서 원인을 분리한다.
 - 단위·교차·형태·광학·조명을 한 변경에서 동시에 조정하지 않는다.
 - 실패 실험은 별도 브랜치와 태그에 보존하되 승인 기준에 섞지 않는다.
-- 단계 13-7 승인 전에는 단계 9의 early exit, coarse march, 저해상도나 temporal을 도입하지 않는다.
+- 단계 9에서는 early exit와 coarse march만 다루고 저해상도와 temporal은 단계 10~11까지 미룬다.

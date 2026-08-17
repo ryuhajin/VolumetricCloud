@@ -27,6 +27,9 @@ int main()
 {
     using namespace stage6;
 
+    Require(sizeof(LightParameters) == 80u,
+            "LightCB CPU layout must remain 80 bytes");
+
     const auto uniform = MarchConstantDensity(4.0f, 0.35f, 1.0f, 0.25f, 32u);
     Require(Near(uniform.transmittance, std::exp(-1.4f), 1e-5f),
             "uniform Beer-Lambert must match analytic result");
@@ -89,6 +92,20 @@ int main()
         0.5f, 0.6f, 0.8f, 0.2f, 0.0f, 2.0f, 1.0f), 0.0f),
         "zero extinction must preserve transmittance and produce no scattering");
 
+    Require(Near(ShapeLightTransmittance(0.0f, 2.0f), 0.0f) &&
+                Near(ShapeLightTransmittance(1.0f, 2.0f), 1.0f) &&
+                ShapeLightTransmittance(0.5f, 1.5f) < 0.5f,
+            "shadow exponent must preserve endpoints and darken the interior");
+    const float broadSurface = ComputeSurfaceExposure(0.6f, 1.0f);
+    const float narrowSurface = ComputeSurfaceExposure(0.6f, 2.0f);
+    Require(narrowSurface < broadSurface,
+            "larger edge optical depth scale must narrow surface exposure");
+    const float neutralScoped = ScopePhaseToSurface(2.0f, 0.2f, 0.0f);
+    const float edgeScoped = ScopePhaseToSurface(2.0f, 0.2f, 1.0f);
+    Require(Near(neutralScoped, 2.0f) && Near(edgeScoped, 1.2f) &&
+                edgeScoped < neutralScoped,
+            "edge influence must confine phase without changing its neutral path");
+
     const auto invalid = MarchConstantDensity(
         std::numeric_limits<float>::quiet_NaN(), 1.0f, 1.0f, 0.0f, 0u);
     Require(std::isfinite(invalid.transmittance) &&
@@ -101,6 +118,9 @@ int main()
     bad.maxLightSteps = 0;
     bad.lightStepSize = -1.0f;
     bad.singleScatteringAlbedo = 2.0f;
+    bad.edgeInfluence = 2.0f;
+    bad.edgeOpticalDepthScale = -1.0f;
+    bad.shadowExponent = 10.0f;
     const LightParameters safe = stage6light::Sanitize(bad);
     const float directionLength = std::sqrt(
         safe.directionToSun.x * safe.directionToSun.x +
@@ -111,6 +131,10 @@ int main()
             safe.lightStepSize > 0.0f, "invalid CPU light settings must be clamped");
     Require(safe.singleScatteringAlbedo == 1.0f,
             "single-scattering albedo above one must clamp to one");
+    Require(safe.edgeInfluence == 1.0f &&
+                safe.edgeOpticalDepthScale == 0.25f &&
+                safe.shadowExponent == 4.0f,
+            "surface-aware direct-light controls must sanitize to documented ranges");
     bad.singleScatteringAlbedo = -0.5f;
     Require(stage6light::Sanitize(bad).singleScatteringAlbedo == 0.0f,
             "negative single-scattering albedo must clamp to zero");

@@ -85,6 +85,9 @@ const char* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::AccumulatedGroundBounce: return "AccumulatedGroundBounce";
     case CloudDebugMode::AccumulatedMultipleScattering: return "AccumulatedMultipleScattering";
     case CloudDebugMode::DetailLodFactor: return "DetailLodFactor";
+    case CloudDebugMode::SilverLiningContribution: return "SilverLiningContribution";
+    case CloudDebugMode::ShapedSunVisibility: return "ShapedSunVisibility";
+    case CloudDebugMode::AmbientVisibility: return "AmbientVisibility";
     default: return "Unknown";
     }
 }
@@ -587,22 +590,33 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
     // 사용자 화면에서 확인한 두 계약을 GPU에서 고정한다.
     // 태양 방향은 View 광학 깊이를 바꾸지 않고 직접광만 바꿔야 하며,
     // Silver Lining 합성은 LDR 출력 범위를 넘어 흰색으로 잘리면 안 된다.
-    renderer.ApplyStage7PhasePreset(Stage7PhasePreset::SilverLining);
-    renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+    renderer.ApplyPortfolioHeroLighting();
     CloudDiagnosticFrame eastDepth;
     CloudDiagnosticFrame westDepth;
     CloudDiagnosticFrame eastDirect;
     CloudDiagnosticFrame westDirect;
     CloudDiagnosticFrame eastComposite;
     CloudDiagnosticFrame westComposite;
-    renderer.ApplyStage6SunPreset(Stage6SunPreset::LowEast);
+    CloudDiagnosticFrame eastSilver;
+    CloudDiagnosticFrame westSilver;
+    CloudDiagnosticFrame eastSurface;
+    CloudDiagnosticFrame eastAmbientVisibility;
     if (!renderer.CaptureCloudDiagnosticFrame(
             camera, 0.0f, CloudDebugMode::ViewOpticalDepth, eastDepth) ||
         !renderer.CaptureCloudDiagnosticFrame(
             camera, 0.0f, CloudDebugMode::AccumulatedDirectLighting,
             eastDirect) ||
         !renderer.CaptureCloudDiagnosticFrame(
-            camera, 0.0f, CloudDebugMode::Composite, eastComposite))
+            camera, 0.0f, CloudDebugMode::Composite, eastComposite) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::SilverLiningContribution,
+            eastSilver) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::ShapedSunVisibility,
+            eastSurface) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::AmbientVisibility,
+            eastAmbientVisibility))
         return 7;
     renderer.ApplyStage6SunPreset(Stage6SunPreset::LowWest);
     if (!renderer.CaptureCloudDiagnosticFrame(
@@ -611,7 +625,10 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
             camera, 0.0f, CloudDebugMode::AccumulatedDirectLighting,
             westDirect) ||
         !renderer.CaptureCloudDiagnosticFrame(
-            camera, 0.0f, CloudDebugMode::Composite, westComposite))
+            camera, 0.0f, CloudDebugMode::Composite, westComposite) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::SilverLiningContribution,
+            westSilver))
         return 8;
 
     const auto depthDirectionMetric = stage13diagnostics::CompareFrames(
@@ -619,6 +636,9 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
         0.01, false);
     const auto directDirectionMetric = stage13diagnostics::CompareFrames(
         eastDirect, westDirect, nullptr, nullptr, ComparisonKind::Rgb,
+        0.01, false);
+    const auto silverDirectionMetric = stage13diagnostics::CompareFrames(
+        eastSilver, westSilver, nullptr, nullptr, ComparisonKind::Rgb,
         0.01, false);
     const auto maximumRgb = [](const CloudDiagnosticFrame& frame)
     {
@@ -630,17 +650,70 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
     };
     const float eastMaximum = maximumRgb(eastComposite);
     const float westMaximum = maximumRgb(westComposite);
+    std::size_t nearWhiteCount = 0u;
+    for (const DirectX::XMFLOAT4& pixel : eastComposite.pixels)
+    {
+        if (std::max(pixel.x, std::max(pixel.y, pixel.z)) >= 0.98f)
+            ++nearWhiteCount;
+    }
+    const double nearWhiteRatio = eastComposite.pixels.empty() ? 1.0 :
+        static_cast<double>(nearWhiteCount) /
+        static_cast<double>(eastComposite.pixels.size());
+
+    double exposedSilver = 0.0;
+    double interiorSilver = 0.0;
+    std::size_t exposedCount = 0u;
+    std::size_t interiorCount = 0u;
+    double ambientMean = 0.0;
+    std::size_t ambientCount = 0u;
+    for (std::size_t index = 0; index < eastSilver.pixels.size(); ++index)
+    {
+        const auto& silverPixel = eastSilver.pixels[index];
+        const auto& surfacePixel = eastSurface.pixels[index];
+        const auto& ambientPixel = eastAmbientVisibility.pixels[index];
+        const double silverValue = std::max(
+            silverPixel.x, std::max(silverPixel.y, silverPixel.z));
+        const double surfaceValue = surfacePixel.x;
+        const double ambientValue = ambientPixel.x;
+        if (ambientValue <= 1e-5)
+            continue;
+        ambientMean += ambientValue;
+        ++ambientCount;
+        if (surfaceValue >= 0.5)
+        {
+            exposedSilver += silverValue;
+            ++exposedCount;
+        }
+        else
+        {
+            interiorSilver += silverValue;
+            ++interiorCount;
+        }
+    }
+    const double exposedSilverMean = exposedCount > 0u
+        ? exposedSilver / static_cast<double>(exposedCount) : 0.0;
+    const double interiorSilverMean = interiorCount > 0u
+        ? interiorSilver / static_cast<double>(interiorCount) : 0.0;
+    ambientMean = ambientCount > 0u
+        ? ambientMean / static_cast<double>(ambientCount) : 0.0;
     const bool directionPassed = depthDirectionMetric.mae <= 1e-7 &&
-        directDirectionMetric.mae > 1e-5;
+        directDirectionMetric.mae > 1e-5 &&
+        silverDirectionMetric.mae > 1e-6;
     const bool highlightPassed = std::isfinite(eastMaximum) &&
         std::isfinite(westMaximum) && eastMaximum <= 1.0f &&
-        westMaximum <= 1.0f;
+        westMaximum <= 1.0f && nearWhiteRatio < 0.01;
+    const bool edgeSelectivityPassed = exposedCount > 0u &&
+        interiorCount > 0u && exposedSilverMean > 0.0 &&
+        exposedSilverMean > interiorSilverMean;
+    const bool ambientPassed = ambientCount > 0u &&
+        std::isfinite(ambientMean) && ambientMean > 0.0 && ambientMean <= 1.0;
     {
         std::ostringstream line;
         line << std::fixed << std::setprecision(8)
              << "[STAGE13-5][DIRECTION] VIEW_TAU_MAE="
              << depthDirectionMetric.mae << " DIRECT_MAE="
-             << directDirectionMetric.mae << ' '
+             << directDirectionMetric.mae << " SILVER_MAE="
+             << silverDirectionMetric.mae << ' '
              << (directionPassed ? "PASS" : "FAIL");
         WriteDiagnosticLine(line.str());
     }
@@ -648,13 +721,108 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
         std::ostringstream line;
         line << std::fixed << std::setprecision(8)
              << "[STAGE13-5][SILVER-LINING] EAST_MAX=" << eastMaximum
-             << " WEST_MAX=" << westMaximum << ' '
+             << " WEST_MAX=" << westMaximum
+             << " NEAR_WHITE_RATIO=" << nearWhiteRatio << ' '
              << (highlightPassed ? "PASS" : "FAIL");
         WriteDiagnosticLine(line.str());
     }
+    {
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(8)
+             << "[STAGE13-5][EDGE-SELECTIVITY] EXPOSED_MEAN="
+             << exposedSilverMean << " INTERIOR_MEAN=" << interiorSilverMean
+             << " AMBIENT_MEAN=" << ambientMean << ' '
+             << (edgeSelectivityPassed && ambientPassed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(line.str());
+    }
     return qualityPassed && lodPassed && directionPassed && highlightPassed &&
+        edgeSelectivityPassed && ambientPassed &&
         !renderer.HasDebugLayerErrors()
         ? 0 : 1;
+}
+
+int RunStage13LightingPerformanceTest(Renderer& renderer, Camera& camera)
+{
+    constexpr int kWarmupFrames = 180;
+    constexpr std::size_t kMeasurementSamples = 600u;
+    constexpr int kMaximumRenderAttempts = 1800;
+    // 변경 전 HEAD 셰이더를 같은 실행 파일의 원시 timestamp 수집기에 넣어 얻은
+    // 동일 조건 baseline이다. 과거 UI EMA 14.7525ms와 통계를 섞지 않는다.
+    constexpr double kPreviousCumulusF6AverageMilliseconds = 13.688282;
+    constexpr double kPreviousCumulusF6P95Milliseconds = 15.639552;
+    constexpr double kMaximumRegressionRatio = 1.05;
+    constexpr double kFrameBudgetMilliseconds = 16.67;
+
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetOpaqueSceneForTest(false);
+    if (!renderer.ApplyStage13OpenWorldPreset() ||
+        !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Cumulus))
+        return 2;
+    renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
+    renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Balanced);
+    renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+    renderer.SetDebugMode(CloudDebugMode::Composite);
+
+    camera.SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    const Stage13CameraPreset& horizon = stage13camera::Get(
+        Stage13CameraPresetId::GroundHorizon);
+    camera.SetLookAt(horizon.position, horizon.target);
+
+    for (int frame = 0; frame < kWarmupFrames; ++frame)
+        renderer.Render(camera, 0.0f);
+
+    std::vector<double> cloudSamples;
+    cloudSamples.reserve(kMeasurementSamples);
+    std::uint64_t lastSampleIndex = renderer.TimingSnapshot().gpuSampleIndex;
+    for (int attempt = 0;
+         attempt < kMaximumRenderAttempts &&
+         cloudSamples.size() < kMeasurementSamples;
+         ++attempt)
+    {
+        renderer.Render(camera, 0.0f);
+        const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+        if (!timing.gpuValid || timing.gpuSampleIndex == lastSampleIndex)
+        {
+            Sleep(1);
+            continue;
+        }
+        lastSampleIndex = timing.gpuSampleIndex;
+        if (!std::isfinite(timing.rawGpuCloudMs) ||
+            timing.rawGpuCloudMs < 0.0 ||
+            timing.rawGpuCloudMs > timing.rawGpuFrameMs)
+            return 3;
+        cloudSamples.push_back(timing.rawGpuCloudMs);
+    }
+    if (cloudSamples.size() != kMeasurementSamples)
+        return 4;
+
+    std::sort(cloudSamples.begin(), cloudSamples.end());
+    const std::size_t percentileIndex = static_cast<std::size_t>(
+        std::ceil(0.95 * static_cast<double>(cloudSamples.size()))) - 1u;
+    const double p95 = cloudSamples[std::min(
+        percentileIndex, cloudSamples.size() - 1u)];
+    const double average = std::accumulate(
+        cloudSamples.begin(), cloudSamples.end(), 0.0) /
+        static_cast<double>(cloudSamples.size());
+    const double averageRegressionLimit =
+        kPreviousCumulusF6AverageMilliseconds * kMaximumRegressionRatio;
+    const double p95RegressionLimit =
+        kPreviousCumulusF6P95Milliseconds * kMaximumRegressionRatio;
+    const bool passed = p95 <= kFrameBudgetMilliseconds &&
+        p95 <= p95RegressionLimit && average <= averageRegressionLimit;
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(6)
+         << "[STAGE13-5][CUMULUS-F6-PERF] SAMPLES="
+         << cloudSamples.size() << " GPU_CLOUD_AVG_MS=" << average
+         << " GPU_CLOUD_P95_MS=" << p95
+         << " AVG_REGRESSION_LIMIT_MS=" << averageRegressionLimit
+         << " P95_REGRESSION_LIMIT_MS=" << p95RegressionLimit << ' '
+         << (passed ? "PASS" : "FAIL");
+    WriteDiagnosticLine(line.str());
+    return passed && !renderer.HasDebugLayerErrors() ? 0 : 1;
 }
 
 
@@ -816,6 +984,7 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             return 7;
     }
 
+    renderer.ApplyPortfolioHeroLighting();
     renderer.SetDebugMode(CloudDebugMode::Composite);
     renderer.Render(camera, 0.0f);
     const std::filesystem::path exportRoot =
@@ -834,8 +1003,11 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             continue;
         std::string metadata;
         if (ReadTextFile(entry.path(), metadata) &&
-            metadata.find("\"schemaVersion\": 29") != std::string::npos &&
-            metadata.find("\"implementationStage\": \"13-4E\"") != std::string::npos &&
+            metadata.find("\"schemaVersion\": 30") != std::string::npos &&
+            metadata.find("\"implementationStage\": \"13-5\"") != std::string::npos &&
+            metadata.find("\"lightingLook\": \"portfolioHero\"") != std::string::npos &&
+            metadata.find("\"edgeInfluence\"") != std::string::npos &&
+            metadata.find("\"ambientShadowCoupling\"") != std::string::npos &&
             metadata.find("\"cloudAppearance\"") != std::string::npos &&
             metadata.find("\"sceneContract\"") != std::string::npos &&
             metadata.find("\"groundSizeMeters\": [10000.000000, 10000.000000]") != std::string::npos &&
@@ -851,7 +1023,7 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
         return 10;
 
     WriteDiagnosticLine(
-        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=29 PASS");
+        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=30 PASS");
     return renderer.HasDebugLayerErrors() ? 11 : 0;
 }
 
@@ -1555,6 +1727,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage13-unified-scene-smoke-test") != nullptr;
     const bool requestedStage13OpticsLightingSmoke = commandLine &&
         wcsstr(commandLine, L"--stage13-optics-lighting-smoke-test") != nullptr;
+    const bool requestedStage13LightingPerformance = commandLine &&
+        wcsstr(commandLine, L"--stage13-lighting-performance-test") != nullptr;
     const bool requestedStage13NoiseVolumeSmoke = commandLine &&
         wcsstr(commandLine, L"--stage13-noise-volume-smoke-test") != nullptr;
     const bool requestedStage13WeatherShapeGpu = commandLine &&
@@ -1565,11 +1739,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         requestedStage13OpenWorldSmoke || requestedStage13NoiseVolumeSmoke ||
         requestedStage13WeatherShapeGpu || requestedStage13UnifiedSceneSmoke ||
         requestedStage13OpticsLightingSmoke;
-    const int kWidth  = (requestedStage13SimilarityGpu ||
+    const int kWidth  = requestedStage13LightingPerformance ? 1920 :
+        (requestedStage13SimilarityGpu ||
                          requestedStage13WeatherShapeGpu ||
                          requestedStage13UnifiedSceneSmoke) ? 320 :
         (requestedSmallGpuSmoke ? 96 : 1280);
-    const int kHeight = (requestedStage13SimilarityGpu ||
+    const int kHeight = requestedStage13LightingPerformance ? 925 :
+        (requestedStage13SimilarityGpu ||
                           requestedStage13WeatherShapeGpu ||
                           requestedStage13UnifiedSceneSmoke) ? 180 :
         (requestedSmallGpuSmoke ? 54 : 720);
@@ -1596,6 +1772,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage13UnifiedSceneSmokeTest = requestedStage13UnifiedSceneSmoke;
     const bool stage13OpticsLightingSmokeTest =
         requestedStage13OpticsLightingSmoke;
+    const bool stage13LightingPerformanceTest =
+        requestedStage13LightingPerformance;
     const bool stage13NoiseVolumeSmokeTest = requestedStage13NoiseVolumeSmoke;
     const bool stage13WeatherShapeGpuTest = requestedStage13WeatherShapeGpu;
     const bool noiseLabSmokeTest = commandLine &&
@@ -1608,12 +1786,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage13DomainSmokeTest || stage13SimilarityGpuTest ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
-        stage13OpticsLightingSmokeTest ||
+        stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest;
     const bool enableNoiseVolumes = !automatedTestRun ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
-        stage13OpticsLightingSmokeTest;
+        stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest;
 
     std::filesystem::path hotReloadShaderDirectory;
     if (shaderHotReloadSmokeTest)
@@ -1633,7 +1811,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 13-4E | Dense Broken-Sky 초기화 중",
+                    L"VolumetricCloud - Stage 13-5 | Portfolio Lighting 초기화 중",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
@@ -1642,6 +1820,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                     !stage13NoiseVolumeSmokeTest &&
                     !stage13WeatherShapeGpuTest && !stage13UnifiedSceneSmokeTest &&
                     !stage13OpticsLightingSmokeTest &&
+                    !stage13LightingPerformanceTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -1677,11 +1856,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         !stage13OpenWorldSmokeTest && !stage13NoiseVolumeSmokeTest &&
         !stage13WeatherShapeGpuTest && !stage13UnifiedSceneSmokeTest &&
         !stage13OpticsLightingSmokeTest &&
+        !stage13LightingPerformanceTest &&
         !noiseLabSmokeTest &&
         !shaderHotReloadSmokeTest;
     if (interactiveRun)
     {
-        if (!renderer.ApplyStage13OpenWorldPreset())
+        if (!renderer.ApplyStage13OpenWorldPreset() ||
+            !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus))
             return -2;
         window.ApplyInitialPortfolioCamera();
     }
@@ -1694,6 +1875,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return RunStage13UnifiedSceneSmokeTest(renderer, camera);
     if (stage13OpticsLightingSmokeTest)
         return RunStage13OpticsLightingSmokeTest(renderer, camera);
+    if (stage13LightingPerformanceTest)
+        return RunStage13LightingPerformanceTest(renderer, camera);
     if (stage13NoiseVolumeSmokeTest)
         return RunStage13NoiseVolumeSmokeTest(renderer, camera);
     if (stage13WeatherShapeGpuTest)
@@ -1937,7 +2120,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 29") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 30") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"A\": \"localThicknessPotential\"") != std::string::npos &&
                 metadata.find("\"localThickness\": {\"seed\": 4051") != std::string::npos &&
@@ -1994,7 +2177,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         if (renderer.SunPreset() != Stage6SunPreset::Noon ||
             renderer.PhasePreset() != Stage7PhasePreset::Balanced ||
             renderer.LightSettings().maxLightSteps != 4u ||
-            sizeof(LightParameters) != 64u)
+            sizeof(LightParameters) != 80u)
             return 3;
 
         // 합성 경로에서 Off와 방향성 Phase가 실제로 다른 프레임을 만드는지 확인한다.
@@ -2029,11 +2212,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 29") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 30") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
-                metadata.find("\"phaseDirectionConvention\": \"cosTheta=dot(cameraToSample,sampleToSun)\"") != std::string::npos)
+                metadata.find("\"phaseDirectionConvention\": \"cosTheta=dot(cameraToSample,sampleToSun)\"") != std::string::npos &&
+                metadata.find("\"lightingLook\": \"custom\"") != std::string::npos &&
+                metadata.find("\"edgeOpticalDepthScale\"") != std::string::npos &&
+                metadata.find("\"shadowExponent\"") != std::string::npos)
                 foundSchema7 = true;
         }
         if (!foundSchema7)
@@ -2059,7 +2245,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         if (renderer.SunPreset() != Stage6SunPreset::Noon ||
             renderer.PhasePreset() != Stage7PhasePreset::Balanced ||
             renderer.EnvironmentPreset() != Stage8EnvironmentPreset::StrongFill ||
-            sizeof(EnvironmentParameters) != 64u)
+            sizeof(EnvironmentParameters) != 80u)
             return 3;
 
         renderer.EnableFrameHashCapture(true);
@@ -2100,7 +2286,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 29") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 30") != std::string::npos &&
                 metadata.find("\"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\"") != std::string::npos &&
                 metadata.find("\"camera\": {") != std::string::npos &&
                 metadata.find("\"verticalFovDegrees\": 60") != std::string::npos &&
@@ -2108,12 +2294,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 metadata.find("\"physicalAdvectionMode\": \"legacyIndependentSpeeds\"") != std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"scatteringCoefficient\"") == std::string::npos &&
-                metadata.find("\"implementationStage\": \"13-4E\"") != std::string::npos &&
+                metadata.find("\"implementationStage\": \"13-5\"") != std::string::npos &&
                 metadata.find("\"noiseVolumes\"") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"similarityScale\"") == std::string::npos &&
                 metadata.find("\"environmentSource\": \"analyticColorsNoExternalTexture\"") != std::string::npos &&
-                metadata.find("\"multipleScatteringModel\": \"reusedLightOpticalDepthOctaves\"") != std::string::npos)
+                metadata.find("\"multipleScatteringModel\": \"reusedLightDepthInteriorWeightedOctaves\"") != std::string::npos &&
+                metadata.find("\"ambientShadowExponent\"") != std::string::npos &&
+                metadata.find("\"multipleScatteringInteriorBlend\"") != std::string::npos)
                 foundSchema8 = true;
         }
         if (!foundSchema8)

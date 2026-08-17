@@ -58,7 +58,8 @@ km 거리의 가까운 값이 검게 뭉개지지 않도록 평면층 거리 출
 일반 실행은 `CloudDomainType::PlanarLayer` 하나만 사용한다. 층은 `1500~7500m`, View는
 50km, fade는 40~50km, Light는 20km다. Y=0의 10km 정사각형 지면과 원점의
 `20×60×20m` 건물이 먼저 깊이를 쓰므로 F5에서는 건물 뒤 구름이 Scene Depth에서 잘린다.
-analytic sky는 카메라 기준 50km를 채우며 shell과 대기 산란은 아직 추가하지 않는다.
+analytic sky는 카메라 기준 50km를 채우며 구형 도메인은 포트폴리오 범위에서 제외했고
+실제 대기 산란은 아직 추가하지 않는다.
 
 이전 사용자 출력 Entry/Exit와 Ray Direction/Scene Depth/World Position/Screen UV/step count
 ID 1~7은 삭제했다. 교차 수학과 `CloudHitMask`, Segment Length, Actual Step은 자동 회귀에
@@ -306,6 +307,22 @@ filteredDetail = lerp(detailNeutralValue, sampledDetail, lod)
 Phase Off/Environment Off로 자기 그림자를 먼저 확인하고, 이후 Phase와 환경광을 한 성분씩
 켜 silver lining과 내부 fill의 원인을 분리한다. 실제 대기 radiance와 지면 재질 입력은
 여전히 단계 14 범위다.
+
+13-5 외곽광 보완은 추가 레이를 만들지 않고 각 View 표본이 이미 가진 `lightT`를 재사용한다.
+`shadowExponent`는 View opacity를 바꾸지 않고 직접 태양광의 자기 그림자 대비만 조절한다.
+`edgeInfluence=0`, `shadowExponent=1`은 이전 계산과 동일하다.
+
+```text
+shapedLightT = lightT ^ shadowExponent
+surfaceMask = lightT ^ edgeOpticalDepthScale
+phaseWeight = lerp(1, surfaceMask, edgeInfluence)
+scopedPhase = 1 + (phaseFactor - 1) * phaseWeight
+direct = commonDirectInteraction * shapedLightT * scopedPhase
+```
+
+Silver Lining Contribution은 `max(scopedPhase-1, 0)`이 실제로 추가한 RGB만 누적한다.
+Shaped Sun Visibility와 Ambient Visibility는 산란 상호작용량으로 가중 평균해 F3에서 0~1로
+표시한다. 세 출력은 진단용 ALU만 추가하며 Light/Base/Detail texture fetch 수를 늘리지 않는다.
 
 ## 안전한 slab AABB 교차
 
@@ -627,13 +644,18 @@ phaseFactor = phaseEnabled
     ? lerp(1, clamp(dual, 0, 16), saturate(phaseIntensity))
     : 1
 
-stepScattering = stage6StepScattering × phaseFactor
+surfaceMask = lightTransmittance ^ edgeOpticalDepthScale
+scopedPhase = 1 + (phaseFactor - 1)
+    × lerp(1, surfaceMask, edgeInfluence)
+stepScattering = stage6StepScattering × scopedPhase
 ```
 
 Phase Off나 Intensity 0은 배율 1이므로 단계 6 결과를 보존한다. Phase는 직접 산란량만
 바꾸고 View/Light 투과율, 광학 깊이와 step 수에는 영향을 주지 않는다. 방향은 View Ray
 전체에서 일정하므로 픽셀당 한 번만 계산한다. raw lobe 진단은 16까지 표시하지만 현재 LDR
-합성에 적용하는 Phase는 최대 2.5다. 환경광과 다중 산란은 단계 8에서 별도로 더한다.
+합성에 적용하는 각도 Phase는 최대 2.5다. Silver Lining은 `edgeInfluence=0.85`로 이 배율을
+태양 투과율이 높은 표면에 제한하며 Balanced/Off의 중립값은 기존 결과를 보존한다.
+환경광과 다중 산란은 단계 8에서 별도로 더한다.
 
 ## 단계 8: 분석적 환경광과 저비용 다중 산란
 
@@ -642,9 +664,12 @@ Phase Off나 Intensity 0은 배율 1이므로 단계 6 결과를 보존한다. P
 ```text
 skyWeight = lerp(1, h, ambientHeightInfluence)
 groundWeight = 1 - h
-ambientOcclusion = exp(-finalDensity × ambientOcclusionStrength)
-sky = skyColor × skyStrength × skyWeight × ambientOcclusion
-ground = groundColor × groundStrength × groundWeight × ambientOcclusion
+localVisibility = exp(-finalDensity × ambientOcclusionStrength)
+sunVisibility = lightTransmittance ^ ambientShadowExponent
+ambientVisibility = localVisibility
+    × lerp(1, sunVisibility, ambientShadowCoupling)
+sky = skyColor × skyStrength × skyWeight × ambientVisibility
+ground = groundColor × groundStrength × groundWeight × ambientVisibility
 ```
 
 하늘·지면광은 방향이 없는 근사이므로 Phase를 적용하지 않는다. 각 색은 직접광과 같은
@@ -656,11 +681,16 @@ ground = groundColor × groundStrength × groundWeight × ambientOcclusion
 ```text
 octaveLightT = exp(-lightOpticalDepth × extinctionScale)
 octavePhase = lerp(1, phaseFactor, phaseScale)
-multiple += sunRadiance × energy × octaveLightT × octavePhase
+interiorWeight = lerp(1, 1-lightTransmittance,
+                      multipleScatteringInteriorBlend)
+multiple += sunRadiance × energy × octaveLightT
+            × octavePhase × interiorWeight
 ```
 
 13-5 사용자 검증에서 Balanced의 간접광이 자기 그림자보다 강하고 Silver Lining의 선형 RGB가
-LDR 화면의 1을 넘어 흰색으로 잘리는 현상을 확인했다. Balanced 기본은 Sky/Ground
+LDR 화면의 1을 넘어 흰색으로 잘리는 현상을 확인했다. Portfolio Hero는 차가운 하늘 fill을
+남기면서 태양 차폐 내부의 Ambient를 줄이고 Multiple을 밝은 외곽에서 내부로 옮긴다.
+Balanced 기본은 새 결합값 0으로 이전 결과를 보존한다. Sky/Ground
 `0.12/0.05`, AO `1.50`, Multiple energy/phase decay `0.20/0.25`로 낮췄다. 최종 합성은
 RGB peak 0.8 이하는 그대로 두고 그 위만 다음 shoulder로 `[0.8,1)`에 압축한다.
 

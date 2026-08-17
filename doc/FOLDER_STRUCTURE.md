@@ -19,13 +19,13 @@ VolumetricCloud/
 │  ├─ main.cpp
 │  ├─ Window.* / Camera.*          # 입력, 오빗과 고정 검증 카메라
 │  ├─ Renderer.*                   # 진단 장면, 깊이, 풀스크린 합성
-│  ├─ NoiseLab.*                   # F1~F4 ImGui, 단면 readback과 PNG/schema 29 JSON 내보내기
+│  ├─ NoiseLab.*                   # F1~F4 ImGui, 단면 readback과 PNG/schema 30 snapshot 내보내기
 │  ├─ CloudAppearance.*            # 13-4E 외형 preset, density CPU 기준, Custom JSON 원자 저장
 │  ├─ WeatherMap.*                 # 256² CPU periodic Perlin/Channel Debug RGBA 생성과 해시
 │  ├─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
 │  ├─ CloudLodParameters.h         # 16바이트 Detail 거리 LOD 설정(b8)
 │  ├─ CloudShapeParameters.h       # 64바이트 물리 두께·타입 Vertical Profile 설정(b7)
-│  ├─ CloudDomainParameters.h      # AABB/평면/shell 도메인 선택과 추적 한계(b5)
+│  ├─ CloudDomainParameters.h      # AABB/최종 평면 도메인 선택과 추적 한계(b5)
 │  ├─ LightParameters.h            # CPU/HLSL 공유 태양광 설정과 프리셋
 │  ├─ EnvironmentParameters.h      # CPU/HLSL 공유 환경광·다중 산란 설정
 │  ├─ Stage7PhaseMath.h            # HG·방향 부호·Dual-lobe CPU 기준
@@ -61,10 +61,10 @@ VolumetricCloud/
 │  ├─ CloudAdvection.hlsli         # Physical Weather/Base/Detail 공통 수평 Bulk 이동
 │  ├─ Noise.hlsli                  # 구름과 Lab 공용 Base/Detail density 라이브러리
 │  ├─ Weather.hlsli                # t2 Weather 샘플·구름 종류 높이 프로파일
-│  ├─ LightParameters.hlsli        # CPU와 공유하는 64바이트 LightCB(b3)
+│  ├─ LightParameters.hlsli        # CPU와 공유하는 80바이트 LightCB(b3)
 │  ├─ CloudLighting.hlsli          # 태양 광학 깊이·직접 단일 산란
 │  ├─ PhaseFunction.hlsli          # 전방·후방 HG와 Phase Factor
-│  ├─ EnvironmentParameters.hlsli  # CPU와 공유하는 64바이트 EnvironmentCB(b4)
+│  ├─ EnvironmentParameters.hlsli  # CPU와 공유하는 80바이트 EnvironmentCB(b4)
 │  ├─ CloudEnvironment.hlsli       # 하늘·지면·AO·다중 산란 근사
 │  └─ Ray.hlsli                    # 안전한 AABB 교차
 ├─ tests/

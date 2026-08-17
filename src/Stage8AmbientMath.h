@@ -31,6 +31,34 @@ struct AmbientRadiance
     Weights weights;
 };
 
+inline float AmbientVisibility(float density, float lightTransmittance,
+                               const EnvironmentParameters& input)
+{
+    const EnvironmentParameters value = stage8environment::Sanitize(input);
+    const float safeDensity = std::max(
+        std::isfinite(density) ? density : 0.0f, 0.0f);
+    const float transmittance = std::clamp(
+        std::isfinite(lightTransmittance) ? lightTransmittance : 1.0f,
+        0.0f, 1.0f);
+    const float localVisibility = std::exp(
+        -safeDensity * value.ambientOcclusionStrength);
+    const float directionalVisibility = std::pow(
+        transmittance, value.ambientShadowExponent);
+    const float coupledVisibility = 1.0f +
+        (directionalVisibility - 1.0f) * value.ambientShadowCoupling;
+    return std::clamp(localVisibility * coupledVisibility, 0.0f, 1.0f);
+}
+
+inline float MultipleScatteringInteriorWeight(
+    float lightTransmittance, const EnvironmentParameters& input)
+{
+    const EnvironmentParameters value = stage8environment::Sanitize(input);
+    const float transmittance = std::clamp(
+        std::isfinite(lightTransmittance) ? lightTransmittance : 1.0f,
+        0.0f, 1.0f);
+    return 1.0f - transmittance * value.multipleScatteringInteriorBlend;
+}
+
 inline Weights EvaluateWeights(float heightFraction, float density,
                                const EnvironmentParameters& input)
 {
@@ -94,6 +122,8 @@ inline float MultipleScatteringFactor(float lightOpticalDepth,
         extinctionScale *= value.multipleScatteringExtinctionFactor;
         phaseScale *= value.multipleScatteringPhaseFactor;
     }
+    result *= MultipleScatteringInteriorWeight(
+        std::exp(-opticalDepth), value);
     return std::isfinite(result) ? std::max(result, 0.0f) : 0.0f;
 }
 }

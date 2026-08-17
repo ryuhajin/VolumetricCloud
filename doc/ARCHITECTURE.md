@@ -3,8 +3,8 @@
 단계 13-4B는 2026-08-14, 단계 13-4C는 2026-08-16 사용자 승인을 받았다. 13-4C의
 Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포트폴리오 씬으로 대체했다.
 13-4D 사용자 검증에서 발견한 낮은 Weather 점유율, 이중 profile threshold와 약한 광학
-대비를 13-4E Dense Broken-Sky로 교체했다. 현재는 13-4E 화면 승인과 이 기본값에서의
-13-5 재승인을 기다린다.
+대비를 13-4E Dense Broken-Sky로 교체했다. 13-5는 기존 Light Ray 예산을 유지한 채
+태양 노출 표면에 Phase를 제한하고 환경광을 자기 그림자에 결합했으며 사용자 재승인을 기다린다.
 
 ## 모듈과 책임
 
@@ -12,20 +12,20 @@ Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포�
 |---|---|
 | `Window` / `Camera` | Win32 입력, 숫자 0~9·F1~F8, 오빗/휠, WASD·Shift rig 이동, FOV·현재/저장 시점과 view/projection 제공 |
 | `Renderer` | D3D11 장치, 10km 지면·20층 건물, compute noise, 구름·Noise Lab 패스와 테스트 전용 legacy fixture |
-| `NoiseLab` | F1 외형/Noise, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 29 JSON 내보내기 |
+| `NoiseLab` | F1 외형/Noise, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 30 snapshot 내보내기 |
 | `CloudAppearance` | Dense Mixed/Stratus/Cumulus 외형 계약, Physical density CPU 기준, schema 29 Custom 원자 저장·엄격 로드 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
 | `CloudLodParameters` | 16바이트 Detail 거리 LOD 시작·끝과 실제 volume 중립 평균 |
 | `CloudShapeParameters` | 64바이트 Legacy/Weather Physical 모드, 타입별 두께와 세로 프로파일 |
 | `CloudDomainParameters` | AABB/평면층 선택, 구름 고도·두께와 View/Light 추적 제한 |
-| `LightParameters` | 64바이트 태양·Light Ray·Dual-lobe Phase 설정 |
-| `EnvironmentParameters` | 64바이트 하늘·지면·AO·다중 산란 설정 |
+| `LightParameters` | 80바이트 태양·Light Ray·외곽 범위 Dual-lobe Phase 설정 |
+| `EnvironmentParameters` | 80바이트 하늘·지면·태양 차폐 AO·다중 산란 설정 |
 | `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, EMA 성능 통계 |
 | `WeatherMap` | 256² RGBA8 Uniform 회귀/Periodic Perlin/Channel Debug 픽셀 생성과 해시, 공통 `CloudTypeMode` |
 | `DiagnosticScene.hlsl` | 평면·박스의 불투명 색상과 장치 깊이 출력 |
 | `Ray.hlsli` | 평행축 0 나누기를 피하는 slab Ray-AABB 교차 |
 | `CloudParameters.hlsli` / `Noise.hlsli` / `Weather.hlsli` | 공유 128바이트 설정과 Base/Detail/Weather 밀도 함수 |
-| `LightParameters.hlsli` / `CloudLighting.hlsli` | 공유 64바이트 조명 설정과 Base-only Light Ray |
+| `LightParameters.hlsli` / `CloudLighting.hlsli` | 공유 80바이트 조명 설정과 Base-only Light Ray·외곽 응답 |
 | `PhaseFunction.hlsli` | 방향 부호를 고정한 전방·후방 HG, raw 진단과 LDR 적용 배율 분리 |
 | `CloudEnvironment.hlsli` | 높이 환경광, 밀도 AO와 광학 깊이 재사용 octave |
 | `VolumetricClouds.hlsl` / `NoiseLab.hlsl` | Beer-Lambert 구름 합성 / XY·XZ·YZ 단면 출력 |
@@ -83,8 +83,9 @@ Raw Noise, Weather Coverage, Base Density, Detail Noise, Final Density, View Opt
 Depth, Accumulated Direct, View Transmittance, Light Transmittance다. 기존 HLSL ID 1~7은
 삭제했으며 CPU에서 Composite로 sanitize한다. CloudCB는 여전히 128바이트다.
 
-13-4D 내보내기는 schema 28, `implementationStage=13-4D`였다. 13-4E에서 schema 29로
-대체되며 `sceneContract`, 현재/저장 카메라,
+13-4D 내보내기는 schema 28, 13-4E 전체 snapshot은 schema 29였다. 13-5 전체 snapshot은
+schema 30/`implementationStage=13-5`로 바뀌며 `lightingLook`과 새 조명 계수를 기록한다.
+13-4E Custom 외형 전용 원자 저장 파일은 schema 29를 유지한다. snapshot은 `sceneContract`, 현재/저장 카메라,
 `cloudTypeMode`, `openWorldPipelinePreset`을 기록하며 `cloudScene`, `domainStates`,
 `stage13Preset`, `similarityScale`, `diagnosticSceneEnabled`와 Stage1/2/4 preset 상태는
 기록하지 않는다.
@@ -104,15 +105,15 @@ F1 `Cloud Type Settings`는 Stratus, Cumulus, Custom과 `Save Current as Custom`
 `captures/noise-lab/custom/noise-settings.json`에 임시 파일을 완전히 쓴 뒤 원자 교체한다.
 시작 때 schema 29를 메모리 슬롯에만 읽고 자동 적용하지 않는다. 누락·구버전·손상·비유한·
 범위 밖 값은 렌더 상태를 건드리지 않고 Dense Mixed fallback 메시지를 표시한다. 전체 snapshot의
-`cloudAppearance`는 active/dirty/current/saved Custom을 기록한다. C++/HLSL 상수버퍼 ABI는
-변경하지 않았다.
+`cloudAppearance`는 active/dirty/current/saved Custom을 기록한다. 13-4E 자체에서는
+상수버퍼 ABI를 바꾸지 않았고, 이후 13-5 보완에서 LightCB/EnvironmentCB만 80바이트로 확장했다.
 
 Pipeline Compare 버튼으로 들어간 1~5 단계의 main cloud pass만 effective time `0`을 사용한다.
 카메라·도메인·일반 Animation 상태는 그대로이며 외형 버튼이나 파라미터 편집으로 Compare를
 벗어나면 정상 effective time으로 즉시 돌아간다.
 9. 최종 밀도가 있는 View 표본에서 태양 방향 도메인 이탈까지 Base Density를 적분한다.
-10. 카메라→표본과 표본→태양 방향 내적으로 픽셀당 Dual-lobe Phase Factor를 한 번 계산한다.
-11. 높이·밀도로 하늘/지면 환경광과 AO를 계산하고 기존 광학 깊이로 다중 산란을 근사한다.
+10. 카메라→표본과 표본→태양 방향으로 Phase를 계산하고 `Tsun` 기반 표면 마스크로 외곽 적용 범위를 제한한다.
+11. 높이·밀도 AO에 `Tsun` 차폐를 결합하고 다중 산란을 태양 차폐 내부 쪽으로 이동시킨다.
 12. Direct/Sky/Ground/Multiple을 같은 View 구간에 누적하고 배경과 합성한다.
 13. RGB peak 0.8 위만 LDR highlight shoulder로 압축해 UNORM 흰색 clip을 막는다.
 14. 개발 UI가 열린 F1~F4 독립 창과 성능 오버레이를 그리고, F1이 열렸을 때만 Noise Lab 단면을 갱신한다.
@@ -186,7 +187,8 @@ Physical에서는 읽지 않는다. 따라서 Coverage·Type·Thickness 경계�
 `domainType=0`은 기존 CloudCB AABB를 그대로 사용해 단계 8 회귀 화면을 보존하고,
 `domainType=1`은 무한한 XZ와 유한한 Y 범위의 평면층을 사용한다. CPU와 HLSL 모두
 수평 레이가 층 밖이면 miss, 층 안이면 유한 추적 거리까지 hit로 처리한다.
-`SphericalShell=2` 값은 인터페이스에 예약했지만 단계 13-6 전까지 sanitize가 선택을 막는다.
+런타임 도메인은 회귀용 AABB와 최종 `PlanarLayer`만 허용한다. 구형 shell 예약값은
+2026-08-17 사용자 결정으로 제거했다.
 
 13-2 프리셋은 평면층 바닥 `-1×S`, 두께 `3×S`, View/Fade/Light 제한
 `50×S/40×S/20×S`를 CloudCB의 높이 범위와 함께 맞춘다. 1000×의 `-1000~2000m`는
@@ -275,7 +277,7 @@ XYZ는 2km 타일이며 주파수 `2/3/4/5`의 표본 수가 `10/6.67/5/4`다. �
 읽지 않는다. 평균 침식은 계속 적용하므로 LOD 경계에서 구름 두께가 갑자기 변하지 않는다.
 Similarity 프리셋은 LOD를 꺼 상사 회귀 화면을 보존한다.
 
-### `LightParameters` / `LightCB` (`b3`, 64바이트)
+### `LightParameters` / `LightCB` (`b3`, 80바이트)
 
 | 묶음 | 필드 | 기본값과 역할 |
 |---|---|---|
@@ -283,6 +285,7 @@ Similarity 프리셋은 LOD를 꺼 상사 회귀 화면을 보존한다.
 | 1 | `sunColor(float3)`, `singleScatteringAlbedo` | `(1,0.95,0.85)`, `1.0`; linear RGB와 `ω=σs/σt` 무차원 산란 비율 `[0,1]` |
 | 2 | `maxLightSteps`, `lightStepSize`, `lightRayBias`, `phaseEnabled` | Stage 8 `16/0.25m/0.01m`, Open World `80/250m/1m`; Phase Off 기본값 |
 | 3 | `forwardScatteringG`, `backwardScatteringG`, `phaseBlend`, `phaseIntensity` | `0.65`, `-0.25`, `0.80`, `0.25`; 전방·후방 HG와 적용 강도 |
+| 4 | `edgeInfluence`, `edgeOpticalDepthScale`, `shadowExponent`, padding | `0/1/1/0`; Phase 외곽 제한 비율·폭과 직접광 그림자 대비 중립값 |
 
 LightCB는 CloudCB와 분리해 `b3`에 바인딩한다. 방향은 빛의 진행 방향이 아니라
 현재 표본에서 태양으로 나가는 방향이다. CPU는 방향을 정규화하고 음수·비정상
@@ -297,10 +300,11 @@ Weather support·로컬 높이·세로 profile이 0인 표본을 Base Texture3D 
 실행 횟수를 표시한다. Phase는
 직접 산란량에만 적용하며 Light 투과율과 광학 깊이를 바꾸지 않는다. Phase Off에서는
 최종 배율이 정확히 1이다. raw HG/dual 진단은 16까지 보존하지만 LDR 합성에 적용하는 최종
-배율은 2.5로 제한한다. Silver Lining은 `g=0.75`, blend `0.90`, intensity `0.10`으로
-좁은 전방 가장자리만 강조한다.
+배율은 2.5로 제한한다. Silver Lining은 `g/blend/intensity=0.75/0.90/0.20`,
+`edgeInfluence/scale/shadowExponent=0.85/2.0/1.35`로 태양 투과율이 높은 얇은 표면에만
+강한 전방 산란을 남긴다. 중립값 `0/1/1`은 이전 직접광을 보존한다.
 
-### `EnvironmentParameters` / `EnvironmentCB` (`b4`, 64바이트)
+### `EnvironmentParameters` / `EnvironmentCB` (`b4`, 80바이트)
 
 | 묶음 | 필드 | 기본값과 역할 |
 |---|---|---|
@@ -308,9 +312,12 @@ Weather support·로컬 높이·세로 profile이 0인 표본을 Base Texture3D 
 | 1 | `groundColor(float3)`, `groundStrength` | `(0.18,0.12,0.08)`, `0.05`; linear 지면색과 세기 |
 | 2 | `ambientOcclusionStrength`, `ambientHeightInfluence`, `multipleScatteringEnabled`, `multipleScatteringOctaves` | `1.50`, `0.65`, `1`, `2`; AO·높이·octave 제어 |
 | 3 | `multipleScatteringAttenuation`, `multipleScatteringExtinctionFactor`, `multipleScatteringPhaseFactor`, padding | `0.20`, `0.50`, `0.25`, `0`; 반복 에너지·광학 깊이·방향성 감소 |
+| 4 | `ambientShadowCoupling`, `ambientShadowExponent`, `multipleScatteringInteriorBlend`, padding | `0/1/0/0`; 기존 환경광을 보존하는 태양 차폐·내부 가중 중립값 |
 
 EnvironmentCB는 `b4`에 바인딩하며 외부 SRV나 sampler를 추가하지 않는다. 기본 Balanced
 프리셋은 환경광을 켜고 Off는 Sky/Ground/Multiple을 0으로 만들어 단계 7 결과를 보존한다.
+Portfolio Hero는 `0.55/0.50/0.75`의 차폐·곡선·내부 가중값으로 푸른 fill은 남기되
+태양측 외곽과 자기 그림자를 덮지 않는다. 새 계산은 기존 Light Ray 결과만 재사용한다.
 Cube Map이나 실제 대기 입력은 단계 14에서 `skyColor` 평가만 교체할 수 있다.
 
 ### Weather Map 리소스

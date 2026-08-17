@@ -35,6 +35,10 @@ int main()
     Require(std::abs(accumulator.Snapshot().gpuFrameMs - 7.8) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuCloudMs - 4.8) < 1e-9,
             "GPU times must use alpha 0.1 EMA");
+    Require(std::abs(accumulator.Snapshot().rawGpuFrameMs - 6.0) < 1e-9 &&
+                std::abs(accumulator.Snapshot().rawGpuCloudMs - 3.0) < 1e-9 &&
+                accumulator.Snapshot().gpuSampleIndex == 2u,
+            "GPU snapshot must expose unique raw samples for percentile gates");
 
     const FrameTimingSnapshot valid = accumulator.Snapshot();
     accumulator.RecordCpuMilliseconds(0.0);

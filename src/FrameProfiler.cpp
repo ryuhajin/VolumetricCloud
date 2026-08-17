@@ -38,6 +38,9 @@ void FrameTimingAccumulator::RecordGpuMilliseconds(double frameMilliseconds,
         return;
     m_lastRawGpuFrameMs = frameMilliseconds;
     m_lastRawGpuCloudMs = cloudMilliseconds;
+    m_snapshot.rawGpuFrameMs = frameMilliseconds;
+    m_snapshot.rawGpuCloudMs = cloudMilliseconds;
+    ++m_snapshot.gpuSampleIndex;
     if (m_snapshot.gpuValid)
     {
         m_snapshot.gpuFrameMs += kEmaAlpha *

@@ -79,6 +79,7 @@ public:
     void ApplyStage6SunPreset(Stage6SunPreset preset);
     void ApplyStage7PhasePreset(Stage7PhasePreset preset);
     void ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset);
+    void ApplyPortfolioHeroLighting();
     void SetLightSampling(std::uint32_t maxSteps, float stepSize);
     void SetCloudLodForValidation(bool enabled, float startMeters,
                                   float endMeters);

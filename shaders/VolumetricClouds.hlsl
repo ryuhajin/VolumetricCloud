@@ -100,6 +100,10 @@ struct CloudMarchDebug
     float3 accumulatedSky;    // View Ray 전체의 분석적 하늘 환경광.
     float3 accumulatedGround; // View Ray 전체의 분석적 지면 반사 근사.
     float3 accumulatedMultiple;// View Ray 전체의 다중 산란 근사.
+    float3 accumulatedSilverLining; // 외곽 범위 Phase가 추가한 양의 직접광.
+    float shapedSunVisibilitySum;   // 조명 가중 평균용 직접광 투과율 합.
+    float ambientVisibilitySum;     // 조명 가중 평균용 환경광 가시성 합.
+    float lightingDiagnosticWeight; // 두 가시성 진단의 공통 분모.
     float viewOpticalDepth;   // View Ray 전체의 final density 광학 깊이.
     float detailLodFactor;    // 대표 위치의 Detail 거리 LOD, 1=원본, 0=평균.
     float4 baseNoiseChannels; // 단계 13-4 Base Texture3D RGBA.
@@ -293,7 +297,9 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             // 5. 최종 합성, Light 비용과 누적 직접광 모드에서만 조명 적분을 실행한다.
             bool requiresLighting = debugMode == 0 || debugMode == 26 ||
                                     debugMode == 32 || debugMode == 53 ||
-                                    debugMode == 54 || debugMode == 55;
+                                    debugMode == 54 || debugMode == 55 ||
+                                    debugMode == 57 || debugMode == 58 ||
+                                    debugMode == 59;
             if (sampledDensity > 0.0 && requiresLighting)
             {
                 LightMarchResult light = { 1.0, 0.0, 0.0 };
@@ -311,6 +317,13 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
                 debugData.accumulatedSky += lighting.skyAmbient;
                 debugData.accumulatedGround += lighting.groundBounce;
                 debugData.accumulatedMultiple += lighting.multipleScattering;
+                debugData.accumulatedSilverLining +=
+                    lighting.silverLiningContribution;
+                debugData.shapedSunVisibilitySum +=
+                    lighting.shapedSunVisibility * lighting.diagnosticWeight;
+                debugData.ambientVisibilitySum +=
+                    lighting.ambientVisibility * lighting.diagnosticWeight;
+                debugData.lightingDiagnosticWeight += lighting.diagnosticWeight;
                 result.scattering += lighting.direct + lighting.skyAmbient +
                                      lighting.groundBounce +
                                      lighting.multipleScattering;
@@ -537,6 +550,26 @@ float4 main(VSOut input) : SV_TARGET
     }
     if (debugMode == 56)
         return float4((marchDebug.detailLodFactor * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 57)
+    {
+        float3 mapped = max(marchDebug.accumulatedSilverLining, 0.0.xxx) /
+            (1.0.xxx + max(marchDebug.accumulatedSilverLining, 0.0.xxx));
+        return float4(mapped * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 58)
+    {
+        float visibility = marchDebug.lightingDiagnosticWeight > 1e-6
+            ? marchDebug.shapedSunVisibilitySum /
+              marchDebug.lightingDiagnosticWeight : 0.0;
+        return float4((saturate(visibility) * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 59)
+    {
+        float visibility = marchDebug.lightingDiagnosticWeight > 1e-6
+            ? marchDebug.ambientVisibilitySum /
+              marchDebug.lightingDiagnosticWeight : 0.0;
+        return float4((saturate(visibility) * marchDebug.hit).xxx, 1.0);
+    }
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry

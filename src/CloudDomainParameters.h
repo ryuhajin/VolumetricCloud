@@ -11,7 +11,6 @@ enum class CloudDomainType : std::uint32_t
 {
     AabbReference = 0,
     PlanarLayer = 1,
-    SphericalShell = 2,
 };
 
 struct alignas(16) CloudDomainParameters
@@ -37,7 +36,7 @@ inline CloudDomainParameters SanitizeCloudDomainParameters(
     if (result.domainType >
         static_cast<std::uint32_t>(CloudDomainType::PlanarLayer))
     {
-        // SphericalShell은 단계 13-6 전까지 선택하지 않는다.
+        // 현재 런타임은 AABB 회귀와 최종 PlanarLayer만 허용한다.
         result.domainType =
             static_cast<std::uint32_t>(CloudDomainType::AabbReference);
     }

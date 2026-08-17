@@ -30,6 +30,49 @@ struct LightMarchResult
     float stepCount;     // 조기 종료까지 실제 실행한 Light 표본 수. float로 보관.
 };
 
+struct DirectLightingResponse
+{
+    float shapedTransmittance; // shadowExponent가 적용된 직접광 투과율.
+    float surfaceExposure;     // 1에 가까울수록 태양 쪽 얇은 외곽이다.
+    float scopedPhase;         // 외곽 범위가 적용된 최종 Phase 배율.
+};
+
+DirectLightingResponse EvaluateDirectLightingResponse(
+    float lightTransmittance, float phaseFactor)
+{
+    DirectLightingResponse result;
+    float safeTransmittance = saturate(lightTransmittance);
+    float safeShadowExponent = clamp(shadowExponent, 0.5, 4.0);
+    float safeEdgeScale = clamp(edgeOpticalDepthScale, 0.25, 8.0);
+    float safeEdgeInfluence = saturate(edgeInfluence);
+    if (!(safeShadowExponent >= 0.5 && safeShadowExponent <= 4.0))
+        safeShadowExponent = 1.0;
+    if (!(safeEdgeScale >= 0.25 && safeEdgeScale <= 8.0))
+        safeEdgeScale = 1.0;
+    if (!(safeEdgeInfluence >= 0.0 && safeEdgeInfluence <= 1.0))
+        safeEdgeInfluence = 0.0;
+    result.shapedTransmittance = pow(
+        safeTransmittance, safeShadowExponent);
+    result.surfaceExposure = pow(safeTransmittance, safeEdgeScale);
+    float phaseWeight = lerp(1.0, result.surfaceExposure, safeEdgeInfluence);
+    result.scopedPhase = 1.0 +
+        (clamp(phaseFactor, 0.0, kMaxPhaseFactor) - 1.0) * phaseWeight;
+    return result;
+}
+
+float3 ComputeDirectInteractionColor(
+    float density, float viewTransmittance, float viewStepLength)
+{
+    float safeDensity = max(density, 0.0);
+    float safeLength = max(viewStepLength, 0.0);
+    float safeExtinction = max(extinctionCoefficient, 0.0);
+    float stepTransmittance = exp(-safeDensity * safeExtinction * safeLength);
+    float interactionFraction = saturate(1.0 - stepTransmittance);
+    return saturate(viewTransmittance) * max(sunColor, 0.0.xxx) *
+           max(sunIntensity, 0.0) * saturate(singleScatteringAlbedo) *
+           interactionFraction;
+}
+
 // 현재 View 표본에서 태양까지 구름이 얼마나 빛을 가리는지 계산한다.
 // samplePosition은 월드 위치(m), lightDirection은 표본→태양 단위 방향이다.
 // 길이가 거의 0인 방향, 퇴화 AABB 또는 유효 이탈 구간이 없으면 빛을 막을
@@ -102,16 +145,11 @@ float3 IntegrateSingleScattering(
     float viewTransmittance, float viewStepLength,
     float phaseFactor)
 {
-    float safeDensity = max(density, 0.0);
-    float safeLength = max(viewStepLength, 0.0);
-    float safeExtinction = max(extinctionCoefficient, 0.0);
-    float stepTransmittance = exp(-safeDensity * safeExtinction * safeLength);
-
-    float interactionFraction = saturate(1.0 - stepTransmittance);
-    return saturate(viewTransmittance) * max(sunColor, 0.0.xxx) *
-           max(sunIntensity, 0.0) * saturate(lightTransmittance) *
-           saturate(singleScatteringAlbedo) * interactionFraction *
-           clamp(phaseFactor, 0.0, kMaxPhaseFactor);
+    DirectLightingResponse response = EvaluateDirectLightingResponse(
+        lightTransmittance, phaseFactor);
+    return ComputeDirectInteractionColor(
+        density, viewTransmittance, viewStepLength) *
+        response.shapedTransmittance * max(response.scopedPhase, 0.0);
 }
 
 #endif

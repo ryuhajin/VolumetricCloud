@@ -82,7 +82,7 @@ inline CloudDebugMode DebugModeFromDigit(int digit)
 inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
 {
     const std::int32_t value = static_cast<std::int32_t>(mode);
-    return value == 0 || (value >= 8 && value <= 56)
+    return value == 0 || (value >= 8 && value <= 59)
         ? mode : CloudDebugMode::Composite;
 }
 
@@ -140,6 +140,9 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::AccumulatedGroundBounce: return L"Ground Bounce";
     case CloudDebugMode::AccumulatedMultipleScattering: return L"Multiple Scattering";
     case CloudDebugMode::DetailLodFactor: return L"Detail LOD Factor";
+    case CloudDebugMode::SilverLiningContribution: return L"Silver Lining Contribution";
+    case CloudDebugMode::ShapedSunVisibility: return L"Shaped Sun Visibility";
+    case CloudDebugMode::AmbientVisibility: return L"Ambient Visibility";
     default: return L"Composite";
     }
 }
