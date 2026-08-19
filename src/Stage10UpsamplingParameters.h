@@ -29,7 +29,7 @@ struct alignas(16) Stage10UpsamplingParameters
 {
     float resolutionScale = 1.0f;
     std::uint32_t filterMode =
-        static_cast<std::uint32_t>(Stage10UpsampleFilter::Joint4);
+        static_cast<std::uint32_t>(Stage10UpsampleFilter::Nearest);
     float sceneDepthRelativeSigma = 0.0025f;
     float cloudDepthRelativeSigma = 0.01f;
 
@@ -47,6 +47,18 @@ namespace stage10upsampling
 inline constexpr float kHalfScale = 0.5f;
 inline constexpr float kTwoThirdsScale = 2.0f / 3.0f;
 inline constexpr float kThreeQuartersScale = 0.75f;
+
+// 2026-08-19 사용자 검증을 통과한 활성 비교 목록이다. 제외한 enum 값은
+// schema 32 숫자 안정성과 과거 실패 화면 재현을 위해 위 enum에 보존한다.
+inline constexpr Stage10ResolutionPreset kRuntimeResolutionCandidates[] = {
+    Stage10ResolutionPreset::Half,
+    Stage10ResolutionPreset::Full,
+};
+inline constexpr Stage10UpsampleFilter kRuntimeFilterCandidates[] = {
+    Stage10UpsampleFilter::Nearest,
+    Stage10UpsampleFilter::Bilinear,
+    Stage10UpsampleFilter::Joint4,
+};
 
 inline const char* ResolutionPresetName(Stage10ResolutionPreset preset)
 {

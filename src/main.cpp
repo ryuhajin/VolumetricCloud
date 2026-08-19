@@ -1897,7 +1897,7 @@ int RunStage10UpsamplingSmokeTest(Renderer& renderer, Camera& camera)
                     { 0.0f, 4500.0f, 0.0f });
 
     renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Full);
-    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint4);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Nearest);
     CloudDiagnosticFrame direct;
     CloudDiagnosticFrame split;
     if (!renderer.CaptureCloudDiagnosticFrame(
@@ -1909,22 +1909,12 @@ int RunStage10UpsamplingSmokeTest(Renderer& renderer, Camera& camera)
     bool finite = std::isfinite(fullMae) && fullMae <= 0.01;
     std::set<std::uint64_t> hashes;
 
-    const Stage10ResolutionPreset resolutions[] = {
-        Stage10ResolutionPreset::Half,
-        Stage10ResolutionPreset::TwoThirds,
-        Stage10ResolutionPreset::ThreeQuarters,
-        Stage10ResolutionPreset::Full,
-    };
-    const Stage10UpsampleFilter filters[] = {
-        Stage10UpsampleFilter::Nearest,
-        Stage10UpsampleFilter::Bilinear,
-        Stage10UpsampleFilter::Joint4,
-        Stage10UpsampleFilter::Joint9,
-    };
-    for (Stage10ResolutionPreset resolution : resolutions)
+    for (Stage10ResolutionPreset resolution :
+         stage10upsampling::kRuntimeResolutionCandidates)
     {
         renderer.ApplyStage10ResolutionPreset(resolution);
-        for (Stage10UpsampleFilter filter : filters)
+        for (Stage10UpsampleFilter filter :
+             stage10upsampling::kRuntimeFilterCandidates)
         {
             renderer.SetStage10UpsampleFilter(filter);
             CloudDiagnosticFrame frame;
@@ -1942,7 +1932,7 @@ int RunStage10UpsamplingSmokeTest(Renderer& renderer, Camera& camera)
     }
 
     renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Half);
-    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint9);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint4);
     for (CloudDebugMode mode : {
              CloudDebugMode::LowResolutionGrid,
              CloudDebugMode::UpsampleSceneRejection,
@@ -1958,7 +1948,8 @@ int RunStage10UpsamplingSmokeTest(Renderer& renderer, Camera& camera)
                 std::isfinite(pixel.w);
     }
 
-    // 홀수 창 크기에서도 ceil 축 크기와 RTV/SRV 재생성이 같은 프레임에 적용된다.
+    // 비활성 2/3 enum도 schema 32 호환을 유지하며, 홀수 창 크기에서 ceil 축 크기와
+    // RTV/SRV 재생성이 같은 프레임에 적용되는지 회귀한다.
     renderer.Resize(97, 55);
     camera.SetAspect(97.0f / 55.0f);
     renderer.ApplyStage10ResolutionPreset(

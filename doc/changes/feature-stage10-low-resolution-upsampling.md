@@ -16,13 +16,17 @@
 - Low-resolution Grid, Scene Rejection, Cloud Depth Weight, Transmittance Weight debug ID
   64~67을 추가했으며 숫자 0~9 매핑은 유지했다.
 - 시작 해상도는 사용자 승인 전까지 Full이다. jitter/history/reprojection은 단계 11로 남겼다.
+- 2026-08-19 사용자 비교에서 50%가 67/75%보다 격자감이 적고 세 필터의 가시적 차이가 작았다.
+  활성 F1/자동 후보를 50/Full과 Nearest/Bilinear/Joint4로 줄이고 `50% + Nearest`를 잠정 최종
+  후보로 정했다. 제외한 enum과 Joint9 셰이더 경로는 schema 32 호환용으로 보존한다.
 
 ## 자동 검증
 
 - `Stage10UpsamplingMath`: 타깃 크기, 최소 1픽셀, 픽셀 중심 UV, opacity 가중 깊이,
   Scene/Cloud/T 가중치와 finite fallback.
-- `Stage10UpsamplingSmoke`: Full 직접 합성 대비 split RGB MAE `0.000093`, 네 해상도 ×
-  네 필터와 네 debug 출력 finite, 후보 hash 13개, Half `48×27`, D3D11 오류 없음.
+- `Stage10UpsamplingSmoke`: Full 직접 합성 대비 split RGB MAE `0.000093`, 최초 네 해상도 ×
+  네 필터와 네 debug 출력 finite, 후보 hash 13개, Half `48×27`, D3D11 오류 없음. 사용자 축소 뒤
+  활성 2개 해상도 × 3개 필터에서 hash 4개와 같은 Full MAE·Half 크기를 다시 통과했다.
 - Debug/Release 빌드, 새 셰이더 포함 hot reload와 전체 CTest 43개를 통과했다. 첫 전체 실행에서
   schema 32인데 `implementationStage=9`를 기대한 구형 테스트 두 곳을 발견해 10으로 동기화했고,
   두 테스트 재실행까지 통과했다.

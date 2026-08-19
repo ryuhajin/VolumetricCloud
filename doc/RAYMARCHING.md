@@ -775,7 +775,8 @@ Map은 단계 10~12 범위다.
 ## 단계 10: 저해상도 구름 데이터와 공간 업샘플링
 
 단계 10은 View/Light 적분식을 바꾸지 않고 실행하는 화면 레이 수를 줄인다. 선택한 축 비율
-`r`에서 구름 픽셀 수는 Full의 `r²`이며 50/67/75%는 각각 약 25/44.4/56.25%다. 각 레이는
+`r`에서 구름 픽셀 수는 Full의 `r²`이다. 초기 비교의 50/67/75%는 각각 약
+25/44.4/56.25%였으며, 사용자 검증 뒤 활성 후보는 정확한 2:1 확대인 50%와 Full만 남겼다. 각 레이는
 최종 장면색 대신 `scattering.rgb`, View `T`, 대표 구름 깊이와 해당 원본 ray의 scene limit을
 두 MRT에 쓴다.
 
@@ -789,7 +790,7 @@ cloudDepth = sum(sampleDistance_i * alpha_i) / sum(alpha_i)
 `sum(alpha_i)`가 `1e-6` 이하면 빈 레이로 보고 cloud depth와 source scene limit에 같은 장면
 제한 거리를 기록한다. 이 값은 색 적분을 바꾸지 않고 업샘플 경계 guide로만 사용한다.
 
-Nearest는 한 texel, Bilinear는 네 texel의 공간 가중합이다. Joint4/Joint9는 여기에 다음
+Nearest는 한 texel, Bilinear는 네 texel의 공간 가중합이다. 활성 Joint4는 여기에 다음
 가중치를 곱한다.
 
 ```text
@@ -802,3 +803,7 @@ w_T = exp(-0.5 * (abs(Ta-Tb) / sigma_T)^2)
 `scattering=0,T=1`로 구름 번짐을 막고 하늘은 최근접 유효 구름 표본을 쓴다. Full은 같은
 MRT와 resolve를 지나되 1:1 최근접으로 복원한다. 현재 프레임의 공간 정보만 사용하며 jitter,
 history buffer, reprojection과 ghosting rejection은 단계 11에 남긴다.
+
+초기 Joint9 3×3 경로와 67/75% enum은 schema 32와 실패 이력 재현을 위해 보존하지만 활성
+F1·자동 후보에서는 제외한다. 정지 화면에서 Nearest/Bilinear/Joint4 차이가 크지 않아 가장 싼
+`50% Axis + Nearest`가 2026-08-19 잠정 최종 후보가 됐다.

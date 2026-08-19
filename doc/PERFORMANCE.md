@@ -224,17 +224,24 @@ Cumulus Horizon은 같은 실행의 Reference `21.01ms` 대비 `9.78ms`로 약 `
 
 ## 단계 10 저해상도·공간 업샘플링 측정
 
-단계 10 기준은 `Stage9 Balanced + 1920×1080 Full`이다. 불투명 장면은 항상 Full이고 구름
-Raymarch만 축 50/67/75/100%로 바뀐다. Full도 저해상도 후보와 같은 RGBA16F/RG32F MRT와
+단계 10 기준은 `Stage9 Balanced + 1920×1080 Full`이다. 불투명 장면은 항상 Full이고 활성
+구름 Raymarch 후보는 축 50/100%다. Full도 저해상도 후보와 같은 RGBA16F/RG32F MRT와
 resolve를 지나며 1:1 최근접으로 복원해 파이프라인 분리 자체의 차이를 잰다.
 
-`Stage10UpsamplingSmoke`는 96×54에서 Full 직접 합성과 Full split 경로를 비교하고 네 해상도 ×
-네 필터 및 네 업샘플 디버그 출력의 finite 결과와 D3D11 오류를 검사한다. 2026-08-19 첫 구현
+`Stage10UpsamplingSmoke`는 96×54에서 Full 직접 합성과 Full split 경로를 비교한다. 최초 네
+해상도 × 네 필터 및 네 업샘플 디버그 출력의 finite 결과와 D3D11 오류를 검사했고, 2026-08-19 첫 구현
 결과는 Full RGB MAE `0.000093`, 서로 다른 후보 hash 13개, Half 실제 타깃 `48×27`로 통과했다.
-이는 기능 회귀이지 1080p 화질·성능 승인이 아니다.
+활성 후보 축소 뒤 smoke는 2개 해상도 × 3개 필터에서 예상한 서로 다른 hash 4개와 같은
+Full MAE·Half 타깃을 다시 통과했다. 이는 기능 회귀이지 1080p 화질·성능 승인이 아니다.
+
+2026-08-19 사용자 F6 정지 화면 비교에서 Full/50/67/75%의 오버레이 Total은 각각
+`9.964/6.623/7.055/8.165ms`였다. VSync On 단일 관찰값이므로 정식 성능값은 아니지만, 50%가
+Full과 비슷하면서 67/75%보다 격자감이 적었다. 세 활성 필터의 가시적 차이도 크지 않아
+`50% Axis + Nearest`를 잠정 최종 후보로 정했다. 67/75%와 Joint9는 활성 UI·자동 후보에서
+제외하고 enum/schema 호환만 유지한다.
 
 정식 후보 평가는 Full 대비 Composite `SSIM≥0.99`, 정규화 `RMSE≤0.01`, T `MAE≤0.01`,
 `P99≤0.03`을 먼저 통과한 조합만 일곱 장면 600-sample 측정에 올린다. Cumulus Horizon
 GPU Cloud Total p95가 단계 9 Balanced보다 20% 이상 개선되고 모든 장면 p95가 8ms 이하여야
-한다. 시작값은 사용자 승인 전까지 Full이며, 현재는 자동 1080p 측정과 사용자 렌더 검증 전이라
-50/67/75% 후보를 기본값으로 승격하지 않았다.
+한다. 시작 Resolution은 자동 1080p 측정이 끝날 때까지 Full이며, 50%+Nearest는 아직 성능
+p95와 전체 장면 게이트 전이므로 시작 Resolution로 승격하지 않았다.

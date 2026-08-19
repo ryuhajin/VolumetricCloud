@@ -198,20 +198,23 @@ Cone Angle `4/3/2/1°`와 Cone Far Fraction `75/77/85/95%`는 같은 tap 수에�
 F1 `Low Resolution / Upsampling`은 **구름만** 몇 픽셀에서 레이마칭할지와 그 결과를 화면
 해상도로 복원하는 방법을 따로 비교한다. 건물, 지면, Scene Depth와 UI는 항상 원래 창
 해상도로 그린다. 각 행은 왼쪽에서 오른쪽으로 계산량 또는 품질 여유가 커지는 순서다.
-사용자 승인 전 시작값은 `Full`이며, 최종 기본값은 아직 정하지 않았다.
+자동 성능 승인 전 시작 Resolution은 `Full`이다. 2026-08-19 사용자 정지 화면 검증에서
+`50% Axis + Nearest`를 잠정 최종 후보로 선택했다.
 
 중요한 예외가 하나 있다. `Full`에서는 저해상도 표본과 화면 픽셀이 1:1이므로 Filter를
 `Nearest`, `Bilinear`, Joint로 바꿔도 셰이더가 의도적으로 동일한 1탭 경로를 사용한다.
-따라서 **Filter와 임계값은 75%, 67%, 50% 중 하나를 선택한 뒤 비교**해야 한다.
+따라서 **Filter와 임계값은 50%를 선택한 뒤 비교**해야 한다.
 
 #### 7.4.1 Resolution 버튼 — 비싼 구름 레이의 개수
 
 | 버튼 | 1920×1080 구름 타깃 | Full 대비 레이 수 | 이 버튼으로 확인하는 것 | 정상 결과 | 실패 징후 |
 |---|---:|---:|---|---|---|
 | `50% Axis` | 960×540 | 25% | 최대 픽셀 절감 후보 | Raymarch 시간이 가장 많이 감소 | 2×2 셀, 얇은 구름 소실, 이동 시 떨림 가능 |
-| `67% Axis` | 1280×720 | 44.4% | 성능과 화질의 중간 후보 | Joint 필터에서 Full과 거의 같은 윤곽 | 수평선 띠, 작은 구멍, 건물 경계 번짐 |
-| `75% Axis` | 1440×810 | 56.25% | 품질 여유가 큰 저해상도 후보 | Full과 구분하기 어렵고 Total은 감소 | 차이가 크면 더 낮은 해상도도 탈락 가능성이 큼 |
 | `Full` | 1920×1080 | 100% | 단계 9 Balanced 화질 기준 | 이전 단계와 같은 색·두께·폐색 | 전체 밝기나 구름 위치가 달라지면 split pipeline 오류 |
+
+초기 비교에 있던 67%와 75%는 2:1 정수 확대가 아니어서 texel 영향 범위가 출력 픽셀 사이에서
+주기적으로 달라졌고, 사용자가 50%보다 격자감이 크다고 판정했다. 비용도 50%보다 높아 활성
+F1 후보에서 제외했다. enum 값과 크기 수학은 schema 32와 실패 이력 재현을 위해 보존한다.
 
 해상도를 낮췄는데 건물이나 UI까지 흐려지면 실패다. 이 기능은 구름 중간 버퍼만 줄여야 한다.
 창 크기가 1920×1080이 아니어도 축 비율은 같고 실제 타깃 크기는 현재 창에서 다시 계산된다.
@@ -223,10 +226,10 @@ F1 `Low Resolution / Upsampling`은 **구름만** 몇 픽셀에서 레이마칭�
 | `Nearest` | 1탭 | 최저 | 가장 가까운 저해상도 결과를 그대로 확대한다. 블록 실패를 찾는 기준이다. | 셀 경계, 계단, 이동 시 딱딱한 팝이 보임 |
 | `Bilinear` | 4탭 | 낮음 | 네 이웃을 단순 혼합해 Nearest의 블록을 부드럽게 한다. | 건물 위 구름색, 수평선 halo, 앞뒤 구름 혼합이 보임 |
 | `Depth/Cloud/T Joint 4` | 4탭 | 중간 | 네 이웃 중 Scene/Cloud/T가 비슷한 표본만 섞어 경계를 지킨다. | 건물 누출, 얇은 구름 소실, 구멍 또는 파편화가 남음 |
-| `Depth/Cloud/T Joint 9` | 9탭 | 최고 | 더 넓은 3×3 후보로 Joint 4의 빈틈을 보완하는 품질 후보이다. | Joint 4와 차이가 없는데 비용만 늘면 실시간 후보에서 제외 |
 
-같은 해상도에서 `Nearest → Bilinear → Joint 4 → Joint 9` 순서로 누른다. 차이가 없는 최초의
-버튼이 그 해상도의 후보이며, Joint 4와 Joint 9가 같아 보이면 Joint 4를 선택한다.
+같은 해상도에서 `Nearest → Bilinear → Joint 4` 순서로 누른다. 사용자 정지 화면 검증에서 세
+필터의 차이가 크지 않아 가장 싼 Nearest를 잠정 최종 후보로 정했다. Joint 9는 Joint 4 대비
+가시적 개선이 없어 활성 F1 후보에서 제외했으며 enum과 셰이더 경로만 호환용으로 보존한다.
 
 #### 7.4.3 Scene Depth 버튼 — 건물과 하늘 경계
 
@@ -289,13 +292,13 @@ F1 `Noise / Weather / Shape / Sampling Debug View`의 `Main View Debug` 콤보�
 숫자 0~9 매핑은 바뀌지 않았다. 아래 세 Weight 출력은 **흰색일수록 후보가 잘 맞아 허용되고,
 검정일수록 달라서 거부됨**을 뜻한다. 이름이 `Scene Rejection`이어도 흰색이 거부라는 뜻은 아니다.
 
-`Scene Rejection`, `Cloud Depth Weight`, `Transmittance Weight`는 Joint 4/9의 판단을 보여 준다.
+`Scene Rejection`, `Cloud Depth Weight`, `Transmittance Weight`는 활성 UI의 Joint 4 판단을 보여 준다.
 `Full`, `Nearest`, `Bilinear`에서는 Joint 계산을 하지 않으므로 이 세 화면이 흰색으로 나오는 것이
-정상이다. 반드시 저해상도와 Joint 4/9를 선택한 뒤 읽는다.
+정상이다. 반드시 50%와 Joint 4를 선택한 뒤 읽는다.
 
 | Debug View | 무엇을 표시하는가 | 정상 패턴 | 실패 패턴과 다음 조작 |
 |---|---|---|---|
-| `Low-resolution Grid` | 저해상도 texel 하나가 차지하는 영역 | 75→67→50%로 갈수록 셀이 균일하게 커짐 | 찌그러짐·단절·한 프레임 깨짐이면 UV/resize 오류. Composite에 격자가 남는 것과 구분 |
+| `Low-resolution Grid` | 저해상도 texel 하나가 차지하는 영역 | 50%에서 균일한 2×2 대응 | 찌그러짐·단절·한 프레임 깨짐이면 UV/resize 오류. Composite에 격자가 남는 것과 구분 |
 | `Scene Rejection` | Scene class/depth 허용도 | 건물/하늘 내부는 대체로 밝고 실루엣·수평선 경계는 어두운 띠 | 경계까지 흰색이며 누출되면 Scene 값을 왼쪽, 넓은 영역이 검고 구멍 나면 오른쪽 |
 | `Cloud Depth Weight` | 후보의 대표 구름 깊이 유사도 | 같은 구름 내부는 밝고 앞뒤 겹침·윤곽은 어두움 | 전부 검고 조각나면 Cloud 값을 오른쪽, 모두 희고 깊이가 번지면 왼쪽 |
 | `Transmittance Weight` | 후보의 투명도 유사도 | 같은 농도 내부는 밝고 얇은 외곽·하늘 틈은 어두움 | 전부 검고 반짝이면 T Sigma를 오른쪽, 모두 희고 halo가 생기면 왼쪽 |
@@ -309,10 +312,10 @@ F1 `Noise / Weather / Shape / Sampling Debug View`의 `Main View Debug` 콤보�
    카메라를 유지한다.
 2. `Full + Composite`에서 Dense/Stratus/Cumulus 기준 모습을 확인한다. Full에서는 Filter 변경을
    비교하지 않는다.
-3. `75%`에서 `Nearest → Bilinear → Joint 4 → Joint 9`를 비교하고 F5 건물, F6 수평선,
-   F7 내부, F8 상공을 확인한다.
-4. 같은 순서를 67%, 50%에서 반복한다. 해상도 때문에 실패하면 Resolution 행만 오른쪽으로,
-   필터 때문에 실패하면 Filter 행만 오른쪽으로 이동한다.
+3. `50%`에서 `Nearest → Bilinear → Joint 4`를 비교하고 F5 건물, F6 수평선, F7 내부,
+   F8 상공을 확인한다. 차이가 없으면 Nearest를 유지한다.
+4. 50%에서 해상도 자체의 손실·이동 떨림이 보이면 Resolution을 Full로 올린다. Nearest에서만
+   경계 문제가 보이면 Bilinear, Joint 4 순으로 Filter만 오른쪽으로 이동한다.
 5. Joint의 특정 문제가 있을 때만 Scene Depth, Cloud Depth, T Sigma를 한 행씩 조정한다.
    한 번에 두 행을 바꾸지 않는다. 마지막에 Minimum Weight를 확인한다.
 6. WASD로 천천히 움직인다. 단계 10은 이전 프레임을 사용하지 않으므로 잔상은 없어야 한다.
@@ -321,7 +324,7 @@ F1 `Noise / Weather / Shape / Sampling Debug View`의 `Main View Debug` 콤보�
    `CPU Frame`과 FPS는 VSync·OS 대기의 영향을 받아 알고리즘 판정값으로 쓰지 않는다.
 
 `Cloud Raymarch`는 해상도를 낮추면 감소해야 한다. `Upsample/Composite`는 Full 화면에서 항상
-실행되는 복원 비용이며 대체로 Nearest가 가장 싸고 Joint 9가 가장 비싸다. 둘의 합인
+실행되는 복원 비용이며 대체로 Nearest가 가장 싸고 Joint 4가 가장 비싸다. 둘의 합인
 `GPU Cloud Total`이 Full보다 낮아야 실제 최적화 이득이다. 정식 성능 판정은 120프레임 워밍업과
 600개 timestamp의 p95로 별도 진행한다.
 
@@ -329,7 +332,7 @@ F1 `Noise / Weather / Shape / Sampling Debug View`의 `Main View Debug` 콤보�
 
 | 카메라/외형 | Resolution | Filter | 보인 문제 | 조정한 임계값 | GPU Cloud Total | 판정 |
 |---|---|---|---|---|---:|---|
-| 예: F6/Cumulus | 67% | Joint 4 | 차이 없음 | 기본값 | 측정값 | 통과/실패 |
+| 예: F6/Cumulus | 50% | Nearest | 차이 없음 | 기본값 | 측정값 | 통과/실패 |
 
 가장 싼 50%부터 무조건 채택하는 것이 목표가 아니다. **Full과 큰 차이가 없고 이동 중에도 안정적인
 후보 중 GPU Cloud Total이 가장 낮은 조합**을 사용자 승인 후보로 보고한다.
@@ -357,9 +360,9 @@ main pass의 샘플 time만 0으로 고정하므로 바람 때문에 위치가 �
 - [ ] 제거된 F2 타입 버튼, 문자 키와 F9~F12는 동작하지 않는다.
 - [ ] F1 Optimization의 Balanced가 가장 왼쪽 Master이고 Empty Search가 `2×/Off`만 제공한다.
 - [ ] Fine Reference와 Straight 320 Fine은 오프라인 기준임을 이해하고 일반 플레이 후보로 사용하지 않는다.
-- [ ] F1 Resolution이 `50%→67%→75%→Full`, Filter가 `Nearest→Bilinear→Joint4→Joint9` 비용순이다.
+- [ ] F1 Resolution이 `50%→Full`, Filter가 `Nearest→Bilinear→Joint4` 비용순이다.
 - [ ] Full에서 단계 9와 같은 화면이며, Filter를 바꿔도 Full 1:1 경로는 변하지 않는다.
-- [ ] 75/67/50%에서 건물 위 번짐·얇은 구름 소실·격자·이동 중 떨림을 카메라/외형별로 기록한다.
+- [ ] 50%에서 건물 위 번짐·얇은 구름 소실·2×2 셀·이동 중 떨림을 카메라/외형별로 기록한다.
 - [ ] Joint에서 Scene/Cloud/T Debug의 흰색은 허용, 검정은 거부이며 Nearest/Bilinear의 흰 화면은 정상이다.
 - [ ] 같은 해상도에서 Nearest부터 올려 큰 차이가 없는 가장 왼쪽 필터를 찾고 GPU Cloud Total을 비교한다.
 

@@ -77,9 +77,10 @@ Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스
 8. Weather Base가 있을 때만 Detail Noise로 깎고, View 적분 결과를 MRT0
    `RGBA16_FLOAT(scattering.rgb,T)`와 MRT1 `RG32_FLOAT(opacity-weighted cloud depth,
    source scene limit)`에 기록한다.
-9. Full-resolution `CloudUpsample.hlsl`가 Nearest/Bilinear/Joint4/Joint9 중 선택한 공간
-   필터로 MRT를 복원한다. Joint는 불투명/하늘 분류, Scene Depth, Cloud Depth와 T 차이를
-   가중치로 사용하며 전부 거부되면 물체는 투명 구름, 하늘은 최근접 표본으로 폴백한다.
+9. Full-resolution `CloudUpsample.hlsl`가 활성 Nearest/Bilinear/Joint4 중 선택한 공간 필터로
+   MRT를 복원한다. Joint9 경로는 schema 32와 실패 이력 호환용으로만 남는다. Joint는
+   불투명/하늘 분류, Scene Depth, Cloud Depth와 T 차이를 가중치로 사용하며 전부 거부되면
+   물체는 투명 구름, 하늘은 최근접 표본으로 폴백한다.
 
 ## 단계 13-4D 단일 씬 런타임 계약
 
@@ -326,15 +327,17 @@ Balanced에 반영했다.
 
 | 묶음 | 필드 | 시작값과 역할 |
 |---|---|---|
-| 0 | `resolutionScale`, `upsampleFilterMode`, `sceneDepthRelativeSigma`, `cloudDepthRelativeSigma` | `1.0`, Joint4, `0.0025`, `0.01`; 축 해상도와 Scene/Cloud 상대 깊이 가중치 |
+| 0 | `resolutionScale`, `upsampleFilterMode`, `sceneDepthRelativeSigma`, `cloudDepthRelativeSigma` | `1.0`, Nearest, `0.0025`, `0.01`; 축 해상도와 Scene/Cloud 상대 깊이 가중치 |
 | 1 | `transmittanceSigma`, `minimumUpsampleWeight`, padding 2개 | `0.1`, `1e-4`, `0`, `0`; T 차이와 후보 거부 하한 |
 
-F1 Resolution은 `50% → 67% → 75% → Full`, Filter는 `Nearest → Bilinear → Joint4 →
-Joint9`로 비용순이다. Full에서는 동일한 MRT/resolve 형식을 사용하되 1:1 최근접 복원으로
-단계 9 직접 합성과 비교한다. 저해상도 타깃은 선택한 크기 한 벌만 만들며 리사이즈나 preset
-변경 시 원자적으로 다시 만든다. 새 디버그 ID 64~67은 Low-resolution Grid, Scene Rejection,
-Cloud Depth Weight, Transmittance Weight이고 숫자 0~9 매핑은 그대로다. temporal jitter,
-history와 reprojection은 단계 11 범위다.
+F1 활성 Resolution은 `50% → Full`, Filter는 `Nearest → Bilinear → Joint4`로 비용순이다.
+2026-08-19 사용자 검증에서 67/75%는 50%보다 격자감이 크고 비용도 높아, Joint9는 Joint4 대비
+가시적 차이가 없어 제외했다. 해당 enum 번호와 셰이더 경로는 schema 32 호환용으로 보존한다.
+Full에서는 동일한 MRT/resolve 형식을 사용하되 1:1 최근접 복원으로 단계 9 직접 합성과 비교한다.
+저해상도 타깃은 선택한 크기 한 벌만 만들며 리사이즈나 preset 변경 시 원자적으로 다시 만든다.
+새 디버그 ID 64~67은 Low-resolution Grid, Scene Rejection, Cloud Depth Weight,
+Transmittance Weight이고 숫자 0~9 매핑은 그대로다. temporal jitter, history와 reprojection은
+단계 11 범위다.
 
 ### `LightParameters` / `LightCB` (`b3`, 80바이트)
 

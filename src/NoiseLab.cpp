@@ -628,15 +628,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     {
         ImGui::TextDisabled(
             "Every row is ordered left to right: lower GPU cost -> higher GPU cost.");
-        const Stage10ResolutionPreset resolutions[] = {
-            Stage10ResolutionPreset::Half,
-            Stage10ResolutionPreset::TwoThirds,
-            Stage10ResolutionPreset::ThreeQuarters,
-            Stage10ResolutionPreset::Full,
-        };
         ImGui::Text("Resolution: %s",
                     stage10upsampling::ResolutionPresetName(resolutionPreset));
-        for (Stage10ResolutionPreset preset : resolutions)
+        for (Stage10ResolutionPreset preset :
+             stage10upsampling::kRuntimeResolutionCandidates)
         {
             if (ImGui::Button(stage10upsampling::ResolutionPresetName(preset)))
             {
@@ -648,20 +643,15 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                 ImGui::SameLine();
         }
 
-        const Stage10UpsampleFilter filters[] = {
-            Stage10UpsampleFilter::Nearest,
-            Stage10UpsampleFilter::Bilinear,
-            Stage10UpsampleFilter::Joint4,
-            Stage10UpsampleFilter::Joint9,
-        };
         ImGui::Text("Filter: %s", stage10upsampling::FilterName(
             static_cast<Stage10UpsampleFilter>(upsamplingParameters.filterMode)));
-        for (Stage10UpsampleFilter filter : filters)
+        for (Stage10UpsampleFilter filter :
+             stage10upsampling::kRuntimeFilterCandidates)
         {
             if (ImGui::Button(stage10upsampling::FilterName(filter)))
                 upsamplingParameters.filterMode =
                     static_cast<std::uint32_t>(filter);
-            if (filter != Stage10UpsampleFilter::Joint9)
+            if (filter != Stage10UpsampleFilter::Joint4)
                 ImGui::SameLine();
         }
 

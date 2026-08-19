@@ -17,6 +17,25 @@ int main()
 {
     using namespace stage10upsampling;
     bool passed = true;
+    passed &= Require(
+        sizeof(kRuntimeResolutionCandidates) /
+                sizeof(kRuntimeResolutionCandidates[0]) == 2u &&
+            kRuntimeResolutionCandidates[0] == Stage10ResolutionPreset::Half &&
+            kRuntimeResolutionCandidates[1] == Stage10ResolutionPreset::Full,
+        "runtime resolution candidates are Half then Full");
+    passed &= Require(
+        sizeof(kRuntimeFilterCandidates) /
+                sizeof(kRuntimeFilterCandidates[0]) == 3u &&
+            kRuntimeFilterCandidates[0] == Stage10UpsampleFilter::Nearest &&
+            kRuntimeFilterCandidates[1] == Stage10UpsampleFilter::Bilinear &&
+            kRuntimeFilterCandidates[2] == Stage10UpsampleFilter::Joint4,
+        "runtime filters exclude Joint9 and keep cost order");
+    const Stage10UpsamplingParameters defaults{};
+    passed &= Require(
+        defaults.resolutionScale == 1.0f &&
+            defaults.filterMode ==
+                static_cast<std::uint32_t>(Stage10UpsampleFilter::Nearest),
+        "stage 10 starts Full with Nearest candidate selected");
     passed &= Require(ScaledExtent(1920, kHalfScale) == 960 &&
                       ScaledExtent(1080, kHalfScale) == 540,
                       "half resolution extent");

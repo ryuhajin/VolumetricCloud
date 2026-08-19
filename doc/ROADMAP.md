@@ -35,7 +35,8 @@
   deterministic Light cone — Balanced 기본값, 2026-08-19 사용자 승인
 - [ ] 단계 10: 저해상도 구름 타깃과 depth/transmittance-aware 업샘플링 — 구현 진행 중
   - [x] RGBA16F scattering/T + RG32F cloud depth/scene limit MRT와 Full resolve 분리
-  - [x] 50/67/75/Full, Nearest/Bilinear/Joint4/Joint9 F1 비교와 schema 32
+  - [x] 최초 50/67/75/Full, Nearest/Bilinear/Joint4/Joint9 비교와 schema 32
+  - [x] 사용자 검증으로 활성 후보를 50/Full, Nearest/Bilinear/Joint4로 축소
   - [x] opacity-weighted depth, 경계 거부 fallback, 분리 GPU timestamp와 단계 10 smoke
   - [ ] 1080p 자동 화질·성능 후보 측정 및 사용자 렌더 승인
 - [ ] 단계 11: Jitter, Temporal Reprojection과 history rejection
