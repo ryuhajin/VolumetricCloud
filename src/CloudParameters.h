@@ -1,201 +1,114 @@
 // ============================================================================
-//  CloudParameters.h  —  구름 밀도와 디버그 UI가 공유하는 CPU 설정
+//  CloudParameters.h - 단계 5 Weather Map/Cloud Type CPU/GPU 공유 설정
 // ============================================================================
 #pragma once
 
 #include <DirectXMath.h>
+#include <cstdint>
 
-enum class CloudRenderMode : int
+enum class CloudDebugMode : std::int32_t
 {
-    LitCloud = 0,
-    FinalDensity,
-    BaseShape,
-    DetailNoise,
-    HeightMask,
-    Transmittance,
-    CacheDifference,
-    SeamDifference,
-    BaseChannelR,
-    BaseChannelG,
-    BaseChannelB,
-    BaseChannelA,
-    LightVisibility,
-    PhaseFunction,
-    AmbientLighting,
-    DirectLighting,
-    WeatherCoverage,
-    WeatherCloudType,
-    WeatherBaseHeight,
-    WeatherThickness,
+    Composite = 0,
+    Transmittance = 8,
+    ConstantDensity = 9,
+    RawNoise = 10,
+    ThresholdDensity = 11,
+    FinalDensity = 12,
+    NoiseUvw = 13,
+    HeightFraction = 14,
+    HeightProfile = 15,
+    BaseDensity = 16,
+    DetailNoise = 17,
+    Erosion = 18,
+    DetailSampleMask = 19,
+    WeatherCoverage = 20,
+    CloudType = 21,
+    WeatherThresholdDensity = 22,
+    TypedShapeProfile = 23,
+    LightTransmittance = 24,
+    LightOpticalDepth = 25,
+    TotalLightSamples = 26,
+    DirectSingleScattering = 27,
+    PhaseCosTheta = 28,
+    ForwardPhaseLobe = 29,
+    BackwardPhaseLobe = 30,
+    DualPhaseFactor = 31,
+    AccumulatedDirectLighting = 32,
+    CloudSegmentLength = 33,
+    ActualViewStepLength = 34,
+    CloudHitMask = 35,
+    BaseVolumeR = 36,
+    BaseVolumeG = 37,
+    BaseVolumeB = 38,
+    BaseVolumeA = 39,
+    BaseVolumeCombined = 40,
+    DetailVolumeR = 41,
+    DetailVolumeG = 42,
+    DetailVolumeB = 43,
+    DetailVolumeA = 44,
+    DetailVolumeCombined = 45,
+    TextureWrapDifference = 46,
+    WeatherThicknessPotential = 47,
+    LocalThickness = 48,
+    LocalHeightFraction = 49,
+    EffectiveShapeCoverage = 50,
+    BaseSupportBeforeDensity = 51,
+    ViewOpticalDepth = 52,
+    AccumulatedSkyAmbient = 53,
+    AccumulatedGroundBounce = 54,
+    AccumulatedMultipleScattering = 55,
+    DetailLodFactor = 56,
+    SilverLiningContribution = 57,
+    ShapedSunVisibility = 58,
+    AmbientVisibility = 59,
+    ExecutedViewSamples = 60,
+    SkippedDistance = 61,
+    EarlyExitSavings = 62,
+    SupportPrecheckSkip = 63,
 };
 
-enum class NoiseSliceAxis : int
+enum class Stage5WeatherPreset : std::int32_t
 {
-    XY = 0,
-    XZ,
-    YZ,
+    UniformLegacy,
+    PeriodicPerlin,
+    ChannelDebug,
 };
 
-// HLSL CloudCB(b1)와 정확히 같은 128바이트 레이아웃을 사용한다.
+// HLSL CloudCB와 16바이트 묶음 순서가 정확히 일치해야 한다.
 struct alignas(16) CloudParameters
 {
-    float noiseWorldScale  = 1.0f; // 한 볼륨 안에서 반복되는 타일 수(정수로 사용)
-    int   basePeriod       = 4;
-    int   detailPeriod     = 16;
-    float densityMultiplier= 2.4f;
+    DirectX::XMFLOAT3 cloudBoundsMin = { -8.0f, -1.0f, -8.0f };
+    float densityMultiplier = 1.0f;
 
-    float noiseCutoffThreshold = 0.48f;
-    float erosionStrength  = 0.35f;
-    float bottomFade       = 0.12f;
-    float topFade          = 0.25f;
+    DirectX::XMFLOAT3 cloudBoundsMax = { 8.0f, 2.0f, 8.0f };
+    float stepSize = 0.1f;
 
-    DirectX::XMFLOAT2 windDirection = { 1.0f, 0.2f };
-    float windSpeed        = 0.03f;
-    float seed             = 17.0f;
+    std::uint32_t maxViewSteps = 128;
+    float extinctionCoefficient = 1.0f;
+    float transmittanceThreshold = 0.01f;
+    std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
 
-    int baseOctaves        = 4;
-    int detailOctaves      = 3;
-    int renderMode         = static_cast<int>(CloudRenderMode::LitCloud);
-    int useTextureCache    = 1;
+    float baseNoiseScale = 0.35f;
+    float coverage = 0.55f;
+    float windSpeed = 0.25f;
+    float noiseOffset = 0.0f;
 
-    int showBounds         = 0;
-    int lightSteps         = 8;
-    float sunAzimuth       = 45.0f;
-    float sunElevation     = 35.0f;
+    DirectX::XMFLOAT3 windDirection = { 0.9701425f, 0.0f, 0.2425356f };
+    float bottomFadeEnd = 0.20f;
 
-    float sunIntensity     = 6.0f;
-    float ambientIntensity = 0.90f;
-    float phaseG           = 0.55f;
-    float lightAbsorption  = 1.05f;
+    float topFadeStart = 0.80f;
+    float minimumLocalThicknessFraction = 0.40f;
+    float localHeightVariation = 0.0f;
+    float cumulusTopBoost = 0.35f;
 
-    float coverage             = 0.62f;
-    float baseErosion          = 0.24f;
-    float powderStrength       = 0.65f;
-    float multiScatterStrength = 0.35f;
+    float detailNoiseScale = 2.5f;
+    float detailErosionStrength = 0.25f;
+    float detailWindSpeed = 0.45f; // Legacy 전용. Physical은 windSpeed를 공유한다.
+    float detailNoiseOffset = 17.3f;
 
-    float silverLiningStrength = 0.25f;
-    float jitterStrength       = 0.80f;
-    int   viewSteps            = 96;
-    float skyExposure          = 1.0f;
-
-    float cloudBaseHeight      = 2.0f;
-    float cloudThickness       = 3.0f;
-    float cloudNoiseWorldSize  = 14.0f;
-    float maxMarchDistance     = 120.0f;
-
-    float weatherWorldSize         = 100.0f;
-    float weatherCoverageStrength  = 0.85f;
-    float weatherTypeBias          = 0.62f;
-    float heightVariation          = 0.45f;
-
-    float thicknessVariation   = 0.40f;
-    float horizonFadeStart     = 70.0f;
-    float horizonFadeEnd       = 120.0f;
-    float weatherSeed          = 31.0f;
+    float weatherMapWorldSize = 16.0f;
+    float weatherMapWindSpeed = 0.10f; // Legacy 전용. Physical은 windSpeed를 공유한다.
+    DirectX::XMFLOAT2 weatherMapOffset = { 0.0f, 0.0f };
 };
 
-static_assert(sizeof(CloudParameters) == 176, "CloudParameters must match CloudCB");
-
-struct NoisePreviewSettings
-{
-    int   axis        = static_cast<int>(NoiseSliceAxis::XY);
-    float slice       = 0.5f;
-    bool  freeze      = true;
-    float previewTime = 0.0f;
-};
-
-inline CloudParameters DefaultCloudParameters()
-{
-    return CloudParameters{};
-}
-
-inline CloudParameters CumulusCloudParameters()
-{
-    CloudParameters p;
-    p.basePeriod = 4;
-    p.detailPeriod = 16;
-    p.noiseCutoffThreshold = 0.46f;
-    p.densityMultiplier = 3.0f;
-    p.erosionStrength = 0.38f;
-    p.bottomFade = 0.08f;
-    p.topFade = 0.26f;
-    p.coverage = 0.66f;
-    p.baseErosion = 0.18f;
-    p.powderStrength = 0.72f;
-    p.multiScatterStrength = 0.38f;
-    p.silverLiningStrength = 0.55f;
-    p.sunElevation = 28.0f;
-    p.sunIntensity = 6.5f;
-    p.ambientIntensity = 1.00f;
-    return p;
-}
-
-inline CloudParameters StratusCloudParameters()
-{
-    CloudParameters p;
-    p.basePeriod = 6;
-    p.detailPeriod = 20;
-    p.noiseCutoffThreshold = 0.56f;
-    p.densityMultiplier = 1.2f;
-    p.erosionStrength = 0.25f;
-    p.bottomFade = 0.05f;
-    p.topFade = 0.15f;
-    p.coverage = 0.78f;
-    p.baseErosion = 0.12f;
-    p.powderStrength = 0.35f;
-    p.multiScatterStrength = 0.45f;
-    p.silverLiningStrength = 0.30f;
-    return p;
-}
-
-inline CloudParameters CumulusShowcaseCloudParameters()
-{
-    CloudParameters p = CumulusCloudParameters();
-    p.noiseWorldScale = 1.0f;
-    p.basePeriod = 5;
-    p.detailPeriod = 20;
-    p.densityMultiplier = 3.20f;
-    p.noiseCutoffThreshold = 0.45f;
-    p.coverage = 0.78f;
-    p.baseErosion = 0.18f;
-    p.erosionStrength = 0.36f;
-    p.sunAzimuth = 32.0f;
-    p.sunElevation = 24.0f;
-    p.sunIntensity = 7.5f;
-    p.ambientIntensity = 0.88f;
-    p.phaseG = 0.62f;
-    p.lightAbsorption = 1.25f;
-    p.lightSteps = 8;
-    p.silverLiningStrength = 0.28f;
-    p.viewSteps = 96;
-    return p;
-}
-
-inline CloudParameters CumulusWideShowcaseCloudParameters()
-{
-    CloudParameters p = CumulusShowcaseCloudParameters();
-    p.coverage = 0.58f;
-    p.densityMultiplier = 1.85f;
-    p.baseErosion = 0.18f;
-    p.erosionStrength = 0.36f;
-    p.ambientIntensity = 0.72f;
-    p.multiScatterStrength = 0.28f;
-    p.lightAbsorption = 1.15f;
-    p.sunIntensity = 6.8f;
-    p.powderStrength = 0.55f;
-    p.silverLiningStrength = 0.42f;
-    p.viewSteps = 128;
-    p.cloudBaseHeight = 2.0f;
-    p.cloudThickness = 3.8f;
-    p.cloudNoiseWorldSize = 10.0f;
-    p.maxMarchDistance = 96.0f;
-    p.weatherWorldSize = 100.0f;
-    p.weatherCoverageStrength = 0.90f;
-    p.weatherTypeBias = 0.70f;
-    p.heightVariation = 0.45f;
-    p.thicknessVariation = 0.42f;
-    p.horizonFadeStart = 60.0f;
-    p.horizonFadeEnd = 96.0f;
-    p.weatherSeed = 31.0f;
-    return p;
-}
+static_assert(sizeof(CloudParameters) == 128, "CloudParameters must match CloudCB");

@@ -1,5 +1,6 @@
 # ---- 빌드 산출물 ----
 build/
+/build-stage8-replan/
 out/
 bin/
 lib/
@@ -17,15 +18,20 @@ cmake_install.cmake
 
 # ---- 컴파일된 셰이더 캐시 ----
 *.cso
-!assets/noise-cache/bundle/*.cso
 *.pdb
 *.ilk
 *.exe
 *.obj
-imgui.ini
 
 # ---- 로컬 전용 AI 도구 설정 ----
 CLAUDE.md
 
-# ---- 로컬 전용 개인 메모 ----
-/notes/interview/
+# AI 에이전트 전용 로컬 계획서
+/doc/Volumetric Cloud 프로젝트 단계별 구현 계획서.pdf
+
+# 단계별 학습·사용자 검증·개인 면접 자료 (로컬 전용)
+/notes/
+
+# Noise Lab 로컬 출력과 ImGui 창 배치
+/captures/
+/imgui.ini

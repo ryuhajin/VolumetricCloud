@@ -1,38 +1,101 @@
-# 폴더 구조
+# 폴더 / 파일 구조
 
 ```text
 VolumetricCloud/
-├─ CMakeLists.txt
-├─ README.md / AGENTS.md
-├─ assets/noise-cache/bundle/       # 배포 기본 .cso, manifest, 128³/64³ volume, 512² weather
+├─ CMakeLists.txt                  # 앱과 단계별 수치·D3D smoke 테스트 빌드
+├─ README.md / AGENTS.md           # 사용자 안내 / AI 작업 규칙
 ├─ doc/
-│  ├─ ARCHITECTURE.md
-│  ├─ RAYMARCHING.md
+│  ├─ ARCHITECTURE.md              # 현재 파이프라인과 상수버퍼
+│  ├─ RAYMARCHING.md               # 교차·적분·noise 밀도 수식
+│  ├─ PERFORMANCE.md               # 동일 조건 성능 측정 절차와 지표 범위
+│  ├─ STAGE13_4B_DEBUGGING_GUIDE.md # F1~F4·단축키·카메라·형상 판독 초보자 가이드
+│  ├─ ROADMAP.md                   # 사용자 승인 기반 0~15단계
+│  ├─ VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md # 단계 13~15 포트폴리오 구현·승인 계획
 │  ├─ FOLDER_STRUCTURE.md
-│  ├─ ROADMAP.md
-│  ├─ changes/                     # 브랜치별 설계 판단·구현·검증 개발 기록
-│  │  └─ TEMPLATE.md
-│  └─ CONTRIBUTING.md
-├─ notes/interview/                 # 개인 면접 메모(로컬 전용, Git 제외)
+│  ├─ CONTRIBUTING.md
+│  └─ changes/
+│     └─ feature-rebuild-foundation.md
 ├─ src/
 │  ├─ main.cpp
-│  ├─ Window.* / Camera.*
-│  ├─ Renderer.*
-│  ├─ CloudParameters.h
-│  ├─ DebugUI.*
-│  └─ NoiseCacheManager.*
+│  ├─ Window.* / Camera.*          # 입력, 오빗과 고정 검증 카메라
+│  ├─ Renderer.*                   # 진단 장면, 깊이, 풀스크린 합성
+│  ├─ NoiseLab.*                   # F1~F4 ImGui, 최적화 비교, PNG/schema 31 snapshot 내보내기
+│  ├─ CloudAppearance.*            # 13-4E 외형 preset, density CPU 기준, Custom JSON 원자 저장
+│  ├─ WeatherMap.*                 # 256² CPU periodic Perlin/Channel Debug RGBA 생성과 해시
+│  ├─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
+│  ├─ CloudLodParameters.h         # 16바이트 Detail 거리 LOD 설정(b8)
+│  ├─ OptimizationParameters.h     # 64바이트 View/Light 최적화 설정과 preset(b9)
+│  ├─ CloudShapeParameters.h       # 64바이트 물리 두께·타입 Vertical Profile 설정(b7)
+│  ├─ CloudDomainParameters.h      # AABB/최종 평면 도메인 선택과 추적 한계(b5)
+│  ├─ LightParameters.h            # CPU/HLSL 공유 태양광 설정과 프리셋
+│  ├─ EnvironmentParameters.h      # CPU/HLSL 공유 환경광·다중 산란 설정
+│  ├─ Stage7PhaseMath.h            # HG·방향 부호·Dual-lobe CPU 기준
+│  ├─ Stage8AmbientMath.h          # 높이·AO·octave CPU 기준
+│  ├─ Stage13ScaleMath.h           # 13-2 런타임/CPU 공유 meter 상사 변환 기준
+│  ├─ Stage13OpenWorldMath.h       # 13-3 실제 km 시작값·파장·step budget 기준
+│  ├─ Stage13NoiseVolumeMath.h     # 13-4 Texture3D 규격·periodic CPU 기준
+│  ├─ Stage13CameraPresets.h       # 단일 씬 F5~F8 위치/타깃 기준
+│  ├─ Stage13SceneMath.h           # 지면·건물·50km·입력·이동·숫자 매핑 기준
+│  ├─ Stage13OpticsLightingMath.h  # 13-5 km 광학·Light 후보·Detail LOD CPU 기준
+│  ├─ Stage9OptimizationMath.h     # 가변 View 구간·coarse rewind·cone weight CPU 기준
+│  ├─ Stage13WeatherShapeMath.h    # 13-4B Weather 두께 분포·타입 프로파일 CPU 기준
+│  ├─ NoiseVolumeCache.h           # 테스트 전용 3D noise cache·hash 검증
+│  ├─ Stage13SimilarityDiagnostics.h # float GPU 프레임의 배율별 오차·연결 블록 수치 비교
+│  ├─ Stage13CloudDomainMath.h     # Y 평면층 교차·거리 fade CPU 기준
+│  ├─ FrameProfiler.*              # CPU 시간·8-slot 비동기 GPU timestamp 계측
+│  ├─ Stage1VolumeMath.h           # AABB·상수 밀도 CPU 테스트 기준
+│  ├─ Stage2NoiseMath.h            # value noise·coverage CPU 테스트 기준
+│  ├─ Stage3HeightMath.h           # 높이 fraction·profile CPU 테스트 기준
+│  ├─ Stage4DetailMath.h           # Detail 좌표·침식·샘플 생략 CPU 기준
+│  ├─ Stage5WeatherMath.h          # Weather UV·coverage·type profile CPU 기준
+│  └─ Stage6LightMath.h            # 광학 깊이·단일 산란 CPU 기준
 ├─ shaders/
-│  ├─ Fullscreen.hlsl
-│  ├─ VolumetricClouds.hlsl
-│  ├─ NoisePreview.hlsl
-│  ├─ NoiseVolumeCS.hlsl
-│  ├─ CloudNoise.hlsli
-│  └─ Ray.hlsli
-└─ third_party/imgui/               # Dear ImGui Git submodule + Win32/DX11 backend
+│  ├─ DiagnosticScene.hlsl         # 불투명 평면·박스
+│  ├─ Fullscreen.hlsl              # SV_VertexID 풀스크린 삼각형
+│  ├─ VolumetricClouds.hlsl        # 단계 8 직접·환경·다중 산란 적분·합성 패스
+│  ├─ NoiseLab.hlsl                # XY/XZ/YZ 고정 단면 픽셀 셰이더
+│  ├─ NoiseVolume.hlsl             # Base/Detail periodic Texture3D compute 생성
+│  ├─ NoiseVolumeParameters.hlsli  # CPU와 공유하는 96바이트 NoiseVolumeCB(b6)
+│  ├─ CloudParameters.hlsli        # CPU와 공유하는 128바이트 CloudCB
+│  ├─ CloudLodParameters.hlsli     # CPU와 공유하는 16바이트 CloudLodCB(b8)
+│  ├─ OptimizationParameters.hlsli # CPU와 공유하는 64바이트 OptimizationCB(b9)
+│  ├─ CloudShapeParameters.hlsli   # CPU와 공유하는 64바이트 CloudShapeCB(b7)
+│  ├─ CloudDomainParameters.hlsli  # CPU와 공유하는 32바이트 DomainCB(b5)와 교차 선택
+│  ├─ CloudAdvection.hlsli         # Physical Weather/Base/Detail 공통 수평 Bulk 이동
+│  ├─ Noise.hlsli                  # 구름과 Lab 공용 Base/Detail density 라이브러리
+│  ├─ Weather.hlsli                # t2 Weather 샘플·구름 종류 높이 프로파일
+│  ├─ LightParameters.hlsli        # CPU와 공유하는 80바이트 LightCB(b3)
+│  ├─ CloudLighting.hlsli          # 태양 광학 깊이·직접 단일 산란
+│  ├─ PhaseFunction.hlsli          # 전방·후방 HG와 Phase Factor
+│  ├─ EnvironmentParameters.hlsli  # CPU와 공유하는 80바이트 EnvironmentCB(b4)
+│  ├─ CloudEnvironment.hlsli       # 하늘·지면·AO·다중 산란 근사
+│  └─ Ray.hlsli                    # 안전한 AABB 교차
+├─ tests/
+│  ├─ FoundationTests.cpp          # 카메라 역투영 CPU 회귀 테스트
+│  ├─ Stage1VolumeMathTests.cpp    # AABB·Beer-Lambert 회귀 테스트
+│  ├─ Stage2NoiseMathTests.cpp     # value noise·coverage·wind 회귀 테스트
+│  ├─ Stage3HeightMathTests.cpp    # 높이 fraction·fade·밀도 회귀 테스트
+│  ├─ Stage4DetailMathTests.cpp    # Detail erosion·sample skip 회귀 테스트
+│  ├─ Stage5WeatherMathTests.cpp   # Weather Map·UV·cloud type 회귀 테스트
+│  ├─ Stage6LightMathTests.cpp     # 태양 투과율·단일 산란 회귀 테스트
+│  ├─ FrameProfilerMathTests.cpp   # EMA·FPS·입력 검증 회귀 테스트
+│  ├─ Stage7PhaseMathTests.cpp     # 방향·HG·프리셋·안정성 회귀 테스트
+│  ├─ Stage8AmbientMathTests.cpp   # 환경광·AO·octave 회귀 테스트
+│  ├─ Stage9OptimizationMathTests.cpp # preset ABI·가변 step·cone 구간 회귀
+│  ├─ Stage13ScaleMathTests.cpp    # 1×~1000× 공간 단위 상사 불변식 테스트
+│  ├─ Stage13OpenWorldMathTests.cpp # 13-3 실제값·View/Light budget·fade 테스트
+│  ├─ Stage13NoiseVolumeMathTests.cpp # 13-4 규격·주기·cache CPU 테스트
+│  ├─ Stage13WeatherShapeMathTests.cpp # 13-4B 분포·두께·프로파일·주파수 테스트
+│  ├─ Stage13CameraControlMathTests.cpp # F5~F8 교차·행렬·휠 줌 테스트
+│  ├─ Stage13SceneMathTests.cpp    # 단일 씬 크기·입력·이동·디버그 매핑 회귀
+│  ├─ Stage13OpticsLightingMathTests.cpp # km τ·Light 후보·Detail LOD 회귀
+│  ├─ CloudAppearanceTests.cpp     # 13-4E 점유율·preset·density·Custom JSON 회귀
+│  ├─ Stage13SimilarityCameraMathTests.cpp # double 기준과 float 역 VP 레이 정밀도 비교
+│  └─ Stage13CloudDomainMathTests.cpp # 평면층 교차·깊이 제한·거리 fade 회귀 테스트
+├─ notes/                           # 로컬 단계 학습·사용자 검증 문서와 개인 메모, Git 제외
+├─ third_party/imgui/              # Win32/DX11 개발 UI submodule
+├─ captures/noise-lab/             # 로컬 PNG/JSON 출력, Git 제외
+└─ build/                          # CMake 산출물, Git 제외
 ```
 
-사용자 캐시는 저장소 밖 `%LOCALAPPDATA%\VolumetricCloud\cache\bundle`에 저장된다. 사용자 프리셋은 `%LOCALAPPDATA%\VolumetricCloud\cloud-presets.ini`에 저장된다. `build/`는 생성물이며 Git에서 제외한다.
-
-`doc/changes/`에는 코드를 수정하는 브랜치마다 Markdown 문서 하나를 둔다. 브랜치 이름의 `/`는 `-`로 바꾸며, 이 문서는 결과만 나열하지 않고 문제를 발견한 근거와 선택하지 않은 대안까지 기록한다.
-
-`notes/interview/`는 공개 개발 기록을 바탕으로 개인 면접 답변을 정리하는 로컬 전용 폴더다. `.gitignore`로 제외하며 저장소나 PR에 포함하지 않는다.
+`doc/Volumetric Cloud 프로젝트 단계별 구현 계획서.pdf`는 AI 에이전트 로컬 참고 자료이며 `.gitignore`로 제외한다.

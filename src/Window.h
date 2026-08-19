@@ -8,6 +8,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include "Stage13CameraPresets.h"
 
 class Camera;   // 전방 선언 (구현은 Window.cpp 에서 포함)
 class Renderer;
@@ -15,23 +16,33 @@ class Renderer;
 class Window
 {
 public:
-    Window(HINSTANCE hInstance, int width, int height, const wchar_t* title);
+    Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
+           bool showWindow = true);
     ~Window();
 
     // 입력을 받을 대상 연결
     void SetCamera(Camera* camera)     { m_camera = camera; }
     void SetRenderer(Renderer* renderer) { m_renderer = renderer; }
+    void ApplyInitialPortfolioCamera();
 
     // 대기 중인 메시지를 모두 처리. 종료(WM_QUIT) 시 false 반환.
     bool ProcessMessages();
+    void UpdateCameraMovement(float deltaSeconds);
 
     HWND GetHandle() const { return m_hwnd; }
     int  GetWidth()  const { return m_width; }
     int  GetHeight() const { return m_height; }
+    void RefreshDebugTitle() { UpdateDebugTitle(); }
 
 private:
     static LRESULT CALLBACK WndProcStatic(HWND, UINT, WPARAM, LPARAM);
     LRESULT WndProc(HWND, UINT, WPARAM, LPARAM);
+    void UpdateDebugTitle();
+    bool HandleGlobalDebugShortcut(WPARAM virtualKey);
+    void ApplyCameraPreset(Stage13CameraPresetId id,
+                           const wchar_t* displayName);
+    void SetCameraPresetName(const wchar_t* displayName);
+    void MarkCameraManuallyAdjusted();
 
     HWND      m_hwnd    = nullptr;
     int       m_width   = 0;
@@ -39,7 +50,6 @@ private:
 
     Camera*   m_camera   = nullptr;
     Renderer* m_renderer = nullptr;
-
     // 마우스 드래그 상태
     bool m_dragging  = false;
     int  m_lastMouseX = 0;
