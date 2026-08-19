@@ -85,6 +85,9 @@ const char* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::AccumulatedGroundBounce: return "AccumulatedGroundBounce";
     case CloudDebugMode::AccumulatedMultipleScattering: return "AccumulatedMultipleScattering";
     case CloudDebugMode::DetailLodFactor: return "DetailLodFactor";
+    case CloudDebugMode::SilverLiningContribution: return "SilverLiningContribution";
+    case CloudDebugMode::ShapedSunVisibility: return "ShapedSunVisibility";
+    case CloudDebugMode::AmbientVisibility: return "AmbientVisibility";
     default: return "Unknown";
     }
 }
@@ -466,6 +469,569 @@ int RunStage13OpenWorldSmokeTest(Renderer& renderer, Camera& camera)
     return renderer.HasDebugLayerErrors() ? 8 : 0;
 }
 
+double ScalarSsim(const CloudDiagnosticFrame& reference,
+                  const CloudDiagnosticFrame& current)
+{
+    if (reference.pixels.empty() ||
+        reference.pixels.size() != current.pixels.size())
+        return 0.0;
+    double referenceMean = 0.0;
+    double currentMean = 0.0;
+    for (std::size_t index = 0; index < reference.pixels.size(); ++index)
+    {
+        referenceMean += reference.pixels[index].x;
+        currentMean += current.pixels[index].x;
+    }
+    referenceMean /= reference.pixels.size();
+    currentMean /= current.pixels.size();
+    double referenceVariance = 0.0;
+    double currentVariance = 0.0;
+    double covariance = 0.0;
+    for (std::size_t index = 0; index < reference.pixels.size(); ++index)
+    {
+        const double referenceDelta =
+            reference.pixels[index].x - referenceMean;
+        const double currentDelta = current.pixels[index].x - currentMean;
+        referenceVariance += referenceDelta * referenceDelta;
+        currentVariance += currentDelta * currentDelta;
+        covariance += referenceDelta * currentDelta;
+    }
+    const double denominator = std::max<std::size_t>(
+        reference.pixels.size() - 1u, 1u);
+    referenceVariance /= denominator;
+    currentVariance /= denominator;
+    covariance /= denominator;
+    constexpr double c1 = 0.01 * 0.01;
+    constexpr double c2 = 0.03 * 0.03;
+    return ((2.0 * referenceMean * currentMean + c1) *
+            (2.0 * covariance + c2)) /
+        ((referenceMean * referenceMean + currentMean * currentMean + c1) *
+         (referenceVariance + currentVariance + c2));
+}
+
+int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
+{
+    using stage13diagnostics::ComparisonKind;
+    struct QualityResult
+    {
+        std::string appearance;
+        std::string preset;
+        double densitySsim = 0.0;
+        double densityRmse = 0.0;
+        double viewSsim = 0.0;
+        double viewRmse = 0.0;
+        double lightMae = 0.0;
+        double lightP99 = 0.0;
+        OptimizationParameters parameters;
+        float earlyExitThreshold = 0.0f;
+        bool qualityPassed = false;
+    };
+    std::vector<QualityResult> qualityResults;
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetOpaqueSceneForTest(false);
+    if (!renderer.ApplyStage13OpenWorldPreset() ||
+        renderer.OptimizationPreset() != Stage9OptimizationPreset::Balanced ||
+        !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus) ||
+        renderer.AppearancePreset() != CloudAppearancePreset::Stratus ||
+        !renderer.ApplyCloudAppearancePreset(
+            CloudAppearancePreset::DenseMixedDefault) ||
+        renderer.AppearancePreset() != CloudAppearancePreset::DenseMixedDefault ||
+        !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus) ||
+        renderer.AppearancePreset() != CloudAppearancePreset::Stratus)
+        return 2;
+
+    camera.SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    const Stage13CameraPreset& horizon = stage13camera::Get(
+        Stage13CameraPresetId::GroundHorizon);
+    camera.SetLookAt(horizon.position, horizon.target);
+
+    const struct AppearanceCase
+    {
+        const char* name;
+        CloudAppearancePreset preset;
+    } appearances[] = {
+        { "Dense", CloudAppearancePreset::DenseMixedDefault },
+        { "Stratus", CloudAppearancePreset::Stratus },
+        { "Cumulus", CloudAppearancePreset::Cumulus },
+    };
+    const struct Candidate
+    {
+        const char* name;
+        Stage9OptimizationPreset preset;
+        std::uint32_t coneOverride;
+        float angleOverride;
+        float farFractionOverride;
+    } candidates[] = {
+        { "Balanced", Stage9OptimizationPreset::Balanced, 0u, 0.0f, 0.0f },
+        { "BalancedCone8", Stage9OptimizationPreset::Balanced, 8u, 3.0f, 0.85f },
+        { "BalancedCone12", Stage9OptimizationPreset::Balanced, 12u, 3.0f, 0.85f },
+        { "Conservative", Stage9OptimizationPreset::Conservative, 0u, 0.0f, 0.0f },
+    };
+
+    bool finitePassed = true;
+    CloudDiagnosticFrame denseReferenceDensity;
+    CloudDiagnosticFrame stratusReferenceDensity;
+    for (const AppearanceCase& appearance : appearances)
+    {
+        if (!renderer.ApplyCloudAppearancePreset(appearance.preset))
+            return 3;
+        renderer.ApplyStage9OptimizationPreset(
+            Stage9OptimizationPreset::ApprovedReference);
+        CloudDiagnosticFrame referenceDensity;
+        CloudDiagnosticFrame referenceViewDepth;
+        if (!renderer.CaptureCloudDiagnosticFrame(
+                camera, 0.0f, CloudDebugMode::FinalDensity,
+                referenceDensity) ||
+            !renderer.CaptureCloudDiagnosticFrame(
+                camera, 0.0f, CloudDebugMode::ViewOpticalDepth,
+                referenceViewDepth))
+            return 4;
+        if (appearance.preset == CloudAppearancePreset::DenseMixedDefault)
+            denseReferenceDensity = referenceDensity;
+        else if (appearance.preset == CloudAppearancePreset::Stratus)
+            stratusReferenceDensity = referenceDensity;
+        renderer.ApplyStage9OptimizationPreset(
+            Stage9OptimizationPreset::FineReference);
+        CloudDiagnosticFrame referenceLight;
+        if (!renderer.CaptureCloudDiagnosticFrame(
+                camera, 0.0f, CloudDebugMode::LightTransmittance,
+                referenceLight))
+            return 4;
+
+        for (const Candidate& candidate : candidates)
+        {
+            renderer.ApplyStage9OptimizationPreset(candidate.preset);
+            if (candidate.coneOverride != 0u)
+                renderer.ConfigureStage9ConeForValidation(
+                    candidate.coneOverride, candidate.angleOverride,
+                    candidate.farFractionOverride);
+            CloudDiagnosticFrame density;
+            CloudDiagnosticFrame viewDepth;
+            CloudDiagnosticFrame light;
+            if (!renderer.CaptureCloudDiagnosticFrame(
+                    camera, 0.0f, CloudDebugMode::FinalDensity, density) ||
+                !renderer.CaptureCloudDiagnosticFrame(
+                    camera, 0.0f, CloudDebugMode::ViewOpticalDepth,
+                    viewDepth) ||
+                !renderer.CaptureCloudDiagnosticFrame(
+                    camera, 0.0f, CloudDebugMode::LightTransmittance, light))
+                return 5;
+            for (const CloudDiagnosticFrame* frame : { &density, &viewDepth, &light })
+                for (const DirectX::XMFLOAT4& pixel : frame->pixels)
+                    finitePassed = finitePassed && std::isfinite(pixel.x) &&
+                        std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+                        std::isfinite(pixel.w);
+
+            const auto densityMetric = stage13diagnostics::CompareFrames(
+                referenceDensity, density, nullptr, nullptr,
+                ComparisonKind::Scalar, 0.01, true);
+            const auto viewMetric = stage13diagnostics::CompareFrames(
+                referenceViewDepth, viewDepth, nullptr, nullptr,
+                ComparisonKind::Scalar, 0.01, false);
+            const auto lightMetric = stage13diagnostics::CompareFrames(
+                referenceLight, light, nullptr, nullptr,
+                ComparisonKind::Scalar, 0.03, false);
+            const double densitySsim = ScalarSsim(referenceDensity, density);
+            const double viewSsim = ScalarSsim(referenceViewDepth, viewDepth);
+            const bool qualityCandidate = densitySsim >= 0.99 &&
+                viewSsim >= 0.99 && densityMetric.rmse <= 0.01 &&
+                viewMetric.rmse <= 0.01 && lightMetric.mae <= 0.01 &&
+                lightMetric.p99 <= 0.03;
+            std::ostringstream line;
+            line << std::fixed << std::setprecision(8)
+                 << "[STAGE9][" << appearance.name << "]["
+                 << candidate.name << "] DENSITY_SSIM=" << densitySsim
+                 << " DENSITY_RMSE=" << densityMetric.rmse
+                 << " VIEW_SSIM=" << viewSsim
+                 << " VIEW_RMSE=" << viewMetric.rmse
+                 << " LIGHT_MAE=" << lightMetric.mae
+                 << " LIGHT_P99=" << lightMetric.p99 << ' '
+                 << (qualityCandidate ? "AUTO_QUALITY_PASS" : "REPORT");
+            WriteDiagnosticLine(line.str());
+            qualityResults.push_back({
+                appearance.name, candidate.name, densitySsim,
+                densityMetric.rmse, viewSsim, viewMetric.rmse,
+                lightMetric.mae, lightMetric.p99,
+                renderer.OptimizationSettings(),
+                renderer.CloudSettings().transmittanceThreshold,
+                qualityCandidate });
+        }
+    }
+    const bool sameAppearanceFrameSize =
+        denseReferenceDensity.width == stratusReferenceDensity.width &&
+        denseReferenceDensity.height == stratusReferenceDensity.height &&
+        denseReferenceDensity.pixels.size() ==
+            stratusReferenceDensity.pixels.size() &&
+        !denseReferenceDensity.pixels.empty();
+    bool appearanceReferenceDifferent = false;
+    if (sameAppearanceFrameSize)
+    {
+        for (std::size_t index = 0;
+             index < denseReferenceDensity.pixels.size(); ++index)
+        {
+            const DirectX::XMFLOAT4& dense =
+                denseReferenceDensity.pixels[index];
+            const DirectX::XMFLOAT4& stratus =
+                stratusReferenceDensity.pixels[index];
+            if (std::abs(dense.x - stratus.x) > 1.0e-6f ||
+                std::abs(dense.y - stratus.y) > 1.0e-6f ||
+                std::abs(dense.z - stratus.z) > 1.0e-6f ||
+                std::abs(dense.w - stratus.w) > 1.0e-6f)
+            {
+                appearanceReferenceDifferent = true;
+                break;
+            }
+        }
+    }
+    if (!sameAppearanceFrameSize || !appearanceReferenceDifferent)
+        return 8;
+    WriteDiagnosticLine(
+        "[STAGE9][APPEARANCE] Dense and Stratus reference frames differ");
+
+    std::error_code error;
+    const std::filesystem::path directory =
+        std::filesystem::path(VCLOUD_SHADER_SOURCE_DIR).parent_path() /
+        "captures" / "stage9";
+    std::filesystem::create_directories(directory, error);
+    if (error)
+        return 6;
+    std::ofstream csv(directory / "quality.csv",
+                      std::ios::binary | std::ios::trunc);
+    csv << "adapter,driver,appearance,preset,density_ssim,density_rmse,"
+           "view_ssim,view_rmse,light_mae,light_p99,precheck,empty_search,"
+           "early_exit,distance_step,coarse_multiplier,far_multiplier,"
+           "cone_taps,cone_angle_degrees,cone_far_fraction,exit_threshold,quality_pass\n";
+    for (const QualityResult& result : qualityResults)
+        csv << '"' << renderer.AdapterName() << "\",\""
+            << renderer.DriverVersion() << "\",\"" << result.appearance
+            << "\",\"" << result.preset << "\"," << result.densitySsim
+            << ',' << result.densityRmse << ',' << result.viewSsim << ','
+            << result.viewRmse << ',' << result.lightMae << ','
+            << result.lightP99 << ','
+            << result.parameters.supportPrecheckEnabled << ','
+            << result.parameters.emptySpaceSkippingEnabled << ','
+            << result.parameters.viewEarlyExitEnabled << ','
+            << result.parameters.distanceStepEnabled << ','
+            << result.parameters.coarseStepMultiplier << ','
+            << result.parameters.farStepMultiplier << ','
+            << result.parameters.coneSampleCount << ','
+            << result.parameters.coneAngleDegrees << ','
+            << result.parameters.lightFarSampleFraction << ','
+            << result.earlyExitThreshold << ','
+            << (result.qualityPassed ? 1 : 0) << '\n';
+    std::ofstream json(directory / "quality.json",
+                       std::ios::binary | std::ios::trunc);
+    json << "{\n  \"adapter\": \"" << renderer.AdapterName()
+         << "\",\n  \"driver\": \"" << renderer.DriverVersion()
+         << "\",\n  \"appearanceReferenceDifferent\": true,\n"
+         << "  \"results\": [\n";
+    for (std::size_t index = 0; index < qualityResults.size(); ++index)
+    {
+        const QualityResult& result = qualityResults[index];
+        json << "    {\"appearance\": \"" << result.appearance
+             << "\", \"preset\": \"" << result.preset
+             << "\", \"densitySsim\": " << result.densitySsim
+             << ", \"densityRmse\": " << result.densityRmse
+             << ", \"viewSsim\": " << result.viewSsim
+             << ", \"viewRmse\": " << result.viewRmse
+             << ", \"lightMae\": " << result.lightMae
+             << ", \"lightP99\": " << result.lightP99
+             << ", \"parameters\": {\"precheck\": "
+             << result.parameters.supportPrecheckEnabled
+             << ", \"emptySearch\": "
+             << result.parameters.emptySpaceSkippingEnabled
+             << ", \"earlyExit\": "
+             << result.parameters.viewEarlyExitEnabled
+             << ", \"distanceStep\": "
+             << result.parameters.distanceStepEnabled
+             << ", \"coarseMultiplier\": "
+             << result.parameters.coarseStepMultiplier
+             << ", \"farMultiplier\": "
+             << result.parameters.farStepMultiplier
+             << ", \"coneTaps\": " << result.parameters.coneSampleCount
+             << ", \"coneAngleDegrees\": "
+             << result.parameters.coneAngleDegrees
+             << ", \"coneFarFraction\": "
+             << result.parameters.lightFarSampleFraction
+             << ", \"exitThreshold\": " << result.earlyExitThreshold
+             << "}, \"qualityPass\": "
+             << (result.qualityPassed ? "true" : "false") << "}"
+             << (index + 1u == qualityResults.size() ? "\n" : ",\n");
+    }
+    json << "  ]\n}\n";
+    if (!csv.good() || !json.good())
+        return 7;
+    // 자동 측정 뒤에는 2026-08-19 사용자 승인 기본값으로 되돌린다.
+    renderer.ApplyStage9OptimizationPreset(
+        Stage9OptimizationPreset::Balanced);
+    return finitePassed && !renderer.HasDebugLayerErrors() ? 0 : 1;
+}
+
+int RunStage9PerformanceTest(Renderer& renderer, Camera& camera)
+{
+    constexpr int kWarmupFrames = 120;
+    constexpr std::size_t kSamples = 600u;
+    constexpr int kMaximumAttempts = 1800;
+    struct Result
+    {
+        std::string preset;
+        std::string scene;
+        double average = 0.0;
+        double p50 = 0.0;
+        double p95 = 0.0;
+        OptimizationParameters parameters{};
+        std::uint32_t maxViewSteps = 0u;
+        float viewStepMeters = 0.0f;
+        std::uint32_t maxLightSteps = 0u;
+        float lightStepMeters = 0.0f;
+        float exitThreshold = 0.0f;
+    };
+    const struct Scene
+    {
+        const char* name;
+        CloudAppearancePreset appearance;
+        Stage13CameraPresetId cameraPreset;
+        bool zenith;
+        bool opaque;
+    } scenes[] = {
+        { "DenseZenith", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::HeroDepth, true, false },
+        { "DenseHorizon", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "StratusHorizon", CloudAppearancePreset::Stratus,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "CumulusHorizon", CloudAppearancePreset::Cumulus,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "CumulusInside", CloudAppearancePreset::Cumulus,
+          Stage13CameraPresetId::InsideLayer, false, false },
+        { "AboveLayer", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::AboveLayer, false, false },
+        { "DepthOccluded", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::HeroDepth, false, true },
+    };
+    const struct PerformancePreset
+    {
+        const char* name;
+        Stage9OptimizationPreset base;
+        std::uint32_t coneOverride;
+        float angleOverride;
+        float farFractionOverride;
+    } presets[] = {
+        { "Balanced", Stage9OptimizationPreset::Balanced, 0u, 0.0f, 0.0f },
+        { "Conservative", Stage9OptimizationPreset::Conservative, 0u, 0.0f, 0.0f },
+        { "Approved Reference", Stage9OptimizationPreset::ApprovedReference, 0u, 0.0f, 0.0f },
+    };
+
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetDebugMode(CloudDebugMode::Composite);
+    camera.SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    if (!renderer.ApplyStage13OpenWorldPreset())
+        return 2;
+
+    std::vector<Result> results;
+    for (const PerformancePreset& preset : presets)
+    {
+        renderer.ApplyStage9OptimizationPreset(preset.base);
+        if (preset.coneOverride != 0u)
+            renderer.ConfigureStage9ConeForValidation(
+                preset.coneOverride, preset.angleOverride,
+                preset.farFractionOverride);
+        for (const Scene& scene : scenes)
+        {
+            if (!renderer.ApplyCloudAppearancePreset(scene.appearance))
+                return 3;
+            renderer.SetOpaqueSceneForTest(scene.opaque);
+            const Stage13CameraPreset& cameraPreset =
+                stage13camera::Get(scene.cameraPreset);
+            if (scene.zenith)
+                camera.SetLookAt(cameraPreset.position,
+                    { cameraPreset.position.x, 7000.0f,
+                      cameraPreset.position.z });
+            else
+                camera.SetLookAt(cameraPreset.position, cameraPreset.target);
+            for (int frame = 0; frame < kWarmupFrames; ++frame)
+                renderer.Render(camera, 0.0f);
+
+            std::vector<double> samples;
+            samples.reserve(kSamples);
+            std::uint64_t lastIndex = renderer.TimingSnapshot().gpuSampleIndex;
+            for (int attempt = 0;
+                 attempt < kMaximumAttempts && samples.size() < kSamples;
+                 ++attempt)
+            {
+                renderer.Render(camera, 0.0f);
+                const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+                if (!timing.gpuValid || timing.gpuSampleIndex == lastIndex)
+                {
+                    Sleep(1);
+                    continue;
+                }
+                lastIndex = timing.gpuSampleIndex;
+                if (!std::isfinite(timing.rawGpuCloudMs) ||
+                    timing.rawGpuCloudMs < 0.0)
+                    return 4;
+                samples.push_back(timing.rawGpuCloudMs);
+            }
+            if (samples.size() != kSamples)
+                return 5;
+            std::sort(samples.begin(), samples.end());
+            Result result;
+            result.preset = preset.name;
+            result.scene = scene.name;
+            result.average = std::accumulate(
+                samples.begin(), samples.end(), 0.0) / samples.size();
+            result.p50 = samples[samples.size() / 2u];
+            result.p95 = samples[static_cast<std::size_t>(
+                std::ceil(samples.size() * 0.95)) - 1u];
+            result.parameters = renderer.OptimizationSettings();
+            result.maxViewSteps = renderer.CloudSettings().maxViewSteps;
+            result.viewStepMeters = renderer.CloudSettings().stepSize;
+            result.maxLightSteps = renderer.LightSettings().maxLightSteps;
+            result.lightStepMeters = renderer.LightSettings().lightStepSize;
+            result.exitThreshold =
+                renderer.CloudSettings().transmittanceThreshold;
+            results.push_back(result);
+        }
+    }
+
+    std::error_code error;
+    const std::filesystem::path directory =
+        std::filesystem::path(VCLOUD_SHADER_SOURCE_DIR).parent_path() /
+        "captures" / "stage9";
+    std::filesystem::create_directories(directory, error);
+    if (error)
+        return 6;
+    std::ofstream csv(directory / "performance.csv",
+                      std::ios::binary | std::ios::trunc);
+    csv << "adapter,driver,preset,scene,samples,warmup,average_ms,p50_ms,p95_ms,"
+           "precheck,empty_search,early_exit,distance_step,empty_samples,base_epsilon,"
+           "coarse_multiplier,max_search_m,distance_start_m,distance_end_m,far_multiplier,"
+           "light_mode,cone_taps,cone_angle_degrees,cone_far_fraction,max_view_steps,"
+           "view_step_m,max_light_steps,light_step_m,exit_threshold\n";
+    for (const Result& result : results)
+        csv << '"' << renderer.AdapterName() << "\",\""
+            << renderer.DriverVersion() << "\",\"" << result.preset
+            << "\",\"" << result.scene << "\"," << kSamples << ','
+            << kWarmupFrames << ',' << result.average << ',' << result.p50
+            << ',' << result.p95 << ','
+            << result.parameters.supportPrecheckEnabled << ','
+            << result.parameters.emptySpaceSkippingEnabled << ','
+            << result.parameters.viewEarlyExitEnabled << ','
+            << result.parameters.distanceStepEnabled << ','
+            << result.parameters.emptySamplesBeforeCoarse << ','
+            << result.parameters.baseDensityEpsilon << ','
+            << result.parameters.coarseStepMultiplier << ','
+            << result.parameters.maxSearchStepMeters << ','
+            << result.parameters.distanceStepStartMeters << ','
+            << result.parameters.distanceStepEndMeters << ','
+            << result.parameters.farStepMultiplier << ','
+            << result.parameters.lightSamplingMode << ','
+            << result.parameters.coneSampleCount << ','
+            << result.parameters.coneAngleDegrees << ','
+            << result.parameters.lightFarSampleFraction << ','
+            << result.maxViewSteps << ',' << result.viewStepMeters << ','
+            << result.maxLightSteps << ',' << result.lightStepMeters << ','
+            << result.exitThreshold << '\n';
+    if (!csv.good())
+        return 7;
+
+    const auto findP95 = [&](const std::string& preset,
+                             const std::string& scene)
+    {
+        for (const Result& result : results)
+            if (result.preset == preset && result.scene == scene)
+                return result.p95;
+        return std::numeric_limits<double>::infinity();
+    };
+    const std::string referenceName = "Approved Reference";
+    std::map<std::string, bool> qualifies;
+    for (const PerformancePreset& preset : presets)
+    {
+        const std::string name = preset.name;
+        bool passed = findP95(name, "CumulusHorizon") <= 10.0 &&
+            findP95(name, "CumulusHorizon") <=
+                findP95(referenceName, "CumulusHorizon") * 0.85;
+        for (const Scene& scene : scenes)
+            if (std::string(scene.name) != "CumulusHorizon")
+                passed = passed && findP95(name, scene.name) <=
+                    findP95(referenceName, scene.name) * 1.03;
+        qualifies[name] = passed;
+    }
+    std::ofstream json(directory / "performance.json",
+                       std::ios::binary | std::ios::trunc);
+    json << "{\n  \"adapter\": \"" << renderer.AdapterName()
+         << "\",\n  \"driver\": \"" << renderer.DriverVersion()
+         << "\",\n  \"resolution\": [1920, 1080],\n"
+         << "  \"vsync\": false,\n  \"timeSeconds\": 0,\n"
+         << "  \"samples\": " << kSamples << ",\n  \"warmup\": "
+         << kWarmupFrames << ",\n  \"results\": [\n";
+    for (std::size_t index = 0; index < results.size(); ++index)
+    {
+        const Result& result = results[index];
+        json << "    {\"preset\": \"" << result.preset
+             << "\", \"scene\": \"" << result.scene
+             << "\", \"averageMs\": " << result.average
+             << ", \"p50Ms\": " << result.p50
+             << ", \"p95Ms\": " << result.p95
+             << ", \"parameters\": {\"precheck\": "
+             << result.parameters.supportPrecheckEnabled
+             << ", \"emptySearch\": "
+             << result.parameters.emptySpaceSkippingEnabled
+             << ", \"earlyExit\": "
+             << result.parameters.viewEarlyExitEnabled
+             << ", \"distanceStep\": "
+             << result.parameters.distanceStepEnabled
+             << ", \"emptySamples\": "
+             << result.parameters.emptySamplesBeforeCoarse
+             << ", \"baseEpsilon\": "
+             << result.parameters.baseDensityEpsilon
+             << ", \"coarseMultiplier\": "
+             << result.parameters.coarseStepMultiplier
+             << ", \"maxSearchMeters\": "
+             << result.parameters.maxSearchStepMeters
+             << ", \"distanceStartMeters\": "
+             << result.parameters.distanceStepStartMeters
+             << ", \"distanceEndMeters\": "
+             << result.parameters.distanceStepEndMeters
+             << ", \"farMultiplier\": "
+             << result.parameters.farStepMultiplier
+             << ", \"lightMode\": "
+             << result.parameters.lightSamplingMode
+             << ", \"coneTaps\": " << result.parameters.coneSampleCount
+             << ", \"coneAngleDegrees\": "
+             << result.parameters.coneAngleDegrees
+             << ", \"coneFarFraction\": "
+             << result.parameters.lightFarSampleFraction
+             << ", \"maxViewSteps\": " << result.maxViewSteps
+             << ", \"viewStepMeters\": " << result.viewStepMeters
+             << ", \"maxLightSteps\": " << result.maxLightSteps
+             << ", \"lightStepMeters\": " << result.lightStepMeters
+             << ", \"exitThreshold\": " << result.exitThreshold << "}}"
+             << (index + 1u == results.size() ? "\n" : ",\n");
+    }
+    json << "  ],\n  \"candidates\": {\n";
+    std::size_t presetIndex = 0;
+    for (const PerformancePreset& preset : presets)
+    {
+        const std::string name = preset.name;
+        json << "    \"" << name << "\": {\"performanceGate\": "
+             << (qualifies[name] ? "true" : "false") << "}"
+             << (++presetIndex == std::size(presets) ? "\n" : ",\n");
+    }
+    json << "  }\n}\n";
+    if (!json.good())
+        return 8;
+    bool anyCandidatePassed = qualifies["Balanced"] ||
+        qualifies["Conservative"];
+    return anyCandidatePassed && !renderer.HasDebugLayerErrors() ? 0 : 1;
+}
+
 int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
 {
     using stage13diagnostics::ComparisonKind;
@@ -475,6 +1041,9 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
     renderer.SetOpaqueSceneForTest(false);
     if (!renderer.ApplyStage13OpenWorldPreset())
         return 2;
+    // 단계 13의 광학 계약은 단계 9 생략 경로가 아닌 승인 Reference로 검사한다.
+    renderer.ApplyStage9OptimizationPreset(
+        Stage9OptimizationPreset::ApprovedReference);
 
     camera.SetClipPlanes(
         stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
@@ -587,22 +1156,33 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
     // 사용자 화면에서 확인한 두 계약을 GPU에서 고정한다.
     // 태양 방향은 View 광학 깊이를 바꾸지 않고 직접광만 바꿔야 하며,
     // Silver Lining 합성은 LDR 출력 범위를 넘어 흰색으로 잘리면 안 된다.
-    renderer.ApplyStage7PhasePreset(Stage7PhasePreset::SilverLining);
-    renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+    renderer.ApplyPortfolioHeroLighting();
     CloudDiagnosticFrame eastDepth;
     CloudDiagnosticFrame westDepth;
     CloudDiagnosticFrame eastDirect;
     CloudDiagnosticFrame westDirect;
     CloudDiagnosticFrame eastComposite;
     CloudDiagnosticFrame westComposite;
-    renderer.ApplyStage6SunPreset(Stage6SunPreset::LowEast);
+    CloudDiagnosticFrame eastSilver;
+    CloudDiagnosticFrame westSilver;
+    CloudDiagnosticFrame eastSurface;
+    CloudDiagnosticFrame eastAmbientVisibility;
     if (!renderer.CaptureCloudDiagnosticFrame(
             camera, 0.0f, CloudDebugMode::ViewOpticalDepth, eastDepth) ||
         !renderer.CaptureCloudDiagnosticFrame(
             camera, 0.0f, CloudDebugMode::AccumulatedDirectLighting,
             eastDirect) ||
         !renderer.CaptureCloudDiagnosticFrame(
-            camera, 0.0f, CloudDebugMode::Composite, eastComposite))
+            camera, 0.0f, CloudDebugMode::Composite, eastComposite) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::SilverLiningContribution,
+            eastSilver) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::ShapedSunVisibility,
+            eastSurface) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::AmbientVisibility,
+            eastAmbientVisibility))
         return 7;
     renderer.ApplyStage6SunPreset(Stage6SunPreset::LowWest);
     if (!renderer.CaptureCloudDiagnosticFrame(
@@ -611,7 +1191,10 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
             camera, 0.0f, CloudDebugMode::AccumulatedDirectLighting,
             westDirect) ||
         !renderer.CaptureCloudDiagnosticFrame(
-            camera, 0.0f, CloudDebugMode::Composite, westComposite))
+            camera, 0.0f, CloudDebugMode::Composite, westComposite) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::SilverLiningContribution,
+            westSilver))
         return 8;
 
     const auto depthDirectionMetric = stage13diagnostics::CompareFrames(
@@ -619,6 +1202,9 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
         0.01, false);
     const auto directDirectionMetric = stage13diagnostics::CompareFrames(
         eastDirect, westDirect, nullptr, nullptr, ComparisonKind::Rgb,
+        0.01, false);
+    const auto silverDirectionMetric = stage13diagnostics::CompareFrames(
+        eastSilver, westSilver, nullptr, nullptr, ComparisonKind::Rgb,
         0.01, false);
     const auto maximumRgb = [](const CloudDiagnosticFrame& frame)
     {
@@ -630,17 +1216,70 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
     };
     const float eastMaximum = maximumRgb(eastComposite);
     const float westMaximum = maximumRgb(westComposite);
+    std::size_t nearWhiteCount = 0u;
+    for (const DirectX::XMFLOAT4& pixel : eastComposite.pixels)
+    {
+        if (std::max(pixel.x, std::max(pixel.y, pixel.z)) >= 0.98f)
+            ++nearWhiteCount;
+    }
+    const double nearWhiteRatio = eastComposite.pixels.empty() ? 1.0 :
+        static_cast<double>(nearWhiteCount) /
+        static_cast<double>(eastComposite.pixels.size());
+
+    double exposedSilver = 0.0;
+    double interiorSilver = 0.0;
+    std::size_t exposedCount = 0u;
+    std::size_t interiorCount = 0u;
+    double ambientMean = 0.0;
+    std::size_t ambientCount = 0u;
+    for (std::size_t index = 0; index < eastSilver.pixels.size(); ++index)
+    {
+        const auto& silverPixel = eastSilver.pixels[index];
+        const auto& surfacePixel = eastSurface.pixels[index];
+        const auto& ambientPixel = eastAmbientVisibility.pixels[index];
+        const double silverValue = std::max(
+            silverPixel.x, std::max(silverPixel.y, silverPixel.z));
+        const double surfaceValue = surfacePixel.x;
+        const double ambientValue = ambientPixel.x;
+        if (ambientValue <= 1e-5)
+            continue;
+        ambientMean += ambientValue;
+        ++ambientCount;
+        if (surfaceValue >= 0.5)
+        {
+            exposedSilver += silverValue;
+            ++exposedCount;
+        }
+        else
+        {
+            interiorSilver += silverValue;
+            ++interiorCount;
+        }
+    }
+    const double exposedSilverMean = exposedCount > 0u
+        ? exposedSilver / static_cast<double>(exposedCount) : 0.0;
+    const double interiorSilverMean = interiorCount > 0u
+        ? interiorSilver / static_cast<double>(interiorCount) : 0.0;
+    ambientMean = ambientCount > 0u
+        ? ambientMean / static_cast<double>(ambientCount) : 0.0;
     const bool directionPassed = depthDirectionMetric.mae <= 1e-7 &&
-        directDirectionMetric.mae > 1e-5;
+        directDirectionMetric.mae > 1e-5 &&
+        silverDirectionMetric.mae > 1e-6;
     const bool highlightPassed = std::isfinite(eastMaximum) &&
         std::isfinite(westMaximum) && eastMaximum <= 1.0f &&
-        westMaximum <= 1.0f;
+        westMaximum <= 1.0f && nearWhiteRatio < 0.01;
+    const bool edgeSelectivityPassed = exposedCount > 0u &&
+        interiorCount > 0u && exposedSilverMean > 0.0 &&
+        exposedSilverMean > interiorSilverMean;
+    const bool ambientPassed = ambientCount > 0u &&
+        std::isfinite(ambientMean) && ambientMean > 0.0 && ambientMean <= 1.0;
     {
         std::ostringstream line;
         line << std::fixed << std::setprecision(8)
              << "[STAGE13-5][DIRECTION] VIEW_TAU_MAE="
              << depthDirectionMetric.mae << " DIRECT_MAE="
-             << directDirectionMetric.mae << ' '
+             << directDirectionMetric.mae << " SILVER_MAE="
+             << silverDirectionMetric.mae << ' '
              << (directionPassed ? "PASS" : "FAIL");
         WriteDiagnosticLine(line.str());
     }
@@ -648,13 +1287,108 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
         std::ostringstream line;
         line << std::fixed << std::setprecision(8)
              << "[STAGE13-5][SILVER-LINING] EAST_MAX=" << eastMaximum
-             << " WEST_MAX=" << westMaximum << ' '
+             << " WEST_MAX=" << westMaximum
+             << " NEAR_WHITE_RATIO=" << nearWhiteRatio << ' '
              << (highlightPassed ? "PASS" : "FAIL");
         WriteDiagnosticLine(line.str());
     }
+    {
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(8)
+             << "[STAGE13-5][EDGE-SELECTIVITY] EXPOSED_MEAN="
+             << exposedSilverMean << " INTERIOR_MEAN=" << interiorSilverMean
+             << " AMBIENT_MEAN=" << ambientMean << ' '
+             << (edgeSelectivityPassed && ambientPassed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(line.str());
+    }
     return qualityPassed && lodPassed && directionPassed && highlightPassed &&
+        edgeSelectivityPassed && ambientPassed &&
         !renderer.HasDebugLayerErrors()
         ? 0 : 1;
+}
+
+int RunStage13LightingPerformanceTest(Renderer& renderer, Camera& camera)
+{
+    constexpr int kWarmupFrames = 180;
+    constexpr std::size_t kMeasurementSamples = 600u;
+    constexpr int kMaximumRenderAttempts = 1800;
+    // 변경 전 HEAD 셰이더를 같은 실행 파일의 원시 timestamp 수집기에 넣어 얻은
+    // 동일 조건 baseline이다. 과거 UI EMA 14.7525ms와 통계를 섞지 않는다.
+    constexpr double kPreviousCumulusF6AverageMilliseconds = 13.688282;
+    constexpr double kPreviousCumulusF6P95Milliseconds = 15.639552;
+    constexpr double kMaximumRegressionRatio = 1.05;
+    constexpr double kFrameBudgetMilliseconds = 16.67;
+
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetOpaqueSceneForTest(false);
+    if (!renderer.ApplyStage13OpenWorldPreset() ||
+        !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Cumulus))
+        return 2;
+    renderer.ApplyStage6SunPreset(Stage6SunPreset::Noon);
+    renderer.ApplyStage7PhasePreset(Stage7PhasePreset::Balanced);
+    renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+    renderer.SetDebugMode(CloudDebugMode::Composite);
+
+    camera.SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    const Stage13CameraPreset& horizon = stage13camera::Get(
+        Stage13CameraPresetId::GroundHorizon);
+    camera.SetLookAt(horizon.position, horizon.target);
+
+    for (int frame = 0; frame < kWarmupFrames; ++frame)
+        renderer.Render(camera, 0.0f);
+
+    std::vector<double> cloudSamples;
+    cloudSamples.reserve(kMeasurementSamples);
+    std::uint64_t lastSampleIndex = renderer.TimingSnapshot().gpuSampleIndex;
+    for (int attempt = 0;
+         attempt < kMaximumRenderAttempts &&
+         cloudSamples.size() < kMeasurementSamples;
+         ++attempt)
+    {
+        renderer.Render(camera, 0.0f);
+        const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+        if (!timing.gpuValid || timing.gpuSampleIndex == lastSampleIndex)
+        {
+            Sleep(1);
+            continue;
+        }
+        lastSampleIndex = timing.gpuSampleIndex;
+        if (!std::isfinite(timing.rawGpuCloudMs) ||
+            timing.rawGpuCloudMs < 0.0 ||
+            timing.rawGpuCloudMs > timing.rawGpuFrameMs)
+            return 3;
+        cloudSamples.push_back(timing.rawGpuCloudMs);
+    }
+    if (cloudSamples.size() != kMeasurementSamples)
+        return 4;
+
+    std::sort(cloudSamples.begin(), cloudSamples.end());
+    const std::size_t percentileIndex = static_cast<std::size_t>(
+        std::ceil(0.95 * static_cast<double>(cloudSamples.size()))) - 1u;
+    const double p95 = cloudSamples[std::min(
+        percentileIndex, cloudSamples.size() - 1u)];
+    const double average = std::accumulate(
+        cloudSamples.begin(), cloudSamples.end(), 0.0) /
+        static_cast<double>(cloudSamples.size());
+    const double averageRegressionLimit =
+        kPreviousCumulusF6AverageMilliseconds * kMaximumRegressionRatio;
+    const double p95RegressionLimit =
+        kPreviousCumulusF6P95Milliseconds * kMaximumRegressionRatio;
+    const bool passed = p95 <= kFrameBudgetMilliseconds &&
+        p95 <= p95RegressionLimit && average <= averageRegressionLimit;
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(6)
+         << "[STAGE13-5][CUMULUS-F6-PERF] SAMPLES="
+         << cloudSamples.size() << " GPU_CLOUD_AVG_MS=" << average
+         << " GPU_CLOUD_P95_MS=" << p95
+         << " AVG_REGRESSION_LIMIT_MS=" << averageRegressionLimit
+         << " P95_REGRESSION_LIMIT_MS=" << p95RegressionLimit << ' '
+         << (passed ? "PASS" : "FAIL");
+    WriteDiagnosticLine(line.str());
+    return passed && !renderer.HasDebugLayerErrors() ? 0 : 1;
 }
 
 
@@ -816,6 +1550,7 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             return 7;
     }
 
+    renderer.ApplyPortfolioHeroLighting();
     renderer.SetDebugMode(CloudDebugMode::Composite);
     renderer.Render(camera, 0.0f);
     const std::filesystem::path exportRoot =
@@ -834,8 +1569,11 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             continue;
         std::string metadata;
         if (ReadTextFile(entry.path(), metadata) &&
-            metadata.find("\"schemaVersion\": 29") != std::string::npos &&
-            metadata.find("\"implementationStage\": \"13-4E\"") != std::string::npos &&
+            metadata.find("\"schemaVersion\": 31") != std::string::npos &&
+            metadata.find("\"implementationStage\": \"9\"") != std::string::npos &&
+            metadata.find("\"lightingLook\": \"portfolioHero\"") != std::string::npos &&
+            metadata.find("\"edgeInfluence\"") != std::string::npos &&
+            metadata.find("\"ambientShadowCoupling\"") != std::string::npos &&
             metadata.find("\"cloudAppearance\"") != std::string::npos &&
             metadata.find("\"sceneContract\"") != std::string::npos &&
             metadata.find("\"groundSizeMeters\": [10000.000000, 10000.000000]") != std::string::npos &&
@@ -851,7 +1589,7 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
         return 10;
 
     WriteDiagnosticLine(
-        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=29 PASS");
+        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=30 PASS");
     return renderer.HasDebugLayerErrors() ? 11 : 0;
 }
 
@@ -1148,6 +1886,9 @@ int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
     renderer.SetOpaqueSceneForTest(false);
     if (!renderer.ApplyStage13OpenWorldPreset())
         return 2;
+    // 단계 13의 CPU↔HLSL 형상 계약은 단계 9 생략 경로가 아닌 승인 Reference로 검사한다.
+    renderer.ApplyStage9OptimizationPreset(
+        Stage9OptimizationPreset::ApprovedReference);
     camera.SetClipPlanes(0.1f, 60000.0f);
     camera.SetOrbit(0.0f, 0.0f, 32000.0f,
                     { 0.0f, 4500.0f, 0.0f });
@@ -1402,6 +2143,8 @@ int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
     }
     if (!renderer.ApplyStage13OpenWorldPreset())
         return 14;
+    renderer.ApplyStage9OptimizationPreset(
+        Stage9OptimizationPreset::ApprovedReference);
 
     // Periodic Weather는 실제 두께 분산을 검증한다. 타입별 옆면 면적은 화면에
     // Stratus/Mixed/Cumulus 띠가 모두 보장되는 Channel Debug를 별도 측면에서 잰다.
@@ -1555,24 +2298,34 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage13-unified-scene-smoke-test") != nullptr;
     const bool requestedStage13OpticsLightingSmoke = commandLine &&
         wcsstr(commandLine, L"--stage13-optics-lighting-smoke-test") != nullptr;
+    const bool requestedStage13LightingPerformance = commandLine &&
+        wcsstr(commandLine, L"--stage13-lighting-performance-test") != nullptr;
     const bool requestedStage13NoiseVolumeSmoke = commandLine &&
         wcsstr(commandLine, L"--stage13-noise-volume-smoke-test") != nullptr;
     const bool requestedStage13WeatherShapeGpu = commandLine &&
         wcsstr(commandLine, L"--stage13-weather-shape-gpu-test") != nullptr;
+    const bool requestedStage9OptimizationSmoke = commandLine &&
+        wcsstr(commandLine, L"--stage9-optimization-smoke-test") != nullptr;
+    const bool requestedStage9Performance = commandLine &&
+        wcsstr(commandLine, L"--stage9-performance-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
         requestedStage8Smoke ||
         requestedPerformanceOverlaySmoke || requestedStage13DomainSmoke ||
         requestedStage13OpenWorldSmoke || requestedStage13NoiseVolumeSmoke ||
         requestedStage13WeatherShapeGpu || requestedStage13UnifiedSceneSmoke ||
-        requestedStage13OpticsLightingSmoke;
-    const int kWidth  = (requestedStage13SimilarityGpu ||
+        requestedStage13OpticsLightingSmoke || requestedStage9OptimizationSmoke;
+    const int kWidth  = (requestedStage13LightingPerformance ||
+        requestedStage9Performance) ? 1920 :
+        (requestedStage13SimilarityGpu ||
                          requestedStage13WeatherShapeGpu ||
                          requestedStage13UnifiedSceneSmoke) ? 320 :
         (requestedSmallGpuSmoke ? 96 : 1280);
-    const int kHeight = (requestedStage13SimilarityGpu ||
+    const int kHeight = requestedStage9Performance ? 1080 :
+        (requestedStage13LightingPerformance ? 925 :
+        (requestedStage13SimilarityGpu ||
                           requestedStage13WeatherShapeGpu ||
                           requestedStage13UnifiedSceneSmoke) ? 180 :
-        (requestedSmallGpuSmoke ? 54 : 720);
+        (requestedSmallGpuSmoke ? 54 : 720));
 
     const bool smokeTest = commandLine &&
         wcsstr(commandLine, L"--foundation-smoke-test") != nullptr;
@@ -1596,8 +2349,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage13UnifiedSceneSmokeTest = requestedStage13UnifiedSceneSmoke;
     const bool stage13OpticsLightingSmokeTest =
         requestedStage13OpticsLightingSmoke;
+    const bool stage13LightingPerformanceTest =
+        requestedStage13LightingPerformance;
     const bool stage13NoiseVolumeSmokeTest = requestedStage13NoiseVolumeSmoke;
     const bool stage13WeatherShapeGpuTest = requestedStage13WeatherShapeGpu;
+    const bool stage9OptimizationSmokeTest = requestedStage9OptimizationSmoke;
+    const bool stage9PerformanceTest = requestedStage9Performance;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -1608,12 +2365,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage13DomainSmokeTest || stage13SimilarityGpuTest ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
-        stage13OpticsLightingSmokeTest ||
+        stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
+        stage9OptimizationSmokeTest || stage9PerformanceTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest;
     const bool enableNoiseVolumes = !automatedTestRun ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
-        stage13OpticsLightingSmokeTest;
+        stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
+        stage9OptimizationSmokeTest || stage9PerformanceTest;
 
     std::filesystem::path hotReloadShaderDirectory;
     if (shaderHotReloadSmokeTest)
@@ -1633,7 +2392,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 13-4E | Dense Broken-Sky 초기화 중",
+                    L"VolumetricCloud - Stage 13-5 | Portfolio Lighting 초기화 중",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
@@ -1642,6 +2401,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                     !stage13NoiseVolumeSmokeTest &&
                     !stage13WeatherShapeGpuTest && !stage13UnifiedSceneSmokeTest &&
                     !stage13OpticsLightingSmokeTest &&
+                    !stage13LightingPerformanceTest &&
+                    !stage9OptimizationSmokeTest &&
+                    !stage9PerformanceTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -1677,11 +2439,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         !stage13OpenWorldSmokeTest && !stage13NoiseVolumeSmokeTest &&
         !stage13WeatherShapeGpuTest && !stage13UnifiedSceneSmokeTest &&
         !stage13OpticsLightingSmokeTest &&
+        !stage13LightingPerformanceTest &&
+        !stage9OptimizationSmokeTest &&
+        !stage9PerformanceTest &&
         !noiseLabSmokeTest &&
         !shaderHotReloadSmokeTest;
     if (interactiveRun)
     {
-        if (!renderer.ApplyStage13OpenWorldPreset())
+        if (!renderer.ApplyStage13OpenWorldPreset() ||
+            !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus))
             return -2;
         window.ApplyInitialPortfolioCamera();
     }
@@ -1694,10 +2460,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return RunStage13UnifiedSceneSmokeTest(renderer, camera);
     if (stage13OpticsLightingSmokeTest)
         return RunStage13OpticsLightingSmokeTest(renderer, camera);
+    if (stage13LightingPerformanceTest)
+        return RunStage13LightingPerformanceTest(renderer, camera);
     if (stage13NoiseVolumeSmokeTest)
         return RunStage13NoiseVolumeSmokeTest(renderer, camera);
     if (stage13WeatherShapeGpuTest)
         return RunStage13WeatherShapeGpuTest(renderer, camera);
+    if (stage9OptimizationSmokeTest)
+        return RunStage9OptimizationSmokeTest(renderer, camera);
+    if (stage9PerformanceTest)
+        return RunStage9PerformanceTest(renderer, camera);
 
     struct VolumeFixture
     {
@@ -1937,7 +2709,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 29") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 31") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"A\": \"localThicknessPotential\"") != std::string::npos &&
                 metadata.find("\"localThickness\": {\"seed\": 4051") != std::string::npos &&
@@ -1994,7 +2766,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         if (renderer.SunPreset() != Stage6SunPreset::Noon ||
             renderer.PhasePreset() != Stage7PhasePreset::Balanced ||
             renderer.LightSettings().maxLightSteps != 4u ||
-            sizeof(LightParameters) != 64u)
+            sizeof(LightParameters) != 80u)
             return 3;
 
         // 합성 경로에서 Off와 방향성 Phase가 실제로 다른 프레임을 만드는지 확인한다.
@@ -2029,11 +2801,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 29") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 31") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
-                metadata.find("\"phaseDirectionConvention\": \"cosTheta=dot(cameraToSample,sampleToSun)\"") != std::string::npos)
+                metadata.find("\"phaseDirectionConvention\": \"cosTheta=dot(cameraToSample,sampleToSun)\"") != std::string::npos &&
+                metadata.find("\"lightingLook\": \"custom\"") != std::string::npos &&
+                metadata.find("\"edgeOpticalDepthScale\"") != std::string::npos &&
+                metadata.find("\"shadowExponent\"") != std::string::npos)
                 foundSchema7 = true;
         }
         if (!foundSchema7)
@@ -2059,7 +2834,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         if (renderer.SunPreset() != Stage6SunPreset::Noon ||
             renderer.PhasePreset() != Stage7PhasePreset::Balanced ||
             renderer.EnvironmentPreset() != Stage8EnvironmentPreset::StrongFill ||
-            sizeof(EnvironmentParameters) != 64u)
+            sizeof(EnvironmentParameters) != 80u)
             return 3;
 
         renderer.EnableFrameHashCapture(true);
@@ -2100,7 +2875,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 29") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 31") != std::string::npos &&
                 metadata.find("\"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\"") != std::string::npos &&
                 metadata.find("\"camera\": {") != std::string::npos &&
                 metadata.find("\"verticalFovDegrees\": 60") != std::string::npos &&
@@ -2108,12 +2883,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 metadata.find("\"physicalAdvectionMode\": \"legacyIndependentSpeeds\"") != std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"scatteringCoefficient\"") == std::string::npos &&
-                metadata.find("\"implementationStage\": \"13-4E\"") != std::string::npos &&
+                metadata.find("\"implementationStage\": \"9\"") != std::string::npos &&
                 metadata.find("\"noiseVolumes\"") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"similarityScale\"") == std::string::npos &&
                 metadata.find("\"environmentSource\": \"analyticColorsNoExternalTexture\"") != std::string::npos &&
-                metadata.find("\"multipleScatteringModel\": \"reusedLightOpticalDepthOctaves\"") != std::string::npos)
+                metadata.find("\"multipleScatteringModel\": \"reusedLightDepthInteriorWeightedOctaves\"") != std::string::npos &&
+                metadata.find("\"ambientShadowExponent\"") != std::string::npos &&
+                metadata.find("\"multipleScatteringInteriorBlend\"") != std::string::npos)
                 foundSchema8 = true;
         }
         if (!foundSchema8)

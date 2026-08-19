@@ -49,6 +49,8 @@ target_link_libraries(VolumetricCloud PRIVATE
     dxgi
     d3dcompiler
     windowscodecs
+    setupapi
+    advapi32
 )
 
 # 유니코드 윈도우 API 사용
@@ -334,6 +336,21 @@ add_test(NAME VolumetricCloud.Stage13OpticsLightingSmoke
          COMMAND VolumetricCloud --stage13-optics-lighting-smoke-test)
 set_tests_properties(VolumetricCloud.Stage13OpticsLightingSmoke
                      PROPERTIES TIMEOUT 180)
+
+# 단계 9 가변 View 간격, preset ABI와 deterministic Light cone 구간을 검사한다.
+add_executable(VolumetricCloud.Stage9OptimizationMathTests
+    tests/Stage9OptimizationMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage9OptimizationMathTests PRIVATE src)
+if(MSVC)
+    target_compile_options(VolumetricCloud.Stage9OptimizationMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage9OptimizationMath
+         COMMAND VolumetricCloud.Stage9OptimizationMathTests)
+add_test(NAME VolumetricCloud.Stage9OptimizationSmoke
+         COMMAND VolumetricCloud --stage9-optimization-smoke-test)
+set_tests_properties(VolumetricCloud.Stage9OptimizationSmoke
+                     PROPERTIES TIMEOUT 300)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

@@ -58,6 +58,13 @@ enum class CloudDebugMode : std::int32_t
     AccumulatedGroundBounce = 54,
     AccumulatedMultipleScattering = 55,
     DetailLodFactor = 56,
+    SilverLiningContribution = 57,
+    ShapedSunVisibility = 58,
+    AmbientVisibility = 59,
+    ExecutedViewSamples = 60,
+    SkippedDistance = 61,
+    EarlyExitSavings = 62,
+    SupportPrecheckSkip = 63,
 };
 
 enum class Stage5WeatherPreset : std::int32_t

@@ -24,6 +24,7 @@
 #include "FrameProfiler.h"
 #include "LightParameters.h"
 #include "NoiseLab.h"
+#include "OptimizationParameters.h"
 #include "Stage13ScaleMath.h"
 #include "Stage13OpenWorldMath.h"
 #include "Stage13NoiseVolumeMath.h"
@@ -79,6 +80,7 @@ public:
     void ApplyStage6SunPreset(Stage6SunPreset preset);
     void ApplyStage7PhasePreset(Stage7PhasePreset preset);
     void ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset);
+    void ApplyPortfolioHeroLighting();
     void SetLightSampling(std::uint32_t maxSteps, float stepSize);
     void SetCloudLodForValidation(bool enabled, float startMeters,
                                   float endMeters);
@@ -89,6 +91,18 @@ public:
     void SetCloudDomainType(CloudDomainType type);
     bool ApplyStage13SimilarityScale(float scale);
     bool ApplyStage13OpenWorldPreset();
+    void ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset);
+    void ConfigureStage9ConeForValidation(std::uint32_t taps,
+                                          float angleDegrees,
+                                          float farSampleFraction = 0.85f);
+    const OptimizationParameters& OptimizationSettings() const
+    {
+        return m_optimizationParameters;
+    }
+    Stage9OptimizationPreset OptimizationPreset() const
+    {
+        return m_optimizationPreset;
+    }
     bool ApplyOpenWorldPipelinePreset(OpenWorldPipelinePreset preset);
     bool ApplyCloudAppearancePreset(CloudAppearancePreset preset);
     bool SaveCurrentCloudAppearance();
@@ -197,6 +211,8 @@ public:
         return m_frameProfiler.Snapshot();
     }
     std::uint64_t LastCloudFrameHash() const { return m_lastCloudFrameHash; }
+    const std::string& AdapterName() const { return m_adapterName; }
+    const std::string& DriverVersion() const { return m_driverVersion; }
 
 private:
     template <typename T>
@@ -279,7 +295,8 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_sceneDepthSrv;
 
     ComPtr<ID3D11VertexShader> m_fullscreenVs;
-    ComPtr<ID3D11PixelShader> m_cloudPs;
+    ComPtr<ID3D11PixelShader> m_cloudReferencePs;
+    ComPtr<ID3D11PixelShader> m_cloudOptimizedPs;
     ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
@@ -295,6 +312,7 @@ private:
     ComPtr<ID3D11Buffer> m_noiseVolumeCb;
     ComPtr<ID3D11Buffer> m_cloudShapeCb;
     ComPtr<ID3D11Buffer> m_cloudLodCb;
+    ComPtr<ID3D11Buffer> m_optimizationCb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
@@ -335,6 +353,9 @@ private:
     NoiseVolumeParameters m_noiseVolumeParameters;
     CloudShapeParameters m_cloudShapeParameters;
     CloudLodParameters m_cloudLodParameters;
+    OptimizationParameters m_optimizationParameters;
+    Stage9OptimizationPreset m_optimizationPreset =
+        Stage9OptimizationPreset::Balanced;
     std::uint64_t m_baseNoiseVolumeHash = 0;
     std::uint64_t m_detailNoiseVolumeHash = 0;
     double m_noiseVolumeGenerationMilliseconds = 0.0;
@@ -358,6 +379,8 @@ private:
     bool m_vsyncEnabled = true;
     bool m_renderOpaqueSceneForTest = true;
     std::uint64_t m_lastCloudFrameHash = 0;
+    std::string m_adapterName = "Unknown adapter";
+    std::string m_driverVersion = "Unavailable";
     FrameProfiler m_frameProfiler;
     NoiseLab m_noiseLab;
 };

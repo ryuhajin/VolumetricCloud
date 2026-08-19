@@ -100,7 +100,10 @@ int main()
     stage6light::ApplyPhasePreset(parameters, Stage7PhasePreset::SilverLining);
     Require(NearlyEqual(parameters.forwardScatteringG, 0.75f) &&
                 NearlyEqual(parameters.phaseBlend, 0.90f) &&
-                NearlyEqual(parameters.phaseIntensity, 0.10f),
+                NearlyEqual(parameters.phaseIntensity, 0.20f) &&
+                NearlyEqual(parameters.edgeInfluence, 0.85f) &&
+                NearlyEqual(parameters.edgeOpticalDepthScale, 2.0f) &&
+                NearlyEqual(parameters.shadowExponent, 1.35f),
             "Silver Lining preset must be deterministic");
     stage6light::ApplyPhasePreset(parameters, Stage7PhasePreset::BackscatterCheck);
     Require(NearlyEqual(parameters.backwardScatteringG, -0.55f) &&
@@ -133,7 +136,7 @@ int main()
                 extreme.phaseFactor <= stage7::kMaxAppliedPhaseFactor,
             "invalid and extreme phase inputs must remain finite and bounded");
     const auto silverPeak = stage7::EvaluateDualLobePhase(
-        x, x, true, 0.75f, -0.15f, 0.90f, 0.10f);
+        x, x, true, 0.75f, -0.15f, 0.90f, 0.20f);
     Require(silverPeak.phaseFactor > 1.0f &&
                 silverPeak.phaseFactor <= stage7::kMaxAppliedPhaseFactor,
             "Silver Lining must retain a bounded forward highlight");

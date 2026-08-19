@@ -4,6 +4,8 @@
 #include "Stage13SceneMath.h"
 
 #include <d3dcompiler.h>
+#include <SetupAPI.h>
+#include <devguid.h>
 
 #include <algorithm>
 #include <chrono>
@@ -17,6 +19,64 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
+std::string NarrowWide(const wchar_t* value)
+{
+    if (!value || value[0] == L'\0')
+        return {};
+    const int length = WideCharToMultiByte(
+        CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+    if (length <= 1)
+        return {};
+    std::string result(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value, -1, result.data(), length,
+                        nullptr, nullptr);
+    result.pop_back();
+    return result;
+}
+
+std::string QueryDisplayDriverVersion(const wchar_t* adapterDescription)
+{
+    HDEVINFO devices = SetupDiGetClassDevsW(
+        &GUID_DEVCLASS_DISPLAY, nullptr, nullptr, DIGCF_PRESENT);
+    if (devices == INVALID_HANDLE_VALUE)
+        return {};
+    std::string version;
+    for (DWORD index = 0; version.empty(); ++index)
+    {
+        SP_DEVINFO_DATA device = {};
+        device.cbSize = sizeof(device);
+        if (!SetupDiEnumDeviceInfo(devices, index, &device))
+            break;
+        wchar_t description[256] = {};
+        DWORD type = 0;
+        if (!SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_DEVICEDESC, &type,
+                reinterpret_cast<PBYTE>(description), sizeof(description),
+                nullptr) || _wcsicmp(description, adapterDescription) != 0)
+            continue;
+        wchar_t driverKey[256] = {};
+        if (!SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_DRIVER, &type,
+                reinterpret_cast<PBYTE>(driverKey), sizeof(driverKey), nullptr))
+            continue;
+        const std::wstring registryPath =
+            L"SYSTEM\\CurrentControlSet\\Control\\Class\\" +
+            std::wstring(driverKey);
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, registryPath.c_str(), 0,
+                          KEY_READ, &key) != ERROR_SUCCESS)
+            continue;
+        wchar_t value[128] = {};
+        DWORD bytes = sizeof(value);
+        if (RegGetValueW(key, nullptr, L"DriverVersion", RRF_RT_REG_SZ,
+                         nullptr, value, &bytes) == ERROR_SUCCESS)
+            version = NarrowWide(value);
+        RegCloseKey(key);
+    }
+    SetupDiDestroyDeviceInfoList(devices);
+    return version;
+}
+
 std::wstring GetExeDir()
 {
     wchar_t path[MAX_PATH] = {};
@@ -173,6 +233,33 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
         MessageBoxW(hwnd, L"D3D11 디바이스/스왑체인 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
+    ComPtr<IDXGIDevice> dxgiDevice;
+    ComPtr<IDXGIAdapter> adapter;
+    if (SUCCEEDED(m_device.As(&dxgiDevice)) &&
+        SUCCEEDED(dxgiDevice->GetAdapter(&adapter)))
+    {
+        DXGI_ADAPTER_DESC description = {};
+        if (SUCCEEDED(adapter->GetDesc(&description)))
+        {
+            m_adapterName = NarrowWide(description.Description);
+            const std::string registryVersion = QueryDisplayDriverVersion(
+                description.Description);
+            if (!registryVersion.empty())
+                m_driverVersion = registryVersion;
+        }
+        LARGE_INTEGER version = {};
+        if (m_driverVersion == "Unavailable" &&
+            SUCCEEDED(adapter->CheckInterfaceSupport(
+                __uuidof(ID3D11Device), &version)))
+        {
+            std::ostringstream text;
+            text << HIWORD(version.HighPart) << '.'
+                 << LOWORD(version.HighPart) << '.'
+                 << HIWORD(version.LowPart) << '.'
+                 << LOWORD(version.LowPart);
+            m_driverVersion = text.str();
+        }
+    }
 
     // GPU timestamp를 만들 수 없는 특수 환경에서도 렌더는 계속하고 오버레이에는
     // GPU timing unavailable을 표시한다. 일반 D3D11 장치에서는 8-slot ring을 쓴다.
@@ -248,7 +335,12 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
 {
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
 #ifdef _DEBUG
-    compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+    compileFlags |= D3DCOMPILE_DEBUG;
+    // 동적 단계 9 shader는 /Od에서 하드웨어 instruction 한도를 넘길 수 있다.
+    // 실제 최적화 비용을 재는 경로이기도 하므로 Debug에서도 최소 O1을 사용한다.
+    compileFlags |= std::strcmp(entryPoint, "mainOptimized") == 0
+        ? D3DCOMPILE_OPTIMIZATION_LEVEL1
+        : D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
 
     ComPtr<ID3DBlob> errors;
@@ -258,7 +350,7 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     if (SUCCEEDED(result))
         return true;
 
-    std::string message = "셰이더 컴파일 실패:\n";
+    std::string message = "HLSL shader compile failed:\n";
     if (errors)
         message += static_cast<const char*>(errors->GetBufferPointer());
     m_shaderError = message;
@@ -273,14 +365,16 @@ bool Renderer::CreateShaders(bool showErrors)
 {
     m_shaderError.clear();
     ComPtr<ID3DBlob> fullscreenVsBlob;
-    ComPtr<ID3DBlob> cloudPsBlob;
+    ComPtr<ID3DBlob> cloudReferencePsBlob;
+    ComPtr<ID3DBlob> cloudOptimizedPsBlob;
     ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
     ComPtr<ID3DBlob> noiseBaseCsBlob;
     ComPtr<ID3DBlob> noiseDetailCsBlob;
     if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudShaderPath, "main", "ps_5_0", cloudPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainReference", "ps_5_0", cloudReferencePsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors) ||
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors) ||
@@ -293,7 +387,8 @@ bool Renderer::CreateShaders(bool showErrors)
     }
 
     ComPtr<ID3D11VertexShader> fullscreenVs;
-    ComPtr<ID3D11PixelShader> cloudPs;
+    ComPtr<ID3D11PixelShader> cloudReferencePs;
+    ComPtr<ID3D11PixelShader> cloudOptimizedPs;
     ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
@@ -305,8 +400,11 @@ bool Renderer::CreateShaders(bool showErrors)
             fullscreenVsBlob->GetBufferPointer(), fullscreenVsBlob->GetBufferSize(),
             nullptr, &fullscreenVs)) ||
         FAILED(m_device->CreatePixelShader(
-            cloudPsBlob->GetBufferPointer(), cloudPsBlob->GetBufferSize(),
-            nullptr, &cloudPs)) ||
+            cloudReferencePsBlob->GetBufferPointer(), cloudReferencePsBlob->GetBufferSize(),
+            nullptr, &cloudReferencePs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudOptimizedPsBlob->GetBufferPointer(), cloudOptimizedPsBlob->GetBufferSize(),
+            nullptr, &cloudOptimizedPs)) ||
         FAILED(m_device->CreatePixelShader(
             noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
             nullptr, &noiseLabPs)) ||
@@ -365,7 +463,8 @@ bool Renderer::CreateShaders(bool showErrors)
     }
 
     m_fullscreenVs = fullscreenVs;
-    m_cloudPs = cloudPs;
+    m_cloudReferencePs = cloudReferencePs;
+    m_cloudOptimizedPs = cloudOptimizedPs;
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
@@ -749,6 +848,7 @@ bool Renderer::CreateConstantBuffers()
            createDynamicBuffer(sizeof(NoiseVolumeParameters), &m_noiseVolumeCb) &&
            createDynamicBuffer(sizeof(CloudShapeParameters), &m_cloudShapeCb) &&
            createDynamicBuffer(sizeof(CloudLodParameters), &m_cloudLodCb) &&
+           createDynamicBuffer(sizeof(OptimizationParameters), &m_optimizationCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -887,6 +987,15 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
                     sizeof(m_cloudLodParameters));
         m_context->Unmap(m_cloudLodCb.Get(), 0);
     }
+    m_optimizationParameters = stage9optimization::Sanitize(
+        m_optimizationParameters);
+    if (SUCCEEDED(m_context->Map(
+            m_optimizationCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_optimizationParameters,
+                    sizeof(m_optimizationParameters));
+        m_context->Unmap(m_optimizationCb.Get(), 0);
+    }
 
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     ID3D11RenderTargetView* cloudTarget =
@@ -899,7 +1008,10 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->IASetInputLayout(nullptr);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    m_context->PSSetShader(m_cloudPs.Get(), nullptr, 0);
+    ID3D11PixelShader* cloudShader =
+        stage9optimization::UsesReferenceShader(m_optimizationParameters)
+        ? m_cloudReferencePs.Get() : m_cloudOptimizedPs.Get();
+    m_context->PSSetShader(cloudShader, nullptr, 0);
     ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
     ID3D11Buffer* lightBuffer = m_lightCb.Get();
@@ -923,6 +1035,8 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->PSSetConstantBuffers(7, 1, &cloudShapeBuffer);
     ID3D11Buffer* cloudLodBuffer = m_cloudLodCb.Get();
     m_context->PSSetConstantBuffers(8, 1, &cloudLodBuffer);
+    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
+    m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
         m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
@@ -1028,6 +1142,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_cloudShapeParameters,
                           m_cloudDomainParameters,
                           m_cloudLodParameters,
+                          m_optimizationParameters, m_optimizationPreset,
                           m_lightParameters, m_sunPreset, m_phasePreset,
                           m_environmentParameters, m_environmentPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
@@ -1178,6 +1293,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                                   m_cloudShapeParameters,
                                   m_cloudDomainParameters,
                                   m_cloudLodParameters,
+                                  m_optimizationParameters,
+                                  m_optimizationPreset,
                                   m_lightParameters,
                                   m_sunPreset,
                                   m_phasePreset,
@@ -1351,6 +1468,21 @@ void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
     m_environmentPreset = preset;
 }
 
+void Renderer::ApplyPortfolioHeroLighting()
+{
+    m_lightParameters.directionToSun = stage6light::Preset(
+        Stage6SunPreset::LowEast).directionToSun;
+    m_lightParameters.sunColor = { 1.0f, 0.78f, 0.62f };
+    m_lightParameters.sunIntensity = 1.15f;
+    stage6light::ApplyPhasePreset(
+        m_lightParameters, Stage7PhasePreset::SilverLining);
+    stage8environment::ApplyPreset(
+        m_environmentParameters, Stage8EnvironmentPreset::PortfolioHero);
+    m_sunPreset = Stage6SunPreset::LowEast;
+    m_phasePreset = Stage7PhasePreset::SilverLining;
+    m_environmentPreset = Stage8EnvironmentPreset::PortfolioHero;
+}
+
 void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
 {
     m_lightParameters.maxLightSteps = maxSteps;
@@ -1372,6 +1504,30 @@ void Renderer::SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize)
 {
     m_cloudParameters.maxViewSteps = std::max(maxSteps, 1u);
     m_cloudParameters.stepSize = std::max(stepSize, 1e-4f);
+}
+
+void Renderer::ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset)
+{
+    stage9optimization::ApplyPreset(
+        m_optimizationParameters, preset,
+        m_cloudParameters.maxViewSteps, m_cloudParameters.stepSize,
+        m_lightParameters.maxLightSteps, m_lightParameters.lightStepSize,
+        m_cloudParameters.transmittanceThreshold);
+    m_optimizationPreset = preset;
+}
+
+void Renderer::ConfigureStage9ConeForValidation(std::uint32_t taps,
+                                                float angleDegrees,
+                                                float farSampleFraction)
+{
+    m_optimizationParameters.lightSamplingMode = static_cast<std::uint32_t>(
+        Stage9LightSamplingMode::DeterministicCone);
+    m_optimizationParameters.coneSampleCount = taps;
+    m_optimizationParameters.coneAngleDegrees = angleDegrees;
+    m_optimizationParameters.lightFarSampleFraction = farSampleFraction;
+    m_optimizationParameters = stage9optimization::Sanitize(
+        m_optimizationParameters);
+    m_optimizationPreset = Stage9OptimizationPreset::Custom;
 }
 
 void Renderer::SetCloudWindSpeedsForValidation(float bulkSpeed,
@@ -1587,6 +1743,8 @@ bool Renderer::ApplyStage13OpenWorldPreset()
         "Deterministic Dense Mixed default applied (saved Custom not auto-applied)";
     m_pipelineComparisonActive = false;
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::FullOpenWorld;
+    // 2026-08-19 승인한 단계 9의 가장 싼 화질·성능 합격 후보를 기본으로 쓴다.
+    ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
     return true;
 }
 
@@ -1899,6 +2057,7 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
     return m_noiseLab.ExportSnapshot(
         root, m_cloudParameters, m_cloudShapeParameters, m_cloudDomainParameters,
         m_cloudLodParameters,
+        m_optimizationParameters, m_optimizationPreset,
         m_lightParameters, m_sunPreset, m_phasePreset,
         m_environmentParameters, m_environmentPreset, m_weatherPreset,
         m_cloudTypeMode,

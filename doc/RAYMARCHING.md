@@ -58,7 +58,8 @@ km 거리의 가까운 값이 검게 뭉개지지 않도록 평면층 거리 출
 일반 실행은 `CloudDomainType::PlanarLayer` 하나만 사용한다. 층은 `1500~7500m`, View는
 50km, fade는 40~50km, Light는 20km다. Y=0의 10km 정사각형 지면과 원점의
 `20×60×20m` 건물이 먼저 깊이를 쓰므로 F5에서는 건물 뒤 구름이 Scene Depth에서 잘린다.
-analytic sky는 카메라 기준 50km를 채우며 shell과 대기 산란은 아직 추가하지 않는다.
+analytic sky는 카메라 기준 50km를 채우며 구형 도메인은 포트폴리오 범위에서 제외했고
+실제 대기 산란은 아직 추가하지 않는다.
 
 이전 사용자 출력 Entry/Exit와 Ray Direction/Scene Depth/World Position/Screen UV/step count
 ID 1~7은 삭제했다. 교차 수학과 `CloudHitMask`, Segment Length, Actual Step은 자동 회귀에
@@ -307,6 +308,22 @@ Phase Off/Environment Off로 자기 그림자를 먼저 확인하고, 이후 Pha
 켜 silver lining과 내부 fill의 원인을 분리한다. 실제 대기 radiance와 지면 재질 입력은
 여전히 단계 14 범위다.
 
+13-5 외곽광 보완은 추가 레이를 만들지 않고 각 View 표본이 이미 가진 `lightT`를 재사용한다.
+`shadowExponent`는 View opacity를 바꾸지 않고 직접 태양광의 자기 그림자 대비만 조절한다.
+`edgeInfluence=0`, `shadowExponent=1`은 이전 계산과 동일하다.
+
+```text
+shapedLightT = lightT ^ shadowExponent
+surfaceMask = lightT ^ edgeOpticalDepthScale
+phaseWeight = lerp(1, surfaceMask, edgeInfluence)
+scopedPhase = 1 + (phaseFactor - 1) * phaseWeight
+direct = commonDirectInteraction * shapedLightT * scopedPhase
+```
+
+Silver Lining Contribution은 `max(scopedPhase-1, 0)`이 실제로 추가한 RGB만 누적한다.
+Shaped Sun Visibility와 Ambient Visibility는 산란 상호작용량으로 가중 평균해 F3에서 0~1로
+표시한다. 세 출력은 진단용 ALU만 추가하며 Light/Base/Detail texture fetch 수를 늘리지 않는다.
+
 ## 안전한 slab AABB 교차
 
 레이는 `p(t) = rayOrigin + rayDirection × t`다. 방향을 길이 1로 정규화했으므로 `t`는 meter다. X, Y, Z 각 축에서 두 평면 사이에 레이가 들어 있는 거리 구간을 구하고 세 구간의 교집합을 취한다.
@@ -392,7 +409,8 @@ currentT *= stepT
 finalColor = cloudScattering + backgroundColor × cloudTransmittance
 ```
 
-`transmittanceThreshold=0.01`은 단계 9에서 충분히 불투명해진 레이를 일찍 끝내기 위한 예약 값이다. 단계 1에서는 정확한 전체 구간 비교를 위해 사용하지 않는다.
+`transmittanceThreshold=0.01`은 단계 9 Optimized View에서 충분히 불투명해진 레이를 일찍
+끝내는 값이다. Reference와 단계 1 회귀는 정확한 전체 구간 비교를 위해 사용하지 않는다.
 
 ## 단계 2: 월드 공간 단일 3D noise 밀도
 
@@ -627,13 +645,18 @@ phaseFactor = phaseEnabled
     ? lerp(1, clamp(dual, 0, 16), saturate(phaseIntensity))
     : 1
 
-stepScattering = stage6StepScattering × phaseFactor
+surfaceMask = lightTransmittance ^ edgeOpticalDepthScale
+scopedPhase = 1 + (phaseFactor - 1)
+    × lerp(1, surfaceMask, edgeInfluence)
+stepScattering = stage6StepScattering × scopedPhase
 ```
 
 Phase Off나 Intensity 0은 배율 1이므로 단계 6 결과를 보존한다. Phase는 직접 산란량만
 바꾸고 View/Light 투과율, 광학 깊이와 step 수에는 영향을 주지 않는다. 방향은 View Ray
 전체에서 일정하므로 픽셀당 한 번만 계산한다. raw lobe 진단은 16까지 표시하지만 현재 LDR
-합성에 적용하는 Phase는 최대 2.5다. 환경광과 다중 산란은 단계 8에서 별도로 더한다.
+합성에 적용하는 각도 Phase는 최대 2.5다. Silver Lining은 `edgeInfluence=0.85`로 이 배율을
+태양 투과율이 높은 표면에 제한하며 Balanced/Off의 중립값은 기존 결과를 보존한다.
+환경광과 다중 산란은 단계 8에서 별도로 더한다.
 
 ## 단계 8: 분석적 환경광과 저비용 다중 산란
 
@@ -642,9 +665,12 @@ Phase Off나 Intensity 0은 배율 1이므로 단계 6 결과를 보존한다. P
 ```text
 skyWeight = lerp(1, h, ambientHeightInfluence)
 groundWeight = 1 - h
-ambientOcclusion = exp(-finalDensity × ambientOcclusionStrength)
-sky = skyColor × skyStrength × skyWeight × ambientOcclusion
-ground = groundColor × groundStrength × groundWeight × ambientOcclusion
+localVisibility = exp(-finalDensity × ambientOcclusionStrength)
+sunVisibility = lightTransmittance ^ ambientShadowExponent
+ambientVisibility = localVisibility
+    × lerp(1, sunVisibility, ambientShadowCoupling)
+sky = skyColor × skyStrength × skyWeight × ambientVisibility
+ground = groundColor × groundStrength × groundWeight × ambientVisibility
 ```
 
 하늘·지면광은 방향이 없는 근사이므로 Phase를 적용하지 않는다. 각 색은 직접광과 같은
@@ -656,11 +682,16 @@ ground = groundColor × groundStrength × groundWeight × ambientOcclusion
 ```text
 octaveLightT = exp(-lightOpticalDepth × extinctionScale)
 octavePhase = lerp(1, phaseFactor, phaseScale)
-multiple += sunRadiance × energy × octaveLightT × octavePhase
+interiorWeight = lerp(1, 1-lightTransmittance,
+                      multipleScatteringInteriorBlend)
+multiple += sunRadiance × energy × octaveLightT
+            × octavePhase × interiorWeight
 ```
 
 13-5 사용자 검증에서 Balanced의 간접광이 자기 그림자보다 강하고 Silver Lining의 선형 RGB가
-LDR 화면의 1을 넘어 흰색으로 잘리는 현상을 확인했다. Balanced 기본은 Sky/Ground
+LDR 화면의 1을 넘어 흰색으로 잘리는 현상을 확인했다. Portfolio Hero는 차가운 하늘 fill을
+남기면서 태양 차폐 내부의 Ambient를 줄이고 Multiple을 밝은 외곽에서 내부로 옮긴다.
+Balanced 기본은 새 결합값 0으로 이전 결과를 보존한다. Sky/Ground
 `0.12/0.05`, AO `1.50`, Multiple energy/phase decay `0.20/0.25`로 낮췄다. 최종 합성은
 RGB peak 0.8 이하는 그대로 두고 그 위만 다음 shoulder로 `[0.8,1)`에 압축한다.
 
@@ -702,3 +733,41 @@ Scene Depth와 건물 폐색은 별도 `Stage13DomainSmoke`가 계속 검사한�
 `ω×(1-stepTransmittance)`로 전환했다. S배 확대할 때 길이는 S배, `σt`는 `1/S`배,
 `ω`는 그대로이므로 직접광·환경광 공통 진폭도 상사 불변이다. Current 1000×의 보고 전용
 Accumulated Direct/Composite MAE는 각각 `0.00036347`/`0.00070073`으로 목표 `0.01` 이하다.
+
+## 단계 9: 평면층 View 기본 최적화와 deterministic Light cone
+
+단계 13 승인값 `100m/512 View`, `250m/80 Straight Light`는 `mainReference`에 그대로 남는다.
+`mainOptimized`만 다음 순서로 비용을 줄인다.
+
+2026-08-19 사용자 승인 기본값은 Balanced이며 `2×` empty search, `1%` early exit,
+`100→150m` 거리 step과 `6탭/2°/원거리 77%` cone을 사용한다. Reference는 시작값이 아니라
+이후 저해상도·temporal 단계의 정확도 비교 기준이다.
+
+1. Weather, 로컬 높이와 타입 세로 profile 중 Base 식에 곱해지는 값이 정확히 0이면
+   Base/Detail Texture3D를 읽지 않는다. 0이 아닐 때는 같은 Weather 표본과 새 Base 표본을
+   `ComposeBaseCloudDensity`에 넣어 Weather를 두 번 읽지 않는다.
+2. Full march에서 Base가 epsilon 이하인 표본이 기본 3회 이어지면 Search로 전환한다.
+   Search 간격은 `min(fullStep×multiplier, 400m)`이고 Base 후보만 평가한다. 후보를 만나면
+   coarse 한 구간을 되감고 Full로 돌아가 경계를 100m 간격으로 다시 읽는다.
+3. View 간격은 16~48km에서 `smoothstep`으로 `100m → farMultiplier×100m`가 된다.
+   마지막 구간은 `min(step,tEnd-cursor)`로 잘라 전체 거리를 빠짐없이 덮는다.
+4. 적분 뒤 `viewT <= transmittanceThreshold`이면 남은 배경 기여가 임계값 이하므로 끝낸다.
+
+각 실제 구간 길이 `Δs_i`를 사용하므로 균일 밀도에서는 가변 분할도
+`T = exp(-rho × sigma_t × sum(Δs_i))`와 같다.
+
+4× Search의 400m deterministic midpoint는 Base Texture3D의 최단 파장 약 522m를
+Nyquist 조건보다 성기게 읽는다. 2026-08-19 사용자 검증에서 카메라 중심의 거리 껍질과
+coarse/full 전환이 등고선·물결무늬로 드러났으므로 Fast/4×는 탈락했다. 활성 최저 비용은
+최대 200m인 Balanced/2×이며 4× 구현은 schema 31과 실패 이력 재현에만 남긴다.
+
+Light cone은 시간 jitter 없이 고정 golden angle `2.39996323 rad`를 사용한다. 5/6/8/12개
+구간을 근거리 쪽에 `pow(x,1.5)`로 모으고 마지막 표본이 나머지 거리를 담당한다. 각 표본은
+담당 길이 `w_i`를 곱하므로 `tau_light = sigma_t × sum(rho_i × w_i)`이고
+`sum(w_i)`는 Light 구간 길이와 같다. cone 반경은 `sampleDistance × tan(coneAngle)`이다.
+1~4°는 표본 수가 같아 계산량도 같고, 각도를 키우면 태양 직선 주변의 더 넓은 밀도 덩어리를
+읽어 평행 대각선 띠를 부드럽게 한다. 기존 Base-only Light 밀도와 `tau>=9.21034` 종료는
+유지한다. 자동 화질 스윕에서 6탭 4°/3°는 Cumulus Light T P99 기준을 넘었고, 동일한 6탭
+비용의 2°와 원거리 구간 비율 77%가 Dense/Stratus/Cumulus에서 처음으로 P99 0.03 이하를
+만족해 Balanced 값이 되었다. temporal jitter, 저해상도, Light Cache와 지면 Cloud Shadow
+Map은 단계 10~12 범위다.

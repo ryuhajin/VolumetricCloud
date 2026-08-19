@@ -55,6 +55,45 @@ inline float SelectLightRayDensity(float baseDensity, float /*finalDensity*/)
     return std::max(baseDensity, 0.0f);
 }
 
+inline float ShapeLightTransmittance(float lightTransmittance,
+                                     float shadowExponent)
+{
+    const float transmittance = std::clamp(
+        std::isfinite(lightTransmittance) ? lightTransmittance : 1.0f,
+        0.0f, 1.0f);
+    const float exponent = std::clamp(
+        std::isfinite(shadowExponent) ? shadowExponent : 1.0f,
+        0.5f, 4.0f);
+    return std::pow(transmittance, exponent);
+}
+
+inline float ComputeSurfaceExposure(float lightTransmittance,
+                                    float opticalDepthScale)
+{
+    const float transmittance = std::clamp(
+        std::isfinite(lightTransmittance) ? lightTransmittance : 1.0f,
+        0.0f, 1.0f);
+    const float scale = std::clamp(
+        std::isfinite(opticalDepthScale) ? opticalDepthScale : 1.0f,
+        0.25f, 8.0f);
+    return std::pow(transmittance, scale);
+}
+
+inline float ScopePhaseToSurface(float phaseFactor, float surfaceExposure,
+                                 float edgeInfluence)
+{
+    const float phase = std::clamp(
+        std::isfinite(phaseFactor) ? phaseFactor : 1.0f, 0.0f, 16.0f);
+    const float exposure = std::clamp(
+        std::isfinite(surfaceExposure) ? surfaceExposure : 1.0f,
+        0.0f, 1.0f);
+    const float influence = std::clamp(
+        std::isfinite(edgeInfluence) ? edgeInfluence : 0.0f,
+        0.0f, 1.0f);
+    const float weight = 1.0f + (exposure - 1.0f) * influence;
+    return 1.0f + (phase - 1.0f) * weight;
+}
+
 inline bool ShouldTraceLightRay(float finalDensity)
 {
     return std::isfinite(finalDensity) && finalDensity > 0.0f;

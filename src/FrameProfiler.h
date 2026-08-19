@@ -18,6 +18,9 @@ struct FrameTimingSnapshot
     double cpuFrameMs = 0.0;
     double gpuFrameMs = 0.0;
     double gpuCloudMs = 0.0;
+    double rawGpuFrameMs = 0.0;
+    double rawGpuCloudMs = 0.0;
+    std::uint64_t gpuSampleIndex = 0;
     bool cpuValid = false;
     bool gpuValid = false;
 };
@@ -37,7 +40,7 @@ public:
 
 private:
     FrameTimingSnapshot m_snapshot;
-    // 오버레이는 EMA를 표시하지만 마지막 유효 원본 표본도 내부에 보존한다.
+    // 오버레이는 EMA를 표시하고 자동 성능 gate는 snapshot의 원본 표본을 읽는다.
     double m_lastRawCpuFrameMs = 0.0;
     double m_lastRawGpuFrameMs = 0.0;
     double m_lastRawGpuCloudMs = 0.0;

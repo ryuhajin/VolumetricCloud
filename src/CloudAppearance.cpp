@@ -184,6 +184,17 @@ const char* CloudAppearancePresetName(CloudAppearancePreset preset)
     }
 }
 
+bool TryDecodeCloudAppearancePresetRequest(
+    int rawValue, CloudAppearancePreset& outPreset)
+{
+    if (rawValue < static_cast<int>(
+            CloudAppearancePreset::DenseMixedDefault) ||
+        rawValue > static_cast<int>(CloudAppearancePreset::Custom))
+        return false;
+    outPreset = static_cast<CloudAppearancePreset>(rawValue);
+    return true;
+}
+
 CloudAppearanceSettings DenseMixedAppearance()
 {
     return {};

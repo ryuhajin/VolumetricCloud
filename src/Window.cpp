@@ -136,7 +136,7 @@ void Window::UpdateDebugTitle()
     };
     static const wchar_t* environmentPresetNames[] = {
         L"Environment Off", L"Balanced Ambient", L"Strong Fill",
-        L"Ground Check", L"Custom Environment"
+        L"Ground Check", L"Portfolio Ambient", L"Custom Environment"
     };
 
     const int weatherPresetIndex = static_cast<int>(m_renderer->WeatherPreset());
@@ -148,13 +148,13 @@ void Window::UpdateDebugTitle()
         m_renderer->CurrentNoiseSource() == NoiseSource::Texture3D
             ? L"Texture3D" : L"Procedural Legacy";
     wchar_t title[512] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 13-4E | %ls | Unified 50km Portfolio Scene | %ls | %ls | %ls | %ls | %ls | %ls | WASD %.0f m/s Shift 4x",
+    swprintf_s(title, L"VolumetricCloud - Stage 13-5 | %ls | Unified 50km Portfolio Scene | %ls | %ls | %ls | %ls | %ls | %ls | WASD %.0f m/s Shift 4x",
                stage13scene::DebugModeName(m_renderer->DebugMode()),
                noiseSourceName,
                weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 1],
                sunPresetNames[(sunPresetIndex >= 0 && sunPresetIndex <= 3) ? sunPresetIndex : 3],
                phasePresetNames[(phasePresetIndex >= 0 && phasePresetIndex <= 4) ? phasePresetIndex : 0],
-               environmentPresetNames[(environmentPresetIndex >= 0 && environmentPresetIndex <= 4) ? environmentPresetIndex : 1],
+               environmentPresetNames[(environmentPresetIndex >= 0 && environmentPresetIndex <= 5) ? environmentPresetIndex : 1],
                m_camera
                    ? (m_camera->GetDebugName() +
                       (m_camera->WasManuallyAdjusted() ? L" · 수동 조정" : L"")).c_str()

@@ -26,6 +26,7 @@
 #include "LightParameters.h"
 #include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
+#include "OptimizationParameters.h"
 
 class Camera;
 
@@ -112,6 +113,8 @@ public:
                     CloudShapeParameters& cloudShapeParameters,
                     CloudDomainParameters& cloudDomainParameters,
                     CloudLodParameters& cloudLodParameters,
+                    OptimizationParameters& optimizationParameters,
+                    Stage9OptimizationPreset& optimizationPreset,
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
                     Stage7PhasePreset& phasePreset,
@@ -175,6 +178,8 @@ public:
                         const CloudShapeParameters& cloudShapeParameters,
                         const CloudDomainParameters& cloudDomainParameters,
                         const CloudLodParameters& cloudLodParameters,
+                        const OptimizationParameters& optimizationParameters,
+                        Stage9OptimizationPreset optimizationPreset,
                         const LightParameters& lightParameters,
                         Stage6SunPreset sunPreset,
                         Stage7PhasePreset phasePreset,
@@ -228,6 +233,8 @@ private:
                            CloudShapeParameters& cloudShapeParameters,
                            CloudDomainParameters& cloudDomainParameters,
                            CloudLodParameters& cloudLodParameters,
+                           OptimizationParameters& optimizationParameters,
+                           Stage9OptimizationPreset& optimizationPreset,
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
                            Stage7PhasePreset& phasePreset,
@@ -273,6 +280,8 @@ private:
                        const CloudShapeParameters& cloudShapeParameters,
                        const CloudDomainParameters& cloudDomainParameters,
                        const CloudLodParameters& cloudLodParameters,
+                       const OptimizationParameters& optimizationParameters,
+                       Stage9OptimizationPreset optimizationPreset,
                        const LightParameters& lightParameters,
                        Stage6SunPreset sunPreset,
                        Stage7PhasePreset phasePreset,

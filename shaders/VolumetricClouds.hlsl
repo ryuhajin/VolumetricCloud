@@ -33,6 +33,7 @@ cbuffer cbCamera : register(b0)
 
 // cbCamera의 time 선언 뒤 포함해야 Light Ray가 같은 애니메이션 시간을 사용한다.
 #include "CloudDomainParameters.hlsli"
+#include "OptimizationParameters.hlsli"
 #include "CloudEnvironment.hlsli"
 
 // t0: 앞선 DiagnosticScene PS가 R16G16B16A16_FLOAT에 쓴 linear RGB 장면색.
@@ -100,10 +101,18 @@ struct CloudMarchDebug
     float3 accumulatedSky;    // View Ray 전체의 분석적 하늘 환경광.
     float3 accumulatedGround; // View Ray 전체의 분석적 지면 반사 근사.
     float3 accumulatedMultiple;// View Ray 전체의 다중 산란 근사.
+    float3 accumulatedSilverLining; // 외곽 범위 Phase가 추가한 양의 직접광.
+    float shapedSunVisibilitySum;   // 조명 가중 평균용 직접광 투과율 합.
+    float ambientVisibilitySum;     // 조명 가중 평균용 환경광 가시성 합.
+    float lightingDiagnosticWeight; // 두 가시성 진단의 공통 분모.
     float viewOpticalDepth;   // View Ray 전체의 final density 광학 깊이.
     float detailLodFactor;    // 대표 위치의 Detail 거리 LOD, 1=원본, 0=평균.
     float4 baseNoiseChannels; // 단계 13-4 Base Texture3D RGBA.
     float4 detailNoiseChannels;// 단계 13-4 Detail Texture3D RGBA.
+    float executedViewSamples; // 단계 9: 실제 실행한 View/Base 표본 수.
+    float skippedDistance;     // 단계 9: coarse search가 건너뛴 거리(m).
+    float earlyExitSavings;    // 단계 9: 투과율 종료로 남긴 거리(m).
+    float supportPrecheckSkips;// 단계 9: Texture3D를 읽지 않은 표본 수.
 };
 
 // 화면 UV를 DirectX NDC로 바꾼다.
@@ -184,9 +193,9 @@ bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
 // 입력은 월드 위치(m), 정규화 월드 방향, 장면 거리(m)이고 출력은 합성 가능한
 // CloudResult와 관찰용 CloudMarchDebug다. 모든 실패 경로는 산란 0, 투과율 1의
 // 중립 결과를 반환해 배경을 바꾸지 않는다.
-CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
-                          float sceneDistance,
-                          out CloudMarchDebug debugData)
+CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
+                                   float sceneDistance,
+                                   out CloudMarchDebug debugData)
 {
     CloudResult result = (CloudResult)0;
     result.transmittance = 1.0;
@@ -263,7 +272,7 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
         // 실제 합성용 Light Ray는 아래 View 반복 안에서 따로 누적한다.
         if (debugMode == 24 || debugMode == 25 || debugMode == 27)
         {
-            LightMarchResult representativeLight = ComputeLightTransmittance(
+            LightMarchResult representativeLight = ComputeLightTransmittanceStraight(
                 representativePosition, directionToSun);
             debugData.lightTransmittance = representativeLight.transmittance;
             debugData.lightOpticalDepth = representativeLight.opticalDepth;
@@ -293,14 +302,16 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             // 5. 최종 합성, Light 비용과 누적 직접광 모드에서만 조명 적분을 실행한다.
             bool requiresLighting = debugMode == 0 || debugMode == 26 ||
                                     debugMode == 32 || debugMode == 53 ||
-                                    debugMode == 54 || debugMode == 55;
+                                    debugMode == 54 || debugMode == 55 ||
+                                    debugMode == 57 || debugMode == 58 ||
+                                    debugMode == 59;
             if (sampledDensity > 0.0 && requiresLighting)
             {
                 LightMarchResult light = { 1.0, 0.0, 0.0 };
                 bool needsLightRay = requiresLighting;
                 if (needsLightRay)
                 {
-                    light = ComputeLightTransmittance(
+                    light = ComputeLightTransmittanceStraight(
                         samplePosition, directionToSun);
                     debugData.totalLightSamples += light.stepCount;
                 }
@@ -311,6 +322,13 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
                 debugData.accumulatedSky += lighting.skyAmbient;
                 debugData.accumulatedGround += lighting.groundBounce;
                 debugData.accumulatedMultiple += lighting.multipleScattering;
+                debugData.accumulatedSilverLining +=
+                    lighting.silverLiningContribution;
+                debugData.shapedSunVisibilitySum +=
+                    lighting.shapedSunVisibility * lighting.diagnosticWeight;
+                debugData.ambientVisibilitySum +=
+                    lighting.ambientVisibility * lighting.diagnosticWeight;
+                debugData.lightingDiagnosticWeight += lighting.diagnosticWeight;
                 result.scattering += lighting.direct + lighting.skyAmbient +
                                      lighting.groundBounce +
                                      lighting.multipleScattering;
@@ -329,31 +347,189 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
     return result;
 }
 
+float Stage9ViewStep(float sampleDistance)
+{
+    if (distanceStepEnabled == 0u)
+        return max(stepSize, 1e-4);
+    float distanceBlend = smoothstep(
+        distanceStepStartMeters, max(distanceStepEndMeters,
+        distanceStepStartMeters + 1.0), sampleDistance);
+    return max(stepSize, 1e-4) * lerp(
+        1.0, max(farStepMultiplier, 1.0), distanceBlend);
+}
+
+CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
+                                   float sceneDistance,
+                                   out CloudMarchDebug debugData)
+{
+    CloudResult result = (CloudResult)0;
+    result.transmittance = 1.0;
+    result.representativeDepth = sceneDistance;
+    debugData = (CloudMarchDebug)0;
+
+    float tStart = 0.0;
+    float tEnd = 0.0;
+    if (!IntersectCloudVolume(rayOrigin, rayDirection, sceneDistance,
+                              tStart, tEnd))
+        return result;
+
+    float segmentLength = tEnd - tStart;
+    debugData.entryDistance = tStart;
+    debugData.exitDistance = tEnd;
+    debugData.segmentLength = segmentLength;
+    debugData.actualStepLength = max(stepSize, 1e-4);
+
+    float representativeDistance = 0.5 * (tStart + tEnd);
+    float3 representativePosition = rayOrigin +
+        rayDirection * representativeDistance;
+    CloudDensitySample representativeSample = SampleCloudDensityOptimized(
+        representativePosition, time, true, representativeDistance);
+    debugData.rawNoise = representativeSample.rawNoise;
+    debugData.thresholdDensity = representativeSample.thresholdDensity;
+    debugData.heightFraction = representativeSample.heightFraction;
+    debugData.heightProfile = representativeSample.heightProfile;
+    debugData.baseDensity = representativeSample.baseDensity;
+    debugData.detailNoise = representativeSample.detailNoise;
+    debugData.erosion = representativeSample.erosion;
+    debugData.detailSampled = representativeSample.detailSampled;
+    debugData.detailLodFactor = representativeSample.detailLodFactor;
+    debugData.weatherCoverage = representativeSample.weatherCoverage;
+    debugData.cloudType = representativeSample.cloudType;
+    debugData.weatherDensityModifier = representativeSample.weatherDensityModifier;
+    debugData.weatherThresholdDensity = representativeSample.weatherThresholdDensity;
+    debugData.typedShapeProfile = representativeSample.typedShapeProfile;
+    debugData.effectiveShapeCoverage = representativeSample.effectiveShapeCoverage;
+    debugData.baseSupport = representativeSample.baseSupport;
+    debugData.weatherThicknessPotential = representativeSample.weatherThicknessPotential;
+    debugData.localThicknessMeters = representativeSample.localThicknessMeters;
+    debugData.localHeightFraction = representativeSample.localHeightFraction;
+    debugData.sampledDensity = representativeSample.finalDensity;
+    debugData.noiseUvw = representativeSample.noiseUvw;
+    debugData.detailNoiseUvw = representativeSample.detailNoiseUvw;
+    debugData.weatherUv = representativeSample.weatherUv;
+    debugData.baseNoiseChannels = representativeSample.baseNoiseChannels;
+    debugData.detailNoiseChannels = representativeSample.detailNoiseChannels;
+
+    PhaseSample phase = EvaluateDualLobePhase(rayDirection, directionToSun);
+    debugData.phaseCosTheta = phase.cosTheta;
+    debugData.forwardPhaseLobe = phase.forwardLobe;
+    debugData.backwardPhaseLobe = phase.backwardLobe;
+    debugData.dualPhaseFactor = phase.phaseFactor;
+    if (debugMode == 24 || debugMode == 25 || debugMode == 27)
+    {
+        LightMarchResult representativeLight = ComputeLightTransmittance(
+            representativePosition, directionToSun);
+        debugData.lightTransmittance = representativeLight.transmittance;
+        debugData.lightOpticalDepth = representativeLight.opticalDepth;
+        debugData.directScattering = IntegrateSingleScattering(
+            representativeSample.finalDensity,
+            representativeLight.transmittance, 1.0,
+            Stage9ViewStep(representativeDistance), phase.phaseFactor);
+    }
+
+    float cursor = tStart;
+    uint consecutiveEmpty = 0u;
+    bool coarseSearch = false;
+    float extinction = max(extinctionCoefficient, 0.0);
+    uint safeMaxSteps = max(maxViewSteps, 1u);
+    [loop]
+    for (uint iteration = 0u;
+         iteration < safeMaxSteps && cursor < tEnd - 1e-5;
+         ++iteration)
+    {
+        float fullStep = Stage9ViewStep(cursor);
+        float candidateStep = coarseSearch
+            ? min(fullStep * max(coarseStepMultiplier, 1.0),
+                  max(maxSearchStepMeters, fullStep))
+            : fullStep;
+        float marchLength = min(candidateStep, tEnd - cursor);
+        float sampleDistance = cursor + 0.5 * marchLength;
+        float3 samplePosition = rayOrigin + rayDirection * sampleDistance;
+
+        if (coarseSearch)
+        {
+            CloudDensitySample candidate = SampleCloudDensityOptimized(
+                samplePosition, time, false, sampleDistance);
+            debugData.executedViewSamples += 1.0;
+            debugData.supportPrecheckSkips += candidate.supportPrecheckSkipped;
+            if (candidate.baseDensity > baseDensityEpsilon)
+            {
+                cursor = max(tStart, cursor - marchLength);
+                coarseSearch = false;
+                consecutiveEmpty = 0u;
+                continue;
+            }
+            debugData.skippedDistance += marchLength;
+            cursor += marchLength;
+            continue;
+        }
+
+        CloudDensitySample densitySample = SampleCloudDensityOptimized(
+            samplePosition, time, true, sampleDistance);
+        debugData.executedViewSamples += 1.0;
+        debugData.supportPrecheckSkips += densitySample.supportPrecheckSkipped;
+        float distanceFade = CloudViewDistanceFade(sampleDistance);
+        densitySample.baseDensity *= distanceFade;
+        densitySample.finalDensity *= distanceFade;
+        float sampledDensity = densitySample.finalDensity;
+        float stepTransmittance = exp(
+            -sampledDensity * extinction * marchLength);
+        debugData.viewOpticalDepth += sampledDensity * extinction * marchLength;
+
+        bool requiresLighting = debugMode == 0 || debugMode == 26 ||
+            debugMode == 32 || debugMode == 53 || debugMode == 54 ||
+            debugMode == 55 || debugMode == 57 || debugMode == 58 ||
+            debugMode == 59;
+        if (sampledDensity > 0.0 && requiresLighting)
+        {
+            LightMarchResult light = ComputeLightTransmittance(
+                samplePosition, directionToSun);
+            debugData.totalLightSamples += light.stepCount;
+            EnvironmentLightingSample lighting = EvaluateEnvironmentLighting(
+                densitySample, light, phase, result.transmittance, marchLength);
+            debugData.accumulatedDirect += lighting.direct;
+            debugData.accumulatedSky += lighting.skyAmbient;
+            debugData.accumulatedGround += lighting.groundBounce;
+            debugData.accumulatedMultiple += lighting.multipleScattering;
+            debugData.accumulatedSilverLining += lighting.silverLiningContribution;
+            debugData.shapedSunVisibilitySum +=
+                lighting.shapedSunVisibility * lighting.diagnosticWeight;
+            debugData.ambientVisibilitySum +=
+                lighting.ambientVisibility * lighting.diagnosticWeight;
+            debugData.lightingDiagnosticWeight += lighting.diagnosticWeight;
+            result.scattering += lighting.direct + lighting.skyAmbient +
+                lighting.groundBounce + lighting.multipleScattering;
+        }
+        result.transmittance *= stepTransmittance;
+        cursor += marchLength;
+
+        consecutiveEmpty = densitySample.baseDensity <= baseDensityEpsilon
+            ? consecutiveEmpty + 1u : 0u;
+        if (emptySpaceSkippingEnabled != 0u &&
+            consecutiveEmpty >= max(emptySamplesBeforeCoarse, 1u))
+            coarseSearch = true;
+        if (viewEarlyExitEnabled != 0u &&
+            result.transmittance <= transmittanceThreshold)
+        {
+            debugData.earlyExitSavings = max(tEnd - cursor, 0.0);
+            break;
+        }
+    }
+
+    result.transmittance = saturate(result.transmittance);
+    result.representativeDepth = 0.5 * (tStart + tEnd);
+    debugData.stepCount = debugData.executedViewSamples;
+    debugData.hit = 1.0;
+    return result;
+}
+
 // 최종 풀스크린 픽셀 셰이더.
 // UV → 레이 → 깊이 → 교차 → 레이 마칭 → 디버그 → 합성 순서를 한곳에서 보여 준다.
-float4 main(VSOut input) : SV_TARGET
+float4 RenderCloudOutput(VSOut input, bool hasGeometry,
+                         float3 rayDirection, CloudResult cloud,
+                         CloudMarchDebug marchDebug)
 {
-    // 1. UV를 유효 범위로 제한하고 같은 픽셀의 Scene Depth를 읽는다.
     float2 uv = saturate(input.uv);
-    float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
-    bool hasGeometry = deviceDepth < 0.999999;
-
-    // 2. 카메라에서 픽셀로 나가는 월드 레이를 복원한다.
-    float3 rayDirection = ReconstructWorldRay(uv);
-
-    // 3. 깊이가 있으면 월드 표면과 meter 거리를 복원하고, 하늘이면 farPlane을 쓴다.
-    float3 worldPosition = hasGeometry
-        ? ReconstructWorldPosition(uv, deviceDepth)
-        : cameraPos + rayDirection * farPlane;
-    float sceneDistance = hasGeometry
-        ? length(worldPosition - cameraPos)
-        : farPlane;
-
-    // 4. 선택한 구름 도메인과 Scene Depth 제한 뒤 밀도를 적분한다.
-    CloudMarchDebug marchDebug;
-    CloudResult cloud = RaymarchCloud(
-        cameraPos, rayDirection, sceneDistance, marchDebug);
-
     // 5. 1~7은 13-4D에서 삭제한 사용자 디버그 ID다. CPU가 오래된 값을
     // 전달해도 별도 분기로 들어가지 않고 아래 최종 Composite로 안전하게 폴백한다.
     if (debugMode == 8)
@@ -537,6 +713,38 @@ float4 main(VSOut input) : SV_TARGET
     }
     if (debugMode == 56)
         return float4((marchDebug.detailLodFactor * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 57)
+    {
+        float3 mapped = max(marchDebug.accumulatedSilverLining, 0.0.xxx) /
+            (1.0.xxx + max(marchDebug.accumulatedSilverLining, 0.0.xxx));
+        return float4(mapped * marchDebug.hit, 1.0);
+    }
+    if (debugMode == 58)
+    {
+        float visibility = marchDebug.lightingDiagnosticWeight > 1e-6
+            ? marchDebug.shapedSunVisibilitySum /
+              marchDebug.lightingDiagnosticWeight : 0.0;
+        return float4((saturate(visibility) * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 59)
+    {
+        float visibility = marchDebug.lightingDiagnosticWeight > 1e-6
+            ? marchDebug.ambientVisibilitySum /
+              marchDebug.lightingDiagnosticWeight : 0.0;
+        return float4((saturate(visibility) * marchDebug.hit).xxx, 1.0);
+    }
+    if (debugMode == 60)
+        return float4((saturate(marchDebug.executedViewSamples /
+            max((float)maxViewSteps, 1.0)) * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 61)
+        return float4((saturate(marchDebug.skippedDistance /
+            max(marchDebug.segmentLength, 1e-4)) * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 62)
+        return float4((saturate(marchDebug.earlyExitSavings /
+            max(marchDebug.segmentLength, 1e-4)) * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 63)
+        return float4((saturate(marchDebug.supportPrecheckSkips /
+            max(marchDebug.executedViewSamples, 1.0)) * marchDebug.hit).xxx, 1.0);
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
@@ -544,4 +752,44 @@ float4 main(VSOut input) : SV_TARGET
         : SkyColor(rayDirection);
     float3 composite = cloud.scattering + background * cloud.transmittance;
     return float4(ApplyLdrHighlightShoulder(composite), 1.0);
+}
+
+// 승인 기준과 최적화 경로를 별도 엔트리로 컴파일한다. Reference에는 b9 분기나
+// 동적 최적화 반복이 들어가지 않아 비교 기준 자체의 비용이 바뀌지 않는다.
+float4 mainReference(VSOut input) : SV_TARGET
+{
+    float2 uv = saturate(input.uv);
+    float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
+    bool hasGeometry = deviceDepth < 0.999999;
+    float3 rayDirection = ReconstructWorldRay(uv);
+    float3 worldPosition = hasGeometry
+        ? ReconstructWorldPosition(uv, deviceDepth)
+        : cameraPos + rayDirection * farPlane;
+    float sceneDistance = hasGeometry
+        ? length(worldPosition - cameraPos) : farPlane;
+    CloudMarchDebug marchDebug = (CloudMarchDebug)0;
+    CloudResult cloud = (CloudResult)0;
+    cloud = RaymarchCloudReference(
+        cameraPos, rayDirection, sceneDistance, marchDebug);
+    return RenderCloudOutput(
+        input, hasGeometry, rayDirection, cloud, marchDebug);
+}
+
+float4 mainOptimized(VSOut input) : SV_TARGET
+{
+    float2 uv = saturate(input.uv);
+    float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
+    bool hasGeometry = deviceDepth < 0.999999;
+    float3 rayDirection = ReconstructWorldRay(uv);
+    float3 worldPosition = hasGeometry
+        ? ReconstructWorldPosition(uv, deviceDepth)
+        : cameraPos + rayDirection * farPlane;
+    float sceneDistance = hasGeometry
+        ? length(worldPosition - cameraPos) : farPlane;
+    CloudMarchDebug marchDebug = (CloudMarchDebug)0;
+    CloudResult cloud = (CloudResult)0;
+    cloud = RaymarchCloudOptimized(
+        cameraPos, rayDirection, sceneDistance, marchDebug);
+    return RenderCloudOutput(
+        input, hasGeometry, rayDirection, cloud, marchDebug);
 }

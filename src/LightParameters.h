@@ -47,9 +47,15 @@ struct alignas(16) LightParameters
     float backwardScatteringG = -0.25f;
     float phaseBlend = 0.80f;
     float phaseIntensity = 0.25f;
+
+    // 13-5 외곽광 보완. 중립값(0, 1, 1)은 승인된 단계 8/13-5 직접광을 보존한다.
+    float edgeInfluence = 0.0f;
+    float edgeOpticalDepthScale = 1.0f;
+    float shadowExponent = 1.0f;
+    float lightPadding = 0.0f;
 };
 
-static_assert(sizeof(LightParameters) == 64, "LightParameters must match LightCB");
+static_assert(sizeof(LightParameters) == 80, "LightParameters must match LightCB");
 
 namespace stage6light
 {
@@ -122,6 +128,17 @@ inline LightParameters Sanitize(LightParameters value)
     value.phaseIntensity = std::clamp(
         std::isfinite(value.phaseIntensity) ? value.phaseIntensity : 0.25f,
         0.0f, 1.0f);
+    value.edgeInfluence = std::clamp(
+        std::isfinite(value.edgeInfluence) ? value.edgeInfluence : 0.0f,
+        0.0f, 1.0f);
+    value.edgeOpticalDepthScale = std::clamp(
+        std::isfinite(value.edgeOpticalDepthScale)
+            ? value.edgeOpticalDepthScale : 1.0f,
+        0.25f, 8.0f);
+    value.shadowExponent = std::clamp(
+        std::isfinite(value.shadowExponent) ? value.shadowExponent : 1.0f,
+        0.5f, 4.0f);
+    value.lightPadding = 0.0f;
     return value;
 }
 
@@ -135,13 +152,19 @@ inline void ApplyPhasePreset(LightParameters& value, Stage7PhasePreset preset)
         value.backwardScatteringG = -0.25f;
         value.phaseBlend = 0.80f;
         value.phaseIntensity = 0.25f;
+        value.edgeInfluence = 0.0f;
+        value.edgeOpticalDepthScale = 1.0f;
+        value.shadowExponent = 1.0f;
         break;
     case Stage7PhasePreset::SilverLining:
         value.phaseEnabled = 1.0f;
         value.forwardScatteringG = 0.75f;
         value.backwardScatteringG = -0.15f;
         value.phaseBlend = 0.90f;
-        value.phaseIntensity = 0.10f;
+        value.phaseIntensity = 0.20f;
+        value.edgeInfluence = 0.85f;
+        value.edgeOpticalDepthScale = 2.0f;
+        value.shadowExponent = 1.35f;
         break;
     case Stage7PhasePreset::BackscatterCheck:
         value.phaseEnabled = 1.0f;
@@ -149,6 +172,9 @@ inline void ApplyPhasePreset(LightParameters& value, Stage7PhasePreset preset)
         value.backwardScatteringG = -0.55f;
         value.phaseBlend = 0.30f;
         value.phaseIntensity = 0.25f;
+        value.edgeInfluence = 0.0f;
+        value.edgeOpticalDepthScale = 1.0f;
+        value.shadowExponent = 1.0f;
         break;
     case Stage7PhasePreset::Custom:
         value = Sanitize(value);
@@ -160,6 +186,9 @@ inline void ApplyPhasePreset(LightParameters& value, Stage7PhasePreset preset)
         value.backwardScatteringG = -0.25f;
         value.phaseBlend = 0.80f;
         value.phaseIntensity = 0.25f;
+        value.edgeInfluence = 0.0f;
+        value.edgeOpticalDepthScale = 1.0f;
+        value.shadowExponent = 1.0f;
         break;
     }
     value = Sanitize(value);

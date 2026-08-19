@@ -6,18 +6,18 @@
 ## 이 프로젝트가 무엇인가
 
 DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류메트릭 클라우드**를 렌더링하는
-학습 프로젝트입니다. 현재 코드는 사용자 승인된 **재구축 단계 8** 기준이며,
-`stage8-approved` 태그와 동일한 렌더링 구현을 유지합니다. 이전 단계 9 최적화와 단계 13
+학습 프로젝트입니다. 단계 0~8과 **단계 13 대규모 평면 구름층**은 사용자 승인을 받았으며,
+단계 9 기본 최적화는 2026-08-19 Balanced 기본값으로 사용자 승인을 받았으며, 현재는
+단계 10 저해상도·업샘플링을 준비합니다. 이전 단계 9 최적화와 초기 단계 13
 평면 구름층 실험은 별도 브랜치에 보관했습니다. 새 포트폴리오 계획은 사용자 승인을 받았고
 단계 13-0 공간 단위 계약과 단계 13-1 AABB/평면층 교차는 사용자 승인을 받았고,
 단계 13-2 상사 확대와 단계 13-3 실제 오픈 월드 스케일은 2026-08-11 사용자 승인을
 받았고, **단계 13-4B Weather 기반 가변 두께와 3D texture 형태**는 2026-08-14,
 **단계 13-4C 개발 UI와 Local Cloud Inspector**는 2026-08-16 사용자 승인을 받았습니다.
 13-4C 이력은 보존하되 현재 런타임은 **단계 13-4D 단일 포트폴리오 디버깅 씬**이
-Local Inspector를 대체합니다. 현재는 **단계 13-4E Dense Broken-Sky와 구름 타입 프리셋**의
-Coverage 보정과 13-5 Light Ray 비용 보완을 진행했으며, Silver Lining 외곽 입체감 해결과
-사용자 렌더 재승인을 기다립니다.
-실행 순서는 `13 → 9 → 10 → 11 → 12 → 14 → 15`입니다.
+Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broken-Sky와 타입 프리셋,
+13-5 km 조명**까지 2026-08-17 최종 승인했습니다. 구형 shell 계획은 취소했고 PlanarLayer를
+최종 대규모 도메인으로 사용합니다. 실행 순서는 `9 → 10 → 11 → 12 → 14 → 15`입니다.
 
 ## 빠른 사실 (Quick Facts)
 
@@ -41,12 +41,13 @@ Coverage 보정과 13-5 Light Ray 비용 보완을 진행했으며, Silver Linin
 | 노이즈 도구 | `src/NoiseLab.*` | ImGui 3축 단면, 파라미터 조절, PNG/JSON 내보내기 |
 | 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | 거리 LOD 설정 | `src/CloudLodParameters.h` | 16바이트 b8 Detail 거리 LOD와 측정 중립 평균 |
+| 최적화 설정 | `src/OptimizationParameters.h` | 64바이트 b9 View/Light 후보와 단계 9 preset |
 | 도메인 설정 | `src/CloudDomainParameters.h` | AABB/평면층 선택과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
 | 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 29 Custom 원자 저장/복원 |
 | 형상 설정 | `src/CloudShapeParameters.h` | 64바이트 b7 물리 두께·타입별 Vertical Profile 설정 |
-| 조명 설정 | `src/LightParameters.h` | 64바이트 LightCB와 태양·Phase 프리셋·sanitize |
-| 환경광 설정 | `src/EnvironmentParameters.h` | 64바이트 EnvironmentCB와 환경광 프리셋·sanitize |
+| 조명 설정 | `src/LightParameters.h` | 80바이트 LightCB와 태양·외곽 범위 Phase 프리셋·sanitize |
+| 환경광 설정 | `src/EnvironmentParameters.h` | 80바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
 | 성능 계측 | `src/FrameProfiler.*` | 8-slot 비동기 D3D11 timestamp와 CPU/GPU EMA |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
@@ -72,6 +73,7 @@ Coverage 보정과 13-5 Light Ray 비용 보완을 진행했으며, Silver Linin
 | 카메라 프리셋 | `src/Stage13CameraPresets.h` | 단일 씬 F5~F8 위치·타깃 기준 |
 | 단일 씬 기준 | `src/Stage13SceneMath.h` | 10km 지면·20층 건물·50km·입력·이동·숫자 매핑 기준 |
 | km 광학 기준 | `src/Stage13OpticsLightingMath.h` | Light 후보·Beer-Lambert·Detail LOD CPU 기준 |
+| 최적화 기준 | `src/Stage9OptimizationMath.h` | 가변 step·coarse 되감기·cone 구간 CPU 기준 |
 
 ## 반드시 지킬 규칙
 
@@ -81,9 +83,8 @@ Coverage 보정과 13-5 Light Ray 비용 보완을 진행했으며, Silver Linin
 2. **브랜치/커밋 규칙**을 따릅니다 → [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md)
 3. **빌드가 깨지지 않게** 유지합니다. 변경 후 위 빌드 명령으로 확인하세요.
 4. [포트폴리오 계획](doc/VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md)의 단계 경계와 사용자 승인
-   게이트를 지킵니다. 2026-08-17 사용자가 승인한 13-5 Light 전용 precheck/조기 종료 외에,
-   13-4E/13-5 사용자 렌더 승인 전에는 13-6 shell이나 단계 9의 View 최적화·저해상도·temporal·
-   Cloud Shadow를 구현하지 않습니다.
+   게이트를 지킵니다. 현재 단계 10에서는 저해상도 구름 타깃과 공간 업샘플링만 다루며
+   temporal·Cloud Shadow Map/Light Cache는 각각 단계 11~12 전까지 구현하지 않습니다.
 
 ## 로컬 단계별 구현 문서 규칙
 

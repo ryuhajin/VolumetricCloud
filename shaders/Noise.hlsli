@@ -19,6 +19,7 @@
 #include "CloudParameters.hlsli"
 #include "NoiseVolumeParameters.hlsli"
 #include "CloudLodParameters.hlsli"
+#include "OptimizationParameters.hlsli"
 #include "CloudAdvection.hlsli"
 
 Texture3D<float4> baseNoiseVolumeTexture : register(t3);
@@ -55,6 +56,7 @@ struct CloudDensitySample
     float2 weatherUv;        // 반복되는 2D Weather Map 조회 좌표(0~1).
     float4 baseNoiseChannels;// Texture3D Base RGBA 또는 legacy value 복제.
     float4 detailNoiseChannels;// Texture3D Detail RGBA 또는 legacy value 복제.
+    float supportPrecheckSkipped;// Weather/높이만으로 Base fetch를 생략하면 1.
 };
 
 // 서로 다른 노이즈 알고리즘도 동일한 값+좌표 인터페이스로 연결하기 위한 표본이다.
@@ -204,18 +206,15 @@ NoiseFieldSample SampleDetailErosionNoise(float3 worldPosition, float timeSecond
     return result;
 }
 
-// Base noise와 Weather coverage/type/density를 결합해 큰 구름 형태를 만든다.
-// Detail 설정을 바꿔도 이 함수의 baseDensity는 절대로 바뀌지 않아야 한다.
-CloudDensitySample EvaluateBaseCloudDensity(float3 worldPosition, float timeSeconds)
+CloudDensitySample ComposeBaseCloudDensity(
+    float3 worldPosition, NoiseFieldSample baseNoise, WeatherSample weather)
 {
     CloudDensitySample sample = (CloudDensitySample)0;
-    NoiseFieldSample baseNoise = SampleBaseShapeNoise(worldPosition, timeSeconds);
     sample.noiseUvw = baseNoise.uvw;
     sample.baseNoiseChannels = baseNoise.channels;
     sample.rawNoise = baseNoise.value;
 
     sample.thresholdDensity = RemapCoverage(sample.rawNoise, coverage);
-    WeatherSample weather = SampleWeatherMap(worldPosition, timeSeconds);
     sample.weatherUv = weather.uv;
     sample.weatherCoverage = weather.coverage;
     sample.cloudType = weather.cloudType;
@@ -284,6 +283,62 @@ CloudDensitySample EvaluateBaseCloudDensity(float3 worldPosition, float timeSeco
         sample.weatherThresholdDensity > 0.0 ? 1.0 : 0.0;
     sample.finalDensity = sample.baseDensity;
     return sample;
+}
+
+// Reference는 승인된 Base -> Weather fetch 순서를 그대로 보존한다.
+CloudDensitySample EvaluateBaseCloudDensity(float3 worldPosition, float timeSeconds)
+{
+    NoiseFieldSample baseNoise = SampleBaseShapeNoise(worldPosition, timeSeconds);
+    WeatherSample weather = SampleWeatherMap(worldPosition, timeSeconds);
+    return ComposeBaseCloudDensity(worldPosition, baseNoise, weather);
+}
+
+// 단계 9 View 전용 경로. Physical Shape의 Base 식에서 noise와 무관한 곱이
+// 정확히 0인 경우만 반환하므로 승인 Reference에서 존재할 구름을 지우지 않는다.
+CloudDensitySample EvaluateBaseCloudDensityOptimized(
+    float3 worldPosition, float timeSeconds)
+{
+    CloudDensitySample result = (CloudDensitySample)0;
+    bool useReference = supportPrecheckEnabled == 0u ||
+        cloudShapeMode != kCloudShapeWeatherPhysicalThickness;
+    if (useReference)
+    {
+        result = EvaluateBaseCloudDensity(worldPosition, timeSeconds);
+    }
+    else
+    {
+        WeatherSample weather = SampleWeatherMap(worldPosition, timeSeconds);
+        float localThickness = EvaluatePhysicalLocalThickness(
+            weather.localThicknessPotential, weather.cloudType);
+        float localHeight = EvaluatePhysicalLocalHeight(
+            worldPosition.y, localThickness);
+        float verticalProfile = EvaluatePhysicalTypedVerticalProfile(
+            localHeight, weather.cloudType);
+        float weatherSupport = smoothstep(0.02, 0.20, weather.coverage);
+        bool definitelyEmpty = localHeight < 0.0 || localHeight > 1.0 ||
+            verticalProfile <= 0.0 || weatherSupport <= 0.0 ||
+            coverage <= 0.0 || densityMultiplier <= 0.0;
+        if (!definitelyEmpty)
+        {
+            NoiseFieldSample baseNoise = SampleBaseShapeNoise(
+                worldPosition, timeSeconds);
+            result = ComposeBaseCloudDensity(worldPosition, baseNoise, weather);
+        }
+        else
+        {
+            result.weatherUv = weather.uv;
+            result.weatherCoverage = weather.coverage;
+            result.cloudType = weather.cloudType;
+            result.weatherDensityModifier = weather.densityModifier;
+            result.weatherThicknessPotential = weather.localThicknessPotential;
+            result.localThicknessMeters = localThickness;
+            result.localHeightFraction = localHeight;
+            result.typedShapeProfile = max(verticalProfile, 0.0);
+            result.supportPrecheckSkipped = 1.0;
+        }
+    }
+
+    return result;
 }
 
 // Light Ray는 최종 scalar Base Density만 필요하다. Physical Shape에서는 먼저
@@ -370,6 +425,42 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
         float boundary = noiseSource == kNoiseSourceTexture3D
             ? 1.0 - smoothstep(0.45, 0.90, sample.baseDensity)
             : 1.0;
+        sample.erosion = sample.detailNoise * max(detailErosionStrength, 0.0) *
+            boundary;
+        sample.finalDensity = saturate(sample.baseDensity - sample.erosion);
+    }
+    return sample;
+}
+
+CloudDensitySample SampleCloudDensityOptimized(
+    float3 worldPosition, float timeSeconds, bool sampleDetail,
+    float viewDistanceMeters)
+{
+    CloudDensitySample sample = EvaluateBaseCloudDensityOptimized(
+        worldPosition, timeSeconds);
+    float lodFactor = EvaluateDetailLodFactor(viewDistanceMeters);
+    sample.detailLodFactor = lodFactor;
+    bool outsideLod = detailLodEnabled != 0u &&
+        viewDistanceMeters >= max(detailLodEndMeters, detailLodStartMeters + 1.0);
+    bool shouldApplyDetail = sampleDetail && sample.baseDensity > 0.0 &&
+                             detailErosionStrength > 0.0;
+    if (shouldApplyDetail && !outsideLod)
+    {
+        NoiseFieldSample detail = SampleDetailErosionNoise(worldPosition, timeSeconds);
+        sample.detailNoiseUvw = detail.uvw;
+        sample.detailNoiseChannels = detail.channels;
+        sample.detailNoise = lerp(saturate(detailNeutralValue),
+                                  detail.value, lodFactor);
+        sample.detailSampled = 1.0;
+    }
+    else if (shouldApplyDetail)
+    {
+        sample.detailNoise = saturate(detailNeutralValue);
+    }
+    if (shouldApplyDetail)
+    {
+        float boundary = noiseSource == kNoiseSourceTexture3D
+            ? 1.0 - smoothstep(0.45, 0.90, sample.baseDensity) : 1.0;
         sample.erosion = sample.detailNoise * max(detailErosionStrength, 0.0) *
             boundary;
         sample.finalDensity = saturate(sample.baseDensity - sample.erosion);

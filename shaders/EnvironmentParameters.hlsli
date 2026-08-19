@@ -1,5 +1,5 @@
 // ============================================================================
-//  EnvironmentParameters.hlsli - CPU와 공유하는 64바이트 EnvironmentCB(b4)
+//  EnvironmentParameters.hlsli - CPU와 공유하는 80바이트 EnvironmentCB(b4)
 // ----------------------------------------------------------------------------
 //  외부 Cube Map이나 간접광 텍스처 없이 linear RGB 상수색과 현재 표본의 높이·
 //  밀도로 간접광을 근사한다. 단계 14에서 skyColor 평가 부분만 실제 대기/환경
@@ -22,6 +22,10 @@ cbuffer EnvironmentCB : register(b4)
     float multipleScatteringExtinctionFactor;// CPU 동일 필드. 반복 광학 깊이 비율.
     float multipleScatteringPhaseFactor;    // CPU 동일 필드. 반복 Phase 방향성 비율.
     float environmentPadding;               // 16바이트 정렬 예약. 사용하지 않는다.
+    float ambientShadowCoupling;             // CPU 동일 필드. 태양 차폐를 환경광 AO에 섞는 비율.
+    float ambientShadowExponent;             // CPU 동일 필드. Tsun 기반 환경광 차폐 곡선.
+    float multipleScatteringInteriorBlend;   // CPU 동일 필드. 다중 산란을 차폐 영역으로 옮기는 비율.
+    float lightingPadding;                   // 16바이트 정렬 예약. 사용하지 않는다.
 };
 
 #endif

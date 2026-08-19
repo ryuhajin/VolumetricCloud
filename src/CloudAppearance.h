@@ -54,6 +54,10 @@ struct CloudAppearanceSettings
 };
 
 const char* CloudAppearancePresetName(CloudAppearancePreset preset);
+// F1 버튼이 저장한 정수 요청을 사용자 선택 가능한 외형으로만 변환한다.
+// CustomUnsaved는 편집 결과 상태이므로 버튼 요청으로 허용하지 않는다.
+bool TryDecodeCloudAppearancePresetRequest(
+    int rawValue, CloudAppearancePreset& outPreset);
 CloudAppearanceSettings DenseMixedAppearance();
 CloudAppearanceSettings StratusAppearance();
 CloudAppearanceSettings CumulusAppearance();
