@@ -7,8 +7,8 @@ DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 �
 13-3 실제 오픈 월드 스케일은 2026-08-11, 13-4B Weather 기반 가변 두께와 3D texture
 형태는 2026-08-14, 13-4C 개발 UI와 Local Cloud Inspector는 2026-08-16 사용자 승인을
 받았습니다. 이 이력은 보존되며 현재 런타임은 **단계 13-4D 단일 포트폴리오 디버깅 씬**이
-Local Inspector를 대체합니다. 기존 13-5 자동 결과는 보존하지만 새 씬에서 재검증·사용자
-승인을 기다립니다. 일반 실행은
+Local Inspector를 대체합니다. 단계 13은 2026-08-17, 단계 9 Balanced는 2026-08-19
+사용자 승인을 받았고 현재 단계 10 저해상도·공간 업샘플링을 구현 중입니다. 일반 실행은
 Planar Layer, 1.5~7.5km 전역 층과 XZ별 1~6km 로컬 두께, 64km Periodic Perlin Weather와 함께 결정적 seed로
 생성한 Base `128³ RGBA8`, Detail `32³ RGBA8` Texture3D를 사용합니다.
 자동 테스트의 이전 단계 경로는 기존 절차 noise/AABB 기준을 유지합니다.
@@ -42,7 +42,9 @@ Planar Layer, 1.5~7.5km 전역 층과 XZ별 1~6km 로컬 두께, 64km Periodic P
 - 독립적인 전방·후방 g, 혼합 비율, Phase 강도와 LDR highlight shoulder
 - 별도 64바이트 EnvironmentCB와 외부 텍스처 없는 하늘·지면 환경광
 - 높이 가중치, 밀도 기반 Ambient Occlusion과 광학 깊이 재사용 다중 산란
-- 우측 상단 FPS·CPU/GPU Frame·GPU Cloud 실시간 성능 오버레이
+- 선택한 50/67/75/100% 축 해상도의 RGBA16F scattering/T + RG32F cloud/scene depth MRT
+- Nearest/Bilinear/Depth·Cloud·T Joint4/Joint9 Full-resolution 공간 복원
+- 우측 상단 FPS·CPU/GPU Frame·Cloud Raymarch·Upsample/Composite·GPU Cloud Total 오버레이
 - 원본 noise, threshold, 최종 밀도와 noise UVW 디버그
 - ImGui Noise Lab의 XY/XZ/YZ 동기 단면, 높이 출력과 프로파일 곡선
 - 공용 `Noise.hlsli` 저장 시 Noise Lab·구름 동시 핫리로드
@@ -103,12 +105,13 @@ Noise Lab의 `3D Noise Volumes`에서 현재 noise source를 확인하고 `Regen
 F1의 `Open World Render Pipeline Compare`는 현재 기하와 카메라를 고정한 채 Legacy
 1000x→Texture3D→Periodic Weather→Physical Shape→Full Open World를 누적 적용합니다.
 Open World 시작값과 `Open World Render Defaults`는 항상 마지막 최신 경로입니다.
-`Export 4 PNG + JSON`은 schema 28로 `sceneContract`, 현재/저장 카메라,
-`cloudTypeMode`, `openWorldPipelinePreset`, noise volume과 광학·LOD 설정을 저장합니다.
+`Export 4 PNG + JSON`은 전체 snapshot schema 32로 `sceneContract`, 현재/저장 카메라,
+`cloudTypeMode`, `openWorldPipelinePreset`, 단계 9 optimization과 단계 10 upsampling 설정을
+저장합니다. Custom 외형 전용 파일은 schema 29를 유지합니다.
 
 우측 상단 성능 오버레이는 `F1` 창을 숨겨도 유지됩니다. F1의 `Performance`
 항목에서 VSync를 켜거나 끌 수 있습니다. CPU Frame은 `Present`와 VSync 대기를 포함하지만
-GPU Frame은 Present를 제외하며, View/Light Step 비용 비교에는 `GPU Cloud ms`를 사용합니다.
+GPU Frame은 Present를 제외하며, 최적화 비교에는 두 구간 합인 `GPU Cloud Total ms`를 사용합니다.
 재현 가능한 측정 절차는 [성능 측정 기준](doc/PERFORMANCE.md)에 정리되어 있습니다.
 
 ### 13-4B Weather 기반 세로 형상

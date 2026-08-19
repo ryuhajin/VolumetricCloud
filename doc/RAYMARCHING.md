@@ -771,3 +771,34 @@ Light cone은 시간 jitter 없이 고정 golden angle `2.39996323 rad`를 사�
 비용의 2°와 원거리 구간 비율 77%가 Dense/Stratus/Cumulus에서 처음으로 P99 0.03 이하를
 만족해 Balanced 값이 되었다. temporal jitter, 저해상도, Light Cache와 지면 Cloud Shadow
 Map은 단계 10~12 범위다.
+
+## 단계 10: 저해상도 구름 데이터와 공간 업샘플링
+
+단계 10은 View/Light 적분식을 바꾸지 않고 실행하는 화면 레이 수를 줄인다. 선택한 축 비율
+`r`에서 구름 픽셀 수는 Full의 `r²`이며 50/67/75%는 각각 약 25/44.4/56.25%다. 각 레이는
+최종 장면색 대신 `scattering.rgb`, View `T`, 대표 구름 깊이와 해당 원본 ray의 scene limit을
+두 MRT에 쓴다.
+
+대표 깊이는 교차 구간 중점이 아니라 각 View 구간이 만든 불투명도 기여도다.
+
+```text
+alpha_i = T_before_i * (1 - T_step_i)
+cloudDepth = sum(sampleDistance_i * alpha_i) / sum(alpha_i)
+```
+
+`sum(alpha_i)`가 `1e-6` 이하면 빈 레이로 보고 cloud depth와 source scene limit에 같은 장면
+제한 거리를 기록한다. 이 값은 색 적분을 바꾸지 않고 업샘플 경계 guide로만 사용한다.
+
+Nearest는 한 texel, Bilinear는 네 texel의 공간 가중합이다. Joint4/Joint9는 여기에 다음
+가중치를 곱한다.
+
+```text
+w = w_spatial * w_sceneClass * w_sceneDepth * w_cloudDepth * w_T
+w_depth(a,b,sigma) = exp(-0.5 * (abs(a-b) / (sigma * max(abs(a),abs(b),1m)))^2)
+w_T = exp(-0.5 * (abs(Ta-Tb) / sigma_T)^2)
+```
+
+하늘/불투명 분류가 다르면 `w_sceneClass=0`이다. 합이 `minimumWeight`보다 작으면 물체 픽셀은
+`scattering=0,T=1`로 구름 번짐을 막고 하늘은 최근접 유효 구름 표본을 쓴다. Full은 같은
+MRT와 resolve를 지나되 1:1 최근접으로 복원한다. 현재 프레임의 공간 정보만 사용하며 jitter,
+history buffer, reprojection과 ghosting rejection은 단계 11에 남긴다.

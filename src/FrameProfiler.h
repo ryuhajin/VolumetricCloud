@@ -18,8 +18,12 @@ struct FrameTimingSnapshot
     double cpuFrameMs = 0.0;
     double gpuFrameMs = 0.0;
     double gpuCloudMs = 0.0;
+    double gpuCloudRaymarchMs = 0.0;
+    double gpuUpsampleCompositeMs = 0.0;
     double rawGpuFrameMs = 0.0;
     double rawGpuCloudMs = 0.0;
+    double rawGpuCloudRaymarchMs = 0.0;
+    double rawGpuUpsampleCompositeMs = 0.0;
     std::uint64_t gpuSampleIndex = 0;
     bool cpuValid = false;
     bool gpuValid = false;
@@ -35,7 +39,8 @@ public:
     void AdvanceFrame();
     void RecordCpuMilliseconds(double milliseconds);
     void RecordGpuMilliseconds(double frameMilliseconds,
-                               double cloudMilliseconds);
+                               double cloudMilliseconds,
+                               double cloudRaymarchMilliseconds = -1.0);
     const FrameTimingSnapshot& Snapshot() const { return m_snapshot; }
 
 private:
@@ -62,6 +67,7 @@ public:
     // timestamp query는 End로 기록하고 GetData에는 DONOTFLUSH만 사용한다.
     void BeginGpuFrame(ID3D11DeviceContext* context);
     void BeginCloudPass(ID3D11DeviceContext* context);
+    void MarkCloudRaymarchEnd(ID3D11DeviceContext* context);
     void EndCloudPass(ID3D11DeviceContext* context);
     void EndGpuFrame(ID3D11DeviceContext* context);
 
@@ -80,6 +86,7 @@ private:
         ComPtr<ID3D11Query> disjoint;
         ComPtr<ID3D11Query> frameStart;
         ComPtr<ID3D11Query> cloudStart;
+        ComPtr<ID3D11Query> cloudRaymarchEnd;
         ComPtr<ID3D11Query> cloudEnd;
         ComPtr<ID3D11Query> frameEnd;
         bool inFlight = false;

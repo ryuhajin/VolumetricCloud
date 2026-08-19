@@ -11,19 +11,21 @@
 | `FPS` | 평활화된 CPU Frame 시간의 `1000 / ms` 값 |
 | `CPU Frame` | `Renderer::Render` 시작부터 `Present` 반환까지. VSync 대기 포함 |
 | `GPU Frame` | 진단 장면 시작부터 ImGui draw 종료까지. `Present` 제외 |
-| `GPU Cloud` | `RenderCloudPass`의 GPU 실행 시간만 측정 |
+| `Cloud Raymarch` | 선택 해상도에서 구름 scattering/T/depth를 MRT에 적분 |
+| `Upsample/Composite` | Full-resolution 공간 복원과 장면 합성 |
+| `GPU Cloud Total` (`GPU Cloud`) | 위 두 구간의 합. 단계 9 JSON과 비교하는 호환 지표 |
 | `View` | `maxViewSteps @ stepSize(m)` |
 | `Light` | `maxLightSteps @ lightStepSize(m)` |
 | `VSync` | 현재 `Present(1, 0)` 또는 `Present(0, 0)` 경로 |
 
 CPU Frame과 GPU Frame은 측정 범위가 다르므로 서로 같은 값일 필요가 없다. 특히 VSync On에서는
 CPU Frame이 모니터 주사율 대기 시간을 포함한다. View/Light Ray 비용을 비교할 때는 FPS보다
-`GPU Cloud ms`를 우선 사용한다.
+`GPU Cloud Total ms`를 우선 사용한다.
 
 ## 비동기 GPU 계측 방식
 
 `FrameProfiler`는 8개 슬롯의 D3D11 timestamp query ring을 사용한다. 각 슬롯은 timestamp
-disjoint와 GPU Frame 시작·종료, Cloud Pass 시작·종료 timestamp를 가진다. 현재 프레임을
+disjoint와 GPU Frame 시작·종료, Cloud 시작·Raymarch 종료·Cloud 종료 timestamp를 가진다. 현재 프레임을
 기다리지 않고 `D3D11_ASYNC_GETDATA_DONOTFLUSH`로 완료된 과거 슬롯만 읽는다. 8개 슬롯이
 모두 사용 중이면 해당 프레임의 GPU 측정을 생략하고 렌더링을 계속한다.
 
@@ -38,7 +40,7 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 3. F1 Noise 창의 Animation에서 시간을 정지한다.
 4. 같은 F1 창의 Performance에서 VSync를 Off로 설정한다.
 5. 설정 변경 후 최소 2초 동안 워밍업한다.
-6. `GPU Cloud ms`를 기록하고, 같은 조건에서 여러 번 관찰해 안정된 값을 비교한다.
+6. `Cloud Raymarch`, `Upsample/Composite`, `GPU Cloud Total`을 기록하고 같은 조건에서 비교한다.
 7. View/Light Step을 바꿀 때 한 번에 한 파라미터만 변경한다.
 
 예를 들어 Light Step 8/16/32의 비용을 비교할 때 카메라와 나머지 설정을 고정한다. FPS는
@@ -219,3 +221,20 @@ Reference와 Fine Reference는 F1의 Advanced Comparison에 남아 단계 10 이
 Cumulus Horizon은 같은 실행의 Reference `21.01ms` 대비 `9.78ms`로 약 `53.5%` 빨랐다.
 앞의 `8.64ms`와 최대 `9.41ms`는 사용자 승인 시점 기록이며, 두 측정 모두 같은 어댑터·드라이버와
 품질/성능 gate를 통과했다.
+
+## 단계 10 저해상도·공간 업샘플링 측정
+
+단계 10 기준은 `Stage9 Balanced + 1920×1080 Full`이다. 불투명 장면은 항상 Full이고 구름
+Raymarch만 축 50/67/75/100%로 바뀐다. Full도 저해상도 후보와 같은 RGBA16F/RG32F MRT와
+resolve를 지나며 1:1 최근접으로 복원해 파이프라인 분리 자체의 차이를 잰다.
+
+`Stage10UpsamplingSmoke`는 96×54에서 Full 직접 합성과 Full split 경로를 비교하고 네 해상도 ×
+네 필터 및 네 업샘플 디버그 출력의 finite 결과와 D3D11 오류를 검사한다. 2026-08-19 첫 구현
+결과는 Full RGB MAE `0.000093`, 서로 다른 후보 hash 13개, Half 실제 타깃 `48×27`로 통과했다.
+이는 기능 회귀이지 1080p 화질·성능 승인이 아니다.
+
+정식 후보 평가는 Full 대비 Composite `SSIM≥0.99`, 정규화 `RMSE≤0.01`, T `MAE≤0.01`,
+`P99≤0.03`을 먼저 통과한 조합만 일곱 장면 600-sample 측정에 올린다. Cumulus Horizon
+GPU Cloud Total p95가 단계 9 Balanced보다 20% 이상 개선되고 모든 장면 p95가 8ms 이하여야
+한다. 시작값은 사용자 승인 전까지 Full이며, 현재는 자동 1080p 측정과 사용자 렌더 검증 전이라
+50/67/75% 후보를 기본값으로 승격하지 않았다.

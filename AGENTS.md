@@ -8,8 +8,8 @@
 DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류메트릭 클라우드**를 렌더링하는
 학습 프로젝트입니다. 단계 0~8과 **단계 13 대규모 평면 구름층**은 사용자 승인을 받았으며,
 단계 9 기본 최적화는 2026-08-19 Balanced 기본값으로 사용자 승인을 받았으며, 현재는
-단계 10 저해상도·업샘플링을 준비합니다. 이전 단계 9 최적화와 초기 단계 13
-평면 구름층 실험은 별도 브랜치에 보관했습니다. 새 포트폴리오 계획은 사용자 승인을 받았고
+단계 10 저해상도·공간 업샘플링을 구현 중입니다. 단계 9는 main과 `stage9-approved` 태그에
+고정했고 초기 단계 13 평면 구름층 실험은 별도 브랜치에 보관했습니다. 새 포트폴리오 계획은 사용자 승인을 받았고
 단계 13-0 공간 단위 계약과 단계 13-1 AABB/평면층 교차는 사용자 승인을 받았고,
 단계 13-2 상사 확대와 단계 13-3 실제 오픈 월드 스케일은 2026-08-11 사용자 승인을
 받았고, **단계 13-4B Weather 기반 가변 두께와 3D texture 형태**는 2026-08-14,
@@ -37,22 +37,24 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 진입점 | `src/main.cpp` | 창·카메라·렌더러 생성 + 메인 루프 |
 | 윈도우/입력 | `src/Window.*` | Win32 창, 마우스/WASD → Camera, 리사이즈 → Renderer |
 | 카메라 | `src/Camera.*` | 오빗·rig 평행 이동 카메라 → view/proj/invViewProj |
-| 렌더러 | `src/Renderer.*` | D3D11 초기화, 진단 장면, 깊이 SRV, 합성 패스 |
+| 렌더러 | `src/Renderer.*` | D3D11 초기화, 진단 장면, 저해상도 구름 MRT, Full 공간 복원·합성 |
 | 노이즈 도구 | `src/NoiseLab.*` | ImGui 3축 단면, 파라미터 조절, PNG/JSON 내보내기 |
 | 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | 거리 LOD 설정 | `src/CloudLodParameters.h` | 16바이트 b8 Detail 거리 LOD와 측정 중립 평균 |
 | 최적화 설정 | `src/OptimizationParameters.h` | 64바이트 b9 View/Light 후보와 단계 9 preset |
+| 업샘플 설정 | `src/Stage10UpsamplingParameters.h` | 32바이트 b10 해상도·공간 필터·경계 가중치 |
 | 도메인 설정 | `src/CloudDomainParameters.h` | AABB/평면층 선택과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
 | 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 29 Custom 원자 저장/복원 |
 | 형상 설정 | `src/CloudShapeParameters.h` | 64바이트 b7 물리 두께·타입별 Vertical Profile 설정 |
 | 조명 설정 | `src/LightParameters.h` | 80바이트 LightCB와 태양·외곽 범위 Phase 프리셋·sanitize |
 | 환경광 설정 | `src/EnvironmentParameters.h` | 80바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
-| 성능 계측 | `src/FrameProfiler.*` | 8-slot 비동기 D3D11 timestamp와 CPU/GPU EMA |
+| 성능 계측 | `src/FrameProfiler.*` | Raymarch/Upsample/Total을 나누는 8-slot GPU timestamp와 CPU/GPU EMA |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
 | Ray | `shaders/Ray.hlsli` | 평행축을 안전하게 처리하는 slab AABB 교차 |
-| PS | `shaders/VolumetricClouds.hlsl` | noise 밀도 적분과 합성 |
+| Cloud PS | `shaders/VolumetricClouds.hlsl` | noise 밀도 적분과 scattering/T/depth MRT 출력 |
+| Resolve PS | `shaders/CloudUpsample.hlsl` | Nearest/Bilinear/Joint 공간 복원과 장면 합성 |
 | Noise | `shaders/Noise.hlsli` | 교체 가능한 Base/Detail noise, 높이와 erosion 밀도 함수 |
 | Lighting | `shaders/CloudLighting.hlsli` | Base-only 태양 Light Ray와 직접 단일 산란 |
 | Phase | `shaders/PhaseFunction.hlsli` | 방향 부호가 고정된 Dual-lobe HG와 안전한 Phase Factor |
@@ -74,6 +76,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 단일 씬 기준 | `src/Stage13SceneMath.h` | 10km 지면·20층 건물·50km·입력·이동·숫자 매핑 기준 |
 | km 광학 기준 | `src/Stage13OpticsLightingMath.h` | Light 후보·Beer-Lambert·Detail LOD CPU 기준 |
 | 최적화 기준 | `src/Stage9OptimizationMath.h` | 가변 step·coarse 되감기·cone 구간 CPU 기준 |
+| 업샘플 기준 | `src/Stage10UpsamplingMath.h` | 타깃 크기·UV·대표 깊이·joint weight CPU 기준 |
 
 ## 반드시 지킬 규칙
 

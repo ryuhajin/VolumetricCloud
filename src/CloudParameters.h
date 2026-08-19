@@ -65,6 +65,10 @@ enum class CloudDebugMode : std::int32_t
     SkippedDistance = 61,
     EarlyExitSavings = 62,
     SupportPrecheckSkip = 63,
+    LowResolutionGrid = 64,
+    UpsampleSceneRejection = 65,
+    UpsampleCloudDepthWeight = 66,
+    UpsampleTransmittanceWeight = 67,
 };
 
 enum class Stage5WeatherPreset : std::int32_t

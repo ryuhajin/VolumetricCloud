@@ -291,6 +291,8 @@ void NoiseLab::BeginFrame(float applicationTime,
                           CloudLodParameters& cloudLodParameters,
                           OptimizationParameters& optimizationParameters,
                           Stage9OptimizationPreset& optimizationPreset,
+                          Stage10UpsamplingParameters& upsamplingParameters,
+                          Stage10ResolutionPreset& resolutionPreset,
                           LightParameters& lightParameters,
                           Stage6SunPreset& sunPreset,
                           Stage7PhasePreset& phasePreset,
@@ -341,6 +343,7 @@ void NoiseLab::BeginFrame(float applicationTime,
                           cloudShapeParameters, cloudDomainParameters,
                           cloudLodParameters,
                           optimizationParameters, optimizationPreset,
+                          upsamplingParameters, resolutionPreset,
                           lightParameters, sunPreset, phasePreset,
                           environmentParameters, environmentPreset,
                           weatherPreset, weatherGeneratorSettings,
@@ -367,6 +370,8 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                                  CloudLodParameters& cloudLodParameters,
                                  OptimizationParameters& optimizationParameters,
                                  Stage9OptimizationPreset& optimizationPreset,
+                                 Stage10UpsamplingParameters& upsamplingParameters,
+                                 Stage10ResolutionPreset& resolutionPreset,
                                  LightParameters& lightParameters,
                                  Stage6SunPreset& sunPreset,
                                  Stage7PhasePreset& phasePreset,
@@ -502,6 +507,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     const CloudDomainParameters domainBefore = cloudDomainParameters;
     const CloudLodParameters lodBefore = cloudLodParameters;
     const OptimizationParameters optimizationBefore = optimizationParameters;
+    const Stage10UpsamplingParameters upsamplingBefore = upsamplingParameters;
     const NoiseVolumeParameters noiseVolumeBefore = noiseVolumeParameters;
     const LightParameters lightBefore = lightParameters;
     const CloudAppearanceSettings appearanceBefore = CaptureCloudAppearance(
@@ -618,6 +624,89 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     }
 
     if (noisePanel && ImGui::CollapsingHeader(
+            "Low Resolution / Upsampling", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::TextDisabled(
+            "Every row is ordered left to right: lower GPU cost -> higher GPU cost.");
+        const Stage10ResolutionPreset resolutions[] = {
+            Stage10ResolutionPreset::Half,
+            Stage10ResolutionPreset::TwoThirds,
+            Stage10ResolutionPreset::ThreeQuarters,
+            Stage10ResolutionPreset::Full,
+        };
+        ImGui::Text("Resolution: %s",
+                    stage10upsampling::ResolutionPresetName(resolutionPreset));
+        for (Stage10ResolutionPreset preset : resolutions)
+        {
+            if (ImGui::Button(stage10upsampling::ResolutionPresetName(preset)))
+            {
+                stage10upsampling::ApplyResolutionPreset(
+                    upsamplingParameters, preset);
+                resolutionPreset = preset;
+            }
+            if (preset != Stage10ResolutionPreset::Full)
+                ImGui::SameLine();
+        }
+
+        const Stage10UpsampleFilter filters[] = {
+            Stage10UpsampleFilter::Nearest,
+            Stage10UpsampleFilter::Bilinear,
+            Stage10UpsampleFilter::Joint4,
+            Stage10UpsampleFilter::Joint9,
+        };
+        ImGui::Text("Filter: %s", stage10upsampling::FilterName(
+            static_cast<Stage10UpsampleFilter>(upsamplingParameters.filterMode)));
+        for (Stage10UpsampleFilter filter : filters)
+        {
+            if (ImGui::Button(stage10upsampling::FilterName(filter)))
+                upsamplingParameters.filterMode =
+                    static_cast<std::uint32_t>(filter);
+            if (filter != Stage10UpsampleFilter::Joint9)
+                ImGui::SameLine();
+        }
+
+        ImGui::TextUnformatted("Scene Depth (same cost):"); ImGui::SameLine();
+        for (float value : { 0.00125f, 0.0025f, 0.005f, 0.01f })
+        {
+            std::string label = std::to_string(value * 100.0f) +
+                "%##SceneDepth";
+            if (ImGui::Button(label.c_str()))
+                upsamplingParameters.sceneDepthRelativeSigma = value;
+            if (value != 0.01f) ImGui::SameLine();
+        }
+        ImGui::TextUnformatted("Cloud Depth (same cost):"); ImGui::SameLine();
+        for (float value : { 0.005f, 0.01f, 0.02f, 0.04f })
+        {
+            std::string label = std::to_string(value * 100.0f) +
+                "%##CloudDepth";
+            if (ImGui::Button(label.c_str()))
+                upsamplingParameters.cloudDepthRelativeSigma = value;
+            if (value != 0.04f) ImGui::SameLine();
+        }
+        ImGui::TextUnformatted("Transmittance Sigma (same cost):"); ImGui::SameLine();
+        for (float value : { 0.05f, 0.10f, 0.15f, 0.20f })
+        {
+            std::string label = std::to_string(value) + "##TSigma";
+            if (ImGui::Button(label.c_str()))
+                upsamplingParameters.transmittanceSigma = value;
+            if (value != 0.20f) ImGui::SameLine();
+        }
+        ImGui::TextUnformatted("Minimum Weight (same cost):"); ImGui::SameLine();
+        for (float value : { 1.0e-5f, 1.0e-4f, 1.0e-3f })
+        {
+            std::string label = std::to_string(value) + "##MinimumWeight";
+            if (ImGui::Button(label.c_str()))
+                upsamplingParameters.minimumWeight = value;
+            if (value != 1.0e-3f) ImGui::SameLine();
+        }
+        ImGui::Text("Current scale %.2f | minimum weight %.1e",
+                    upsamplingParameters.resolutionScale,
+                    upsamplingParameters.minimumWeight);
+        ImGui::TextDisabled(
+            "Stage 10 starts at Full until automatic and user quality gates approve a lower resolution.");
+    }
+
+    if (noisePanel && ImGui::CollapsingHeader(
             "Noise / Weather / Shape / Sampling Debug View",
             ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -661,6 +750,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             { "Skipped Distance", CloudDebugMode::SkippedDistance },
             { "Early Exit Savings", CloudDebugMode::EarlyExitSavings },
             { "Support Precheck Skip", CloudDebugMode::SupportPrecheckSkip },
+            { "Low-resolution Grid", CloudDebugMode::LowResolutionGrid },
+            { "Scene Rejection", CloudDebugMode::UpsampleSceneRejection },
+            { "Cloud Depth Weight", CloudDebugMode::UpsampleCloudDepthWeight },
+            { "Transmittance Weight", CloudDebugMode::UpsampleTransmittanceWeight },
         };
         int selected = 0;
         const auto current = static_cast<CloudDebugMode>(cloudParameters.debugMode);
@@ -1992,6 +2085,8 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
 
     optimizationParameters = stage9optimization::Sanitize(
         optimizationParameters);
+    upsamplingParameters = stage10upsampling::Sanitize(
+        upsamplingParameters);
     const CloudAppearanceSettings appearanceAfter = CaptureCloudAppearance(
         cloudParameters, cloudShapeParameters, m_weatherGeneratorDraft);
     if (!CloudAppearanceSettingsEqual(appearanceBefore, appearanceAfter))
@@ -2008,7 +2103,9 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         std::memcmp(&noiseVolumeBefore, &noiseVolumeParameters,
                     sizeof(NoiseVolumeParameters)) != 0 ||
         std::memcmp(&optimizationBefore, &optimizationParameters,
-                    sizeof(OptimizationParameters)) != 0;
+                    sizeof(OptimizationParameters)) != 0 ||
+        std::memcmp(&upsamplingBefore, &upsamplingParameters,
+                    sizeof(Stage10UpsamplingParameters)) != 0;
     const bool sunSettingsChanged =
         lightBefore.directionToSun.x != lightParameters.directionToSun.x ||
         lightBefore.directionToSun.y != lightParameters.directionToSun.y ||
@@ -2231,7 +2328,11 @@ void NoiseLab::DrawPerformanceOverlay(const FrameTimingSnapshot& timing,
         if (timing.gpuValid)
         {
             ImGui::Text("GPU Frame  %7.3f ms", timing.gpuFrameMs);
-            ImGui::Text("GPU Cloud  %7.3f ms", timing.gpuCloudMs);
+            ImGui::Text("Cloud Raymarch      %7.3f ms",
+                        timing.gpuCloudRaymarchMs);
+            ImGui::Text("Upsample/Composite  %7.3f ms",
+                        timing.gpuUpsampleCompositeMs);
+            ImGui::Text("GPU Cloud Total     %7.3f ms", timing.gpuCloudMs);
         }
         else
         {
@@ -2576,6 +2677,10 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const CloudLodParameters& lod,
                              const OptimizationParameters& optimization,
                              Stage9OptimizationPreset optimizationPreset,
+                             const Stage10UpsamplingParameters& upsampling,
+                             Stage10ResolutionPreset resolutionPreset,
+                             int cloudRenderWidth,
+                             int cloudRenderHeight,
                              const LightParameters& light,
                              Stage6SunPreset sunPreset,
                              Stage7PhasePreset phasePreset,
@@ -2656,8 +2761,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         : 0.0;
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 31,\n"
-           << "  \"implementationStage\": \"9\",\n"
+           << "  \"schemaVersion\": 32,\n"
+           << "  \"implementationStage\": \"10\",\n"
            << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\",\n"
            << "  \"physicalAdvectionMode\": \""
            << (physicalShape ? "rigidSharedWindSpeed"
@@ -2754,6 +2859,21 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << ", \"coneAngleDegrees\": " << optimization.coneAngleDegrees
            << ", \"lightFarSampleFraction\": "
            << optimization.lightFarSampleFraction << "},\n"
+           << "  \"upsampling\": {\"resolutionPreset\": \""
+           << stage10upsampling::ResolutionPresetName(resolutionPreset)
+           << "\", \"resolutionScale\": " << upsampling.resolutionScale
+           << ", \"filter\": \""
+           << stage10upsampling::FilterName(
+                  static_cast<Stage10UpsampleFilter>(upsampling.filterMode))
+           << "\", \"sceneDepthRelativeSigma\": "
+           << upsampling.sceneDepthRelativeSigma
+           << ", \"cloudDepthRelativeSigma\": "
+           << upsampling.cloudDepthRelativeSigma
+           << ", \"transmittanceSigma\": "
+           << upsampling.transmittanceSigma
+           << ", \"minimumWeight\": " << upsampling.minimumWeight
+           << ", \"targetSize\": [" << std::max(cloudRenderWidth, 1)
+           << ", " << std::max(cloudRenderHeight, 1) << "]},\n"
            << "  \"camera\": {\n"
            << "    \"current\": ";
     if (m_currentCamera.valid)
@@ -3010,6 +3130,10 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const CloudLodParameters& cloudLodParameters,
                               const OptimizationParameters& optimizationParameters,
                               Stage9OptimizationPreset optimizationPreset,
+                              const Stage10UpsamplingParameters& upsamplingParameters,
+                              Stage10ResolutionPreset resolutionPreset,
+                              int cloudRenderWidth,
+                              int cloudRenderHeight,
                               const LightParameters& lightParameters,
                               Stage6SunPreset sunPreset,
                               Stage7PhasePreset phasePreset,
@@ -3048,6 +3172,10 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                                        cloudLodParameters,
                                        optimizationParameters,
                                        optimizationPreset,
+                                       upsamplingParameters,
+                                       resolutionPreset,
+                                       cloudRenderWidth,
+                                       cloudRenderHeight,
                                        lightParameters, sunPreset,
                                        phasePreset, environmentParameters,
                                        environmentPreset, weatherPreset,

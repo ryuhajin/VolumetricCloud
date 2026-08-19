@@ -88,6 +88,10 @@ const char* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::SilverLiningContribution: return "SilverLiningContribution";
     case CloudDebugMode::ShapedSunVisibility: return "ShapedSunVisibility";
     case CloudDebugMode::AmbientVisibility: return "AmbientVisibility";
+    case CloudDebugMode::LowResolutionGrid: return "LowResolutionGrid";
+    case CloudDebugMode::UpsampleSceneRejection: return "UpsampleSceneRejection";
+    case CloudDebugMode::UpsampleCloudDepthWeight: return "UpsampleCloudDepthWeight";
+    case CloudDebugMode::UpsampleTransmittanceWeight: return "UpsampleTransmittanceWeight";
     default: return "Unknown";
     }
 }
@@ -1569,8 +1573,8 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             continue;
         std::string metadata;
         if (ReadTextFile(entry.path(), metadata) &&
-            metadata.find("\"schemaVersion\": 31") != std::string::npos &&
-            metadata.find("\"implementationStage\": \"9\"") != std::string::npos &&
+            metadata.find("\"schemaVersion\": 32") != std::string::npos &&
+            metadata.find("\"implementationStage\": \"10\"") != std::string::npos &&
             metadata.find("\"lightingLook\": \"portfolioHero\"") != std::string::npos &&
             metadata.find("\"edgeInfluence\"") != std::string::npos &&
             metadata.find("\"ambientShadowCoupling\"") != std::string::npos &&
@@ -1589,7 +1593,7 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
         return 10;
 
     WriteDiagnosticLine(
-        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=30 PASS");
+        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=32 PASS");
     return renderer.HasDebugLayerErrors() ? 11 : 0;
 }
 
@@ -1876,6 +1880,118 @@ double DiagnosticFrameMeanAbsoluteError(const CloudDiagnosticFrame& first,
                        static_cast<double>(second.pixels[index].z));
     }
     return sum / static_cast<double>(first.pixels.size() * 3u);
+}
+
+int RunStage10UpsamplingSmokeTest(Renderer& renderer, Camera& camera)
+{
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetOpaqueSceneForTest(true);
+    if (!renderer.ApplyStage13OpenWorldPreset() ||
+        !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus))
+        return 2;
+    renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
+    camera.SetClipPlanes(0.1f, 60000.0f);
+    camera.SetOrbit(0.0f, 0.0f, 32000.0f,
+                    { 0.0f, 4500.0f, 0.0f });
+
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Full);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint4);
+    CloudDiagnosticFrame direct;
+    CloudDiagnosticFrame split;
+    if (!renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::Composite, direct, true) ||
+        !renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::Composite, split))
+        return 3;
+    const double fullMae = DiagnosticFrameMeanAbsoluteError(direct, split);
+    bool finite = std::isfinite(fullMae) && fullMae <= 0.01;
+    std::set<std::uint64_t> hashes;
+
+    const Stage10ResolutionPreset resolutions[] = {
+        Stage10ResolutionPreset::Half,
+        Stage10ResolutionPreset::TwoThirds,
+        Stage10ResolutionPreset::ThreeQuarters,
+        Stage10ResolutionPreset::Full,
+    };
+    const Stage10UpsampleFilter filters[] = {
+        Stage10UpsampleFilter::Nearest,
+        Stage10UpsampleFilter::Bilinear,
+        Stage10UpsampleFilter::Joint4,
+        Stage10UpsampleFilter::Joint9,
+    };
+    for (Stage10ResolutionPreset resolution : resolutions)
+    {
+        renderer.ApplyStage10ResolutionPreset(resolution);
+        for (Stage10UpsampleFilter filter : filters)
+        {
+            renderer.SetStage10UpsampleFilter(filter);
+            CloudDiagnosticFrame frame;
+            if (!renderer.CaptureCloudDiagnosticFrame(
+                    camera, 0.0f, CloudDebugMode::Composite, frame))
+                return 4;
+            for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+            {
+                finite = finite && std::isfinite(pixel.x) &&
+                    std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+                    std::isfinite(pixel.w);
+            }
+            hashes.insert(HashDiagnosticFrame(frame));
+        }
+    }
+
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Half);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint9);
+    for (CloudDebugMode mode : {
+             CloudDebugMode::LowResolutionGrid,
+             CloudDebugMode::UpsampleSceneRejection,
+             CloudDebugMode::UpsampleCloudDepthWeight,
+             CloudDebugMode::UpsampleTransmittanceWeight })
+    {
+        CloudDiagnosticFrame frame;
+        if (!renderer.CaptureCloudDiagnosticFrame(camera, 0.0f, mode, frame))
+            return 5;
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+            finite = finite && std::isfinite(pixel.x) &&
+                std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+                std::isfinite(pixel.w);
+    }
+
+    // 홀수 창 크기에서도 ceil 축 크기와 RTV/SRV 재생성이 같은 프레임에 적용된다.
+    renderer.Resize(97, 55);
+    camera.SetAspect(97.0f / 55.0f);
+    renderer.ApplyStage10ResolutionPreset(
+        Stage10ResolutionPreset::TwoThirds);
+    CloudDiagnosticFrame resized;
+    if (!renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::Composite, resized) ||
+        renderer.CloudRenderWidth() != 65 ||
+        renderer.CloudRenderHeight() != 37)
+        return 7;
+    for (const DirectX::XMFLOAT4& pixel : resized.pixels)
+        finite = finite && std::isfinite(pixel.x) &&
+            std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+            std::isfinite(pixel.w);
+
+    renderer.Resize(96, 54);
+    camera.SetAspect(96.0f / 54.0f);
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Half);
+    CloudDiagnosticFrame restored;
+    if (!renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::Composite, restored))
+        return 8;
+
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(6)
+         << "STAGE10_UPSAMPLING FULL_MAE=" << fullMae
+         << " DISTINCT=" << hashes.size()
+         << " TARGET=" << renderer.CloudRenderWidth() << 'x'
+         << renderer.CloudRenderHeight() << ' '
+         << (finite && hashes.size() >= 4 ? "PASS" : "FAIL");
+    WriteDiagnosticLine(line.str());
+    return finite && hashes.size() >= 4 && !renderer.HasDebugLayerErrors()
+        ? 0 : 6;
 }
 
 int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
@@ -2308,12 +2424,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage9-optimization-smoke-test") != nullptr;
     const bool requestedStage9Performance = commandLine &&
         wcsstr(commandLine, L"--stage9-performance-test") != nullptr;
+    const bool requestedStage10UpsamplingSmoke = commandLine &&
+        wcsstr(commandLine, L"--stage10-upsampling-smoke-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
         requestedStage8Smoke ||
         requestedPerformanceOverlaySmoke || requestedStage13DomainSmoke ||
         requestedStage13OpenWorldSmoke || requestedStage13NoiseVolumeSmoke ||
         requestedStage13WeatherShapeGpu || requestedStage13UnifiedSceneSmoke ||
-        requestedStage13OpticsLightingSmoke || requestedStage9OptimizationSmoke;
+        requestedStage13OpticsLightingSmoke || requestedStage9OptimizationSmoke ||
+        requestedStage10UpsamplingSmoke;
     const int kWidth  = (requestedStage13LightingPerformance ||
         requestedStage9Performance) ? 1920 :
         (requestedStage13SimilarityGpu ||
@@ -2355,6 +2474,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage13WeatherShapeGpuTest = requestedStage13WeatherShapeGpu;
     const bool stage9OptimizationSmokeTest = requestedStage9OptimizationSmoke;
     const bool stage9PerformanceTest = requestedStage9Performance;
+    const bool stage10UpsamplingSmokeTest = requestedStage10UpsamplingSmoke;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -2367,12 +2487,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
         stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
         stage9OptimizationSmokeTest || stage9PerformanceTest ||
+        stage10UpsamplingSmokeTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest;
     const bool enableNoiseVolumes = !automatedTestRun ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
         stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
-        stage9OptimizationSmokeTest || stage9PerformanceTest;
+        stage9OptimizationSmokeTest || stage9PerformanceTest ||
+        stage10UpsamplingSmokeTest;
 
     std::filesystem::path hotReloadShaderDirectory;
     if (shaderHotReloadSmokeTest)
@@ -2404,6 +2526,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                     !stage13LightingPerformanceTest &&
                     !stage9OptimizationSmokeTest &&
                     !stage9PerformanceTest &&
+                    !stage10UpsamplingSmokeTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -2442,6 +2565,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         !stage13LightingPerformanceTest &&
         !stage9OptimizationSmokeTest &&
         !stage9PerformanceTest &&
+        !stage10UpsamplingSmokeTest &&
         !noiseLabSmokeTest &&
         !shaderHotReloadSmokeTest;
     if (interactiveRun)
@@ -2470,6 +2594,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return RunStage9OptimizationSmokeTest(renderer, camera);
     if (stage9PerformanceTest)
         return RunStage9PerformanceTest(renderer, camera);
+    if (stage10UpsamplingSmokeTest)
+        return RunStage10UpsamplingSmokeTest(renderer, camera);
 
     struct VolumeFixture
     {
@@ -2709,7 +2835,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 31") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 32") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"A\": \"localThicknessPotential\"") != std::string::npos &&
                 metadata.find("\"localThickness\": {\"seed\": 4051") != std::string::npos &&
@@ -2801,7 +2927,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 31") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 32") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
@@ -2875,7 +3001,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 31") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 32") != std::string::npos &&
                 metadata.find("\"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\"") != std::string::npos &&
                 metadata.find("\"camera\": {") != std::string::npos &&
                 metadata.find("\"verticalFovDegrees\": 60") != std::string::npos &&
@@ -2883,7 +3009,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 metadata.find("\"physicalAdvectionMode\": \"legacyIndependentSpeeds\"") != std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"scatteringCoefficient\"") == std::string::npos &&
-                metadata.find("\"implementationStage\": \"9\"") != std::string::npos &&
+                metadata.find("\"implementationStage\": \"10\"") != std::string::npos &&
                 metadata.find("\"noiseVolumes\"") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"similarityScale\"") == std::string::npos &&

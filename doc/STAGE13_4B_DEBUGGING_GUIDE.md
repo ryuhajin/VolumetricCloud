@@ -189,9 +189,37 @@ Cone Angle `4/3/2/1°`와 Cone Far Fraction `75/77/85/95%`는 같은 tap 수에�
 바꾸므로 계산량이 같다. 각도와 비율은 그림자 모양·오차 비교용이며 Balanced 승인값은
 `2°/77%`다.
 
-성능을 눈으로 비교할 때는 우측 오버레이의 `GPU Cloud`를 읽는다. `CPU Frame`은 VSync 대기를
+성능을 눈으로 비교할 때는 우측 오버레이의 `GPU Cloud Total`을 읽는다. `CPU Frame`은 VSync 대기를
 포함하므로 알고리즘 비교값으로 쓰지 않는다. 정식 판정은 VSync Off와 120프레임 워밍업 뒤
 `captures/stage9/performance.json`의 p95를 사용한다.
+
+### 7.4 단계 10 Resolution / Filter 버튼
+
+F1 `Low Resolution / Upsampling`은 구름 레이를 쏘는 픽셀 수와 공간 복원 비용을 따로 비교한다.
+사용자 승인 전 시작값은 Full이다.
+
+| Resolution | 1920×1080 구름 타깃 | Full 대비 구름 레이 수 | 예상 비용/실패 징후 |
+|---|---:|---:|---|
+| 50% Axis | 960×540 | 25% | 가장 싸지만 2×2 블록, 얇은 구름 소실 가능 |
+| 67% Axis | 1280×720 | 44.4% | 중간 후보, 경계 품질을 Joint와 확인 |
+| 75% Axis | 1440×810 | 56.25% | 품질 여유가 큰 저해상도 후보 |
+| Full | 1920×1080 | 100% | 단계 9 기준. split 파이프라인 비교용 시작값 |
+
+| Filter | Full 픽셀당 저해상도 읽기 | 상대 비용 | 용도 |
+|---|---:|---:|---|
+| Nearest | 1 | 최저 | 블록/격자 실패 기준 |
+| Bilinear | 4 | 낮음 | 부드럽지만 건물·구름 경계를 섞을 수 있음 |
+| Depth/Cloud/T Joint 4 | 4 | 중간 | Scene/Cloud/T 차이로 4개 후보를 거름 |
+| Depth/Cloud/T Joint 9 | 9 | 최고 | 더 넓은 공간 복원, 경계 품질 비교 |
+
+오버레이의 `Cloud Raymarch`는 해상도를 낮추면 크게 줄어야 하고,
+`Upsample/Composite`는 Full 픽셀에서 항상 실행되는 복원 비용이다. 둘의 합인
+`GPU Cloud Total`이 Full보다 낮아야 실제 최적화 이득이다. Scene/Cloud Depth/T 임계값과
+Minimum Weight 버튼은 같은 탭 수에서 위치별 가중치만 바꾸므로 계산량은 같다.
+
+추가 Debug View의 `Low-resolution Grid`는 직접 계산한 texel 격자, `Scene Rejection`은
+건물/하늘 분리, `Cloud Depth Weight`와 `Transmittance Weight`는 구름 경계 보존 정도를
+표시한다. 숫자 0~9 매핑은 바뀌지 않았다.
 
 ## 8. Pipeline Compare
 
@@ -216,6 +244,9 @@ main pass의 샘플 time만 0으로 고정하므로 바람 때문에 위치가 �
 - [ ] 제거된 F2 타입 버튼, 문자 키와 F9~F12는 동작하지 않는다.
 - [ ] F1 Optimization의 Balanced가 가장 왼쪽 Master이고 Empty Search가 `2×/Off`만 제공한다.
 - [ ] Fine Reference와 Straight 320 Fine은 오프라인 기준임을 이해하고 일반 플레이 후보로 사용하지 않는다.
+- [ ] F1 Resolution이 `50%→67%→75%→Full`, Filter가 `Nearest→Bilinear→Joint4→Joint9` 비용순이다.
+- [ ] Full에서 단계 9와 같은 화면이며, 75/67/50%로 내릴 때 건물 위 번짐·얇은 구름 소실·격자를 기록한다.
+- [ ] 같은 해상도에서 Nearest부터 올려 큰 차이가 없는 가장 왼쪽 필터를 찾고 GPU Cloud Total을 비교한다.
 
 13-4E 렌더와 새 Dense Mixed F6 기준 13-5는 2026-08-17 승인됐다. 구형 shell은 제외했고 단계 9
 Balanced는 Dense 버튼 복구와 Fast/4× 탈락 재검증 뒤 2026-08-19 최종 승인됐다.

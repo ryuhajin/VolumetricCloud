@@ -352,6 +352,21 @@ add_test(NAME VolumetricCloud.Stage9OptimizationSmoke
 set_tests_properties(VolumetricCloud.Stage9OptimizationSmoke
                      PROPERTIES TIMEOUT 300)
 
+# 단계 10 해상도 크기, UV 중심, 대표 깊이와 joint 가중치 기준을 검사한다.
+add_executable(VolumetricCloud.Stage10UpsamplingMathTests
+    tests/Stage10UpsamplingMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage10UpsamplingMathTests PRIVATE src)
+if(MSVC)
+    target_compile_options(VolumetricCloud.Stage10UpsamplingMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage10UpsamplingMath
+         COMMAND VolumetricCloud.Stage10UpsamplingMathTests)
+add_test(NAME VolumetricCloud.Stage10UpsamplingSmoke
+         COMMAND VolumetricCloud --stage10-upsampling-smoke-test)
+set_tests_properties(VolumetricCloud.Stage10UpsamplingSmoke
+                     PROPERTIES TIMEOUT 300)
+
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)
 #  빌드 후 build/<Config>/shaders/ 에 hlsl이 위치하게 됨

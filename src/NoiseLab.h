@@ -27,6 +27,7 @@
 #include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
 #include "OptimizationParameters.h"
+#include "Stage10UpsamplingParameters.h"
 
 class Camera;
 
@@ -115,6 +116,8 @@ public:
                     CloudLodParameters& cloudLodParameters,
                     OptimizationParameters& optimizationParameters,
                     Stage9OptimizationPreset& optimizationPreset,
+                    Stage10UpsamplingParameters& upsamplingParameters,
+                    Stage10ResolutionPreset& resolutionPreset,
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
                     Stage7PhasePreset& phasePreset,
@@ -180,6 +183,10 @@ public:
                         const CloudLodParameters& cloudLodParameters,
                         const OptimizationParameters& optimizationParameters,
                         Stage9OptimizationPreset optimizationPreset,
+                        const Stage10UpsamplingParameters& upsamplingParameters,
+                        Stage10ResolutionPreset resolutionPreset,
+                        int cloudRenderWidth,
+                        int cloudRenderHeight,
                         const LightParameters& lightParameters,
                         Stage6SunPreset sunPreset,
                         Stage7PhasePreset phasePreset,
@@ -235,6 +242,8 @@ private:
                            CloudLodParameters& cloudLodParameters,
                            OptimizationParameters& optimizationParameters,
                            Stage9OptimizationPreset& optimizationPreset,
+                           Stage10UpsamplingParameters& upsamplingParameters,
+                           Stage10ResolutionPreset& resolutionPreset,
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
                            Stage7PhasePreset& phasePreset,
@@ -282,6 +291,10 @@ private:
                        const CloudLodParameters& cloudLodParameters,
                        const OptimizationParameters& optimizationParameters,
                        Stage9OptimizationPreset optimizationPreset,
+                       const Stage10UpsamplingParameters& upsamplingParameters,
+                       Stage10ResolutionPreset resolutionPreset,
+                       int cloudRenderWidth,
+                       int cloudRenderHeight,
                        const LightParameters& lightParameters,
                        Stage6SunPreset sunPreset,
                        Stage7PhasePreset phasePreset,

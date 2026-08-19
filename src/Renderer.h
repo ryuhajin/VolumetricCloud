@@ -25,6 +25,7 @@
 #include "LightParameters.h"
 #include "NoiseLab.h"
 #include "OptimizationParameters.h"
+#include "Stage10UpsamplingParameters.h"
 #include "Stage13ScaleMath.h"
 #include "Stage13OpenWorldMath.h"
 #include "Stage13NoiseVolumeMath.h"
@@ -56,7 +57,8 @@ public:
     void Render(Camera& camera, float timeSeconds);
     bool CaptureCloudDiagnosticFrame(const Camera& camera, float timeSeconds,
                                      CloudDebugMode mode,
-                                     CloudDiagnosticFrame& frame);
+                                     CloudDiagnosticFrame& frame,
+                                     bool forceDirectComposite = false);
     // 자동 GPU 회귀가 구름 패스만 비교할 때 사용하는 테스트 전용 fixture다.
     void SetOpaqueSceneForTest(bool enabled)
     {
@@ -103,6 +105,27 @@ public:
     {
         return m_optimizationPreset;
     }
+    void ApplyStage10ResolutionPreset(Stage10ResolutionPreset preset);
+    void SetStage10UpsampleFilter(Stage10UpsampleFilter filter);
+    const Stage10UpsamplingParameters& UpsamplingSettings() const
+    {
+        return m_upsamplingParameters;
+    }
+    Stage10UpsamplingParameters& MutableUpsamplingSettings()
+    {
+        return m_upsamplingParameters;
+    }
+    Stage10ResolutionPreset ResolutionPreset() const
+    {
+        return m_resolutionPreset;
+    }
+    Stage10UpsampleFilter UpsampleFilter() const
+    {
+        return static_cast<Stage10UpsampleFilter>(
+            m_upsamplingParameters.filterMode);
+    }
+    int CloudRenderWidth() const { return m_cloudRenderWidth; }
+    int CloudRenderHeight() const { return m_cloudRenderHeight; }
     bool ApplyOpenWorldPipelinePreset(OpenWorldPipelinePreset preset);
     bool ApplyCloudAppearancePreset(CloudAppearancePreset preset);
     bool SaveCurrentCloudAppearance();
@@ -246,6 +269,7 @@ private:
     bool CreateShaders(bool showErrors);
     bool CreateBackBufferTarget();
     bool CreateSceneTargets();
+    bool CreateCloudTargets();
     bool CreateDiagnosticScene();
     bool CreatePipelineStates();
     bool CreateConstantBuffers();
@@ -273,6 +297,14 @@ private:
     void RenderDiagnosticScene(const Camera& camera);
     void RenderCloudPass(const Camera& camera, float timeSeconds,
                          ID3D11RenderTargetView* targetOverride = nullptr);
+    void UpdateCloudConstantBuffers(const Camera& camera, float timeSeconds,
+                                    int renderWidth, int renderHeight);
+    void BindCloudRaymarchResources(ID3D11PixelShader* pixelShader);
+    void UnbindCloudShaderResources(UINT count);
+    void RenderCloudDataPass(const Camera& camera, float timeSeconds);
+    void RenderCloudUpsamplePass(const Camera& camera, float timeSeconds,
+                                 ID3D11RenderTargetView* targetOverride = nullptr);
+    bool EnsureCloudTargets();
     void CaptureCloudFrameHash();
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
@@ -294,9 +326,21 @@ private:
     ComPtr<ID3D11DepthStencilView> m_sceneDepthDsv;
     ComPtr<ID3D11ShaderResourceView> m_sceneDepthSrv;
 
+    ComPtr<ID3D11Texture2D> m_cloudScatteringTransmittance;
+    ComPtr<ID3D11RenderTargetView> m_cloudScatteringTransmittanceRtv;
+    ComPtr<ID3D11ShaderResourceView> m_cloudScatteringTransmittanceSrv;
+    ComPtr<ID3D11Texture2D> m_cloudDepthSceneLimit;
+    ComPtr<ID3D11RenderTargetView> m_cloudDepthSceneLimitRtv;
+    ComPtr<ID3D11ShaderResourceView> m_cloudDepthSceneLimitSrv;
+    int m_cloudRenderWidth = 0;
+    int m_cloudRenderHeight = 0;
+
     ComPtr<ID3D11VertexShader> m_fullscreenVs;
     ComPtr<ID3D11PixelShader> m_cloudReferencePs;
     ComPtr<ID3D11PixelShader> m_cloudOptimizedPs;
+    ComPtr<ID3D11PixelShader> m_cloudReferenceDataPs;
+    ComPtr<ID3D11PixelShader> m_cloudOptimizedDataPs;
+    ComPtr<ID3D11PixelShader> m_cloudUpsamplePs;
     ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
@@ -313,6 +357,7 @@ private:
     ComPtr<ID3D11Buffer> m_cloudShapeCb;
     ComPtr<ID3D11Buffer> m_cloudLodCb;
     ComPtr<ID3D11Buffer> m_optimizationCb;
+    ComPtr<ID3D11Buffer> m_upsamplingCb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
@@ -356,6 +401,9 @@ private:
     OptimizationParameters m_optimizationParameters;
     Stage9OptimizationPreset m_optimizationPreset =
         Stage9OptimizationPreset::Balanced;
+    Stage10UpsamplingParameters m_upsamplingParameters;
+    Stage10ResolutionPreset m_resolutionPreset =
+        Stage10ResolutionPreset::Full;
     std::uint64_t m_baseNoiseVolumeHash = 0;
     std::uint64_t m_detailNoiseVolumeHash = 0;
     double m_noiseVolumeGenerationMilliseconds = 0.0;
@@ -366,6 +414,7 @@ private:
     std::wstring m_shaderDir;
     std::wstring m_fullscreenShaderPath;
     std::wstring m_cloudShaderPath;
+    std::wstring m_cloudUpsampleShaderPath;
     std::wstring m_noiseLabShaderPath;
     std::wstring m_sceneShaderPath;
     std::wstring m_noiseVolumeShaderPath;

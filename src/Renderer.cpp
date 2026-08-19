@@ -195,6 +195,7 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_shaderDir = ResolveShaderDir();
     m_fullscreenShaderPath = m_shaderDir + L"Fullscreen.hlsl";
     m_cloudShaderPath = m_shaderDir + L"VolumetricClouds.hlsl";
+    m_cloudUpsampleShaderPath = m_shaderDir + L"CloudUpsample.hlsl";
     m_noiseLabShaderPath = m_shaderDir + L"NoiseLab.hlsl";
     m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
     m_noiseVolumeShaderPath = m_shaderDir + L"NoiseVolume.hlsl";
@@ -266,6 +267,7 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_frameProfiler.Init(m_device.Get());
 
     if (!CreateBackBufferTarget() || !CreateSceneTargets() ||
+        !CreateCloudTargets() ||
         !CreateConstantBuffers() || !CreateShaders(true) ||
         !CreateDiagnosticScene() || !CreatePipelineStates() ||
         !CreateWeatherMapTexture(m_weatherPreset) ||
@@ -327,6 +329,77 @@ bool Renderer::CreateSceneTargets()
         m_sceneDepth.Get(), &srvDesc, &m_sceneDepthSrv));
 }
 
+bool Renderer::CreateCloudTargets()
+{
+    if (!m_device || m_width <= 0 || m_height <= 0)
+        return false;
+    m_upsamplingParameters = stage10upsampling::Sanitize(
+        m_upsamplingParameters);
+    const int targetWidth = stage10upsampling::ScaledExtent(
+        m_width, m_upsamplingParameters.resolutionScale);
+    const int targetHeight = stage10upsampling::ScaledExtent(
+        m_height, m_upsamplingParameters.resolutionScale);
+
+    const auto createTarget = [&](DXGI_FORMAT format,
+                                  ComPtr<ID3D11Texture2D>& texture,
+                                  ComPtr<ID3D11RenderTargetView>& rtv,
+                                  ComPtr<ID3D11ShaderResourceView>& srv)
+    {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = static_cast<UINT>(targetWidth);
+        desc.Height = static_cast<UINT>(targetHeight);
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = format;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET |
+                         D3D11_BIND_SHADER_RESOURCE;
+        return SUCCEEDED(m_device->CreateTexture2D(
+                   &desc, nullptr, &texture)) &&
+               SUCCEEDED(m_device->CreateRenderTargetView(
+                   texture.Get(), nullptr, &rtv)) &&
+               SUCCEEDED(m_device->CreateShaderResourceView(
+                   texture.Get(), nullptr, &srv));
+    };
+
+    ComPtr<ID3D11Texture2D> scattering;
+    ComPtr<ID3D11RenderTargetView> scatteringRtv;
+    ComPtr<ID3D11ShaderResourceView> scatteringSrv;
+    ComPtr<ID3D11Texture2D> depth;
+    ComPtr<ID3D11RenderTargetView> depthRtv;
+    ComPtr<ID3D11ShaderResourceView> depthSrv;
+    if (!createTarget(DXGI_FORMAT_R16G16B16A16_FLOAT,
+                      scattering, scatteringRtv, scatteringSrv) ||
+        !createTarget(DXGI_FORMAT_R32G32_FLOAT,
+                      depth, depthRtv, depthSrv))
+        return false;
+
+    m_cloudScatteringTransmittance = scattering;
+    m_cloudScatteringTransmittanceRtv = scatteringRtv;
+    m_cloudScatteringTransmittanceSrv = scatteringSrv;
+    m_cloudDepthSceneLimit = depth;
+    m_cloudDepthSceneLimitRtv = depthRtv;
+    m_cloudDepthSceneLimitSrv = depthSrv;
+    m_cloudRenderWidth = targetWidth;
+    m_cloudRenderHeight = targetHeight;
+    return true;
+}
+
+bool Renderer::EnsureCloudTargets()
+{
+    const Stage10UpsamplingParameters sanitized =
+        stage10upsampling::Sanitize(m_upsamplingParameters);
+    const int expectedWidth = stage10upsampling::ScaledExtent(
+        m_width, sanitized.resolutionScale);
+    const int expectedHeight = stage10upsampling::ScaledExtent(
+        m_height, sanitized.resolutionScale);
+    m_upsamplingParameters = sanitized;
+    return (m_cloudScatteringTransmittance && m_cloudDepthSceneLimit &&
+            expectedWidth == m_cloudRenderWidth &&
+            expectedHeight == m_cloudRenderHeight) || CreateCloudTargets();
+}
+
 bool Renderer::CompileShaderFromFile(const std::wstring& path,
                                      const char* entryPoint,
                                      const char* target,
@@ -338,7 +411,8 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     compileFlags |= D3DCOMPILE_DEBUG;
     // 동적 단계 9 shader는 /Od에서 하드웨어 instruction 한도를 넘길 수 있다.
     // 실제 최적화 비용을 재는 경로이기도 하므로 Debug에서도 최소 O1을 사용한다.
-    compileFlags |= std::strcmp(entryPoint, "mainOptimized") == 0
+    compileFlags |= (std::strcmp(entryPoint, "mainOptimized") == 0 ||
+                     std::strcmp(entryPoint, "mainOptimizedData") == 0)
         ? D3DCOMPILE_OPTIMIZATION_LEVEL1
         : D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
@@ -367,6 +441,9 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3DBlob> fullscreenVsBlob;
     ComPtr<ID3DBlob> cloudReferencePsBlob;
     ComPtr<ID3DBlob> cloudOptimizedPsBlob;
+    ComPtr<ID3DBlob> cloudReferenceDataPsBlob;
+    ComPtr<ID3DBlob> cloudOptimizedDataPsBlob;
+    ComPtr<ID3DBlob> cloudUpsamplePsBlob;
     ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
@@ -375,6 +452,9 @@ bool Renderer::CreateShaders(bool showErrors)
     if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainReference", "ps_5_0", cloudReferencePsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainReferenceData", "ps_5_0", cloudReferenceDataPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudShaderPath, "mainOptimizedData", "ps_5_0", cloudOptimizedDataPsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudUpsampleShaderPath, "main", "ps_5_0", cloudUpsamplePsBlob, showErrors) ||
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors) ||
@@ -389,6 +469,9 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3D11VertexShader> fullscreenVs;
     ComPtr<ID3D11PixelShader> cloudReferencePs;
     ComPtr<ID3D11PixelShader> cloudOptimizedPs;
+    ComPtr<ID3D11PixelShader> cloudReferenceDataPs;
+    ComPtr<ID3D11PixelShader> cloudOptimizedDataPs;
+    ComPtr<ID3D11PixelShader> cloudUpsamplePs;
     ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
@@ -405,6 +488,15 @@ bool Renderer::CreateShaders(bool showErrors)
         FAILED(m_device->CreatePixelShader(
             cloudOptimizedPsBlob->GetBufferPointer(), cloudOptimizedPsBlob->GetBufferSize(),
             nullptr, &cloudOptimizedPs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudReferenceDataPsBlob->GetBufferPointer(), cloudReferenceDataPsBlob->GetBufferSize(),
+            nullptr, &cloudReferenceDataPs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudOptimizedDataPsBlob->GetBufferPointer(), cloudOptimizedDataPsBlob->GetBufferSize(),
+            nullptr, &cloudOptimizedDataPs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudUpsamplePsBlob->GetBufferPointer(), cloudUpsamplePsBlob->GetBufferSize(),
+            nullptr, &cloudUpsamplePs)) ||
         FAILED(m_device->CreatePixelShader(
             noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
             nullptr, &noiseLabPs)) ||
@@ -465,6 +557,9 @@ bool Renderer::CreateShaders(bool showErrors)
     m_fullscreenVs = fullscreenVs;
     m_cloudReferencePs = cloudReferencePs;
     m_cloudOptimizedPs = cloudOptimizedPs;
+    m_cloudReferenceDataPs = cloudReferenceDataPs;
+    m_cloudOptimizedDataPs = cloudOptimizedDataPs;
+    m_cloudUpsamplePs = cloudUpsamplePs;
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
@@ -849,6 +944,8 @@ bool Renderer::CreateConstantBuffers()
            createDynamicBuffer(sizeof(CloudShapeParameters), &m_cloudShapeCb) &&
            createDynamicBuffer(sizeof(CloudLodParameters), &m_cloudLodCb) &&
            createDynamicBuffer(sizeof(OptimizationParameters), &m_optimizationCb) &&
+           createDynamicBuffer(sizeof(Stage10UpsamplingParameters),
+                               &m_upsamplingCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -861,6 +958,14 @@ void Renderer::ReleaseSizeDependentResources()
     m_sceneDepthSrv.Reset();
     m_sceneDepthDsv.Reset();
     m_sceneDepth.Reset();
+    m_cloudScatteringTransmittanceSrv.Reset();
+    m_cloudScatteringTransmittanceRtv.Reset();
+    m_cloudScatteringTransmittance.Reset();
+    m_cloudDepthSceneLimitSrv.Reset();
+    m_cloudDepthSceneLimitRtv.Reset();
+    m_cloudDepthSceneLimit.Reset();
+    m_cloudRenderWidth = 0;
+    m_cloudRenderHeight = 0;
 }
 
 void Renderer::Resize(int width, int height)
@@ -880,6 +985,7 @@ void Renderer::Resize(int width, int height)
     {
         CreateBackBufferTarget();
         CreateSceneTargets();
+        CreateCloudTargets();
     }
 }
 
@@ -1052,9 +1158,186 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->PSSetShaderResources(0, 5, nullResources);
 }
 
+void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
+                                          float timeSeconds,
+                                          int renderWidth,
+                                          int renderHeight)
+{
+    CameraCB cameraData = {};
+    XMStoreFloat4x4(&cameraData.invViewProj,
+                    XMMatrixTranspose(camera.GetInvViewProj()));
+    XMStoreFloat4x4(&cameraData.invProjection,
+                    XMMatrixTranspose(camera.GetInvProjection()));
+    XMStoreFloat4x4(&cameraData.invViewRotation,
+                    XMMatrixTranspose(camera.GetInvViewRotation()));
+    cameraData.cameraPos = camera.GetPosition();
+    cameraData.time = timeSeconds;
+    cameraData.renderSize = {
+        static_cast<float>(std::max(renderWidth, 1)),
+        static_cast<float>(std::max(renderHeight, 1))
+    };
+    cameraData.nearPlane = camera.GetNearPlane();
+    cameraData.farPlane = camera.GetFarPlane();
+
+    m_cloudDomainParameters = SanitizeCloudDomainParameters(
+        m_cloudDomainParameters);
+    m_lightParameters = stage6light::Sanitize(m_lightParameters);
+    m_environmentParameters = stage8environment::Sanitize(
+        m_environmentParameters);
+    m_cloudShapeParameters = SanitizeCloudShapeParameters(
+        m_cloudShapeParameters);
+    m_cloudLodParameters = stage13lod::Sanitize(m_cloudLodParameters);
+    m_optimizationParameters = stage9optimization::Sanitize(
+        m_optimizationParameters);
+    m_upsamplingParameters = stage10upsampling::Sanitize(
+        m_upsamplingParameters);
+
+    const auto update = [&](ID3D11Buffer* buffer, const void* data,
+                            std::size_t size)
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (buffer && SUCCEEDED(m_context->Map(
+                buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        {
+            std::memcpy(mapped.pData, data, size);
+            m_context->Unmap(buffer, 0);
+        }
+    };
+    update(m_cameraCb.Get(), &cameraData, sizeof(cameraData));
+    update(m_cloudCb.Get(), &m_cloudParameters, sizeof(m_cloudParameters));
+    update(m_lightCb.Get(), &m_lightParameters, sizeof(m_lightParameters));
+    update(m_environmentCb.Get(), &m_environmentParameters,
+           sizeof(m_environmentParameters));
+    update(m_cloudDomainCb.Get(), &m_cloudDomainParameters,
+           sizeof(m_cloudDomainParameters));
+    update(m_noiseVolumeCb.Get(), &m_noiseVolumeParameters,
+           sizeof(m_noiseVolumeParameters));
+    update(m_cloudShapeCb.Get(), &m_cloudShapeParameters,
+           sizeof(m_cloudShapeParameters));
+    update(m_cloudLodCb.Get(), &m_cloudLodParameters,
+           sizeof(m_cloudLodParameters));
+    update(m_optimizationCb.Get(), &m_optimizationParameters,
+           sizeof(m_optimizationParameters));
+    update(m_upsamplingCb.Get(), &m_upsamplingParameters,
+           sizeof(m_upsamplingParameters));
+}
+
+void Renderer::BindCloudRaymarchResources(ID3D11PixelShader* pixelShader)
+{
+    m_context->IASetInputLayout(nullptr);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
+    m_context->PSSetShader(pixelShader, nullptr, 0);
+    ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
+    m_context->PSSetConstantBuffers(0, 2, constantBuffers);
+    ID3D11Buffer* lightBuffer = m_lightCb.Get();
+    m_context->PSSetConstantBuffers(3, 1, &lightBuffer);
+    ID3D11Buffer* environmentBuffer = m_environmentCb.Get();
+    m_context->PSSetConstantBuffers(4, 1, &environmentBuffer);
+    ID3D11Buffer* domainBuffer = m_cloudDomainCb.Get();
+    m_context->PSSetConstantBuffers(5, 1, &domainBuffer);
+    ID3D11Buffer* noiseVolumeBuffer = m_noiseVolumeCb.Get();
+    m_context->PSSetConstantBuffers(6, 1, &noiseVolumeBuffer);
+    ID3D11Buffer* shapeBuffer = m_cloudShapeCb.Get();
+    m_context->PSSetConstantBuffers(7, 1, &shapeBuffer);
+    ID3D11Buffer* lodBuffer = m_cloudLodCb.Get();
+    m_context->PSSetConstantBuffers(8, 1, &lodBuffer);
+    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
+    m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
+    ID3D11ShaderResourceView* resources[5] = {
+        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
+        m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
+    };
+    m_context->PSSetShaderResources(0, 5, resources);
+    ID3D11SamplerState* samplers[2] = {
+        m_pointClampSampler.Get(), m_weatherLinearWrapSampler.Get()
+    };
+    m_context->PSSetSamplers(0, 2, samplers);
+}
+
+void Renderer::UnbindCloudShaderResources(UINT count)
+{
+    std::vector<ID3D11ShaderResourceView*> nullResources(count, nullptr);
+    m_context->PSSetShaderResources(0, count, nullResources.data());
+}
+
+void Renderer::RenderCloudDataPass(const Camera& camera, float timeSeconds)
+{
+    if (!EnsureCloudTargets())
+        return;
+    const std::int32_t savedDebugMode = m_cloudParameters.debugMode;
+    m_cloudParameters.debugMode = static_cast<std::int32_t>(
+        CloudDebugMode::Composite);
+    UpdateCloudConstantBuffers(camera, timeSeconds,
+                               m_cloudRenderWidth, m_cloudRenderHeight);
+    m_cloudParameters.debugMode = savedDebugMode;
+
+    ID3D11RenderTargetView* targets[2] = {
+        m_cloudScatteringTransmittanceRtv.Get(),
+        m_cloudDepthSceneLimitRtv.Get()
+    };
+    const float clearCloud[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    const float clearDepth[4] = {
+        camera.GetFarPlane(), camera.GetFarPlane(), 0.0f, 0.0f
+    };
+    m_context->OMSetRenderTargets(2, targets, nullptr);
+    m_context->ClearRenderTargetView(targets[0], clearCloud);
+    m_context->ClearRenderTargetView(targets[1], clearDepth);
+    m_context->OMSetDepthStencilState(nullptr, 0);
+    m_context->RSSetState(nullptr);
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_cloudRenderWidth);
+    viewport.Height = static_cast<float>(m_cloudRenderHeight);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+
+    ID3D11PixelShader* shader =
+        stage9optimization::UsesReferenceShader(m_optimizationParameters)
+        ? m_cloudReferenceDataPs.Get() : m_cloudOptimizedDataPs.Get();
+    BindCloudRaymarchResources(shader);
+    m_context->Draw(3, 0);
+    UnbindCloudShaderResources(5);
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+}
+
+void Renderer::RenderCloudUpsamplePass(const Camera& camera,
+                                       float timeSeconds,
+                                       ID3D11RenderTargetView* targetOverride)
+{
+    UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
+    ID3D11RenderTargetView* target = targetOverride
+        ? targetOverride : m_backBufferRtv.Get();
+    const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
+    m_context->OMSetRenderTargets(1, &target, nullptr);
+    m_context->ClearRenderTargetView(target, clearColor);
+    m_context->OMSetDepthStencilState(nullptr, 0);
+    m_context->RSSetState(nullptr);
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+    m_context->IASetInputLayout(nullptr);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
+    m_context->PSSetShader(m_cloudUpsamplePs.Get(), nullptr, 0);
+    ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
+    m_context->PSSetConstantBuffers(0, 2, constantBuffers);
+    ID3D11Buffer* upsamplingBuffer = m_upsamplingCb.Get();
+    m_context->PSSetConstantBuffers(10, 1, &upsamplingBuffer);
+    ID3D11ShaderResourceView* resources[4] = {
+        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
+        m_cloudScatteringTransmittanceSrv.Get(),
+        m_cloudDepthSceneLimitSrv.Get()
+    };
+    m_context->PSSetShaderResources(0, 4, resources);
+    m_context->Draw(3, 0);
+    UnbindCloudShaderResources(4);
+}
+
 bool Renderer::CaptureCloudDiagnosticFrame(
     const Camera& camera, float timeSeconds, CloudDebugMode mode,
-    CloudDiagnosticFrame& frame)
+    CloudDiagnosticFrame& frame, bool forceDirectComposite)
 {
     frame = {};
     if (!m_device || !m_context || m_width <= 0 || m_height <= 0)
@@ -1094,7 +1377,17 @@ bool Renderer::CaptureCloudDiagnosticFrame(
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
     RenderDiagnosticScene(camera);
-    RenderCloudPass(camera, timeSeconds, targetRtv.Get());
+    if (!forceDirectComposite && (mode == CloudDebugMode::Composite ||
+        (static_cast<std::int32_t>(mode) >= 64 &&
+         static_cast<std::int32_t>(mode) <= 67)) && EnsureCloudTargets())
+    {
+        RenderCloudDataPass(camera, timeSeconds);
+        RenderCloudUpsamplePass(camera, timeSeconds, targetRtv.Get());
+    }
+    else
+    {
+        RenderCloudPass(camera, timeSeconds, targetRtv.Get());
+    }
     SetDebugMode(previousMode);
 
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -1143,6 +1436,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_cloudDomainParameters,
                           m_cloudLodParameters,
                           m_optimizationParameters, m_optimizationPreset,
+                          m_upsamplingParameters, m_resolutionPreset,
                           m_lightParameters, m_sunPreset, m_phasePreset,
                           m_environmentParameters, m_environmentPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
@@ -1271,7 +1565,20 @@ void Renderer::Render(Camera& camera, float timeSeconds)
 
     RenderDiagnosticScene(camera);
     m_frameProfiler.BeginCloudPass(m_context.Get());
-    RenderCloudPass(camera, effectiveTime);
+    const CloudDebugMode debugMode = DebugMode();
+    if ((debugMode == CloudDebugMode::Composite ||
+        (static_cast<std::int32_t>(debugMode) >= 64 &&
+         static_cast<std::int32_t>(debugMode) <= 67)) && EnsureCloudTargets())
+    {
+        RenderCloudDataPass(camera, effectiveTime);
+        m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
+        RenderCloudUpsamplePass(camera, effectiveTime);
+    }
+    else
+    {
+        RenderCloudPass(camera, effectiveTime);
+        m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
+    }
     m_frameProfiler.EndCloudPass(m_context.Get());
     if (m_captureFrameHashes)
         CaptureCloudFrameHash();
@@ -1295,6 +1602,10 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                                   m_cloudLodParameters,
                                   m_optimizationParameters,
                                   m_optimizationPreset,
+                                  m_upsamplingParameters,
+                                  m_resolutionPreset,
+                                  m_cloudRenderWidth,
+                                  m_cloudRenderHeight,
                                   m_lightParameters,
                                   m_sunPreset,
                                   m_phasePreset,
@@ -1514,6 +1825,27 @@ void Renderer::ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset)
         m_lightParameters.maxLightSteps, m_lightParameters.lightStepSize,
         m_cloudParameters.transmittanceThreshold);
     m_optimizationPreset = preset;
+}
+
+void Renderer::ApplyStage10ResolutionPreset(
+    Stage10ResolutionPreset preset)
+{
+    if (preset == Stage10ResolutionPreset::Custom)
+        return;
+    stage10upsampling::ApplyResolutionPreset(
+        m_upsamplingParameters, preset);
+    m_upsamplingParameters = stage10upsampling::Sanitize(
+        m_upsamplingParameters);
+    m_resolutionPreset = preset;
+    m_frameProfiler.ResetMeasurements();
+}
+
+void Renderer::SetStage10UpsampleFilter(Stage10UpsampleFilter filter)
+{
+    m_upsamplingParameters.filterMode = static_cast<std::uint32_t>(filter);
+    m_upsamplingParameters = stage10upsampling::Sanitize(
+        m_upsamplingParameters);
+    m_frameProfiler.ResetMeasurements();
 }
 
 void Renderer::ConfigureStage9ConeForValidation(std::uint32_t taps,
@@ -2058,6 +2390,8 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
         root, m_cloudParameters, m_cloudShapeParameters, m_cloudDomainParameters,
         m_cloudLodParameters,
         m_optimizationParameters, m_optimizationPreset,
+        m_upsamplingParameters, m_resolutionPreset,
+        m_cloudRenderWidth, m_cloudRenderHeight,
         m_lightParameters, m_sunPreset, m_phasePreset,
         m_environmentParameters, m_environmentPreset, m_weatherPreset,
         m_cloudTypeMode,

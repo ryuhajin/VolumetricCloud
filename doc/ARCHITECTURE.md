@@ -8,6 +8,9 @@ Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포�
 단계 9는 이 평면층 승인 기준을 별도 Reference PS로 보존한 채 View 공백 탐색·조기 종료와
 deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Balanced를 일반 시작
 기본값으로 승인했으며 Reference PS는 이후 단계의 회귀 비교용으로 유지한다.
+단계 10은 단계 9 Balanced를 유지하면서 구름 적분 결과를 저해상도 MRT에 기록하고,
+Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스로 분리했다. 사용자 승인 전
+시작 해상도는 Full이며 temporal history는 만들지 않는다.
 
 ## 모듈과 책임
 
@@ -15,16 +18,17 @@ deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Bala
 |---|---|
 | `Window` / `Camera` | Win32 입력, 숫자 0~9·F1~F8, 오빗/휠, WASD·Shift rig 이동, FOV·현재/저장 시점과 view/projection 제공 |
 | `Renderer` | D3D11 장치, 10km 지면·20층 건물, compute noise, 구름·Noise Lab 패스와 테스트 전용 legacy fixture |
-| `NoiseLab` | F1 외형/Noise/Optimization, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 31 snapshot 내보내기 |
+| `NoiseLab` | F1 외형/Noise/Optimization/Upsampling, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 32 snapshot 내보내기 |
 | `CloudAppearance` | Dense Mixed/Stratus/Cumulus 외형 계약, F1 요청값 0~3 공통 디코딩, Physical density CPU 기준, schema 29 Custom 원자 저장·엄격 로드 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
 | `CloudLodParameters` | 16바이트 Detail 거리 LOD 시작·끝과 실제 volume 중립 평균 |
 | `OptimizationParameters` | 64바이트 b9 View/Light 후보와 Balanced~Fine Reference 활성 preset; Fast/4× 값은 실패 이력·schema 호환용 보존 |
+| `Stage10UpsamplingParameters` | 32바이트 b10 해상도 비율, 공간 필터와 Scene/Cloud/T 경계 가중치 |
 | `CloudShapeParameters` | 64바이트 Legacy/Weather Physical 모드, 타입별 두께와 세로 프로파일 |
 | `CloudDomainParameters` | AABB/평면층 선택, 구름 고도·두께와 View/Light 추적 제한 |
 | `LightParameters` | 80바이트 태양·Light Ray·외곽 범위 Dual-lobe Phase 설정 |
 | `EnvironmentParameters` | 80바이트 하늘·지면·태양 차폐 AO·다중 산란 설정 |
-| `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, EMA 성능 통계 |
+| `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, Cloud Raymarch/Upsample/Total 분리 EMA |
 | `WeatherMap` | 256² RGBA8 Uniform 회귀/Periodic Perlin/Channel Debug 픽셀 생성과 해시, 공통 `CloudTypeMode` |
 | `DiagnosticScene.hlsl` | 평면·박스의 불투명 색상과 장치 깊이 출력 |
 | `Ray.hlsli` | 평행축 0 나누기를 피하는 slab Ray-AABB 교차 |
@@ -32,7 +36,7 @@ deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Bala
 | `LightParameters.hlsli` / `CloudLighting.hlsli` | 공유 80바이트 조명 설정과 Base-only Light Ray·외곽 응답 |
 | `PhaseFunction.hlsli` | 방향 부호를 고정한 전방·후방 HG, raw 진단과 LDR 적용 배율 분리 |
 | `CloudEnvironment.hlsli` | 높이 환경광, 밀도 AO와 광학 깊이 재사용 octave |
-| `VolumetricClouds.hlsl` / `NoiseLab.hlsl` | Beer-Lambert 구름 합성 / XY·XZ·YZ 단면 출력 |
+| `VolumetricClouds.hlsl` / `CloudUpsample.hlsl` | Beer-Lambert 구름 MRT 출력 / Full-resolution 공간 복원·장면 합성 |
 | `Stage1VolumeMath.h` | GPU와 독립적으로 같은 경계 조건과 투과율을 검사하는 CPU 기준 구현 |
 | `Stage2NoiseMath.h` | value noise, coverage와 바람 좌표의 CPU 기준 구현 |
 | `Stage3HeightMath.h` | 정규화 높이, 상·하단 smoothstep과 밀도 결합의 CPU 기준 구현 |
@@ -48,6 +52,7 @@ deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Bala
 | `Stage13SceneMath.h` | 10km 지면·20×60×20m 건물·50km 지원 반경, 입력·이동·숫자 Debug 매핑 기준 |
 | `Stage13OpticsLightingMath.h` | km Beer-Lambert, Light sampling 후보와 Detail LOD CPU 기준 |
 | `Stage9OptimizationMath.h` | 가변 View 구간, coarse 되감기와 weighted cone CPU 기준 |
+| `Stage10UpsamplingMath.h` | 축 해상도, 픽셀 중심 UV, opacity 가중 깊이와 joint weight CPU 기준 |
 | `NoiseVolumeCache.h` | 테스트 전용 cache header·parameter/payload hash와 손상 거부 |
 | `Stage13CloudDomainMath.h` | 평면층의 아래·내부·위·수평·깊이 제한 교차 CPU 기준 |
 
@@ -57,7 +62,8 @@ deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Bala
    `R16G16B16A16_FLOAT` 색상 타깃과 `D32_FLOAT` 깊이에 항상 렌더링한다. linear RGB는
    지면 `(0.10,0.14,0.12)`, 건물 `(0.02,0.025,0.035)`이다.
 2. 깊이 타깃을 DSV에서 해제하고 `R32_FLOAT` SRV로 전환한다.
-3. 풀스크린 삼각형이 장면 색상과 깊이를 읽어 월드 레이, 월드 위치와 장면 거리를 복원한다.
+3. 선택한 구름 해상도(50/67/75/100% 축)의 풀스크린 삼각형이 Full-resolution 장면 깊이를
+   읽어 월드 레이, 월드 위치와 장면 거리를 복원한다.
 4. 일반 실행은 Open World와 `Texture3D`를, 자동 회귀는 기존 AABB/13-2와
    `ProceduralLegacy`와 Legacy shape mode를 b1/b3/b5/b6/b7에 넣는다.
 5. DomainCB 선택에 따라 AABB 또는 Y 평면층의 진입·이탈 거리를 구하고 Scene Depth와
@@ -68,7 +74,12 @@ deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Bala
 7. 월드 XZ로 Weather Map R/G/B/A를 읽고 A/G로 타입별 물리 두께를 정한다. 13-4E는
    Weather를 `support`와 70~100%의 완만한 수평 coverage로 분리하고, footprint는 threshold에
    20%만 반영한다. 세로 profile은 threshold가 아니라 최종 Base 밀도에 정확히 한 번 곱한다.
-8. Weather Base가 있을 때만 Detail Noise로 깎는다.
+8. Weather Base가 있을 때만 Detail Noise로 깎고, View 적분 결과를 MRT0
+   `RGBA16_FLOAT(scattering.rgb,T)`와 MRT1 `RG32_FLOAT(opacity-weighted cloud depth,
+   source scene limit)`에 기록한다.
+9. Full-resolution `CloudUpsample.hlsl`가 Nearest/Bilinear/Joint4/Joint9 중 선택한 공간
+   필터로 MRT를 복원한다. Joint는 불투명/하늘 분류, Scene Depth, Cloud Depth와 T 차이를
+   가중치로 사용하며 전부 거부되면 물체는 투명 구름, 하늘은 최근접 표본으로 폴백한다.
 
 ## 단계 13-4D 단일 씬 런타임 계약
 
@@ -89,7 +100,9 @@ Depth, Accumulated Direct, View Transmittance, Light Transmittance다. 기존 HL
 삭제했으며 CPU에서 Composite로 sanitize한다. CloudCB는 여전히 128바이트다.
 
 13-4D 내보내기는 schema 28, 13-4E 전체 snapshot은 schema 29, 13-5는 schema 30이었다.
-단계 9 전체 snapshot은 schema 31/`implementationStage=9`이며 `optimization` preset과 b9 값을 기록한다.
+단계 9 전체 snapshot은 schema 31이었다. 단계 10 전체 snapshot은 schema 32/
+`implementationStage=10`이며 기존 `optimization`과 함께 `upsampling` preset, b10 값과 실제
+구름 타깃 크기를 기록한다.
 13-4E Custom 외형 전용 원자 저장 파일은 schema 29를 유지한다. snapshot은 `sceneContract`, 현재/저장 카메라,
 `cloudTypeMode`, `openWorldPipelinePreset`을 기록하며 `cloudScene`, `domainStates`,
 `stage13Preset`, `similarityScale`, `diagnosticSceneEnabled`와 Stage1/2/4 preset 상태는
@@ -117,19 +130,20 @@ F1 `Cloud Type Settings`는 Dense Mixed Default, Stratus, Cumulus, Custom과
 Pipeline Compare 버튼으로 들어간 1~5 단계의 main cloud pass만 effective time `0`을 사용한다.
 카메라·도메인·일반 Animation 상태는 그대로이며 외형 버튼이나 파라미터 편집으로 Compare를
 벗어나면 정상 effective time으로 즉시 돌아간다.
-9. 최종 밀도가 있는 View 표본에서 태양 방향 도메인 이탈까지 Base Density를 적분한다.
-10. 카메라→표본과 표본→태양 방향으로 Phase를 계산하고 `Tsun` 기반 표면 마스크로 외곽 적용 범위를 제한한다.
-11. 높이·밀도 AO에 `Tsun` 차폐를 결합하고 다중 산란을 태양 차폐 내부 쪽으로 이동시킨다.
-12. Direct/Sky/Ground/Multiple을 같은 View 구간에 누적하고 배경과 합성한다.
-13. RGB peak 0.8 위만 LDR highlight shoulder로 압축해 UNORM 흰색 clip을 막는다.
-14. 개발 UI가 열린 F1~F4 독립 창과 성능 오버레이를 그리고, F1이 열렸을 때만 Noise Lab 단면을 갱신한다.
-14. GPU Frame timestamp를 닫은 뒤 VSync 설정에 따라 Present한다.
+10. 최종 밀도가 있는 View 표본에서 태양 방향 도메인 이탈까지 Base Density를 적분한다.
+11. 카메라→표본과 표본→태양 방향으로 Phase를 계산하고 `Tsun` 기반 표면 마스크로 외곽 적용 범위를 제한한다.
+12. 높이·밀도 AO에 `Tsun` 차폐를 결합하고 다중 산란을 태양 차폐 내부 쪽으로 이동시킨다.
+13. Direct/Sky/Ground/Multiple을 같은 View 구간에 누적하고 opacity 기여도로 대표 깊이를 계산한다.
+14. 업샘플 결과를 배경과 합성하고 RGB peak 0.8 위만 LDR highlight shoulder로 압축한다.
+15. 개발 UI와 성능 오버레이를 그린 뒤 GPU Frame timestamp를 닫고 Present한다.
 
 ## 프레임 성능 계측
 
 `FrameProfiler`의 CPU 범위는 `Renderer::Render` 시작부터 `Present` 반환까지라서 VSync 대기를
 포함한다. GPU Frame 범위는 진단 장면 직전부터 ImGui draw 직후까지이며 Present는 포함하지
-않는다. GPU Cloud는 그 안의 `RenderCloudPass`만 측정한다.
+않는다. GPU Cloud Total은 `RenderCloudDataPass + RenderCloudUpsamplePass`이며 중간 timestamp로
+`Cloud Raymarch`와 `Upsample/Composite`를 따로 표시한다. 구형 `GPU Cloud` 필드와 원시 표본은
+호환을 위해 두 패스의 합을 뜻한다.
 
 GPU 시간은 8개 query 슬롯을 순환하며 완료된 과거 프레임만
 `D3D11_ASYNC_GETDATA_DONOTFLUSH`로 읽는다. 준비되지 않은 query 때문에 CPU나 GPU를 기다리지
@@ -307,6 +321,20 @@ Executed View Samples, Skipped Distance, Early Exit Savings, Support Precheck Sk
 숫자 0~9 단축키 표는 바꾸지 않는다. Cone Far Fraction은 탭 수가 같아 계산량이 같은
 `75/77/85/95%` 비교 버튼이며, 자동 스윕에서 4°→3°→2°와 77% 순으로 올린 첫 합격값을
 Balanced에 반영했다.
+
+### `Stage10UpsamplingParameters` / `UpsamplingCB` (`b10`, 32바이트)
+
+| 묶음 | 필드 | 시작값과 역할 |
+|---|---|---|
+| 0 | `resolutionScale`, `upsampleFilterMode`, `sceneDepthRelativeSigma`, `cloudDepthRelativeSigma` | `1.0`, Joint4, `0.0025`, `0.01`; 축 해상도와 Scene/Cloud 상대 깊이 가중치 |
+| 1 | `transmittanceSigma`, `minimumUpsampleWeight`, padding 2개 | `0.1`, `1e-4`, `0`, `0`; T 차이와 후보 거부 하한 |
+
+F1 Resolution은 `50% → 67% → 75% → Full`, Filter는 `Nearest → Bilinear → Joint4 →
+Joint9`로 비용순이다. Full에서는 동일한 MRT/resolve 형식을 사용하되 1:1 최근접 복원으로
+단계 9 직접 합성과 비교한다. 저해상도 타깃은 선택한 크기 한 벌만 만들며 리사이즈나 preset
+변경 시 원자적으로 다시 만든다. 새 디버그 ID 64~67은 Low-resolution Grid, Scene Rejection,
+Cloud Depth Weight, Transmittance Weight이고 숫자 0~9 매핑은 그대로다. temporal jitter,
+history와 reprojection은 단계 11 범위다.
 
 ### `LightParameters` / `LightCB` (`b3`, 80바이트)
 
