@@ -1743,8 +1743,8 @@ bool Renderer::ApplyStage13OpenWorldPreset()
         "Deterministic Dense Mixed default applied (saved Custom not auto-applied)";
     m_pipelineComparisonActive = false;
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::FullOpenWorld;
-    // 단계 9 사용자 비교가 끝나기 전까지 단계 13 승인 화질을 시작 기준으로 쓴다.
-    ApplyStage9OptimizationPreset(Stage9OptimizationPreset::ApprovedReference);
+    // 2026-08-19 승인한 단계 9의 가장 싼 화질·성능 합격 후보를 기본으로 쓴다.
+    ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
     return true;
 }
 

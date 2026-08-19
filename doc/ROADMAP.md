@@ -29,10 +29,10 @@
 중단된 단계 13 v1은 `feature/large-planar-cloud-layer`와 `stage13-paused-20260810`에
 보관한다. 새 구현은 코드를 병합하지 않고 수식·테스트·실패 기록만 참고한다.
 
-## 현재 목표: 단계 9 기본 최적화
+## 현재 목표: 단계 10 저해상도·업샘플링
 
-- [ ] 단계 9: View Weather/Base precheck, empty-space skip, View early exit, 거리별 step과
-  deterministic Light cone — Fast/4× 탈락과 Dense 버튼 복구 후 Balanced 사용자 재검증 대기
+- [x] 단계 9: View Weather/Base precheck, empty-space skip, View early exit, 거리별 step과
+  deterministic Light cone — Balanced 기본값, 2026-08-19 사용자 승인
 - [ ] 단계 10: 저해상도 구름 타깃과 depth/transmittance-aware 업샘플링
 - [ ] 단계 11: Jitter, Temporal Reprojection과 history rejection
 - [ ] 단계 12: Cloud Shadow Map과 Light Cache

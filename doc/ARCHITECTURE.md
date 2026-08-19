@@ -6,7 +6,8 @@ Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포�
 대비를 13-4E Dense Broken-Sky로 교체했다. 13-5는 기존 Light Ray 예산을 유지한 채
 태양 노출 표면에 Phase를 제한하고 환경광을 자기 그림자에 결합했으며 2026-08-17 승인됐다.
 단계 9는 이 평면층 승인 기준을 별도 Reference PS로 보존한 채 View 공백 탐색·조기 종료와
-deterministic Light cone 후보를 Optimized PS에 추가한다.
+deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Balanced를 일반 시작
+기본값으로 승인했으며 Reference PS는 이후 단계의 회귀 비교용으로 유지한다.
 
 ## 모듈과 책임
 

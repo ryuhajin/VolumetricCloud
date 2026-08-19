@@ -355,7 +355,7 @@ private:
     CloudLodParameters m_cloudLodParameters;
     OptimizationParameters m_optimizationParameters;
     Stage9OptimizationPreset m_optimizationPreset =
-        Stage9OptimizationPreset::ApprovedReference;
+        Stage9OptimizationPreset::Balanced;
     std::uint64_t m_baseNoiseVolumeHash = 0;
     std::uint64_t m_detailNoiseVolumeHash = 0;
     double m_noiseVolumeGenerationMilliseconds = 0.0;

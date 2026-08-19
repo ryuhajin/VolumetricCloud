@@ -123,7 +123,7 @@ F1/F3의 Debug View 콤보에는 추가 진단이 있다. `Typed Shape Profile`�
 
 F1 `Optimization`의 Master는 여러 행을 한 번에 안전한 조합으로 맞춘다. 개별 행의 버튼은
 누른 행만 바꾸고 상태를 `Custom`으로 만들기 때문에, 성능 비교를 시작할 때는 먼저 Master를
-눌러 기준을 초기화한다. 일반 시작은 단계 9 사용자 승인 전까지 `Approved Reference`다.
+눌러 기준을 초기화한다. 2026-08-19 단계 9 승인 뒤 일반 시작은 `Balanced`다.
 
 ### 7.1 Master preset
 
@@ -133,9 +133,9 @@ Fine Reference는 실시간 후보가 아니므로 이 측정에서 의도적으
 
 | Master 버튼 | View / Light 핵심 설정 | 용도 | 7장면 GPU Cloud p95 |
 |---|---|---|---|
-| Balanced | Search 2×, Exit 1%, `100→150m`, Cone 6·2°·77% | 자동 화질·성능을 통과한 가장 싼 실시간 후보 | `7.44~9.41ms`, 최대 `9.41ms` |
-| Conservative | Search 2×, Exit 0.5%, `100m fixed`, Cone 12 | 품질 여유가 더 큰 비교 후보 | `6.88~16.73ms`, 최대 `16.73ms` |
-| Approved Reference | 최적화 Off, `512×100m`, Straight `80×250m` | 단계 13 승인 화면과 비교하는 기준 | `11.22~25.33ms`, 최대 `25.33ms` |
+| Balanced | Search 2×, Exit 1%, `100→150m`, Cone 6·2°·77% | 자동 화질·성능을 통과한 가장 싼 실시간 후보 | 동결 재측정 `7.89~9.89ms`, 최대 `9.89ms` |
+| Conservative | Search 2×, Exit 0.5%, `100m fixed`, Cone 12 | 품질 여유가 더 큰 비교 후보 | 동결 재측정 `8.14~16.78ms`, 최대 `16.78ms` |
+| Approved Reference | 최적화 Off, `512×100m`, Straight `80×250m` | 단계 13 승인 화면과 비교하는 기준 | 동결 재측정 `12.01~26.72ms`, 최대 `26.72ms` |
 | Fine Reference | 최적화 Off, `1024×50m`, Straight `320×62.5m` | 오프라인 화질 정답 생성 | 실시간 성능 측정 제외, 매우 무거움 |
 
 버튼 순서는 계산 예산 기준이다. 실제 GPU ms는 장면의 빈 공간, 조기 종료와 측정 변동 때문에
@@ -218,4 +218,4 @@ main pass의 샘플 time만 0으로 고정하므로 바람 때문에 위치가 �
 - [ ] Fine Reference와 Straight 320 Fine은 오프라인 기준임을 이해하고 일반 플레이 후보로 사용하지 않는다.
 
 13-4E 렌더와 새 Dense Mixed F6 기준 13-5는 2026-08-17 승인됐다. 구형 shell은 제외했고 단계 9
-Balanced 사용자 최종 승인을 기다린다.
+Balanced는 Dense 버튼 복구와 Fast/4× 탈락 재검증 뒤 2026-08-19 최종 승인됐다.

@@ -178,7 +178,7 @@ Direct/Silver MAE는 `0.03554698/0.03117338`로 태양 방향이 밀도 광학�
 Approved Reference View와 `62.5m/320` Fine Light를 만든 뒤 Balanced/Conservative와
 Final Density, View τ, Light T를 비교한다. SSIM/RMSE와 Light MAE/P99를 보고하고 모든
 픽셀이 finite인지 gate로 검사한다. Dense와 Stratus Reference Final Density가 실제로 다른지도
-회귀하며 미적 승인 전에는 실행 상태를 Approved Reference로 되돌린다.
+회귀한다. 측정이 끝나면 실행 상태를 2026-08-19 승인 기본값인 Balanced로 되돌린다.
 
 정식 성능 명령은 Release 실행 파일의 `--stage9-performance-test`다. 1920×1080,
 VSync/UI/preview Off, time 0, 120-frame 워밍업 뒤 장면별 원시 GPU timestamp 600개를 모은다.
@@ -194,7 +194,8 @@ Light T 화질 reference로만 사용한다.
 
 후보 gate는 GPU Cloud p95 `10ms` 이하, Cumulus Horizon이 Approved Reference보다 15% 이상
 빠름, 나머지 장면 p95 회귀 3% 이하를 동시에 요구한다. 이 자동 gate와 사용자 렌더 검증을
-모두 통과하기 전에는 가장 싼 후보를 시작 기본값으로 자동 승격하지 않는다.
+모두 통과하기 전에는 가장 싼 후보를 시작 기본값으로 자동 승격하지 않는다. Balanced는 자동
+gate와 2026-08-19 사용자 렌더 검증을 모두 통과해 단계 9 시작 기본값으로 승인됐다.
 
 2026-08-17 RTX 4080 SUPER/드라이버 `32.0.15.9186` 측정에서 자동 합격 Balanced
 (`6탭/2°/원거리 77%`)의 2026-08-19 재측정 일곱 장면 p95는
@@ -208,3 +209,13 @@ Final Density/View τ도 SSIM 0.99, RMSE 0.01 기준을 통과했다.
 등고선이 생겨 화질 탈락했다. 이전 자동 결과도 Fast View SSIM이 Dense/Stratus/Cumulus
 `0.73/0.70/0.61`로 기준에 미달했다. 이후 측정 산출물과 합격 판정에는 Fast를 포함하지 않고
 Balanced를 가장 왼쪽 실시간 후보로 사용한다.
+
+2026-08-19 최종 승인 뒤 일반 실행과 Full Open World 복원은 Balanced로 시작한다. Approved
+Reference와 Fine Reference는 F1의 Advanced Comparison에 남아 단계 10 이후에도 화질·비용
+회귀 기준으로 사용한다.
+
+승인 커밋 직전 같은 조건으로 다시 수집한 동결 측정에서 Balanced 일곱 장면 p95는
+`9.89/9.04/9.65/9.78/9.41/9.02/7.89ms`, 최대 `9.89ms`로 10ms gate를 유지했다.
+Cumulus Horizon은 같은 실행의 Reference `21.01ms` 대비 `9.78ms`로 약 `53.5%` 빨랐다.
+앞의 `8.64ms`와 최대 `9.41ms`는 사용자 승인 시점 기록이며, 두 측정 모두 같은 어댑터·드라이버와
+품질/성능 gate를 통과했다.

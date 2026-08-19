@@ -739,6 +739,10 @@ Accumulated Direct/Composite MAE는 각각 `0.00036347`/`0.00070073`으로 목�
 단계 13 승인값 `100m/512 View`, `250m/80 Straight Light`는 `mainReference`에 그대로 남는다.
 `mainOptimized`만 다음 순서로 비용을 줄인다.
 
+2026-08-19 사용자 승인 기본값은 Balanced이며 `2×` empty search, `1%` early exit,
+`100→150m` 거리 step과 `6탭/2°/원거리 77%` cone을 사용한다. Reference는 시작값이 아니라
+이후 저해상도·temporal 단계의 정확도 비교 기준이다.
+
 1. Weather, 로컬 높이와 타입 세로 profile 중 Base 식에 곱해지는 값이 정확히 0이면
    Base/Detail Texture3D를 읽지 않는다. 0이 아닐 때는 같은 Weather 표본과 새 Base 표본을
    `ComposeBaseCloudDensity`에 넣어 Weather를 두 번 읽지 않는다.

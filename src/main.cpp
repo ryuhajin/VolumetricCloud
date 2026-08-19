@@ -532,6 +532,7 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
     renderer.SetVSyncEnabled(false);
     renderer.SetOpaqueSceneForTest(false);
     if (!renderer.ApplyStage13OpenWorldPreset() ||
+        renderer.OptimizationPreset() != Stage9OptimizationPreset::Balanced ||
         !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus) ||
         renderer.AppearancePreset() != CloudAppearancePreset::Stratus ||
         !renderer.ApplyCloudAppearancePreset(
@@ -763,9 +764,9 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
     json << "  ]\n}\n";
     if (!csv.good() || !json.good())
         return 7;
-    // 사용자 렌더 승인 전에는 승인 기준을 시작값으로 되돌린다.
+    // 자동 측정 뒤에는 2026-08-19 사용자 승인 기본값으로 되돌린다.
     renderer.ApplyStage9OptimizationPreset(
-        Stage9OptimizationPreset::ApprovedReference);
+        Stage9OptimizationPreset::Balanced);
     return finitePassed && !renderer.HasDebugLayerErrors() ? 0 : 1;
 }
 
@@ -1040,6 +1041,9 @@ int RunStage13OpticsLightingSmokeTest(Renderer& renderer, Camera& camera)
     renderer.SetOpaqueSceneForTest(false);
     if (!renderer.ApplyStage13OpenWorldPreset())
         return 2;
+    // 단계 13의 광학 계약은 단계 9 생략 경로가 아닌 승인 Reference로 검사한다.
+    renderer.ApplyStage9OptimizationPreset(
+        Stage9OptimizationPreset::ApprovedReference);
 
     camera.SetClipPlanes(
         stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
@@ -1882,6 +1886,9 @@ int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
     renderer.SetOpaqueSceneForTest(false);
     if (!renderer.ApplyStage13OpenWorldPreset())
         return 2;
+    // 단계 13의 CPU↔HLSL 형상 계약은 단계 9 생략 경로가 아닌 승인 Reference로 검사한다.
+    renderer.ApplyStage9OptimizationPreset(
+        Stage9OptimizationPreset::ApprovedReference);
     camera.SetClipPlanes(0.1f, 60000.0f);
     camera.SetOrbit(0.0f, 0.0f, 32000.0f,
                     { 0.0f, 4500.0f, 0.0f });
@@ -2136,6 +2143,8 @@ int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
     }
     if (!renderer.ApplyStage13OpenWorldPreset())
         return 14;
+    renderer.ApplyStage9OptimizationPreset(
+        Stage9OptimizationPreset::ApprovedReference);
 
     // Periodic Weather는 실제 두께 분산을 검증한다. 타입별 옆면 면적은 화면에
     // Stratus/Mixed/Cumulus 띠가 모두 보장되는 Channel Debug를 별도 측면에서 잰다.
