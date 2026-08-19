@@ -15,10 +15,10 @@ deterministic Light cone 후보를 Optimized PS에 추가한다.
 | `Window` / `Camera` | Win32 입력, 숫자 0~9·F1~F8, 오빗/휠, WASD·Shift rig 이동, FOV·현재/저장 시점과 view/projection 제공 |
 | `Renderer` | D3D11 장치, 10km 지면·20층 건물, compute noise, 구름·Noise Lab 패스와 테스트 전용 legacy fixture |
 | `NoiseLab` | F1 외형/Noise/Optimization, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 31 snapshot 내보내기 |
-| `CloudAppearance` | Dense Mixed/Stratus/Cumulus 외형 계약, Physical density CPU 기준, schema 29 Custom 원자 저장·엄격 로드 |
+| `CloudAppearance` | Dense Mixed/Stratus/Cumulus 외형 계약, F1 요청값 0~3 공통 디코딩, Physical density CPU 기준, schema 29 Custom 원자 저장·엄격 로드 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
 | `CloudLodParameters` | 16바이트 Detail 거리 LOD 시작·끝과 실제 volume 중립 평균 |
-| `OptimizationParameters` | 64바이트 b9 View/Light 후보와 Fast~Fine Reference preset |
+| `OptimizationParameters` | 64바이트 b9 View/Light 후보와 Balanced~Fine Reference 활성 preset; Fast/4× 값은 실패 이력·schema 호환용 보존 |
 | `CloudShapeParameters` | 64바이트 Legacy/Weather Physical 모드, 타입별 두께와 세로 프로파일 |
 | `CloudDomainParameters` | AABB/평면층 선택, 구름 고도·두께와 View/Light 추적 제한 |
 | `LightParameters` | 80바이트 태양·Light Ray·외곽 범위 Dual-lobe Phase 설정 |
@@ -292,12 +292,16 @@ Similarity 프리셋은 LOD를 꺼 상사 회귀 화면을 보존한다.
 | 3 | `lightSamplingMode`, `coneSampleCount`, `coneAngleDegrees`, `lightFarSampleFraction` | 초기 fallback은 Straight, `6`, `3°`, `0.85`; 자동 합격 Balanced는 Cone `6`, `2°`, `0.77` |
 
 `Approved Reference`와 `Fine Reference`는 모든 View 최적화가 Off이고 Straight Light라서
-`mainReference`를 선택한다. Fast/Balanced/Conservative와 개별 Custom 조합은
+`mainReference`를 선택한다. Balanced/Conservative와 개별 Custom 조합은
 `mainOptimized`를 선택한다. Debug에서도 Reference는 `/Od`, 동적 Optimized는 실제 비용과
 D3D11 instruction 한도를 위해 `/O1`로 컴파일한다. 두 PS와 나머지 셰이더가 모두 성공해야
 핫 리로드 세대가 교체된다.
 
-F1 Optimization의 각 행은 왼쪽에서 오른쪽으로 계산량이 증가한다. 새 디버그 ID 60~63은
+F1 Optimization의 활성 Master는 Balanced → Conservative → Approved Reference → Fine
+Reference, Empty Search는 2× → Off 순서다. Fast와 4×는 2026-08-19 사용자 검증에서
+400m deterministic 표본의 등고선 alias가 확인되어 활성 UI와 자동 후보에서 제외했다.
+enum `Fast=0`과 4× preset 값은 schema 31 숫자와 실패 이력 재현을 위해서만 유지한다.
+새 디버그 ID 60~63은
 Executed View Samples, Skipped Distance, Early Exit Savings, Support Precheck Skip이며
 숫자 0~9 단축키 표는 바꾸지 않는다. Cone Far Fraction은 탭 수가 같아 계산량이 같은
 `75/77/85/95%` 비교 버튼이며, 자동 스윕에서 4°→3°→2°와 77% 순으로 올린 첫 합격값을

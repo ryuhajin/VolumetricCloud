@@ -57,6 +57,30 @@ Occupancy MeasureOccupancy(const CloudAppearanceSettings& appearance)
 
 int main()
 {
+    CloudAppearancePreset decoded = CloudAppearancePreset::CustomUnsaved;
+    const CloudAppearancePreset selectable[] = {
+        CloudAppearancePreset::DenseMixedDefault,
+        CloudAppearancePreset::Stratus,
+        CloudAppearancePreset::Cumulus,
+        CloudAppearancePreset::Custom,
+    };
+    for (CloudAppearancePreset expected : selectable)
+    {
+        decoded = CloudAppearancePreset::CustomUnsaved;
+        if (!TryDecodeCloudAppearancePresetRequest(
+                static_cast<int>(expected), decoded) || decoded != expected)
+            Fail("selectable appearance request did not decode");
+    }
+    decoded = CloudAppearancePreset::Stratus;
+    if (TryDecodeCloudAppearancePresetRequest(-1, decoded) ||
+        decoded != CloudAppearancePreset::Stratus ||
+        TryDecodeCloudAppearancePresetRequest(
+            static_cast<int>(CloudAppearancePreset::CustomUnsaved), decoded) ||
+        decoded != CloudAppearancePreset::Stratus ||
+        TryDecodeCloudAppearancePresetRequest(99, decoded) ||
+        decoded != CloudAppearancePreset::Stratus)
+        Fail("invalid appearance request must be rejected without mutation");
+
     const CloudAppearanceSettings dense = DenseMixedAppearance();
     const CloudAppearanceSettings stratus = StratusAppearance();
     const CloudAppearanceSettings cumulus = CumulusAppearance();

@@ -129,3 +129,5 @@ camera/light에서 두께와 profile만 뚜렷하게 비교하며 Custom은 sche
 - 단계 9에서는 early exit와 coarse march만 다루고 저해상도와 temporal은 단계 10~11까지 미룬다.
 - 2026-08-17 자동 후보 측정에서 Balanced `6탭/2°/원거리 77%`가 세 외형 화질 gate와
   1080p 일곱 장면 성능 gate를 통과했다. 사용자 화면 승인 전에는 Reference 시작값을 유지한다.
+- 2026-08-19 사용자 검증에서 Fast/Empty Search 4×는 400m 표본 alias로 탈락했고 활성
+  후보에서 제거했다. Dense 버튼 요청 경계도 복구했으며 Balanced 화면 재검증을 기다린다.

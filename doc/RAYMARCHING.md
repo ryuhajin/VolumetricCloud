@@ -752,6 +752,11 @@ Accumulated Direct/Composite MAE는 각각 `0.00036347`/`0.00070073`으로 목�
 각 실제 구간 길이 `Δs_i`를 사용하므로 균일 밀도에서는 가변 분할도
 `T = exp(-rho × sigma_t × sum(Δs_i))`와 같다.
 
+4× Search의 400m deterministic midpoint는 Base Texture3D의 최단 파장 약 522m를
+Nyquist 조건보다 성기게 읽는다. 2026-08-19 사용자 검증에서 카메라 중심의 거리 껍질과
+coarse/full 전환이 등고선·물결무늬로 드러났으므로 Fast/4×는 탈락했다. 활성 최저 비용은
+최대 200m인 Balanced/2×이며 4× 구현은 schema 31과 실패 이력 재현에만 남긴다.
+
 Light cone은 시간 jitter 없이 고정 golden angle `2.39996323 rad`를 사용한다. 5/6/8/12개
 구간을 근거리 쪽에 `pow(x,1.5)`로 모으고 마지막 표본이 나머지 거리를 담당한다. 각 표본은
 담당 길이 `w_i`를 곱하므로 `tau_light = sigma_t × sum(rho_i × w_i)`이고

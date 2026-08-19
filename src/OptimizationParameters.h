@@ -9,6 +9,7 @@
 
 enum class Stage9OptimizationPreset : std::uint32_t
 {
+    // schema 31 숫자와 실패 이력 재현용으로 보존한다. 활성 F1/자동 후보에서는 제외한다.
     Fast = 0,
     Balanced = 1,
     Conservative = 2,

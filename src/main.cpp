@@ -536,7 +536,9 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
         renderer.AppearancePreset() != CloudAppearancePreset::Stratus ||
         !renderer.ApplyCloudAppearancePreset(
             CloudAppearancePreset::DenseMixedDefault) ||
-        renderer.AppearancePreset() != CloudAppearancePreset::DenseMixedDefault)
+        renderer.AppearancePreset() != CloudAppearancePreset::DenseMixedDefault ||
+        !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus) ||
+        renderer.AppearancePreset() != CloudAppearancePreset::Stratus)
         return 2;
 
     camera.SetClipPlanes(
@@ -562,7 +564,6 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
         float angleOverride;
         float farFractionOverride;
     } candidates[] = {
-        { "Fast", Stage9OptimizationPreset::Fast, 0u, 0.0f, 0.0f },
         { "Balanced", Stage9OptimizationPreset::Balanced, 0u, 0.0f, 0.0f },
         { "BalancedCone8", Stage9OptimizationPreset::Balanced, 8u, 3.0f, 0.85f },
         { "BalancedCone12", Stage9OptimizationPreset::Balanced, 12u, 3.0f, 0.85f },
@@ -570,6 +571,8 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
     };
 
     bool finitePassed = true;
+    CloudDiagnosticFrame denseReferenceDensity;
+    CloudDiagnosticFrame stratusReferenceDensity;
     for (const AppearanceCase& appearance : appearances)
     {
         if (!renderer.ApplyCloudAppearancePreset(appearance.preset))
@@ -585,6 +588,10 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
                 camera, 0.0f, CloudDebugMode::ViewOpticalDepth,
                 referenceViewDepth))
             return 4;
+        if (appearance.preset == CloudAppearancePreset::DenseMixedDefault)
+            denseReferenceDensity = referenceDensity;
+        else if (appearance.preset == CloudAppearancePreset::Stratus)
+            stratusReferenceDensity = referenceDensity;
         renderer.ApplyStage9OptimizationPreset(
             Stage9OptimizationPreset::FineReference);
         CloudDiagnosticFrame referenceLight;
@@ -652,6 +659,37 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
                 qualityCandidate });
         }
     }
+    const bool sameAppearanceFrameSize =
+        denseReferenceDensity.width == stratusReferenceDensity.width &&
+        denseReferenceDensity.height == stratusReferenceDensity.height &&
+        denseReferenceDensity.pixels.size() ==
+            stratusReferenceDensity.pixels.size() &&
+        !denseReferenceDensity.pixels.empty();
+    bool appearanceReferenceDifferent = false;
+    if (sameAppearanceFrameSize)
+    {
+        for (std::size_t index = 0;
+             index < denseReferenceDensity.pixels.size(); ++index)
+        {
+            const DirectX::XMFLOAT4& dense =
+                denseReferenceDensity.pixels[index];
+            const DirectX::XMFLOAT4& stratus =
+                stratusReferenceDensity.pixels[index];
+            if (std::abs(dense.x - stratus.x) > 1.0e-6f ||
+                std::abs(dense.y - stratus.y) > 1.0e-6f ||
+                std::abs(dense.z - stratus.z) > 1.0e-6f ||
+                std::abs(dense.w - stratus.w) > 1.0e-6f)
+            {
+                appearanceReferenceDifferent = true;
+                break;
+            }
+        }
+    }
+    if (!sameAppearanceFrameSize || !appearanceReferenceDifferent)
+        return 8;
+    WriteDiagnosticLine(
+        "[STAGE9][APPEARANCE] Dense and Stratus reference frames differ");
+
     std::error_code error;
     const std::filesystem::path directory =
         std::filesystem::path(VCLOUD_SHADER_SOURCE_DIR).parent_path() /
@@ -687,7 +725,8 @@ int RunStage9OptimizationSmokeTest(Renderer& renderer, Camera& camera)
                        std::ios::binary | std::ios::trunc);
     json << "{\n  \"adapter\": \"" << renderer.AdapterName()
          << "\",\n  \"driver\": \"" << renderer.DriverVersion()
-         << "\",\n  \"results\": [\n";
+         << "\",\n  \"appearanceReferenceDifferent\": true,\n"
+         << "  \"results\": [\n";
     for (std::size_t index = 0; index < qualityResults.size(); ++index)
     {
         const QualityResult& result = qualityResults[index];
@@ -780,7 +819,6 @@ int RunStage9PerformanceTest(Renderer& renderer, Camera& camera)
         float angleOverride;
         float farFractionOverride;
     } presets[] = {
-        { "Fast", Stage9OptimizationPreset::Fast, 0u, 0.0f, 0.0f },
         { "Balanced", Stage9OptimizationPreset::Balanced, 0u, 0.0f, 0.0f },
         { "Conservative", Stage9OptimizationPreset::Conservative, 0u, 0.0f, 0.0f },
         { "Approved Reference", Stage9OptimizationPreset::ApprovedReference, 0u, 0.0f, 0.0f },
@@ -988,7 +1026,7 @@ int RunStage9PerformanceTest(Renderer& renderer, Camera& camera)
     json << "  }\n}\n";
     if (!json.good())
         return 8;
-    bool anyCandidatePassed = qualifies["Fast"] || qualifies["Balanced"] ||
+    bool anyCandidatePassed = qualifies["Balanced"] ||
         qualifies["Conservative"];
     return anyCandidatePassed && !renderer.HasDebugLayerErrors() ? 0 : 1;
 }

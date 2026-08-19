@@ -544,7 +544,6 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             optimizationPreset = preset;
         };
         const Stage9OptimizationPreset masterPresets[] = {
-            Stage9OptimizationPreset::Fast,
             Stage9OptimizationPreset::Balanced,
             Stage9OptimizationPreset::Conservative,
             Stage9OptimizationPreset::ApprovedReference,
@@ -562,8 +561,6 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
 
         auto markCustom = [&]() { optimizationPreset = Stage9OptimizationPreset::Custom; };
         ImGui::TextUnformatted("Empty Search:"); ImGui::SameLine();
-        if (ImGui::Button("4x##Empty")) { optimizationParameters.emptySpaceSkippingEnabled = 1u; optimizationParameters.coarseStepMultiplier = 4.0f; markCustom(); }
-        ImGui::SameLine();
         if (ImGui::Button("2x##Empty")) { optimizationParameters.emptySpaceSkippingEnabled = 1u; optimizationParameters.coarseStepMultiplier = 2.0f; markCustom(); }
         ImGui::SameLine();
         if (ImGui::Button("Off##Empty")) { optimizationParameters.emptySpaceSkippingEnabled = 0u; markCustom(); }
@@ -2291,15 +2288,9 @@ bool NoiseLab::ConsumeOpenWorldPipelinePresetRequest(
 bool NoiseLab::ConsumeCloudAppearancePresetRequest(
     CloudAppearancePreset& preset)
 {
-    if (m_cloudAppearancePresetRequest <
-            static_cast<int>(CloudAppearancePreset::Stratus) ||
-        m_cloudAppearancePresetRequest >
-            static_cast<int>(CloudAppearancePreset::Custom))
-        return false;
-    preset = static_cast<CloudAppearancePreset>(
-        m_cloudAppearancePresetRequest);
+    const int request = m_cloudAppearancePresetRequest;
     m_cloudAppearancePresetRequest = -1;
-    return true;
+    return TryDecodeCloudAppearancePresetRequest(request, preset);
 }
 
 bool NoiseLab::ConsumeCloudAppearanceSaveRequest()

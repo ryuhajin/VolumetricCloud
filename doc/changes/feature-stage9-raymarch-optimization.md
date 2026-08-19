@@ -16,6 +16,10 @@
   처음 통과해 Balanced에 반영됐다.
 - 사용자 렌더 승인 전에는 자동 테스트를 통과한 후보가 있어도 시작 기본을 Reference로 유지한다.
 - 일반 외형 시작은 Stratus, Full Open World 비교 복원값은 Dense Mixed다.
+- 2026-08-19 사용자 검증에서 Dense 버튼의 요청값 0을 Stratus 이상만 허용하던 범위 검사
+  오류를 발견했다. 공통 요청 디코더로 0~3을 허용하고 모든 요청을 한 번만 소비하도록 고쳤다.
+- Fast/Empty Search 4×는 400m deterministic sampling의 등고선 alias로 탈락했다. enum과
+  preset 값은 schema 31 호환용으로 남기되 활성 UI·자동 후보에서는 제거했다.
 
 ## 검증
 
@@ -24,7 +28,7 @@
 - `Stage9OptimizationSmoke`: Dense/Stratus/Cumulus의 Final Density, View τ, Light T finite 및
   SSIM/RMSE/MAE/P99 보고.
 - `--stage9-performance-test`: Release 1920×1080, 120 warmup, 원시 timestamp 600개,
-  일곱 장면과 네 preset을 CSV/JSON으로 기록.
+  일곱 장면과 세 활성/기준 preset을 CSV/JSON으로 기록.
 - 2026-08-17 중간 통합에서 `NoiseLab.hlsl`이 b9 선언 없이 `Noise.hlsli`를 읽어 X3004가
   발생했다. Optimization header를 Noise 공통 include로 이동한 뒤 FoundationSmoke를 통과했다.
 
@@ -32,6 +36,6 @@
 
 - Balanced 화질: Dense/Stratus/Cumulus Light T P99 `0.02814/0.01250/0.02899`, 모든 View
   SSIM `0.999999` 이상, RMSE `0.000468` 이하.
-- Balanced 성능: 일곱 장면 최대 p95 `8.98ms`; Cumulus Horizon은 Reference
-  `19.83ms → 8.98ms`로 약 `54.7%` 개선.
+- Balanced 성능: Fast 제거 뒤 재측정한 일곱 장면 최대 p95 `9.41ms`; Cumulus Horizon은
+  Reference `18.68ms → 8.64ms`로 약 `53.8%` 개선.
 - 자동 화질·성능 gate는 통과했다. 사용자 렌더 승인 전 시작 기본은 Approved Reference다.
