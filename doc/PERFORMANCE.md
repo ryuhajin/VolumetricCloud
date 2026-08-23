@@ -12,7 +12,7 @@
 | `CPU Frame` | `Renderer::Render` 시작부터 `Present` 반환까지. VSync 대기 포함 |
 | `GPU Frame` | 진단 장면 시작부터 ImGui draw 종료까지. `Present` 제외 |
 | `Cloud Raymarch` | 선택 해상도에서 구름 scattering/T/depth를 MRT에 적분 |
-| `Upsample/Composite` | Full-resolution 공간 복원과 장면 합성 |
+| `Spatial/Temporal Resolve` | Full-resolution 공간 복원, 선택적 history 재투영·clip과 장면 합성 |
 | `GPU Cloud Total` (`GPU Cloud`) | 위 두 구간의 합. 단계 9 JSON과 비교하는 호환 지표 |
 | `View` | `maxViewSteps @ stepSize(m)` |
 | `Light` | `maxLightSteps @ lightStepSize(m)` |
@@ -40,7 +40,7 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 3. F1 Noise 창의 Animation에서 시간을 정지한다.
 4. 같은 F1 창의 Performance에서 VSync를 Off로 설정한다.
 5. 설정 변경 후 최소 2초 동안 워밍업한다.
-6. `Cloud Raymarch`, `Upsample/Composite`, `GPU Cloud Total`을 기록하고 같은 조건에서 비교한다.
+6. `Cloud Raymarch`, `Spatial/Temporal Resolve`, `GPU Cloud Total`을 기록하고 같은 조건에서 비교한다.
 7. View/Light Step을 바꿀 때 한 번에 한 파라미터만 변경한다.
 
 예를 들어 Light Step 8/16/32의 비용을 비교할 때 카메라와 나머지 설정을 고정한다. FPS는
@@ -70,12 +70,31 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 | 기록 | 600 frames |
 | GPU Frame p95 | 16.67ms 이하 |
 | GPU Cloud p95 | 10.00ms 이하 |
+| Temporal Resolve p95 | 2.00ms 이하 |
 | 최적화 전후 SSIM | 0.99 이상 |
 | 정규화 RMSE | 0.01 이하 |
 
 고정 장면은 `GroundZenith`, `GroundHorizon`, `InsideLayer`, `AboveLayer`,
 `FlightTraversal`, `DepthOccluded`, `CumulusHorizonStress`다. 다른 앱의 동시 GPU 부하나
 timestamp disjoint가 감지되면 측정을 무효로 표시하며 합격 자료로 사용하지 않는다.
+
+### Stage 11 source validation 회귀 측정 (2026-08-22)
+
+Full D32 plane source gate와 3×3 Cloud Depth 범위 수정은 Release `Stratus`, Stable 4-Phase,
+1920×1080 Scene/960×540 Cloud Data, Joint4, camera/time 고정, wind 0에서 측정했다. F5 HeroDepth와
+F8 AboveLayer yaw +3° 각각 120프레임 warmup 뒤 서로 다른 GPU timestamp 600개를 사용했다.
+
+| 장면·구간 | p95 | 기준 | 결과 |
+|---|---:|---:|---|
+| F5 Spatial/Temporal Resolve | 1.255424ms | 2.00ms 이하 | 통과 |
+| F5 GPU Cloud Total | 3.897344ms | 10.00ms 이하 | 통과 |
+| F8 Spatial/Temporal Resolve | 1.314816ms | 2.00ms 이하 | 통과 |
+| F8 GPU Cloud Total | 2.793472ms | 10.00ms 이하 | 통과 |
+
+F8 기본·yaw ±3°·pitch ±2°와 세 필터의 평면 내부 Composite range 평균/P99는
+`0.000012/0.000250`이었다. Current Source non-green, invalid horizontal run, Weight phase P99,
+Diff blue, Cloud Depth yellow run과 Temporal Off hole run은 모두 0이었다. 이 값은 F5/F8 회귀
+gate이며 일곱 장면 최종 포트폴리오 측정이나 Full reference SSIM/RMSE/T 승인을 대신하지 않는다.
 ## 단계 13-2 상사 진단 해상도
 
 `Stage13SimilarityGpu`의 320×180 float offscreen 렌더는 배율별 수치 비교를 위한 고정

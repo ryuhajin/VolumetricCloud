@@ -2,6 +2,7 @@
 #include "Camera.h"
 #include "Stage13CameraPresets.h"
 #include "Stage13SceneMath.h"
+#include "Stage11TemporalMath.h"
 
 #include <d3dcompiler.h>
 #include <SetupAPI.h>
@@ -196,6 +197,8 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_fullscreenShaderPath = m_shaderDir + L"Fullscreen.hlsl";
     m_cloudShaderPath = m_shaderDir + L"VolumetricClouds.hlsl";
     m_cloudUpsampleShaderPath = m_shaderDir + L"CloudUpsample.hlsl";
+    m_cloudTemporalResolveShaderPath =
+        m_shaderDir + L"CloudTemporalResolve.hlsl";
     m_noiseLabShaderPath = m_shaderDir + L"NoiseLab.hlsl";
     m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
     m_noiseVolumeShaderPath = m_shaderDir + L"NoiseVolume.hlsl";
@@ -267,7 +270,7 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_frameProfiler.Init(m_device.Get());
 
     if (!CreateBackBufferTarget() || !CreateSceneTargets() ||
-        !CreateCloudTargets() ||
+        !CreateCloudTargets() || !CreateTemporalHistoryTargets() ||
         !CreateConstantBuffers() || !CreateShaders(true) ||
         !CreateDiagnosticScene() || !CreatePipelineStates() ||
         !CreateWeatherMapTexture(m_weatherPreset) ||
@@ -335,6 +338,8 @@ bool Renderer::CreateCloudTargets()
         return false;
     m_upsamplingParameters = stage10upsampling::Sanitize(
         m_upsamplingParameters);
+    m_temporalParameters = stage11temporal::Sanitize(
+        m_temporalParameters);
     const int targetWidth = stage10upsampling::ScaledExtent(
         m_width, m_upsamplingParameters.resolutionScale);
     const int targetHeight = stage10upsampling::ScaledExtent(
@@ -383,6 +388,61 @@ bool Renderer::CreateCloudTargets()
     m_cloudDepthSceneLimitSrv = depthSrv;
     m_cloudRenderWidth = targetWidth;
     m_cloudRenderHeight = targetHeight;
+    return true;
+}
+
+bool Renderer::CreateTemporalHistoryTargets()
+{
+    if (!m_device || m_width <= 0 || m_height <= 0)
+        return false;
+
+    const auto createTarget = [&](DXGI_FORMAT format,
+                                  ComPtr<ID3D11Texture2D>& texture,
+                                  ComPtr<ID3D11RenderTargetView>& rtv,
+                                  ComPtr<ID3D11ShaderResourceView>& srv)
+    {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = static_cast<UINT>(m_width);
+        desc.Height = static_cast<UINT>(m_height);
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = format;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET |
+                         D3D11_BIND_SHADER_RESOURCE;
+        return SUCCEEDED(m_device->CreateTexture2D(&desc, nullptr, &texture)) &&
+               SUCCEEDED(m_device->CreateRenderTargetView(
+                   texture.Get(), nullptr, &rtv)) &&
+               SUCCEEDED(m_device->CreateShaderResourceView(
+                   texture.Get(), nullptr, &srv));
+    };
+
+    ComPtr<ID3D11Texture2D> clouds[2];
+    ComPtr<ID3D11RenderTargetView> cloudRtvs[2];
+    ComPtr<ID3D11ShaderResourceView> cloudSrvs[2];
+    ComPtr<ID3D11Texture2D> auxiliaries[2];
+    ComPtr<ID3D11RenderTargetView> auxiliaryRtvs[2];
+    ComPtr<ID3D11ShaderResourceView> auxiliarySrvs[2];
+    for (int index = 0; index < 2; ++index)
+    {
+        if (!createTarget(DXGI_FORMAT_R16G16B16A16_FLOAT,
+                          clouds[index], cloudRtvs[index], cloudSrvs[index]) ||
+            !createTarget(DXGI_FORMAT_R16G16_FLOAT,
+                          auxiliaries[index], auxiliaryRtvs[index],
+                          auxiliarySrvs[index]))
+            return false;
+    }
+    for (int index = 0; index < 2; ++index)
+    {
+        m_temporalHistoryCloud[index] = clouds[index];
+        m_temporalHistoryCloudRtv[index] = cloudRtvs[index];
+        m_temporalHistoryCloudSrv[index] = cloudSrvs[index];
+        m_temporalHistoryAux[index] = auxiliaries[index];
+        m_temporalHistoryAuxRtv[index] = auxiliaryRtvs[index];
+        m_temporalHistoryAuxSrv[index] = auxiliarySrvs[index];
+    }
+    ResetTemporalHistory(Stage11HistoryResetReason::ResourcesRecreated);
     return true;
 }
 
@@ -444,6 +504,7 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3DBlob> cloudReferenceDataPsBlob;
     ComPtr<ID3DBlob> cloudOptimizedDataPsBlob;
     ComPtr<ID3DBlob> cloudUpsamplePsBlob;
+    ComPtr<ID3DBlob> cloudTemporalResolvePsBlob;
     ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
@@ -455,6 +516,7 @@ bool Renderer::CreateShaders(bool showErrors)
         !CompileShaderFromFile(m_cloudShaderPath, "mainReferenceData", "ps_5_0", cloudReferenceDataPsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainOptimizedData", "ps_5_0", cloudOptimizedDataPsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudUpsampleShaderPath, "main", "ps_5_0", cloudUpsamplePsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudTemporalResolveShaderPath, "main", "ps_5_0", cloudTemporalResolvePsBlob, showErrors) ||
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors) ||
@@ -472,6 +534,7 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3D11PixelShader> cloudReferenceDataPs;
     ComPtr<ID3D11PixelShader> cloudOptimizedDataPs;
     ComPtr<ID3D11PixelShader> cloudUpsamplePs;
+    ComPtr<ID3D11PixelShader> cloudTemporalResolvePs;
     ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
@@ -497,6 +560,10 @@ bool Renderer::CreateShaders(bool showErrors)
         FAILED(m_device->CreatePixelShader(
             cloudUpsamplePsBlob->GetBufferPointer(), cloudUpsamplePsBlob->GetBufferSize(),
             nullptr, &cloudUpsamplePs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudTemporalResolvePsBlob->GetBufferPointer(),
+            cloudTemporalResolvePsBlob->GetBufferSize(), nullptr,
+            &cloudTemporalResolvePs)) ||
         FAILED(m_device->CreatePixelShader(
             noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
             nullptr, &noiseLabPs)) ||
@@ -560,6 +627,7 @@ bool Renderer::CreateShaders(bool showErrors)
     m_cloudReferenceDataPs = cloudReferenceDataPs;
     m_cloudOptimizedDataPs = cloudOptimizedDataPs;
     m_cloudUpsamplePs = cloudUpsamplePs;
+    m_cloudTemporalResolvePs = cloudTemporalResolvePs;
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
@@ -637,6 +705,11 @@ bool Renderer::CreatePipelineStates()
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
     if (FAILED(m_device->CreateSamplerState(&samplerDesc, &m_pointClampSampler)))
+        return false;
+
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    if (FAILED(m_device->CreateSamplerState(
+            &samplerDesc, &m_linearClampSampler)))
         return false;
 
     // Weather Map의 연속 coverage/type 값은 bilinear로 읽고, 0/1 UV 경계는
@@ -914,11 +987,14 @@ bool Renderer::RegenerateNoiseVolumes()
     m_detailNoiseVolumeHash = detailHash;
     m_cloudLodParameters.detailNeutralValue = detailNeutralValue;
     m_noiseVolumeGenerationMilliseconds = milliseconds;
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     return true;
 }
 
 void Renderer::SetNoiseSource(NoiseSource source)
 {
+    if (source != CurrentNoiseSource())
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     m_noiseVolumeParameters.noiseSource = static_cast<std::uint32_t>(source);
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
 }
@@ -946,6 +1022,8 @@ bool Renderer::CreateConstantBuffers()
            createDynamicBuffer(sizeof(OptimizationParameters), &m_optimizationCb) &&
            createDynamicBuffer(sizeof(Stage10UpsamplingParameters),
                                &m_upsamplingCb) &&
+           createDynamicBuffer(sizeof(Stage11TemporalParameters),
+                               &m_temporalCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -964,8 +1042,18 @@ void Renderer::ReleaseSizeDependentResources()
     m_cloudDepthSceneLimitSrv.Reset();
     m_cloudDepthSceneLimitRtv.Reset();
     m_cloudDepthSceneLimit.Reset();
+    for (int index = 0; index < 2; ++index)
+    {
+        m_temporalHistoryCloudSrv[index].Reset();
+        m_temporalHistoryCloudRtv[index].Reset();
+        m_temporalHistoryCloud[index].Reset();
+        m_temporalHistoryAuxSrv[index].Reset();
+        m_temporalHistoryAuxRtv[index].Reset();
+        m_temporalHistoryAux[index].Reset();
+    }
     m_cloudRenderWidth = 0;
     m_cloudRenderHeight = 0;
+    ResetTemporalHistory(Stage11HistoryResetReason::Resize);
 }
 
 void Renderer::Resize(int width, int height)
@@ -977,8 +1065,8 @@ void Renderer::Resize(int width, int height)
     m_height = height;
     m_frameProfiler.ResetMeasurements();
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
-    ID3D11ShaderResourceView* nullSrvs[5] = {};
-    m_context->PSSetShaderResources(0, 5, nullSrvs);
+    ID3D11ShaderResourceView* nullSrvs[6] = {};
+    m_context->PSSetShaderResources(0, 6, nullSrvs);
     ReleaseSizeDependentResources();
 
     if (SUCCEEDED(m_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
@@ -986,6 +1074,7 @@ void Renderer::Resize(int width, int height)
         CreateBackBufferTarget();
         CreateSceneTargets();
         CreateCloudTargets();
+        CreateTemporalHistoryTargets();
     }
 }
 
@@ -1191,6 +1280,8 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
         m_optimizationParameters);
     m_upsamplingParameters = stage10upsampling::Sanitize(
         m_upsamplingParameters);
+    m_temporalParameters = stage11temporal::Sanitize(
+        m_temporalParameters);
 
     const auto update = [&](ID3D11Buffer* buffer, const void* data,
                             std::size_t size)
@@ -1220,6 +1311,8 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
            sizeof(m_optimizationParameters));
     update(m_upsamplingCb.Get(), &m_upsamplingParameters,
            sizeof(m_upsamplingParameters));
+    update(m_temporalCb.Get(), &m_temporalParameters,
+           sizeof(m_temporalParameters));
 }
 
 void Renderer::BindCloudRaymarchResources(ID3D11PixelShader* pixelShader)
@@ -1244,6 +1337,8 @@ void Renderer::BindCloudRaymarchResources(ID3D11PixelShader* pixelShader)
     m_context->PSSetConstantBuffers(8, 1, &lodBuffer);
     ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
     m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
+    ID3D11Buffer* temporalBuffer = m_temporalCb.Get();
+    m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
         m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
@@ -1335,6 +1430,139 @@ void Renderer::RenderCloudUpsamplePass(const Camera& camera,
     UnbindCloudShaderResources(4);
 }
 
+void Renderer::PrepareTemporalFrame(const Camera& camera, float timeSeconds)
+{
+    if (m_temporalPreviousFrameValid)
+    {
+        const XMFLOAT3 currentPosition = camera.GetPosition();
+        const XMFLOAT3 delta = {
+            currentPosition.x - m_temporalParameters.previousCameraPosition.x,
+            currentPosition.y - m_temporalParameters.previousCameraPosition.y,
+            currentPosition.z - m_temporalParameters.previousCameraPosition.z
+        };
+        const float distanceSquared =
+            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+        if (distanceSquared > 5000.0f * 5000.0f ||
+            std::abs(camera.GetFovYDegrees() -
+                     m_previousTemporalFovYDegrees) > 2.0f)
+            ResetTemporalHistory(Stage11HistoryResetReason::CameraCut);
+    }
+    if (!m_temporalPreviousFrameValid)
+    {
+        XMStoreFloat4x4(&m_temporalParameters.previousViewProjection,
+                        XMMatrixTranspose(camera.GetViewProj()));
+        m_temporalParameters.previousCameraPosition = camera.GetPosition();
+        m_previousTemporalTimeSeconds = timeSeconds;
+        m_previousTemporalFovYDegrees = camera.GetFovYDegrees();
+        m_temporalParameters.deltaTimeSeconds = 0.0f;
+    }
+    else
+    {
+        const float delta = timeSeconds - m_previousTemporalTimeSeconds;
+        if (!std::isfinite(delta) || delta < 0.0f || delta > 0.25f)
+        {
+            ResetTemporalHistory(
+                Stage11HistoryResetReason::TimeDiscontinuity);
+            XMStoreFloat4x4(&m_temporalParameters.previousViewProjection,
+                            XMMatrixTranspose(camera.GetViewProj()));
+            m_temporalParameters.previousCameraPosition = camera.GetPosition();
+            m_temporalParameters.deltaTimeSeconds = 0.0f;
+        }
+        else
+        {
+            m_temporalParameters.deltaTimeSeconds = delta;
+        }
+    }
+    m_temporalParameters.historyValid = m_temporalHistoryValid ? 1u : 0u;
+    m_temporalParameters.jitterOffsetLowResTexels =
+        m_temporalParameters.jitterEnabled != 0u
+        ? stage11temporal::JitterForFrame(m_temporalParameters.frameIndex)
+        : XMFLOAT2{};
+    m_temporalParameters = stage11temporal::Sanitize(m_temporalParameters);
+}
+
+void Renderer::CommitTemporalFrame(const Camera& camera, float timeSeconds)
+{
+    m_temporalHistoryReadIndex = 1u - m_temporalHistoryReadIndex;
+    m_temporalHistoryValid = true;
+    m_temporalPreviousFrameValid = true;
+    m_temporalParameters.historyValid = 1u;
+    XMStoreFloat4x4(&m_temporalParameters.previousViewProjection,
+                    XMMatrixTranspose(camera.GetViewProj()));
+    m_temporalParameters.previousCameraPosition = camera.GetPosition();
+    m_previousTemporalTimeSeconds = timeSeconds;
+    m_previousTemporalFovYDegrees = camera.GetFovYDegrees();
+    if (m_temporalParameters.temporalEnabled != 0u)
+    {
+        ++m_temporalParameters.frameIndex;
+        ++m_temporalAccumulatedFrames;
+    }
+    else
+    {
+        m_temporalParameters.frameIndex = 0;
+        m_temporalAccumulatedFrames = 0;
+    }
+}
+
+bool Renderer::RenderCloudTemporalPass(
+    const Camera& camera, float timeSeconds,
+    ID3D11RenderTargetView* targetOverride)
+{
+    const std::uint32_t writeIndex = 1u - m_temporalHistoryReadIndex;
+    if (!m_cloudTemporalResolvePs || !m_temporalHistoryCloudRtv[writeIndex] ||
+        !m_temporalHistoryAuxRtv[writeIndex] ||
+        !m_temporalHistoryCloudSrv[m_temporalHistoryReadIndex] ||
+        !m_temporalHistoryAuxSrv[m_temporalHistoryReadIndex])
+    {
+        ResetTemporalHistory(Stage11HistoryResetReason::ResourcesRecreated);
+        return false;
+    }
+
+    UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
+    ID3D11RenderTargetView* outputTarget = targetOverride
+        ? targetOverride : m_backBufferRtv.Get();
+    ID3D11RenderTargetView* targets[3] = {
+        m_temporalHistoryCloudRtv[writeIndex].Get(),
+        m_temporalHistoryAuxRtv[writeIndex].Get(),
+        outputTarget
+    };
+    const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
+    m_context->OMSetRenderTargets(3, targets, nullptr);
+    m_context->ClearRenderTargetView(outputTarget, clearColor);
+    m_context->OMSetDepthStencilState(nullptr, 0);
+    m_context->RSSetState(nullptr);
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+    m_context->IASetInputLayout(nullptr);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
+    m_context->PSSetShader(m_cloudTemporalResolvePs.Get(), nullptr, 0);
+    ID3D11Buffer* cameraAndCloud[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
+    m_context->PSSetConstantBuffers(0, 2, cameraAndCloud);
+    ID3D11Buffer* upsamplingBuffer = m_upsamplingCb.Get();
+    ID3D11Buffer* temporalBuffer = m_temporalCb.Get();
+    m_context->PSSetConstantBuffers(10, 1, &upsamplingBuffer);
+    m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
+    ID3D11ShaderResourceView* resources[6] = {
+        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
+        m_cloudScatteringTransmittanceSrv.Get(),
+        m_cloudDepthSceneLimitSrv.Get(),
+        m_temporalHistoryCloudSrv[m_temporalHistoryReadIndex].Get(),
+        m_temporalHistoryAuxSrv[m_temporalHistoryReadIndex].Get()
+    };
+    m_context->PSSetShaderResources(0, 6, resources);
+    ID3D11SamplerState* sampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(0, 1, &sampler);
+    m_context->Draw(3, 0);
+    UnbindCloudShaderResources(6);
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    CommitTemporalFrame(camera, timeSeconds);
+    return true;
+}
+
 bool Renderer::CaptureCloudDiagnosticFrame(
     const Camera& camera, float timeSeconds, CloudDebugMode mode,
     CloudDiagnosticFrame& frame, bool forceDirectComposite)
@@ -1379,10 +1607,12 @@ bool Renderer::CaptureCloudDiagnosticFrame(
     RenderDiagnosticScene(camera);
     if (!forceDirectComposite && (mode == CloudDebugMode::Composite ||
         (static_cast<std::int32_t>(mode) >= 64 &&
-         static_cast<std::int32_t>(mode) <= 67)) && EnsureCloudTargets())
+         static_cast<std::int32_t>(mode) <= 73)) && EnsureCloudTargets())
     {
+        PrepareTemporalFrame(camera, timeSeconds);
         RenderCloudDataPass(camera, timeSeconds);
-        RenderCloudUpsamplePass(camera, timeSeconds, targetRtv.Get());
+        if (!RenderCloudTemporalPass(camera, timeSeconds, targetRtv.Get()))
+            RenderCloudUpsamplePass(camera, timeSeconds, targetRtv.Get());
     }
     else
     {
@@ -1415,6 +1645,55 @@ bool Renderer::CaptureCloudDiagnosticFrame(
     return true;
 }
 
+bool Renderer::CaptureSceneDepthDiagnosticFrame(
+    const Camera& camera, SceneDepthDiagnosticFrame& frame)
+{
+    frame = {};
+    if (!m_device || !m_context || !m_sceneDepth ||
+        m_width <= 0 || m_height <= 0)
+        return false;
+
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+    RenderDiagnosticScene(camera);
+    D3D11_TEXTURE2D_DESC stagingDesc = {};
+    m_sceneDepth->GetDesc(&stagingDesc);
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(m_device->CreateTexture2D(
+            &stagingDesc, nullptr, &staging)))
+        return false;
+
+    m_context->CopyResource(staging.Get(), m_sceneDepth.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(m_context->Map(
+            staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return false;
+
+    frame.width = m_width;
+    frame.height = m_height;
+    frame.deviceDepth.resize(
+        static_cast<std::size_t>(m_width) * static_cast<std::size_t>(m_height));
+    const std::size_t rowBytes = static_cast<std::size_t>(m_width) * sizeof(float);
+    for (int y = 0; y < m_height; ++y)
+    {
+        const auto* source = static_cast<const unsigned char*>(mapped.pData) +
+            static_cast<std::size_t>(y) * mapped.RowPitch;
+        std::memcpy(frame.deviceDepth.data() +
+                        static_cast<std::size_t>(y) *
+                        static_cast<std::size_t>(m_width),
+                    source, rowBytes);
+    }
+    m_context->Unmap(staging.Get(), 0);
+    return true;
+}
+
 void Renderer::Render(Camera& camera, float timeSeconds)
 {
     if (!m_backBufferRtv || !m_sceneColorRtv || !m_sceneDepthDsv)
@@ -1437,6 +1716,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_cloudLodParameters,
                           m_optimizationParameters, m_optimizationPreset,
                           m_upsamplingParameters, m_resolutionPreset,
+                          m_temporalParameters, m_temporalHistoryValid,
+                          m_temporalAccumulatedFrames,
                           m_lightParameters, m_sunPreset, m_phasePreset,
                           m_environmentParameters, m_environmentPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
@@ -1453,6 +1734,13 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_shaderGeneration, m_shaderStatus, m_shaderError);
     if (m_noiseLab.ConsumeParametersChanged())
     {
+        if (m_temporalParameters.temporalEnabled != 0u)
+        {
+            stage10upsampling::ApplyResolutionPreset(
+                m_upsamplingParameters, Stage10ResolutionPreset::Half);
+            m_resolutionPreset = Stage10ResolutionPreset::Half;
+        }
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
         m_pipelineComparisonActive = false;
         const bool similarityChanged =
             domainBeforeNoiseLab.domainType !=
@@ -1522,6 +1810,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
         }
     }
+    if (m_noiseLab.ConsumeTemporalResetRequest())
+        ResetTemporalHistory(Stage11HistoryResetReason::Manual);
     Stage5WeatherPreset requestedWeatherPreset = m_weatherPreset;
     if (m_noiseLab.ConsumeWeatherPresetRequest(requestedWeatherPreset))
         ApplyStage5WeatherPreset(requestedWeatherPreset);
@@ -1568,11 +1858,13 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     const CloudDebugMode debugMode = DebugMode();
     if ((debugMode == CloudDebugMode::Composite ||
         (static_cast<std::int32_t>(debugMode) >= 64 &&
-         static_cast<std::int32_t>(debugMode) <= 67)) && EnsureCloudTargets())
+         static_cast<std::int32_t>(debugMode) <= 73)) && EnsureCloudTargets())
     {
+        PrepareTemporalFrame(camera, effectiveTime);
         RenderCloudDataPass(camera, effectiveTime);
         m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
-        RenderCloudUpsamplePass(camera, effectiveTime);
+        if (!RenderCloudTemporalPass(camera, effectiveTime))
+            RenderCloudUpsamplePass(camera, effectiveTime);
     }
     else
     {
@@ -1604,6 +1896,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                                   m_optimizationPreset,
                                   m_upsamplingParameters,
                                   m_resolutionPreset,
+                                  m_temporalParameters,
                                   m_cloudRenderWidth,
                                   m_cloudRenderHeight,
                                   m_lightParameters,
@@ -1738,12 +2031,14 @@ bool Renderer::ApplyStage5WeatherPreset(Stage5WeatherPreset preset)
     if (changed)
     {
         m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     }
     return true;
 }
 
 void Renderer::ApplyStage6SunPreset(Stage6SunPreset preset)
 {
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     if (preset == Stage6SunPreset::Custom)
     {
         m_sunPreset = preset;
@@ -1757,6 +2052,7 @@ void Renderer::ApplyStage6SunPreset(Stage6SunPreset preset)
 
 void Renderer::ApplyStage7PhasePreset(Stage7PhasePreset preset)
 {
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     if (preset == Stage7PhasePreset::Custom)
     {
         m_phasePreset = preset;
@@ -1768,6 +2064,7 @@ void Renderer::ApplyStage7PhasePreset(Stage7PhasePreset preset)
 
 void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
 {
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     if (preset == Stage8EnvironmentPreset::Custom)
     {
         m_environmentParameters =
@@ -1781,6 +2078,7 @@ void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
 
 void Renderer::ApplyPortfolioHeroLighting()
 {
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     m_lightParameters.directionToSun = stage6light::Preset(
         Stage6SunPreset::LowEast).directionToSun;
     m_lightParameters.sunColor = { 1.0f, 0.78f, 0.62f };
@@ -1819,6 +2117,7 @@ void Renderer::SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize)
 
 void Renderer::ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset)
 {
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     stage9optimization::ApplyPreset(
         m_optimizationParameters, preset,
         m_cloudParameters.maxViewSteps, m_cloudParameters.stepSize,
@@ -1838,6 +2137,7 @@ void Renderer::ApplyStage10ResolutionPreset(
         m_upsamplingParameters);
     m_resolutionPreset = preset;
     m_frameProfiler.ResetMeasurements();
+    ResetTemporalHistory(Stage11HistoryResetReason::ResolutionOrFilter);
 }
 
 void Renderer::SetStage10UpsampleFilter(Stage10UpsampleFilter filter)
@@ -1846,6 +2146,38 @@ void Renderer::SetStage10UpsampleFilter(Stage10UpsampleFilter filter)
     m_upsamplingParameters = stage10upsampling::Sanitize(
         m_upsamplingParameters);
     m_frameProfiler.ResetMeasurements();
+    ResetTemporalHistory(Stage11HistoryResetReason::ResolutionOrFilter);
+}
+
+void Renderer::SetStage11TemporalMode(Stage11TemporalMode mode)
+{
+    const Stage11TemporalMode previous = TemporalMode();
+    stage11temporal::ApplyMode(m_temporalParameters, mode);
+    if (mode == Stage11TemporalMode::Stable4Phase)
+    {
+        stage10upsampling::ApplyResolutionPreset(
+            m_upsamplingParameters, Stage10ResolutionPreset::Half);
+        m_resolutionPreset = Stage10ResolutionPreset::Half;
+    }
+    m_temporalParameters = stage11temporal::Sanitize(m_temporalParameters);
+    if (previous != mode)
+    {
+        ResetTemporalHistory(Stage11HistoryResetReason::TemporalToggle);
+        m_frameProfiler.ResetMeasurements();
+    }
+}
+
+void Renderer::ResetTemporalHistory(Stage11HistoryResetReason reason)
+{
+    m_temporalHistoryValid = false;
+    m_temporalPreviousFrameValid = false;
+    m_temporalHistoryReadIndex = 0;
+    m_temporalAccumulatedFrames = 0;
+    m_temporalParameters.frameIndex = 0;
+    m_temporalParameters.historyValid = 0;
+    m_temporalParameters.deltaTimeSeconds = 0.0f;
+    m_temporalParameters.jitterOffsetLowResTexels = {};
+    m_temporalParameters.resetReason = static_cast<std::uint32_t>(reason);
 }
 
 void Renderer::ConfigureStage9ConeForValidation(std::uint32_t taps,
@@ -1879,6 +2211,7 @@ void Renderer::SetCloudDomainType(CloudDomainType type)
 {
     if (type != DomainType())
     {
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     }
     m_cloudDomainParameters.domainType = static_cast<std::uint32_t>(type);
     m_cloudDomainParameters = SanitizeCloudDomainParameters(
@@ -1978,6 +2311,7 @@ bool Renderer::SetCloudTypeMode(CloudTypeMode type)
         return false;
     m_cloudTypeMode = safe;
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     return true;
 }
 
@@ -2117,6 +2451,7 @@ bool Renderer::ApplyCloudAppearanceSettings(
     m_cloudAppearanceDirty = preset == CloudAppearancePreset::CustomUnsaved;
     m_pipelineComparisonActive = false;
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     return true;
 }
 
@@ -2271,6 +2606,7 @@ bool Renderer::ApplyWeatherGeneratorSettings(
     if (changed)
     {
         m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     }
     return true;
 }
@@ -2362,7 +2698,10 @@ void Renderer::CheckShaderHotReload()
     }
     const bool succeeded = CreateShaders(false);
     if (succeeded)
+    {
+        ResetTemporalHistory(Stage11HistoryResetReason::ShaderReload);
         m_shaderStatus = "Reloaded: " + changed.str() + " @ " + CurrentLocalTimeText();
+    }
     else
         m_shaderStatus = "Reload failed: " + changed.str();
     m_shaderWriteTimes = currentTimes;
@@ -2391,6 +2730,7 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
         m_cloudLodParameters,
         m_optimizationParameters, m_optimizationPreset,
         m_upsamplingParameters, m_resolutionPreset,
+        m_temporalParameters,
         m_cloudRenderWidth, m_cloudRenderHeight,
         m_lightParameters, m_sunPreset, m_phasePreset,
         m_environmentParameters, m_environmentPreset, m_weatherPreset,

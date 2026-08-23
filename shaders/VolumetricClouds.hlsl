@@ -34,6 +34,7 @@ cbuffer cbCamera : register(b0)
 // cbCamera의 time 선언 뒤 포함해야 Light Ray가 같은 애니메이션 시간을 사용한다.
 #include "CloudDomainParameters.hlsli"
 #include "OptimizationParameters.hlsli"
+#include "Stage11TemporalParameters.hlsli"
 #include "CloudEnvironment.hlsli"
 
 // t0: 앞선 DiagnosticScene PS가 R16G16B16A16_FLOAT에 쓴 linear RGB 장면색.
@@ -828,7 +829,9 @@ float4 mainOptimized(VSOut input) : SV_TARGET
 
 CloudDataOutput mainReferenceData(VSOut input)
 {
-    float2 uv = saturate(input.uv);
+    float2 uv = saturate(input.uv +
+        (temporalJitterEnabled != 0u ? jitterOffsetLowResTexels : 0.0.xx) /
+        max(renderSize, 1.0.xx));
     float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
     bool hasGeometry = deviceDepth < 0.999999;
     float3 rayDirection = ReconstructWorldRay(uv);
@@ -845,7 +848,9 @@ CloudDataOutput mainReferenceData(VSOut input)
 
 CloudDataOutput mainOptimizedData(VSOut input)
 {
-    float2 uv = saturate(input.uv);
+    float2 uv = saturate(input.uv +
+        (temporalJitterEnabled != 0u ? jitterOffsetLowResTexels : 0.0.xx) /
+        max(renderSize, 1.0.xx));
     float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
     bool hasGeometry = deviceDepth < 0.999999;
     float3 rayDirection = ReconstructWorldRay(uv);

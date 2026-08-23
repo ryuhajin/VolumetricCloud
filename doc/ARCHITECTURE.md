@@ -9,8 +9,13 @@ Local Inspector 이력은 보존하지만 런타임 구조는 13-4D 단일 포�
 deterministic Light cone 후보를 Optimized PS에 추가했다. 2026-08-19 Balanced를 일반 시작
 기본값으로 승인했으며 Reference PS는 이후 단계의 회귀 비교용으로 유지한다.
 단계 10은 단계 9 Balanced를 유지하면서 구름 적분 결과를 저해상도 MRT에 기록하고,
-Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스로 분리했다. 사용자 승인 전
-시작 해상도는 Full이며 temporal history는 만들지 않는다.
+Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스로 분리했다. 단계 11은
+50% Cloud Data에 2×2 4-phase jitter를 적용하고 Full-resolution history를 재투영·거부·clip한
+뒤 합성한다. Full current 복원은 생성 시 더한 low-res jitter를 빼 texel index 공간을 맞춘다.
+건물 경계에서는 Full Scene의 geometry/sky class와 국소 D32 surface plane이 일치하는 low-res source만
+복원에 참여한다. 유효 current가 없는 픽셀은 잘못된 중심값으로 history를 덮지 않고, Full Scene
+anchor로 재투영한 history가 유효하면 그대로 유지한다.
+사용자 승인 전 시작값은 Temporal Off라 단계 10 화면을 보존한다.
 
 ## 모듈과 책임
 
@@ -18,12 +23,13 @@ Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스
 |---|---|
 | `Window` / `Camera` | Win32 입력, 숫자 0~9·F1~F8, 오빗/휠, WASD·Shift rig 이동, FOV·현재/저장 시점과 view/projection 제공 |
 | `Renderer` | D3D11 장치, 10km 지면·20층 건물, compute noise, 구름·Noise Lab 패스와 테스트 전용 legacy fixture |
-| `NoiseLab` | F1 외형/Noise/Optimization/Upsampling, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 32 snapshot 내보내기 |
+| `NoiseLab` | F1 외형/Noise/Optimization/Upsampling/Temporal, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 33 snapshot 내보내기 |
 | `CloudAppearance` | Dense Mixed/Stratus/Cumulus 외형 계약, F1 요청값 0~3 공통 디코딩, Physical density CPU 기준, schema 29 Custom 원자 저장·엄격 로드 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
 | `CloudLodParameters` | 16바이트 Detail 거리 LOD 시작·끝과 실제 volume 중립 평균 |
 | `OptimizationParameters` | 64바이트 b9 View/Light 후보와 Balanced~Fine Reference 활성 preset; Fast/4× 값은 실패 이력·schema 호환용 보존 |
 | `Stage10UpsamplingParameters` | 32바이트 b10 해상도 비율, 공간 필터와 Scene/Cloud/T 경계 가중치 |
+| `Stage11TemporalParameters` | 144바이트 b11 이전 View-Projection, jitter, history 거부·clip 설정과 상태 |
 | `CloudShapeParameters` | 64바이트 Legacy/Weather Physical 모드, 타입별 두께와 세로 프로파일 |
 | `CloudDomainParameters` | AABB/평면층 선택, 구름 고도·두께와 View/Light 추적 제한 |
 | `LightParameters` | 80바이트 태양·Light Ray·외곽 범위 Dual-lobe Phase 설정 |
@@ -36,7 +42,7 @@ Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스
 | `LightParameters.hlsli` / `CloudLighting.hlsli` | 공유 80바이트 조명 설정과 Base-only Light Ray·외곽 응답 |
 | `PhaseFunction.hlsli` | 방향 부호를 고정한 전방·후방 HG, raw 진단과 LDR 적용 배율 분리 |
 | `CloudEnvironment.hlsli` | 높이 환경광, 밀도 AO와 광학 깊이 재사용 octave |
-| `VolumetricClouds.hlsl` / `CloudUpsample.hlsl` | Beer-Lambert 구름 MRT 출력 / Full-resolution 공간 복원·장면 합성 |
+| `VolumetricClouds.hlsl` / `CloudTemporalResolve.hlsl` | jittered Beer-Lambert 구름 MRT 출력 / Full 공간 복원·재투영·history·장면 합성 |
 | `Stage1VolumeMath.h` | GPU와 독립적으로 같은 경계 조건과 투과율을 검사하는 CPU 기준 구현 |
 | `Stage2NoiseMath.h` | value noise, coverage와 바람 좌표의 CPU 기준 구현 |
 | `Stage3HeightMath.h` | 정규화 높이, 상·하단 smoothstep과 밀도 결합의 CPU 기준 구현 |
@@ -53,6 +59,7 @@ Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스
 | `Stage13OpticsLightingMath.h` | km Beer-Lambert, Light sampling 후보와 Detail LOD CPU 기준 |
 | `Stage9OptimizationMath.h` | 가변 View 구간, coarse 되감기와 weighted cone CPU 기준 |
 | `Stage10UpsamplingMath.h` | 축 해상도, 픽셀 중심 UV, opacity 가중 깊이와 joint weight CPU 기준 |
+| `Stage11TemporalMath.h` | 4-phase jitter와 Full 복원 역보정, source class/depth 검증, invalid-current 유지 정책, 바람 재투영, clip·EMA CPU 기준 |
 | `NoiseVolumeCache.h` | 테스트 전용 cache header·parameter/payload hash와 손상 거부 |
 | `Stage13CloudDomainMath.h` | 평면층의 아래·내부·위·수평·깊이 제한 교차 CPU 기준 |
 
@@ -81,6 +88,23 @@ Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스
    MRT를 복원한다. Joint9 경로는 schema 32와 실패 이력 호환용으로만 남는다. Joint는
    불투명/하늘 분류, Scene Depth, Cloud Depth와 T 차이를 가중치로 사용하며 전부 거부되면
    물체는 투명 구름, 하늘은 최근접 표본으로 폴백한다.
+10. Stable 4-Phase가 켜지면 저해상도 texel 기준 `±0.25` 네 위상을 Cloud UV·Ray·Scene Depth에
+    함께 적용한다. Full Scene 카메라 투영은 흔들지 않는다.
+11. Temporal 공간 복원은 source의 finite/range와 Full Scene geometry/sky class를 먼저 검사한다.
+    가까운 동일 표면은 `clamp(target×1%,1m,10m)` meter fast path로 통과시키고, 이를 넘는 F8
+    사선 표면은 Full D32 Center/L/R/U/D의 작은 one-sided slope로 source device depth를 예측해
+    `8e-7 + 2e-7×ManhattanPixelDistance` 안일 때 같은 평면으로 인정한다. Nearest는 invalid일 때
+    결정적 3×3 검색, Bilinear/Joint는 invalid weight 제거·재정규화 뒤 같은 검색을 사용한다.
+12. `CloudTemporalResolve.hlsl`가 대표 Cloud Depth로 현재 월드 위치를 복원하고 Physical Wind의
+    `-normalize(windDirection) × windSpeed × dt`를 적용한 뒤 이전 View-Projection으로 history UV를
+    구한다. 화면/`w`, motion, Scene class/depth, Cloud depth, T와 near fade를 검사한다. Cloud Depth는
+    중심 한 값이 아니라 불투명한 current 3×3 대표 깊이 범위와 상대 margin 밖일 때만 거부하며,
+    같은 3×3 `scattering/T` 범위를 history clipping에도 재사용한다.
+    current source가 없으면 geometry는 Full Scene surface, sky는 far-plane point를 anchor로 쓰며,
+    Scene 검사까지 통과한 history를 weight 1로 유지한다. history도 없으면 투명 구름으로 시작한다.
+13. 유효 history의 scattering/T를 현재 저해상도 3×3 범위로 clip해 EMA 혼합하고, 반대쪽 Full
+    `RGBA16F + RG16F` history와 Back Buffer에 동시에 쓴다. 성공한 draw 뒤에만 ping-pong index를
+    바꾸며 거부 프레임은 현재값 100%로 새 history를 시작한다.
 
 ## 단계 13-4D 단일 씬 런타임 계약
 
@@ -103,7 +127,9 @@ Depth, Accumulated Direct, View Transmittance, Light Transmittance다. 기존 HL
 13-4D 내보내기는 schema 28, 13-4E 전체 snapshot은 schema 29, 13-5는 schema 30이었다.
 단계 9 전체 snapshot은 schema 31이었다. 단계 10 전체 snapshot은 schema 32/
 `implementationStage=10`이며 기존 `optimization`과 함께 `upsampling` preset, b10 값과 실제
-구름 타깃 크기를 기록한다.
+구름 타깃 크기를 기록한다. 단계 11은 schema 33/`implementationStage=11`이며 temporal mode,
+history weight, 거부 threshold, near fade와 neighborhood clamp를 추가한다. 구형 schema 32에는
+temporal 필드가 없으므로 다시 로드하는 경로에서는 Off로 해석한다.
 13-4E Custom 외형 전용 원자 저장 파일은 schema 29를 유지한다. snapshot은 `sceneContract`, 현재/저장 카메라,
 `cloudTypeMode`, `openWorldPipelinePreset`을 기록하며 `cloudScene`, `domainStates`,
 `stage13Preset`, `similarityScale`, `diagnosticSceneEnabled`와 Stage1/2/4 preset 상태는
@@ -135,7 +161,7 @@ Pipeline Compare 버튼으로 들어간 1~5 단계의 main cloud pass만 effecti
 11. 카메라→표본과 표본→태양 방향으로 Phase를 계산하고 `Tsun` 기반 표면 마스크로 외곽 적용 범위를 제한한다.
 12. 높이·밀도 AO에 `Tsun` 차폐를 결합하고 다중 산란을 태양 차폐 내부 쪽으로 이동시킨다.
 13. Direct/Sky/Ground/Multiple을 같은 View 구간에 누적하고 opacity 기여도로 대표 깊이를 계산한다.
-14. 업샘플 결과를 배경과 합성하고 RGB peak 0.8 위만 LDR highlight shoulder로 압축한다.
+14. 공간/temporal resolve 결과를 배경과 합성하고 RGB peak 0.8 위만 LDR highlight shoulder로 압축한다.
 15. 개발 UI와 성능 오버레이를 그린 뒤 GPU Frame timestamp를 닫고 Present한다.
 
 ## 프레임 성능 계측
@@ -143,7 +169,7 @@ Pipeline Compare 버튼으로 들어간 1~5 단계의 main cloud pass만 effecti
 `FrameProfiler`의 CPU 범위는 `Renderer::Render` 시작부터 `Present` 반환까지라서 VSync 대기를
 포함한다. GPU Frame 범위는 진단 장면 직전부터 ImGui draw 직후까지이며 Present는 포함하지
 않는다. GPU Cloud Total은 `RenderCloudDataPass + RenderCloudUpsamplePass`이며 중간 timestamp로
-`Cloud Raymarch`와 `Upsample/Composite`를 따로 표시한다. 구형 `GPU Cloud` 필드와 원시 표본은
+`Cloud Raymarch`와 `Spatial/Temporal Resolve`를 따로 표시한다. 구형 `GPU Cloud` 필드와 원시 표본은
 호환을 위해 두 패스의 합을 뜻한다.
 
 GPU 시간은 8개 query 슬롯을 순환하며 완료된 과거 프레임만
@@ -336,8 +362,28 @@ F1 활성 Resolution은 `50% → Full`, Filter는 `Nearest → Bilinear → Join
 Full에서는 동일한 MRT/resolve 형식을 사용하되 1:1 최근접 복원으로 단계 9 직접 합성과 비교한다.
 저해상도 타깃은 선택한 크기 한 벌만 만들며 리사이즈나 preset 변경 시 원자적으로 다시 만든다.
 새 디버그 ID 64~67은 Low-resolution Grid, Scene Rejection, Cloud Depth Weight,
-Transmittance Weight이고 숫자 0~9 매핑은 그대로다. temporal jitter, history와 reprojection은
-단계 11 범위다.
+Transmittance Weight이고 숫자 0~9 매핑은 그대로다.
+
+### `Stage11TemporalParameters` / `TemporalCB` (`b11`, 144바이트)
+
+| 묶음 | 필드 | 시작값과 역할 |
+|---|---|---|
+| 0~3 | `previousViewProjection` | 이전 성공 프레임의 월드→clip 행렬 |
+| 4 | `previousCameraPosition`, `temporalDeltaTimeSeconds` | 이전 카메라 위치와 Physical Wind 역이동 시간(s) |
+| 5 | `jitterOffsetLowResTexels`, `temporalFrameIndex`, `temporalHistoryValid` | `±0.25` 위상, 반복 index, history 사용 가능 여부 |
+| 6 | `temporalEnabled`, `temporalJitterEnabled`, `neighborhoodClampingEnabled`, `temporalResetReason` | Off/Stable 경로와 진단 상태 |
+| 7 | `temporalHistoryWeight`, Scene/Cloud 상대 threshold, T threshold | `0.90`, `0.0025`, `0.02`, `0.08` |
+| 8 | near fade 시작/끝, 최대 motion, `temporalClipGamma` | `1/3km`, `96px`, `1.0` |
+
+history는 최종 장면색이 아니라 `scattering.rgb/T`와 대표 Cloud Depth/Scene Limit을 저장한다.
+후자는 50km 장면 계약이 half-float 최대 65,504m 안에 있으므로 `RG16_FLOAT`를 쓴다. resize,
+Stage 10 Resolution/Filter, Temporal toggle, F5~F8, 파라미터·preset, 큰 time jump, shader reload,
+리소스 재생성은 history를 즉시 무효화한다. 디버그 ID 68~73은 Jitter Phase, Reprojection Motion,
+History Validity/Reason, Final Weight, Current/History Difference, Current Source Validity다. Motion은 0px 중립 회색과
+signed RG `±16px`, 화면 밖 파랑을 사용한다. Validity는 초록 허용과 reason별 고정색을 사용하고,
+Difference는 clamp 전 raw history의 scattering을 R, T를 G, current/history 없음은 B로 ×4 표시한다.
+Current Source Validity는 valid 초록, class 불일치 빨강, geometry surface/plane 불일치 노랑,
+finite/guide/후보 없음 파랑, invalid current 대신 history를 유지한 픽셀은 회색이다.
 
 ### `LightParameters` / `LightCB` (`b3`, 80바이트)
 

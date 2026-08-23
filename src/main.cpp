@@ -92,6 +92,12 @@ const char* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::UpsampleSceneRejection: return "UpsampleSceneRejection";
     case CloudDebugMode::UpsampleCloudDepthWeight: return "UpsampleCloudDepthWeight";
     case CloudDebugMode::UpsampleTransmittanceWeight: return "UpsampleTransmittanceWeight";
+    case CloudDebugMode::TemporalJitterPhase: return "TemporalJitterPhase";
+    case CloudDebugMode::TemporalReprojectionMotion: return "TemporalReprojectionMotion";
+    case CloudDebugMode::TemporalHistoryValidity: return "TemporalHistoryValidity";
+    case CloudDebugMode::TemporalHistoryWeight: return "TemporalHistoryWeight";
+    case CloudDebugMode::TemporalCurrentHistoryDifference: return "TemporalCurrentHistoryDifference";
+    case CloudDebugMode::TemporalCurrentSourceValidity: return "TemporalCurrentSourceValidity";
     default: return "Unknown";
     }
 }
@@ -1985,6 +1991,827 @@ int RunStage10UpsamplingSmokeTest(Renderer& renderer, Camera& camera)
         ? 0 : 6;
 }
 
+int RunStage11TemporalSmokeTest(Renderer& renderer, Camera& camera)
+{
+    WriteDiagnosticLine("[STAGE11][SETUP] BEGIN");
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetOpaqueSceneForTest(true);
+    if (!renderer.ApplyStage13OpenWorldPreset() ||
+        !renderer.ApplyCloudAppearancePreset(CloudAppearancePreset::Stratus))
+        return 2;
+    renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Half);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint4);
+    const CloudParameters appearance = renderer.CloudSettings();
+    renderer.SetCloudWindSpeedsForValidation(0.0f, 0.0f, 0.0f);
+    camera.SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    const Stage13CameraPreset& hero = stage13camera::Get(
+        Stage13CameraPresetId::HeroDepth);
+    camera.SetLookAt(hero.position, hero.target);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Stable4Phase);
+
+    bool finite = true;
+    SceneDepthDiagnosticFrame sceneDepth;
+    if (!renderer.CaptureSceneDepthDiagnosticFrame(camera, sceneDepth) ||
+        sceneDepth.deviceDepth.empty())
+        return 3;
+    WriteDiagnosticLine("[STAGE11][SETUP] SCENE_DEPTH_READY");
+
+    const std::size_t geometryPixelCount = static_cast<std::size_t>(std::count_if(
+        sceneDepth.deviceDepth.begin(), sceneDepth.deviceDepth.end(),
+        [](float depth) { return depth < 0.999999f; }));
+    const auto geometryAt = [&](int x, int y)
+    {
+        const std::size_t index = static_cast<std::size_t>(y) *
+            static_cast<std::size_t>(sceneDepth.width) +
+            static_cast<std::size_t>(x);
+        return sceneDepth.deviceDepth[index] < 0.999999f;
+    };
+    std::vector<double> firstGeometryRows;
+    firstGeometryRows.reserve(static_cast<std::size_t>(sceneDepth.width));
+    for (int x = 0; x < sceneDepth.width; ++x)
+    {
+        for (int y = 0; y < sceneDepth.height; ++y)
+        {
+            if (!geometryAt(x, y))
+                continue;
+            firstGeometryRows.push_back(static_cast<double>(y));
+            break;
+        }
+    }
+    // F5의 지면/하늘 horizon은 화면 전체에 걸친 가장 큰 경계다. 사용자가
+    // 보고한 대상은 그보다 위로 솟은 진단 box이므로 각 열의 첫 geometry
+    // 중앙값보다 위쪽인 silhouette만 건물+인접 하늘 경계 마스크로 삼는다.
+    const int groundHorizonRow = static_cast<int>(std::lround(
+        FramePercentile(firstGeometryRows, 0.5)));
+    std::vector<std::size_t> boundaryPixels;
+    for (int y = 1; y + 1 < sceneDepth.height; ++y)
+    {
+        for (int x = 1; x + 1 < sceneDepth.width; ++x)
+        {
+            const bool centerGeometry = geometryAt(x, y);
+            // 실제 한 픽셀 좌우/상하 silhouette만 센다. 대각선만 닿는
+            // 3x3 corner 확장은 건물 경계가 아닌 주변 픽셀까지 섞는다.
+            const bool boundary =
+                geometryAt(x - 1, y) != centerGeometry ||
+                geometryAt(x + 1, y) != centerGeometry ||
+                geometryAt(x, y - 1) != centerGeometry ||
+                geometryAt(x, y + 1) != centerGeometry;
+            if (boundary && y < groundHorizonRow - 2)
+                boundaryPixels.push_back(static_cast<std::size_t>(y) *
+                    static_cast<std::size_t>(sceneDepth.width) +
+                    static_cast<std::size_t>(x));
+        }
+    }
+
+    const auto capturePhaseSequence = [&](Stage10UpsampleFilter filter,
+                                          CloudDebugMode mode,
+                                          std::array<CloudDiagnosticFrame, 4>& frames)
+    {
+        renderer.SetStage10UpsampleFilter(filter);
+        renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+        renderer.SetStage11TemporalMode(Stage11TemporalMode::Stable4Phase);
+        renderer.ResetTemporalHistory(Stage11HistoryResetReason::Manual);
+        renderer.SetDebugMode(CloudDebugMode::Composite);
+        for (std::uint32_t frameIndex = 0; frameIndex < 12; ++frameIndex)
+        {
+            renderer.Render(camera, 0.0f);
+            if ((frameIndex & 3u) == 3u)
+            {
+                std::ostringstream warmupProgress;
+                warmupProgress << "[STAGE11][WARMUP] FILTER="
+                    << static_cast<std::uint32_t>(filter)
+                    << " DEBUG=" << static_cast<std::uint32_t>(mode)
+                    << " FRAMES=" << (frameIndex + 1u);
+                WriteDiagnosticLine(warmupProgress.str());
+            }
+        }
+        for (CloudDiagnosticFrame& frame : frames)
+            if (!renderer.CaptureCloudDiagnosticFrame(camera, 0.0f, mode, frame))
+                return false;
+        std::ostringstream progress;
+        progress << "[STAGE11][CAPTURE] FILTER="
+                 << static_cast<std::uint32_t>(filter)
+                 << " DEBUG=" << static_cast<std::uint32_t>(mode)
+                 << " PASS";
+        WriteDiagnosticLine(progress.str());
+        return true;
+    };
+    const auto rgbRangesForPixels = [](
+        const std::array<CloudDiagnosticFrame, 4>& frames,
+        const std::vector<std::size_t>& selectedPixels)
+    {
+        std::vector<double> ranges;
+        ranges.reserve(selectedPixels.size());
+        for (std::size_t index : selectedPixels)
+        {
+            double minimum[3] = {
+                std::numeric_limits<double>::infinity(),
+                std::numeric_limits<double>::infinity(),
+                std::numeric_limits<double>::infinity(),
+            };
+            double maximum[3] = {
+                -std::numeric_limits<double>::infinity(),
+                -std::numeric_limits<double>::infinity(),
+                -std::numeric_limits<double>::infinity(),
+            };
+            for (const CloudDiagnosticFrame& frame : frames)
+            {
+                const DirectX::XMFLOAT4& pixel = frame.pixels[index];
+                const double values[3] = { pixel.x, pixel.y, pixel.z };
+                for (std::size_t channel = 0; channel < 3; ++channel)
+                {
+                    minimum[channel] = std::min(minimum[channel], values[channel]);
+                    maximum[channel] = std::max(maximum[channel], values[channel]);
+                }
+            }
+            ranges.push_back(
+                ((maximum[0] - minimum[0]) +
+                 (maximum[1] - minimum[1]) +
+                 (maximum[2] - minimum[2])) / 3.0);
+        }
+        return ranges;
+    };
+    const auto nearColor = [](const DirectX::XMFLOAT4& pixel,
+                              const DirectX::XMFLOAT3& color)
+    {
+        return std::abs(pixel.x - color.x) <= 0.02f &&
+            std::abs(pixel.y - color.y) <= 0.02f &&
+            std::abs(pixel.z - color.z) <= 0.02f;
+    };
+    static constexpr std::array<DirectX::XMFLOAT3, 10> validityPalette = {{
+        { 0.10f, 1.00f, 0.20f }, { 0.20f, 0.20f, 0.20f },
+        { 1.00f, 0.00f, 1.00f }, { 0.00f, 0.35f, 1.00f },
+        { 0.00f, 1.00f, 1.00f }, { 1.00f, 0.45f, 0.00f },
+        { 1.00f, 1.00f, 0.00f }, { 1.00f, 0.00f, 0.00f },
+        { 0.55f, 0.20f, 1.00f }, { 1.00f, 0.10f, 0.50f },
+    }};
+    static constexpr std::array<DirectX::XMFLOAT3, 5> currentPalette = {{
+        { 0.10f, 1.00f, 0.20f }, { 1.00f, 0.00f, 0.00f },
+        { 1.00f, 1.00f, 0.00f }, { 0.00f, 0.20f, 1.00f },
+        { 0.35f, 0.35f, 0.35f },
+    }};
+    const Stage10UpsampleFilter filters[] = {
+        Stage10UpsampleFilter::Nearest,
+        Stage10UpsampleFilter::Bilinear,
+        Stage10UpsampleFilter::Joint4,
+    };
+    double boundaryMean = 0.0;
+    double boundaryP99 = 0.0;
+    double weightP99 = 0.0;
+    bool stationaryBoundaryPassed = boundaryPixels.size() >= 8u;
+    bool weightPassed = true;
+    bool currentPalettePassed = true;
+    bool validityPalettePassed = true;
+    bool differenceContractPassed = true;
+    std::size_t acceptedPixels = 0;
+    std::size_t heldHistoryPixels = 0;
+    for (Stage10UpsampleFilter filter : filters)
+    {
+        std::array<CloudDiagnosticFrame, 4> frames;
+        std::array<std::vector<float>, 4> boundaryWeights;
+        for (std::vector<float>& phaseWeights : boundaryWeights)
+            phaseWeights.reserve(boundaryPixels.size());
+        std::array<std::size_t, 5> unstableCurrentColors{};
+        std::array<std::size_t, 10> unstableHistoryColors{};
+        if (!capturePhaseSequence(filter, CloudDebugMode::Composite, frames))
+            return 4;
+        const std::vector<double> ranges = rgbRangesForPixels(
+            frames, boundaryPixels);
+        const double mean = ranges.empty()
+            ? std::numeric_limits<double>::infinity()
+            : std::accumulate(ranges.begin(), ranges.end(), 0.0) /
+              static_cast<double>(ranges.size());
+        const double p99 = FramePercentile(ranges, 0.99);
+        boundaryMean = std::max(boundaryMean, mean);
+        boundaryP99 = std::max(boundaryP99, p99);
+        stationaryBoundaryPassed = stationaryBoundaryPassed &&
+            mean <= 0.01 && p99 <= 0.03;
+
+        if (!capturePhaseSequence(
+                filter, CloudDebugMode::TemporalHistoryWeight, frames))
+            return 5;
+        std::vector<double> weightRanges;
+        weightRanges.reserve(boundaryPixels.size());
+        for (std::size_t index : boundaryPixels)
+        {
+            double minimum = std::numeric_limits<double>::infinity();
+            double maximum = -std::numeric_limits<double>::infinity();
+            for (std::size_t phase = 0; phase < frames.size(); ++phase)
+            {
+                const CloudDiagnosticFrame& frame = frames[phase];
+                minimum = std::min(minimum,
+                    static_cast<double>(frame.pixels[index].x));
+                maximum = std::max(maximum,
+                    static_cast<double>(frame.pixels[index].x));
+                boundaryWeights[phase].push_back(frame.pixels[index].x);
+            }
+            const int boundaryX = static_cast<int>(
+                index % static_cast<std::size_t>(sceneDepth.width));
+            const int boundaryY = static_cast<int>(
+                index / static_cast<std::size_t>(sceneDepth.width));
+            // Weight 안정성은 실제로 떨렸던 opaque 건물 픽셀에서 판정한다.
+            // 인접 sky는 구름 자체의 depth/T disocclusion으로 0 weight가 되는
+            // 것이 정상일 수 있으므로 Composite 양면 경계 검사와 분리한다.
+            if (geometryAt(boundaryX, boundaryY))
+                weightRanges.push_back(maximum - minimum);
+        }
+        const double filterWeightP99 = FramePercentile(weightRanges, 0.99);
+        weightP99 = std::max(weightP99, filterWeightP99);
+        weightPassed = weightPassed && filterWeightP99 <= 0.05;
+
+        if (!capturePhaseSequence(
+                filter, CloudDebugMode::TemporalCurrentSourceValidity, frames))
+            return 6;
+        for (const CloudDiagnosticFrame& frame : frames)
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+        {
+            bool matched = false;
+            for (const DirectX::XMFLOAT3& color : currentPalette)
+                matched = matched || nearColor(pixel, color);
+            currentPalettePassed = currentPalettePassed && matched;
+            heldHistoryPixels += nearColor(pixel, currentPalette[4]) ? 1u : 0u;
+            finite = finite && std::isfinite(pixel.x) &&
+                std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+                std::isfinite(pixel.w);
+        }
+        for (std::size_t phase = 0; phase < frames.size(); ++phase)
+        for (std::size_t boundaryIndex = 0;
+             boundaryIndex < boundaryPixels.size(); ++boundaryIndex)
+        {
+            float minimum = boundaryWeights[0][boundaryIndex];
+            float maximum = minimum;
+            for (std::size_t weightPhase = 1; weightPhase < 4; ++weightPhase)
+            {
+                minimum = std::min(minimum,
+                    boundaryWeights[weightPhase][boundaryIndex]);
+                maximum = std::max(maximum,
+                    boundaryWeights[weightPhase][boundaryIndex]);
+            }
+            if (maximum - minimum <= 0.05f)
+                continue;
+            const DirectX::XMFLOAT4& pixel =
+                frames[phase].pixels[boundaryPixels[boundaryIndex]];
+            for (std::size_t color = 0; color < currentPalette.size(); ++color)
+                unstableCurrentColors[color] +=
+                    nearColor(pixel, currentPalette[color]) ? 1u : 0u;
+        }
+
+        if (!capturePhaseSequence(
+                filter, CloudDebugMode::TemporalHistoryValidity, frames))
+            return 7;
+        for (const CloudDiagnosticFrame& frame : frames)
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+        {
+            bool matched = false;
+            for (const DirectX::XMFLOAT3& color : validityPalette)
+                matched = matched || nearColor(pixel, color);
+            validityPalettePassed = validityPalettePassed && matched;
+            acceptedPixels += nearColor(pixel, validityPalette[0]) ? 1u : 0u;
+        }
+        for (std::size_t phase = 0; phase < frames.size(); ++phase)
+        for (std::size_t boundaryIndex = 0;
+             boundaryIndex < boundaryPixels.size(); ++boundaryIndex)
+        {
+            float minimum = boundaryWeights[0][boundaryIndex];
+            float maximum = minimum;
+            for (std::size_t weightPhase = 1; weightPhase < 4; ++weightPhase)
+            {
+                minimum = std::min(minimum,
+                    boundaryWeights[weightPhase][boundaryIndex]);
+                maximum = std::max(maximum,
+                    boundaryWeights[weightPhase][boundaryIndex]);
+            }
+            if (maximum - minimum <= 0.05f)
+                continue;
+            const DirectX::XMFLOAT4& pixel =
+                frames[phase].pixels[boundaryPixels[boundaryIndex]];
+            for (std::size_t color = 0; color < validityPalette.size(); ++color)
+                unstableHistoryColors[color] +=
+                    nearColor(pixel, validityPalette[color]) ? 1u : 0u;
+        }
+
+        if (!capturePhaseSequence(filter,
+                CloudDebugMode::TemporalCurrentHistoryDifference, frames))
+            return 8;
+        for (const CloudDiagnosticFrame& frame : frames)
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+        {
+            finite = finite && std::isfinite(pixel.x) &&
+                std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+                std::isfinite(pixel.w);
+            differenceContractPassed = differenceContractPassed &&
+                pixel.x >= 0.0f && pixel.x <= 1.0f &&
+                pixel.y >= 0.0f && pixel.y <= 1.0f &&
+                (std::abs(pixel.z) <= 0.02f ||
+                 std::abs(pixel.z - 1.0f) <= 0.02f);
+        }
+        std::ostringstream filterLine;
+        filterLine << std::fixed << std::setprecision(6)
+                   << "[STAGE11][FILTER] ID="
+                   << static_cast<std::uint32_t>(filter)
+                   << " BOUNDARY_MEAN=" << mean
+                   << " BOUNDARY_P99=" << p99
+                   << " WEIGHT_P99=" << filterWeightP99
+                   << " CURRENT_GRY=" << unstableCurrentColors[4]
+                   << " CURRENT_GRN=" << unstableCurrentColors[0]
+                   << " HISTORY_GRN=" << unstableHistoryColors[0]
+                   << " HISTORY_SCENE=" << unstableHistoryColors[5]
+                   << " HISTORY_CLOUD=" << unstableHistoryColors[6]
+                   << " HISTORY_T=" << unstableHistoryColors[7];
+        WriteDiagnosticLine(filterLine.str());
+    }
+    validityPalettePassed = validityPalettePassed && acceptedPixels > 0u;
+
+    // F5 silhouette만으로는 F8의 넓은 사선 평면에서 생기는 perspective
+    // depth gradient를 재현하지 못했다. F8 기본 방향과 작은 yaw/pitch를
+    // 별도 fixture로 고정해 같은 회귀가 다시 숨어들지 않게 한다.
+    const Stage13CameraPreset& above = stage13camera::Get(
+        Stage13CameraPresetId::AboveLayer);
+    const auto setAboveStressCamera = [&](float yawDegrees,
+                                           float pitchDegrees)
+    {
+        using namespace DirectX;
+        const XMVECTOR position = XMLoadFloat3(&above.position);
+        XMVECTOR direction = XMVectorSubtract(
+            XMLoadFloat3(&above.target), position);
+        const float distance = XMVectorGetX(XMVector3Length(direction));
+        direction = XMVector3Normalize(direction);
+        direction = XMVector3TransformNormal(direction,
+            XMMatrixRotationY(XMConvertToRadians(yawDegrees)));
+        XMVECTOR right = XMVector3Normalize(XMVector3Cross(
+            XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), direction));
+        direction = XMVector3Rotate(direction, XMQuaternionRotationAxis(
+            right, XMConvertToRadians(pitchDegrees)));
+        XMFLOAT3 target{};
+        XMStoreFloat3(&target, XMVectorMultiplyAdd(
+            direction, XMVectorReplicate(distance), position));
+        camera.SetLookAt(above.position, target);
+    };
+    const auto buildPlanarInteriorMask = [&](const SceneDepthDiagnosticFrame& depth,
+                                              std::vector<std::size_t>& pixels,
+                                              std::vector<std::uint8_t>& mask)
+    {
+        pixels.clear();
+        mask.assign(depth.deviceDepth.size(), 0u);
+        const auto at = [&](int x, int y)
+        {
+            return depth.deviceDepth[static_cast<std::size_t>(y) *
+                static_cast<std::size_t>(depth.width) +
+                static_cast<std::size_t>(x)];
+        };
+        for (int y = 2; y + 2 < depth.height; ++y)
+        for (int x = 2; x + 2 < depth.width; ++x)
+        {
+            bool geometry5x5 = true;
+            for (int oy = -2; oy <= 2 && geometry5x5; ++oy)
+            for (int ox = -2; ox <= 2; ++ox)
+            {
+                const float value = at(x + ox, y + oy);
+                geometry5x5 = geometry5x5 && std::isfinite(value) &&
+                    value >= 0.0f && value < 0.999999f;
+            }
+            if (!geometry5x5)
+                continue;
+            const float center = at(x, y);
+            const float curvature =
+                std::abs(at(x - 1, y) - 2.0f * center + at(x + 1, y)) +
+                std::abs(at(x, y - 1) - 2.0f * center + at(x, y + 1));
+            if (curvature > 4.0e-6f)
+                continue;
+            const std::size_t index = static_cast<std::size_t>(y) *
+                static_cast<std::size_t>(depth.width) +
+                static_cast<std::size_t>(x);
+            pixels.push_back(index);
+            mask[index] = 1u;
+        }
+    };
+    const auto longestHorizontalRun = [](
+        const CloudDiagnosticFrame& frame,
+        const std::vector<std::uint8_t>& mask,
+        const auto& predicate)
+    {
+        std::size_t longest = 0u;
+        for (int y = 0; y < frame.height; ++y)
+        {
+            std::size_t run = 0u;
+            for (int x = 0; x < frame.width; ++x)
+            {
+                const std::size_t index = static_cast<std::size_t>(y) *
+                    static_cast<std::size_t>(frame.width) +
+                    static_cast<std::size_t>(x);
+                if (mask[index] != 0u && predicate(frame.pixels[index]))
+                {
+                    ++run;
+                    longest = std::max(longest, run);
+                }
+                else
+                {
+                    run = 0u;
+                }
+            }
+        }
+        return longest;
+    };
+
+    struct F8Angle { float yaw; float pitch; };
+    const F8Angle f8Angles[] = {
+        { 0.0f, 0.0f }, { -3.0f, 0.0f }, { 3.0f, 0.0f },
+        { 0.0f, -2.0f }, { 0.0f, 2.0f },
+    };
+    bool f8PlanePassed = true;
+    double f8CompositeMean = 0.0;
+    double f8CompositeP99 = 0.0;
+    double f8NonGreenRatio = 0.0;
+    std::size_t f8InvalidRun = 0u;
+    for (const F8Angle& angle : f8Angles)
+    {
+        setAboveStressCamera(angle.yaw, angle.pitch);
+        SceneDepthDiagnosticFrame f8Depth;
+        if (!renderer.CaptureSceneDepthDiagnosticFrame(camera, f8Depth))
+            return 11;
+        std::vector<std::size_t> planarPixels;
+        std::vector<std::uint8_t> planarMask;
+        buildPlanarInteriorMask(f8Depth, planarPixels, planarMask);
+        if (planarPixels.size() < 10000u)
+            return 12;
+
+        for (Stage10UpsampleFilter filter : filters)
+        {
+            std::array<CloudDiagnosticFrame, 4> frames;
+            if (!capturePhaseSequence(filter, CloudDebugMode::Composite,
+                                      frames))
+                return 13;
+            const std::vector<double> ranges = rgbRangesForPixels(
+                frames, planarPixels);
+            const double mean = std::accumulate(
+                ranges.begin(), ranges.end(), 0.0) /
+                static_cast<double>(ranges.size());
+            const double p99 = FramePercentile(ranges, 0.99);
+            f8CompositeMean = std::max(f8CompositeMean, mean);
+            f8CompositeP99 = std::max(f8CompositeP99, p99);
+            f8PlanePassed = f8PlanePassed && mean <= 0.01 && p99 <= 0.03;
+
+            if (!capturePhaseSequence(filter,
+                    CloudDebugMode::TemporalCurrentSourceValidity, frames))
+                return 14;
+            std::size_t nonGreen = 0u;
+            for (const CloudDiagnosticFrame& frame : frames)
+            {
+                for (std::size_t index : planarPixels)
+                    nonGreen += nearColor(frame.pixels[index],
+                        currentPalette[0]) ? 0u : 1u;
+                f8InvalidRun = std::max(f8InvalidRun,
+                    longestHorizontalRun(frame, planarMask,
+                        [&](const DirectX::XMFLOAT4& value)
+                        {
+                            return !nearColor(value, currentPalette[0]);
+                        }));
+            }
+            const double nonGreenRatio = static_cast<double>(nonGreen) /
+                static_cast<double>(planarPixels.size() * frames.size());
+            f8NonGreenRatio = std::max(f8NonGreenRatio, nonGreenRatio);
+            f8PlanePassed = f8PlanePassed && nonGreenRatio <= 0.001 &&
+                f8InvalidRun <= 4u;
+        }
+    }
+
+    // 가장 잘 재현되는 +3도 yaw에서 Weight/Diff/Validity와 Temporal Off의
+    // current-only hole을 추가로 검사한다.
+    setAboveStressCamera(3.0f, 0.0f);
+    SceneDepthDiagnosticFrame f8StressDepth;
+    if (!renderer.CaptureSceneDepthDiagnosticFrame(camera, f8StressDepth))
+        return 15;
+    std::vector<std::size_t> f8StressPixels;
+    std::vector<std::uint8_t> f8StressMask;
+    buildPlanarInteriorMask(f8StressDepth, f8StressPixels, f8StressMask);
+    CloudDiagnosticFrame fullReference;
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Full);
+    if (!renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::Composite, fullReference, true))
+        return 16;
+
+    double f8WeightP99 = 0.0;
+    double f8DiffBlueRatio = 0.0;
+    std::size_t f8CloudDepthRun = 0u;
+    std::size_t f8OffHoleRun = 0u;
+    for (Stage10UpsampleFilter filter : filters)
+    {
+        std::array<CloudDiagnosticFrame, 4> frames;
+        if (!capturePhaseSequence(
+                filter, CloudDebugMode::TemporalHistoryWeight, frames))
+            return 17;
+        std::vector<double> weightRanges;
+        weightRanges.reserve(f8StressPixels.size());
+        for (std::size_t index : f8StressPixels)
+        {
+            float minimum = frames[0].pixels[index].x;
+            float maximum = minimum;
+            for (std::size_t phase = 1; phase < frames.size(); ++phase)
+            {
+                minimum = std::min(minimum, frames[phase].pixels[index].x);
+                maximum = std::max(maximum, frames[phase].pixels[index].x);
+            }
+            weightRanges.push_back(maximum - minimum);
+        }
+        const double filterWeightP99 = FramePercentile(weightRanges, 0.99);
+        f8WeightP99 = std::max(f8WeightP99, filterWeightP99);
+        f8PlanePassed = f8PlanePassed && filterWeightP99 <= 0.05;
+
+        if (!capturePhaseSequence(filter,
+                CloudDebugMode::TemporalCurrentHistoryDifference, frames))
+            return 18;
+        std::size_t blue = 0u;
+        for (const CloudDiagnosticFrame& frame : frames)
+        for (std::size_t index : f8StressPixels)
+            blue += nearColor(frame.pixels[index], { 0.0f, 0.0f, 1.0f })
+                ? 1u : 0u;
+        const double blueRatio = static_cast<double>(blue) /
+            static_cast<double>(f8StressPixels.size() * frames.size());
+        f8DiffBlueRatio = std::max(f8DiffBlueRatio, blueRatio);
+        f8PlanePassed = f8PlanePassed && blueRatio <= 0.001;
+
+        if (!capturePhaseSequence(filter,
+                CloudDebugMode::TemporalHistoryValidity, frames))
+            return 19;
+        for (const CloudDiagnosticFrame& frame : frames)
+            f8CloudDepthRun = std::max(f8CloudDepthRun,
+                longestHorizontalRun(frame, f8StressMask,
+                    [&](const DirectX::XMFLOAT4& value)
+                    {
+                        return nearColor(value, validityPalette[6]);
+                    }));
+        f8PlanePassed = f8PlanePassed && f8CloudDepthRun <= 4u;
+
+        renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+        renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Half);
+        renderer.SetStage10UpsampleFilter(filter);
+        CloudDiagnosticFrame halfOff;
+        if (!renderer.CaptureCloudDiagnosticFrame(
+                camera, 0.0f, CloudDebugMode::Composite, halfOff))
+            return 20;
+        std::vector<std::uint8_t> holeMask(f8StressMask.size(), 0u);
+        for (int y = 1; y + 1 < halfOff.height; ++y)
+        for (int x = 0; x < halfOff.width; ++x)
+        {
+            const std::size_t index = static_cast<std::size_t>(y) *
+                static_cast<std::size_t>(halfOff.width) +
+                static_cast<std::size_t>(x);
+            if (f8StressMask[index] == 0u)
+                continue;
+            const auto errorAt = [&](std::size_t sample)
+            {
+                const DirectX::XMFLOAT4& a = halfOff.pixels[sample];
+                const DirectX::XMFLOAT4& b = fullReference.pixels[sample];
+                return (std::abs(a.x - b.x) + std::abs(a.y - b.y) +
+                        std::abs(a.z - b.z)) / 3.0f;
+            };
+            const float error = errorAt(index);
+            const float neighborError = 0.5f * (errorAt(
+                index - static_cast<std::size_t>(halfOff.width)) + errorAt(
+                index + static_cast<std::size_t>(halfOff.width)));
+            holeMask[index] = error > 0.05f &&
+                error - neighborError > 0.03f ? 1u : 0u;
+        }
+        f8OffHoleRun = std::max(f8OffHoleRun,
+            longestHorizontalRun(halfOff, f8StressMask,
+                [&](const DirectX::XMFLOAT4& value)
+                {
+                    const std::size_t index = &value - halfOff.pixels.data();
+                    return holeMask[index] != 0u;
+                }));
+        f8PlanePassed = f8PlanePassed && f8OffHoleRun <= 4u;
+    }
+    {
+        std::ostringstream f8Line;
+        f8Line << std::fixed << std::setprecision(6)
+               << "[STAGE11][F8-PLANE] COMPOSITE_MEAN=" << f8CompositeMean
+               << " COMPOSITE_P99=" << f8CompositeP99
+               << " NON_GREEN_RATIO=" << f8NonGreenRatio
+               << " INVALID_RUN=" << f8InvalidRun
+               << " WEIGHT_P99=" << f8WeightP99
+               << " DIFF_BLUE_RATIO=" << f8DiffBlueRatio
+               << " CLOUD_DEPTH_RUN=" << f8CloudDepthRun
+               << " OFF_HOLE_RUN=" << f8OffHoleRun << ' '
+               << (f8PlanePassed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(f8Line.str());
+    }
+
+    // 이후 기존 F5 motion/convergence/performance 계약을 같은 카메라에서 잰다.
+    camera.SetLookAt(hero.position, hero.target);
+
+    std::array<CloudDiagnosticFrame, 4> stationaryMotionFrames;
+    if (!capturePhaseSequence(Stage10UpsampleFilter::Joint4,
+            CloudDebugMode::TemporalReprojectionMotion,
+            stationaryMotionFrames))
+        return 9;
+    std::size_t neutralMotionPixels = 0;
+    std::size_t emptyMotionPixels = 0;
+    for (const DirectX::XMFLOAT4& pixel : stationaryMotionFrames[0].pixels)
+    {
+        finite = finite && std::isfinite(pixel.x) && std::isfinite(pixel.y) &&
+            std::isfinite(pixel.z) && std::isfinite(pixel.w);
+        neutralMotionPixels += nearColor(pixel, { 0.5f, 0.5f, 0.5f }) ? 1u : 0u;
+        emptyMotionPixels += nearColor(pixel, { 0.05f, 0.05f, 0.05f }) ? 1u : 0u;
+    }
+    const bool stationaryMotionPassed = neutralMotionPixels > 0u &&
+        emptyMotionPixels > 0u;
+
+    renderer.SetCloudWindSpeedsForValidation(
+        appearance.windSpeed, appearance.weatherMapWindSpeed,
+        appearance.detailWindSpeed);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Stable4Phase);
+    std::set<std::uint64_t> convergenceHashes;
+    for (std::uint32_t frameIndex = 0; frameIndex < 8; ++frameIndex)
+    {
+        CloudDiagnosticFrame frame;
+        if (!renderer.CaptureCloudDiagnosticFrame(
+                camera, static_cast<float>(frameIndex) / 60.0f,
+                CloudDebugMode::Composite, frame))
+            return 7;
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+            finite = finite && std::isfinite(pixel.x) &&
+                std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+                std::isfinite(pixel.w);
+        convergenceHashes.insert(HashDiagnosticFrame(frame));
+    }
+    if (!renderer.TemporalHistoryValid() ||
+        renderer.TemporalAccumulatedFrames() < 8u)
+        return 8;
+
+    for (CloudDebugMode mode : {
+             CloudDebugMode::TemporalJitterPhase,
+             CloudDebugMode::TemporalReprojectionMotion,
+             CloudDebugMode::TemporalHistoryValidity,
+             CloudDebugMode::TemporalHistoryWeight,
+             CloudDebugMode::TemporalCurrentHistoryDifference,
+             CloudDebugMode::TemporalCurrentSourceValidity })
+    {
+        CloudDiagnosticFrame frame;
+        if (!renderer.CaptureCloudDiagnosticFrame(camera, 8.0f / 60.0f,
+                                                   mode, frame))
+            return 9;
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+            finite = finite && std::isfinite(pixel.x) &&
+                std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
+                std::isfinite(pixel.w);
+    }
+
+    // 승인 성능 계약도 같은 Stratus/F5/50%/Stable 조건에서 raw timestamp로
+    // 다시 잰다. UI EMA가 아니라 120프레임 warmup 뒤 서로 다른 GPU query
+    // 600개만 모아 p95를 계산한다.
+    renderer.SetDebugMode(CloudDebugMode::Composite);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint4);
+    renderer.SetCloudWindSpeedsForValidation(0.0f, 0.0f, 0.0f);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Stable4Phase);
+    for (std::uint32_t frameIndex = 0; frameIndex < 120u; ++frameIndex)
+        renderer.Render(camera, 0.0f);
+    std::vector<double> resolveSamples;
+    std::vector<double> cloudTotalSamples;
+    resolveSamples.reserve(600u);
+    cloudTotalSamples.reserve(600u);
+    std::uint64_t lastGpuSample = renderer.TimingSnapshot().gpuSampleIndex;
+    for (std::uint32_t attempt = 0;
+         attempt < 2400u && resolveSamples.size() < 600u; ++attempt)
+    {
+        renderer.Render(camera, 0.0f);
+        const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+        if (!timing.gpuValid || timing.gpuSampleIndex == lastGpuSample)
+        {
+            Sleep(1);
+            continue;
+        }
+        lastGpuSample = timing.gpuSampleIndex;
+        if (!std::isfinite(timing.rawGpuUpsampleCompositeMs) ||
+            !std::isfinite(timing.rawGpuCloudMs) ||
+            timing.rawGpuUpsampleCompositeMs < 0.0 ||
+            timing.rawGpuCloudMs < timing.rawGpuUpsampleCompositeMs)
+        {
+            finite = false;
+            break;
+        }
+        resolveSamples.push_back(timing.rawGpuUpsampleCompositeMs);
+        cloudTotalSamples.push_back(timing.rawGpuCloudMs);
+    }
+    const double resolveP95 = FramePercentile(resolveSamples, 0.95);
+    const double cloudTotalP95 = FramePercentile(cloudTotalSamples, 0.95);
+    bool performancePassed = resolveSamples.size() == 600u &&
+        cloudTotalSamples.size() == 600u && resolveP95 <= 2.0 &&
+        cloudTotalP95 <= 10.0;
+    {
+        std::ostringstream performanceLine;
+        performanceLine << std::fixed << std::setprecision(6)
+                        << "[STAGE11][PERF] SAMPLES=" << resolveSamples.size()
+                        << " RESOLVE_P95_MS=" << resolveP95
+                        << " CLOUD_TOTAL_P95_MS=" << cloudTotalP95 << ' '
+                        << (performancePassed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(performanceLine.str());
+    }
+
+    setAboveStressCamera(3.0f, 0.0f);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Stable4Phase);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Joint4);
+    for (std::uint32_t frameIndex = 0; frameIndex < 120u; ++frameIndex)
+        renderer.Render(camera, 0.0f);
+    std::vector<double> f8ResolveSamples;
+    std::vector<double> f8CloudTotalSamples;
+    f8ResolveSamples.reserve(600u);
+    f8CloudTotalSamples.reserve(600u);
+    lastGpuSample = renderer.TimingSnapshot().gpuSampleIndex;
+    for (std::uint32_t attempt = 0;
+         attempt < 2400u && f8ResolveSamples.size() < 600u; ++attempt)
+    {
+        renderer.Render(camera, 0.0f);
+        const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+        if (!timing.gpuValid || timing.gpuSampleIndex == lastGpuSample)
+        {
+            Sleep(1);
+            continue;
+        }
+        lastGpuSample = timing.gpuSampleIndex;
+        if (!std::isfinite(timing.rawGpuUpsampleCompositeMs) ||
+            !std::isfinite(timing.rawGpuCloudMs) ||
+            timing.rawGpuUpsampleCompositeMs < 0.0 ||
+            timing.rawGpuCloudMs < timing.rawGpuUpsampleCompositeMs)
+        {
+            finite = false;
+            break;
+        }
+        f8ResolveSamples.push_back(timing.rawGpuUpsampleCompositeMs);
+        f8CloudTotalSamples.push_back(timing.rawGpuCloudMs);
+    }
+    const double f8ResolveP95 = FramePercentile(f8ResolveSamples, 0.95);
+    const double f8CloudTotalP95 = FramePercentile(
+        f8CloudTotalSamples, 0.95);
+    const bool f8PerformancePassed = f8ResolveSamples.size() == 600u &&
+        f8CloudTotalSamples.size() == 600u && f8ResolveP95 <= 2.0 &&
+        f8CloudTotalP95 <= 10.0;
+    performancePassed = performancePassed && f8PerformancePassed;
+    {
+        std::ostringstream performanceLine;
+        performanceLine << std::fixed << std::setprecision(6)
+                        << "[STAGE11][F8-PERF] SAMPLES="
+                        << f8ResolveSamples.size()
+                        << " RESOLVE_P95_MS=" << f8ResolveP95
+                        << " CLOUD_TOTAL_P95_MS=" << f8CloudTotalP95 << ' '
+                        << (f8PerformancePassed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(performanceLine.str());
+    }
+
+    renderer.Resize(97, 55);
+    camera.SetAspect(97.0f / 55.0f);
+    const bool resizeReset = !renderer.TemporalHistoryValid() &&
+        renderer.TemporalAccumulatedFrames() == 0u;
+    CloudDiagnosticFrame resized;
+    if (!renderer.CaptureCloudDiagnosticFrame(
+            camera, 9.0f / 60.0f, CloudDebugMode::Composite, resized))
+        return 10;
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    const bool toggleReset = !renderer.TemporalHistoryValid() &&
+        renderer.TemporalAccumulatedFrames() == 0u;
+
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(6)
+         << "STAGE11_TEMPORAL FRAMES=" << convergenceHashes.size()
+         << " BOUNDARY_MEAN=" << boundaryMean
+         << " BOUNDARY_P99=" << boundaryP99
+         << " WEIGHT_P99=" << weightP99
+         << " GEOMETRY=" << geometryPixelCount
+         << " BOUNDARY=" << boundaryPixels.size()
+         << " GROUND_ROW=" << groundHorizonRow
+         << " FILTERS=" << std::size(filters)
+         << " HISTORY_HOLD=" << heldHistoryPixels
+         << " MOTION_NEUTRAL=" << neutralMotionPixels
+         << " MOTION_EMPTY=" << emptyMotionPixels
+         << " RESOLVE_P95_MS=" << resolveP95
+         << " CLOUD_TOTAL_P95_MS=" << cloudTotalP95
+         << " F8_RESOLVE_P95_MS=" << f8ResolveP95
+         << " F8_CLOUD_TOTAL_P95_MS=" << f8CloudTotalP95
+         << " F8_PLANE=" << (f8PlanePassed ? 1 : 0)
+         << " RESIZE_RESET=" << (resizeReset ? 1 : 0)
+         << " TOGGLE_RESET=" << (toggleReset ? 1 : 0) << ' '
+         << (finite && stationaryBoundaryPassed && weightPassed &&
+              f8PlanePassed &&
+              stationaryMotionPassed && currentPalettePassed &&
+              validityPalettePassed && differenceContractPassed &&
+              performancePassed && resizeReset && toggleReset
+              ? "PASS" : "FAIL");
+    WriteDiagnosticLine(line.str());
+    return finite && stationaryBoundaryPassed && weightPassed &&
+        f8PlanePassed &&
+        stationaryMotionPassed && currentPalettePassed &&
+        validityPalettePassed && differenceContractPassed &&
+        performancePassed && resizeReset && toggleReset &&
+        !renderer.HasDebugLayerErrors() ? 0 : 7;
+}
+
 int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
 {
     renderer.SetNoiseLabVisible(false);
@@ -2417,20 +3244,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage9-performance-test") != nullptr;
     const bool requestedStage10UpsamplingSmoke = commandLine &&
         wcsstr(commandLine, L"--stage10-upsampling-smoke-test") != nullptr;
+    const bool requestedStage11TemporalSmoke = commandLine &&
+        wcsstr(commandLine, L"--stage11-temporal-smoke-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
         requestedStage8Smoke ||
         requestedPerformanceOverlaySmoke || requestedStage13DomainSmoke ||
         requestedStage13OpenWorldSmoke || requestedStage13NoiseVolumeSmoke ||
         requestedStage13WeatherShapeGpu || requestedStage13UnifiedSceneSmoke ||
         requestedStage13OpticsLightingSmoke || requestedStage9OptimizationSmoke ||
-        requestedStage10UpsamplingSmoke;
+        requestedStage10UpsamplingSmoke || requestedStage11TemporalSmoke;
     const int kWidth  = (requestedStage13LightingPerformance ||
-        requestedStage9Performance) ? 1920 :
+        requestedStage9Performance || requestedStage11TemporalSmoke) ? 1920 :
         (requestedStage13SimilarityGpu ||
                          requestedStage13WeatherShapeGpu ||
                          requestedStage13UnifiedSceneSmoke) ? 320 :
         (requestedSmallGpuSmoke ? 96 : 1280);
-    const int kHeight = requestedStage9Performance ? 1080 :
+    const int kHeight = (requestedStage9Performance ||
+        requestedStage11TemporalSmoke) ? 1080 :
         (requestedStage13LightingPerformance ? 925 :
         (requestedStage13SimilarityGpu ||
                           requestedStage13WeatherShapeGpu ||
@@ -2466,6 +3296,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage9OptimizationSmokeTest = requestedStage9OptimizationSmoke;
     const bool stage9PerformanceTest = requestedStage9Performance;
     const bool stage10UpsamplingSmokeTest = requestedStage10UpsamplingSmoke;
+    const bool stage11TemporalSmokeTest = requestedStage11TemporalSmoke;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -2478,14 +3309,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
         stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
         stage9OptimizationSmokeTest || stage9PerformanceTest ||
-        stage10UpsamplingSmokeTest ||
+        stage10UpsamplingSmokeTest || stage11TemporalSmokeTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest;
     const bool enableNoiseVolumes = !automatedTestRun ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
         stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
         stage9OptimizationSmokeTest || stage9PerformanceTest ||
-        stage10UpsamplingSmokeTest;
+        stage10UpsamplingSmokeTest || stage11TemporalSmokeTest;
 
     std::filesystem::path hotReloadShaderDirectory;
     if (shaderHotReloadSmokeTest)
@@ -2505,7 +3336,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 13-5 | Portfolio Lighting 초기화 중",
+                    L"VolumetricCloud - Stage 11 | Temporal Reprojection 초기화 중",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
@@ -2517,7 +3348,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                     !stage13LightingPerformanceTest &&
                     !stage9OptimizationSmokeTest &&
                     !stage9PerformanceTest &&
-                    !stage10UpsamplingSmokeTest &&
+                    !stage10UpsamplingSmokeTest && !stage11TemporalSmokeTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -2556,7 +3387,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         !stage13LightingPerformanceTest &&
         !stage9OptimizationSmokeTest &&
         !stage9PerformanceTest &&
-        !stage10UpsamplingSmokeTest &&
+        !stage10UpsamplingSmokeTest && !stage11TemporalSmokeTest &&
         !noiseLabSmokeTest &&
         !shaderHotReloadSmokeTest;
     if (interactiveRun)
@@ -2587,6 +3418,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return RunStage9PerformanceTest(renderer, camera);
     if (stage10UpsamplingSmokeTest)
         return RunStage10UpsamplingSmokeTest(renderer, camera);
+    if (stage11TemporalSmokeTest)
+        return RunStage11TemporalSmokeTest(renderer, camera);
 
     struct VolumeFixture
     {

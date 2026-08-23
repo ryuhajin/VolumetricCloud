@@ -18,8 +18,8 @@ VolumetricCloud/
 ├─ src/
 │  ├─ main.cpp
 │  ├─ Window.* / Camera.*          # 입력, 오빗과 고정 검증 카메라
-│  ├─ Renderer.*                   # 진단 장면, 저해상도 구름 MRT, Full 공간 복원·합성
-│  ├─ NoiseLab.*                   # F1~F4 ImGui, 최적화/업샘플 비교, PNG/schema 32 snapshot
+│  ├─ Renderer.*                   # 저해상도 구름 MRT, Full temporal history·복원·합성, Scene Depth 회귀 readback
+│  ├─ NoiseLab.*                   # F1~F4 ImGui, 업샘플/Temporal 비교, PNG/schema 33 snapshot
 │  ├─ CloudAppearance.*            # 13-4E 외형 preset, density CPU 기준, Custom JSON 원자 저장
 │  ├─ WeatherMap.*                 # 256² CPU periodic Perlin/Channel Debug RGBA 생성과 해시
 │  ├─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
@@ -27,6 +27,8 @@ VolumetricCloud/
 │  ├─ OptimizationParameters.h     # 64바이트 View/Light 최적화 설정과 preset(b9)
 │  ├─ Stage10UpsamplingParameters.h # 32바이트 해상도·공간 필터 설정(b10)
 │  ├─ Stage10UpsamplingMath.h      # 크기·UV·대표 깊이·joint weight CPU 기준
+│  ├─ Stage11TemporalParameters.h  # 144바이트 재투영/history 설정과 상태(b11)
+│  ├─ Stage11TemporalMath.h        # jitter·D32 plane source gate·3×3 Cloud Depth·재투영·EMA CPU 기준
 │  ├─ CloudShapeParameters.h       # 64바이트 물리 두께·타입 Vertical Profile 설정(b7)
 │  ├─ CloudDomainParameters.h      # AABB/최종 평면 도메인 선택과 추적 한계(b5)
 │  ├─ LightParameters.h            # CPU/HLSL 공유 태양광 설정과 프리셋
@@ -56,6 +58,7 @@ VolumetricCloud/
 │  ├─ Fullscreen.hlsl              # SV_VertexID 풀스크린 삼각형
 │  ├─ VolumetricClouds.hlsl        # 직접·환경·다중 산란 적분과 단계 10 MRT 출력
 │  ├─ CloudUpsample.hlsl           # Full-resolution Nearest/Bilinear/Joint 복원·합성
+│  ├─ CloudTemporalResolve.hlsl    # Full D32 평면 source 검증·공간 복원, 3×3 depth·history 합성
 │  ├─ NoiseLab.hlsl                # XY/XZ/YZ 고정 단면 픽셀 셰이더
 │  ├─ NoiseVolume.hlsl             # Base/Detail periodic Texture3D compute 생성
 │  ├─ NoiseVolumeParameters.hlsli  # CPU와 공유하는 96바이트 NoiseVolumeCB(b6)
@@ -63,6 +66,7 @@ VolumetricCloud/
 │  ├─ CloudLodParameters.hlsli     # CPU와 공유하는 16바이트 CloudLodCB(b8)
 │  ├─ OptimizationParameters.hlsli # CPU와 공유하는 64바이트 OptimizationCB(b9)
 │  ├─ Stage10UpsamplingParameters.hlsli # CPU와 공유하는 32바이트 UpsamplingCB(b10)
+│  ├─ Stage11TemporalParameters.hlsli # CPU와 공유하는 144바이트 TemporalCB(b11)
 │  ├─ CloudShapeParameters.hlsli   # CPU와 공유하는 64바이트 CloudShapeCB(b7)
 │  ├─ CloudDomainParameters.hlsli  # CPU와 공유하는 32바이트 DomainCB(b5)와 교차 선택
 │  ├─ CloudAdvection.hlsli         # Physical Weather/Base/Detail 공통 수평 Bulk 이동
@@ -87,6 +91,7 @@ VolumetricCloud/
 │  ├─ Stage8AmbientMathTests.cpp   # 환경광·AO·octave 회귀 테스트
 │  ├─ Stage9OptimizationMathTests.cpp # preset ABI·가변 step·cone 구간 회귀
 │  ├─ Stage10UpsamplingMathTests.cpp # 크기·UV·대표 깊이·joint weight 회귀
+│  ├─ Stage11TemporalMathTests.cpp # 4-phase·D32 평면·3×3 depth·재투영·clip·EMA 회귀
 │  ├─ Stage13ScaleMathTests.cpp    # 1×~1000× 공간 단위 상사 불변식 테스트
 │  ├─ Stage13OpenWorldMathTests.cpp # 13-3 실제값·View/Light budget·fade 테스트
 │  ├─ Stage13NoiseVolumeMathTests.cpp # 13-4 규격·주기·cache CPU 테스트

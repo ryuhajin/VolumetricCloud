@@ -293,6 +293,9 @@ void NoiseLab::BeginFrame(float applicationTime,
                           Stage9OptimizationPreset& optimizationPreset,
                           Stage10UpsamplingParameters& upsamplingParameters,
                           Stage10ResolutionPreset& resolutionPreset,
+                          Stage11TemporalParameters& temporalParameters,
+                          bool temporalHistoryValid,
+                          std::uint32_t temporalAccumulatedFrames,
                           LightParameters& lightParameters,
                           Stage6SunPreset& sunPreset,
                           Stage7PhasePreset& phasePreset,
@@ -344,6 +347,8 @@ void NoiseLab::BeginFrame(float applicationTime,
                           cloudLodParameters,
                           optimizationParameters, optimizationPreset,
                           upsamplingParameters, resolutionPreset,
+                          temporalParameters, temporalHistoryValid,
+                          temporalAccumulatedFrames,
                           lightParameters, sunPreset, phasePreset,
                           environmentParameters, environmentPreset,
                           weatherPreset, weatherGeneratorSettings,
@@ -372,6 +377,9 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                                  Stage9OptimizationPreset& optimizationPreset,
                                  Stage10UpsamplingParameters& upsamplingParameters,
                                  Stage10ResolutionPreset& resolutionPreset,
+                                 Stage11TemporalParameters& temporalParameters,
+                                 bool temporalHistoryValid,
+                                 std::uint32_t temporalAccumulatedFrames,
                                  LightParameters& lightParameters,
                                  Stage6SunPreset& sunPreset,
                                  Stage7PhasePreset& phasePreset,
@@ -508,6 +516,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     const CloudLodParameters lodBefore = cloudLodParameters;
     const OptimizationParameters optimizationBefore = optimizationParameters;
     const Stage10UpsamplingParameters upsamplingBefore = upsamplingParameters;
+    const Stage11TemporalParameters temporalBefore = temporalParameters;
     const NoiseVolumeParameters noiseVolumeBefore = noiseVolumeParameters;
     const LightParameters lightBefore = lightParameters;
     const CloudAppearanceSettings appearanceBefore = CaptureCloudAppearance(
@@ -697,6 +706,66 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     }
 
     if (noisePanel && ImGui::CollapsingHeader(
+            "Temporal", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const Stage11TemporalMode temporalMode =
+            temporalParameters.temporalEnabled != 0u
+            ? Stage11TemporalMode::Stable4Phase : Stage11TemporalMode::Off;
+        ImGui::Text("Mode: %s", temporalMode == Stage11TemporalMode::Off
+            ? "Off" : "Stable 4-Phase");
+        if (ImGui::Button("Off##Temporal"))
+            stage11temporal::ApplyMode(
+                temporalParameters, Stage11TemporalMode::Off);
+        ImGui::SameLine();
+        if (ImGui::Button("Stable 4-Phase##Temporal"))
+            stage11temporal::ApplyMode(
+                temporalParameters, Stage11TemporalMode::Stable4Phase);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset History"))
+            m_temporalResetRequested = true;
+
+        ImGui::Text("Phase %u | history %s | accumulated %u",
+                    temporalParameters.frameIndex & 3u,
+                    temporalHistoryValid ? "valid" : "invalid",
+                    temporalAccumulatedFrames);
+        ImGui::Text("Last reset reason: %u", temporalParameters.resetReason);
+
+        ImGui::TextUnformatted("History Weight:"); ImGui::SameLine();
+        for (float value : { 0.80f, 0.90f, 0.95f })
+        {
+            std::string label = std::to_string(value) + "##HistoryWeight";
+            if (ImGui::Button(label.c_str()))
+                temporalParameters.historyWeight = value;
+            if (value != 0.95f) ImGui::SameLine();
+        }
+        ImGui::TextUnformatted("Near Cloud History:"); ImGui::SameLine();
+        if (ImGui::Button("Off##NearHistory"))
+        {
+            temporalParameters.nearHistoryFadeStartMeters = 0.0f;
+            temporalParameters.nearHistoryFadeEndMeters = 1.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("1 km##NearHistory"))
+        {
+            temporalParameters.nearHistoryFadeStartMeters = 250.0f;
+            temporalParameters.nearHistoryFadeEndMeters = 1000.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("3 km##NearHistory"))
+        {
+            temporalParameters.nearHistoryFadeStartMeters = 1000.0f;
+            temporalParameters.nearHistoryFadeEndMeters = 3000.0f;
+        }
+        bool neighborhoodClamp =
+            temporalParameters.neighborhoodClampingEnabled != 0u;
+        if (ImGui::Checkbox("Neighborhood Clamp", &neighborhoodClamp))
+            temporalParameters.neighborhoodClampingEnabled =
+                neighborhoodClamp ? 1u : 0u;
+        ImGui::TextDisabled(
+            "Approval default remains Off. Stable mode jitters only the Cloud Data pass.");
+    }
+
+    if (noisePanel && ImGui::CollapsingHeader(
             "Noise / Weather / Shape / Sampling Debug View",
             ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -744,6 +813,12 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             { "Scene Rejection", CloudDebugMode::UpsampleSceneRejection },
             { "Cloud Depth Weight", CloudDebugMode::UpsampleCloudDepthWeight },
             { "Transmittance Weight", CloudDebugMode::UpsampleTransmittanceWeight },
+            { "Temporal Jitter Phase", CloudDebugMode::TemporalJitterPhase },
+            { "Temporal Reprojection Motion", CloudDebugMode::TemporalReprojectionMotion },
+            { "Temporal History Validity", CloudDebugMode::TemporalHistoryValidity },
+            { "Temporal History Weight", CloudDebugMode::TemporalHistoryWeight },
+            { "Temporal Current/History Difference", CloudDebugMode::TemporalCurrentHistoryDifference },
+            { "Temporal Current Source Validity", CloudDebugMode::TemporalCurrentSourceValidity },
         };
         int selected = 0;
         const auto current = static_cast<CloudDebugMode>(cloudParameters.debugMode);
@@ -762,6 +837,32 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                     ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
+        }
+        if (current == CloudDebugMode::TemporalReprojectionMotion)
+        {
+            ImGui::TextWrapped(
+                "Motion: neutral gray = 0 px, RG = signed +/-16 px, blue = behind/outside, dark gray = no cloud/history.");
+        }
+        else if (current == CloudDebugMode::TemporalHistoryValidity)
+        {
+            ImGui::TextWrapped(
+                "Validity: green accepted, gray no history, magenta clip.w, blue UV bounds, cyan max motion.");
+            ImGui::TextWrapped(
+                "Orange scene, yellow cloud depth, red T, purple near fade, pink non-finite.");
+        }
+        else if (current == CloudDebugMode::TemporalCurrentHistoryDifference)
+        {
+            ImGui::TextWrapped(
+                "Raw difference x4: red scattering, green T, yellow both, blue = current/history unavailable.");
+            ImGui::TextWrapped(
+                "Different jitter phases can remain non-black after convergence; judge stability in Composite.");
+        }
+        else if (current == CloudDebugMode::TemporalCurrentSourceValidity)
+        {
+            ImGui::TextWrapped(
+                "Current source: green valid, red scene class, yellow geometry surface/plane, blue no finite/guide/source.");
+            ImGui::TextWrapped(
+                "Gray = invalid current skipped while accepted history is held.");
         }
         ImGui::TextDisabled("0-9 selects the nine frequent pipeline views.");
     }
@@ -2077,6 +2178,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         optimizationParameters);
     upsamplingParameters = stage10upsampling::Sanitize(
         upsamplingParameters);
+    temporalParameters = stage11temporal::Sanitize(temporalParameters);
     const CloudAppearanceSettings appearanceAfter = CaptureCloudAppearance(
         cloudParameters, cloudShapeParameters, m_weatherGeneratorDraft);
     if (!CloudAppearanceSettingsEqual(appearanceBefore, appearanceAfter))
@@ -2095,7 +2197,9 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         std::memcmp(&optimizationBefore, &optimizationParameters,
                     sizeof(OptimizationParameters)) != 0 ||
         std::memcmp(&upsamplingBefore, &upsamplingParameters,
-                    sizeof(Stage10UpsamplingParameters)) != 0;
+                    sizeof(Stage10UpsamplingParameters)) != 0 ||
+        std::memcmp(&temporalBefore, &temporalParameters,
+                    sizeof(Stage11TemporalParameters)) != 0;
     const bool sunSettingsChanged =
         lightBefore.directionToSun.x != lightParameters.directionToSun.x ||
         lightBefore.directionToSun.y != lightParameters.directionToSun.y ||
@@ -2320,7 +2424,7 @@ void NoiseLab::DrawPerformanceOverlay(const FrameTimingSnapshot& timing,
             ImGui::Text("GPU Frame  %7.3f ms", timing.gpuFrameMs);
             ImGui::Text("Cloud Raymarch      %7.3f ms",
                         timing.gpuCloudRaymarchMs);
-            ImGui::Text("Upsample/Composite  %7.3f ms",
+            ImGui::Text("Spatial/Temporal Resolve %7.3f ms",
                         timing.gpuUpsampleCompositeMs);
             ImGui::Text("GPU Cloud Total     %7.3f ms", timing.gpuCloudMs);
         }
@@ -2402,6 +2506,13 @@ bool NoiseLab::ConsumeNoiseVolumeRegenerateRequest()
 {
     const bool requested = m_noiseVolumeRegenerateRequest;
     m_noiseVolumeRegenerateRequest = false;
+    return requested;
+}
+
+bool NoiseLab::ConsumeTemporalResetRequest()
+{
+    const bool requested = m_temporalResetRequested;
+    m_temporalResetRequested = false;
     return requested;
 }
 
@@ -2669,6 +2780,7 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              Stage9OptimizationPreset optimizationPreset,
                              const Stage10UpsamplingParameters& upsampling,
                              Stage10ResolutionPreset resolutionPreset,
+                             const Stage11TemporalParameters& temporal,
                              int cloudRenderWidth,
                              int cloudRenderHeight,
                              const LightParameters& light,
@@ -2751,8 +2863,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         : 0.0;
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 32,\n"
-           << "  \"implementationStage\": \"10\",\n"
+           << "  \"schemaVersion\": 33,\n"
+           << "  \"implementationStage\": \"11\",\n"
            << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\",\n"
            << "  \"physicalAdvectionMode\": \""
            << (physicalShape ? "rigidSharedWindSpeed"
@@ -2784,6 +2896,21 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"openWorldPipelinePreset\": \""
            << stage13openworld::PipelinePresetName(
                   m_openWorldPipelinePreset) << "\",\n"
+           << "  \"temporal\": {\"mode\": \""
+           << (temporal.temporalEnabled != 0u ? "stable4Phase" : "off")
+           << "\", \"historyWeight\": " << temporal.historyWeight
+           << ", \"sceneDepthRelativeThreshold\": "
+           << temporal.sceneDepthRelativeThreshold
+           << ", \"cloudDepthRelativeThreshold\": "
+           << temporal.cloudDepthRelativeThreshold
+           << ", \"transmittanceThreshold\": "
+           << temporal.transmittanceThreshold
+           << ", \"nearFadeMeters\": ["
+           << temporal.nearHistoryFadeStartMeters << ", "
+           << temporal.nearHistoryFadeEndMeters
+           << "], \"neighborhoodClamp\": "
+           << (temporal.neighborhoodClampingEnabled != 0u ? "true" : "false")
+           << "},\n"
            << "  \"cloudTypeMode\": \""
            << cloudTypeModeNames[cloudTypeIndex] << "\",\n";
     const CloudAppearanceSettings currentAppearance = CaptureCloudAppearance(
@@ -3122,6 +3249,7 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               Stage9OptimizationPreset optimizationPreset,
                               const Stage10UpsamplingParameters& upsamplingParameters,
                               Stage10ResolutionPreset resolutionPreset,
+                              const Stage11TemporalParameters& temporalParameters,
                               int cloudRenderWidth,
                               int cloudRenderHeight,
                               const LightParameters& lightParameters,
@@ -3164,6 +3292,7 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                                        optimizationPreset,
                                        upsamplingParameters,
                                        resolutionPreset,
+                                       temporalParameters,
                                        cloudRenderWidth,
                                        cloudRenderHeight,
                                        lightParameters, sunPreset,

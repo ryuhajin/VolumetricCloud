@@ -7,8 +7,9 @@
 
 DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류메트릭 클라우드**를 렌더링하는
 학습 프로젝트입니다. 단계 0~8과 **단계 13 대규모 평면 구름층**은 사용자 승인을 받았으며,
-단계 9 기본 최적화는 2026-08-19 Balanced 기본값으로 사용자 승인을 받았으며, 현재는
-단계 10 저해상도·공간 업샘플링을 구현 중입니다. 단계 9는 main과 `stage9-approved` 태그에
+단계 9 기본 최적화는 2026-08-19 Balanced 기본값으로, 단계 11 Jitter·Temporal Reprojection은
+2026-08-23 안정성 우선 기준으로 사용자 승인을 받았으며, 현재는 단계 12 Cloud Shadow Map과
+Light Cache 진입 준비 상태입니다. 단계 9는 `stage9-approved`, 단계 11은 `stage11` 태그에
 고정했고 초기 단계 13 평면 구름층 실험은 별도 브랜치에 보관했습니다. 새 포트폴리오 계획은 사용자 승인을 받았고
 단계 13-0 공간 단위 계약과 단계 13-1 AABB/평면층 교차는 사용자 승인을 받았고,
 단계 13-2 상사 확대와 단계 13-3 실제 오픈 월드 스케일은 2026-08-11 사용자 승인을
@@ -43,6 +44,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 거리 LOD 설정 | `src/CloudLodParameters.h` | 16바이트 b8 Detail 거리 LOD와 측정 중립 평균 |
 | 최적화 설정 | `src/OptimizationParameters.h` | 64바이트 b9 View/Light 후보와 단계 9 preset |
 | 업샘플 설정 | `src/Stage10UpsamplingParameters.h` | 32바이트 b10 해상도·공간 필터·경계 가중치 |
+| Temporal 설정 | `src/Stage11TemporalParameters.h` | 144바이트 b11 jitter·이전 행렬·history 거부 설정 |
 | 도메인 설정 | `src/CloudDomainParameters.h` | AABB/평면층 선택과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
 | 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 29 Custom 원자 저장/복원 |
@@ -55,6 +57,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | Ray | `shaders/Ray.hlsli` | 평행축을 안전하게 처리하는 slab AABB 교차 |
 | Cloud PS | `shaders/VolumetricClouds.hlsl` | noise 밀도 적분과 scattering/T/depth MRT 출력 |
 | Resolve PS | `shaders/CloudUpsample.hlsl` | Nearest/Bilinear/Joint 공간 복원과 장면 합성 |
+| Temporal PS | `shaders/CloudTemporalResolve.hlsl` | wind-aware 재투영·history 거부/clip과 Full 합성 |
 | Noise | `shaders/Noise.hlsli` | 교체 가능한 Base/Detail noise, 높이와 erosion 밀도 함수 |
 | Lighting | `shaders/CloudLighting.hlsli` | Base-only 태양 Light Ray와 직접 단일 산란 |
 | Phase | `shaders/PhaseFunction.hlsli` | 방향 부호가 고정된 Dual-lobe HG와 안전한 Phase Factor |

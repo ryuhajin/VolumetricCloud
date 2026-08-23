@@ -26,6 +26,7 @@
 #include "NoiseLab.h"
 #include "OptimizationParameters.h"
 #include "Stage10UpsamplingParameters.h"
+#include "Stage11TemporalParameters.h"
 #include "Stage13ScaleMath.h"
 #include "Stage13OpenWorldMath.h"
 #include "Stage13NoiseVolumeMath.h"
@@ -48,6 +49,13 @@ struct CloudDiagnosticFrame
     std::vector<DirectX::XMFLOAT4> pixels;
 };
 
+struct SceneDepthDiagnosticFrame
+{
+    int width = 0;
+    int height = 0;
+    std::vector<float> deviceDepth;
+};
+
 class Renderer
 {
 public:
@@ -59,6 +67,8 @@ public:
                                      CloudDebugMode mode,
                                      CloudDiagnosticFrame& frame,
                                      bool forceDirectComposite = false);
+    bool CaptureSceneDepthDiagnosticFrame(
+        const Camera& camera, SceneDepthDiagnosticFrame& frame);
     // 자동 GPU 회귀가 구름 패스만 비교할 때 사용하는 테스트 전용 fixture다.
     void SetOpaqueSceneForTest(bool enabled)
     {
@@ -126,6 +136,27 @@ public:
     }
     int CloudRenderWidth() const { return m_cloudRenderWidth; }
     int CloudRenderHeight() const { return m_cloudRenderHeight; }
+    void SetStage11TemporalMode(Stage11TemporalMode mode);
+    Stage11TemporalMode TemporalMode() const
+    {
+        return m_temporalParameters.temporalEnabled != 0u
+            ? Stage11TemporalMode::Stable4Phase : Stage11TemporalMode::Off;
+    }
+    const Stage11TemporalParameters& TemporalSettings() const
+    {
+        return m_temporalParameters;
+    }
+    Stage11TemporalParameters& MutableTemporalSettings()
+    {
+        return m_temporalParameters;
+    }
+    void ResetTemporalHistory(Stage11HistoryResetReason reason =
+        Stage11HistoryResetReason::Manual);
+    bool TemporalHistoryValid() const { return m_temporalHistoryValid; }
+    std::uint32_t TemporalAccumulatedFrames() const
+    {
+        return m_temporalAccumulatedFrames;
+    }
     bool ApplyOpenWorldPipelinePreset(OpenWorldPipelinePreset preset);
     bool ApplyCloudAppearancePreset(CloudAppearancePreset preset);
     bool SaveCurrentCloudAppearance();
@@ -270,6 +301,7 @@ private:
     bool CreateBackBufferTarget();
     bool CreateSceneTargets();
     bool CreateCloudTargets();
+    bool CreateTemporalHistoryTargets();
     bool CreateDiagnosticScene();
     bool CreatePipelineStates();
     bool CreateConstantBuffers();
@@ -304,6 +336,10 @@ private:
     void RenderCloudDataPass(const Camera& camera, float timeSeconds);
     void RenderCloudUpsamplePass(const Camera& camera, float timeSeconds,
                                  ID3D11RenderTargetView* targetOverride = nullptr);
+    bool RenderCloudTemporalPass(const Camera& camera, float timeSeconds,
+                                 ID3D11RenderTargetView* targetOverride = nullptr);
+    void PrepareTemporalFrame(const Camera& camera, float timeSeconds);
+    void CommitTemporalFrame(const Camera& camera, float timeSeconds);
     bool EnsureCloudTargets();
     void CaptureCloudFrameHash();
     void CheckShaderHotReload();
@@ -335,12 +371,20 @@ private:
     int m_cloudRenderWidth = 0;
     int m_cloudRenderHeight = 0;
 
+    ComPtr<ID3D11Texture2D> m_temporalHistoryCloud[2];
+    ComPtr<ID3D11RenderTargetView> m_temporalHistoryCloudRtv[2];
+    ComPtr<ID3D11ShaderResourceView> m_temporalHistoryCloudSrv[2];
+    ComPtr<ID3D11Texture2D> m_temporalHistoryAux[2];
+    ComPtr<ID3D11RenderTargetView> m_temporalHistoryAuxRtv[2];
+    ComPtr<ID3D11ShaderResourceView> m_temporalHistoryAuxSrv[2];
+
     ComPtr<ID3D11VertexShader> m_fullscreenVs;
     ComPtr<ID3D11PixelShader> m_cloudReferencePs;
     ComPtr<ID3D11PixelShader> m_cloudOptimizedPs;
     ComPtr<ID3D11PixelShader> m_cloudReferenceDataPs;
     ComPtr<ID3D11PixelShader> m_cloudOptimizedDataPs;
     ComPtr<ID3D11PixelShader> m_cloudUpsamplePs;
+    ComPtr<ID3D11PixelShader> m_cloudTemporalResolvePs;
     ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
@@ -358,6 +402,7 @@ private:
     ComPtr<ID3D11Buffer> m_cloudLodCb;
     ComPtr<ID3D11Buffer> m_optimizationCb;
     ComPtr<ID3D11Buffer> m_upsamplingCb;
+    ComPtr<ID3D11Buffer> m_temporalCb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
@@ -366,6 +411,7 @@ private:
     ComPtr<ID3D11DepthStencilState> m_depthState;
     ComPtr<ID3D11RasterizerState> m_rasterizerState;
     ComPtr<ID3D11SamplerState> m_pointClampSampler;
+    ComPtr<ID3D11SamplerState> m_linearClampSampler;
     ComPtr<ID3D11SamplerState> m_weatherLinearWrapSampler;
     ComPtr<ID3D11Texture2D> m_weatherMapTexture;
     ComPtr<ID3D11ShaderResourceView> m_weatherMapSrv;
@@ -404,6 +450,13 @@ private:
     Stage10UpsamplingParameters m_upsamplingParameters;
     Stage10ResolutionPreset m_resolutionPreset =
         Stage10ResolutionPreset::Full;
+    Stage11TemporalParameters m_temporalParameters;
+    bool m_temporalHistoryValid = false;
+    bool m_temporalPreviousFrameValid = false;
+    std::uint32_t m_temporalHistoryReadIndex = 0;
+    std::uint32_t m_temporalAccumulatedFrames = 0;
+    float m_previousTemporalTimeSeconds = 0.0f;
+    float m_previousTemporalFovYDegrees = 60.0f;
     std::uint64_t m_baseNoiseVolumeHash = 0;
     std::uint64_t m_detailNoiseVolumeHash = 0;
     double m_noiseVolumeGenerationMilliseconds = 0.0;
@@ -415,6 +468,7 @@ private:
     std::wstring m_fullscreenShaderPath;
     std::wstring m_cloudShaderPath;
     std::wstring m_cloudUpsampleShaderPath;
+    std::wstring m_cloudTemporalResolveShaderPath;
     std::wstring m_noiseLabShaderPath;
     std::wstring m_sceneShaderPath;
     std::wstring m_noiseVolumeShaderPath;
