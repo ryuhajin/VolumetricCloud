@@ -771,3 +771,115 @@ Light cone은 시간 jitter 없이 고정 golden angle `2.39996323 rad`를 사�
 비용의 2°와 원거리 구간 비율 77%가 Dense/Stratus/Cumulus에서 처음으로 P99 0.03 이하를
 만족해 Balanced 값이 되었다. temporal jitter, 저해상도, Light Cache와 지면 Cloud Shadow
 Map은 단계 10~12 범위다.
+
+## 단계 10: 저해상도 구름 데이터와 공간 업샘플링
+
+단계 10은 View/Light 적분식을 바꾸지 않고 실행하는 화면 레이 수를 줄인다. 선택한 축 비율
+`r`에서 구름 픽셀 수는 Full의 `r²`이다. 초기 비교의 50/67/75%는 각각 약
+25/44.4/56.25%였으며, 사용자 검증 뒤 활성 후보는 정확한 2:1 확대인 50%와 Full만 남겼다. 각 레이는
+최종 장면색 대신 `scattering.rgb`, View `T`, 대표 구름 깊이와 해당 원본 ray의 scene limit을
+두 MRT에 쓴다.
+
+대표 깊이는 교차 구간 중점이 아니라 각 View 구간이 만든 불투명도 기여도다.
+
+```text
+alpha_i = T_before_i * (1 - T_step_i)
+cloudDepth = sum(sampleDistance_i * alpha_i) / sum(alpha_i)
+```
+
+`sum(alpha_i)`가 `1e-6` 이하면 빈 레이로 보고 cloud depth와 source scene limit에 같은 장면
+제한 거리를 기록한다. 이 값은 색 적분을 바꾸지 않고 업샘플 경계 guide로만 사용한다.
+
+Nearest는 한 texel, Bilinear는 네 texel의 공간 가중합이다. 활성 Joint4는 여기에 다음
+가중치를 곱한다.
+
+```text
+w = w_spatial * w_sceneClass * w_sceneDepth * w_cloudDepth * w_T
+w_depth(a,b,sigma) = exp(-0.5 * (abs(a-b) / (sigma * max(abs(a),abs(b),1m)))^2)
+w_T = exp(-0.5 * (abs(Ta-Tb) / sigma_T)^2)
+```
+
+하늘/불투명 분류가 다르면 `w_sceneClass=0`이다. 합이 `minimumWeight`보다 작으면 물체 픽셀은
+`scattering=0,T=1`로 구름 번짐을 막고 하늘은 최근접 유효 구름 표본을 쓴다. Full은 같은
+MRT와 resolve를 지나되 1:1 최근접으로 복원한다. 현재 프레임의 공간 정보만 사용하며 jitter,
+history buffer, reprojection과 ghosting rejection은 단계 11에 남긴다.
+
+초기 Joint9 3×3 경로와 67/75% enum은 schema 32와 실패 이력 재현을 위해 보존하지만 활성
+F1·자동 후보에서는 제외한다. 정지 화면에서 Nearest/Bilinear/Joint4 차이가 크지 않아 가장 싼
+`50% Axis + Nearest`가 2026-08-19 잠정 최종 후보가 됐다.
+
+## 단계 11: 4-phase jitter와 Temporal Reprojection
+
+Stable 4-Phase는 50% 저해상도 texel 중심에 다음 offset을 순환 적용한다.
+
+```text
+(-0.25,-0.25), (+0.25,+0.25), (+0.25,-0.25), (-0.25,+0.25)
+jitteredUv = cloudUv + jitterLowResTexels / cloudRenderSize
+sourcePosition = fullUv * cloudRenderSize - 0.5 - jitterLowResTexels
+```
+
+같은 `jitteredUv`로 View Ray와 Full Scene Depth를 읽으므로 한 저해상도 레이의 구름 구간과
+장면 제한이 어긋나지 않는다. Full Scene geometry의 projection 자체는 jitter하지 않는다.
+저해상도 texel `i`는 `(i+0.5+jitter)/size` 위치를 측정했으므로 Full 공간 복원에서는 jitter를
+반드시 뺀다. 이 역보정이 없으면 current가 phase마다 `±0.5 Full pixel` 이동한 것으로 해석되어
+불투명 건물 경계가 한 픽셀 왕복한다.
+
+역보정만으로는 건물 바로 옆 low-res ray가 phase마다 geometry와 sky를 번갈아 보는 문제를
+해결할 수 없다. Stage 11 resolve는 각 source의 Scene Limit이 finite이고 `[0,far]`인지 확인한 뒤
+Full 픽셀과 geometry/sky class가 같은 source만 쓴다. 가까운 동일 표면은 다음 meter fast path로
+추가 Full Depth 조회 없이 통과한다.
+
+```text
+allowedDepthError = clamp(fullSceneLimit * 0.01, 1m, 10m)
+abs(sourceSceneLimit - fullSceneLimit) <= allowedDepthError
+```
+
+이 식은 최종 거부 기준이 아니다. 2026-08-22 F8 하향 사선 구도에서는 같은 10km 지면의 인접
+ray 거리도 10m 이상 달라져 모든 필터에 수평 invalid 줄이 생겼다. fast path를 넘으면 low-res tap이
+실제로 raymarch한 Full 픽셀을 `(tap+0.5+jitter)/lowSize`로 찾고, target D32의 Center/L/R/U/D에서
+절댓값이 작은 one-sided slope를 골라 source device depth를 예측한다.
+
+```text
+predictedDepth = targetDepth + slopeX*deltaX + slopeY*deltaY
+tolerance = 8e-7 + 2e-7*(abs(deltaX)+abs(deltaY))
+abs(sourceFullDepth-predictedDepth) <= tolerance
+```
+
+Perspective 투영에서 한 삼각형의 device depth는 화면 좌표에 대해 affine이므로 넓은 사선 평면은
+통과하고, 건물·지면·하늘의 depth discontinuity는 거부된다. 필요한 축의 slope가 없으면
+보수적으로 invalid 처리한다.
+
+Nearest의 최근접 source가 실패하면 3×3을 y-major/x-major로 탐색해 공간상 가장 가까운 유효
+source를 고른다. Bilinear는 invalid tap의 weight를 0으로 만들고 나머지를 재정규화하며,
+Joint4/보존 Joint9는 soft weight 전에 같은 hard validation을 적용한다. Joint 공간 거리는
+`tapPixelIndex-sourcePosition`으로 계산해 texel-index 중심 규칙을 통일한다.
+
+공간 복원한 현재 대표 깊이 `d_cloud`로 월드 위치를 만들고, Physical Shape가 한 프레임 동안
+이동한 만큼 반대로 옮겨 같은 밀도 특징의 이전 위치를 찾는다.
+
+```text
+P_current  = cameraPosition + rayDirection * d_cloud
+P_previous = P_current - normalize(windDirection) * windSpeed * deltaTime
+clip_previous = P_previous * previousViewProjection
+uv_previous = (clip.xy / clip.w) * (0.5,-0.5) + (0.5,0.5)
+```
+
+`clip.w<=0`, 화면 밖, 96px 초과 motion, Scene geometry/sky 불일치, Scene/Cloud 깊이 차이,
+T 차이와 1km 이하 near fade는 history를 거부한다. Cloud Depth는 중심 한 값 대신 `T<0.99`인
+현재 Full 3×3 대표 깊이의 최소·최대와 상대 margin을 사용한다. current/history가 거의 투명하면
+대표 깊이 검사를 생략하고 T와 clipping에 맡긴다. 같은 3×3 `scattering/T` 최소·최대 범위로
+history를 clamp한 뒤 다음 EMA로 합친다.
+
+```text
+historyClipped = clamp(history, neighborhoodMin, neighborhoodMax)
+resolved = lerp(current, historyClipped, historyWeight * nearFade)
+```
+
+history에는 합성된 장면색이 아니라 `scattering/T`와 현재 Cloud Depth/Scene Limit을 저장한다.
+따라서 다음 프레임에도 구름과 불투명 장면의 경계를 따로 검사할 수 있다. resize, preset,
+카메라 cut, 큰 time jump와 shader reload 뒤 첫 프레임은 항상 current 100%다.
+
+유효한 current source가 하나도 없을 때는 invalid Cloud Depth/T를 rejection에 넣지 않는다.
+geometry는 Full Scene surface, sky는 far-plane ray point로 history UV를 계산하고 Scene 검사까지
+통과한 history를 100% 유지한다. 이때 이전 Cloud Depth는 보존하고 Scene Limit만 현재 Full
+픽셀 값으로 갱신한다. history도 읽을 수 없으면 `scattering=0,T=1`로 시작한다.

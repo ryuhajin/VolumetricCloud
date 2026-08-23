@@ -82,6 +82,9 @@ void Window::ApplyCameraPreset(Stage13CameraPresetId id,
         stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
     m_camera->SetFovYDegrees(60.0f);
     m_camera->SetLookAt(preset.position, preset.target);
+    if (m_renderer)
+        m_renderer->ResetTemporalHistory(
+            Stage11HistoryResetReason::CameraCut);
     SetCameraPresetName(displayName);
 }
 
