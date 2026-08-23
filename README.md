@@ -7,8 +7,9 @@ DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 �
 13-3 실제 오픈 월드 스케일은 2026-08-11, 13-4B Weather 기반 가변 두께와 3D texture
 형태는 2026-08-14, 13-4C 개발 UI와 Local Cloud Inspector는 2026-08-16 사용자 승인을
 받았습니다. 이 이력은 보존되며 현재 런타임은 **단계 13-4D 단일 포트폴리오 디버깅 씬**이
-Local Inspector를 대체합니다. 기존 13-5 자동 결과는 보존하지만 새 씬에서 재검증·사용자
-승인을 기다립니다. 일반 실행은
+Local Inspector를 대체합니다. 단계 13은 2026-08-17, 단계 9 Balanced는 2026-08-19,
+단계 11 Jitter·Temporal Reprojection 안정성 기준은 2026-08-23 사용자 승인을 받았습니다.
+현재 다음 목표는 단계 12 Cloud Shadow Map과 Light Cache입니다. 일반 실행은
 Planar Layer, 1.5~7.5km 전역 층과 XZ별 1~6km 로컬 두께, 64km Periodic Perlin Weather와 함께 결정적 seed로
 생성한 Base `128³ RGBA8`, Detail `32³ RGBA8` Texture3D를 사용합니다.
 자동 테스트의 이전 단계 경로는 기존 절차 noise/AABB 기준을 유지합니다.
@@ -42,7 +43,11 @@ Planar Layer, 1.5~7.5km 전역 층과 XZ별 1~6km 로컬 두께, 64km Periodic P
 - 독립적인 전방·후방 g, 혼합 비율, Phase 강도와 LDR highlight shoulder
 - 별도 64바이트 EnvironmentCB와 외부 텍스처 없는 하늘·지면 환경광
 - 높이 가중치, 밀도 기반 Ambient Occlusion과 광학 깊이 재사용 다중 산란
-- 우측 상단 FPS·CPU/GPU Frame·GPU Cloud 실시간 성능 오버레이
+- 선택한 50/67/75/100% 축 해상도의 RGBA16F scattering/T + RG32F cloud/scene depth MRT
+- Nearest/Bilinear/Depth·Cloud·T Joint4/Joint9 Full-resolution 공간 복원
+- 50% 2×2 4-phase jitter와 Full RGBA16F/RG16F temporal history ping-pong
+- 대표 Cloud Depth·Physical Wind 기반 재투영, Scene/Cloud/T 거부와 neighborhood clipping
+- 우측 상단 FPS·CPU/GPU Frame·Cloud Raymarch·Spatial/Temporal Resolve·GPU Cloud Total 오버레이
 - 원본 noise, threshold, 최종 밀도와 noise UVW 디버그
 - ImGui Noise Lab의 XY/XZ/YZ 동기 단면, 높이 출력과 프로파일 곡선
 - 공용 `Noise.hlsli` 저장 시 Noise Lab·구름 동시 핫리로드
@@ -103,12 +108,19 @@ Noise Lab의 `3D Noise Volumes`에서 현재 noise source를 확인하고 `Regen
 F1의 `Open World Render Pipeline Compare`는 현재 기하와 카메라를 고정한 채 Legacy
 1000x→Texture3D→Periodic Weather→Physical Shape→Full Open World를 누적 적용합니다.
 Open World 시작값과 `Open World Render Defaults`는 항상 마지막 최신 경로입니다.
-`Export 4 PNG + JSON`은 schema 28로 `sceneContract`, 현재/저장 카메라,
-`cloudTypeMode`, `openWorldPipelinePreset`, noise volume과 광학·LOD 설정을 저장합니다.
+F1의 `Temporal`에서 Off/Stable 4-Phase, history weight, near-cloud fade와 reset을 조작하고
+phase/history valid/누적 프레임을 확인할 수 있습니다. 승인 전 일반 시작값은 Off입니다.
+Temporal On/Off의 50% 공간 복원은 Full Scene과 geometry/sky class·D32 surface plane이 맞는
+low-res source만 사용하며, On에서 유효 current가 없으면 검증된 Full history를 유지합니다.
+`Current Source Validity` debug에서 valid 초록, class 빨강, surface/plane 노랑,
+guide/후보 없음 파랑, history 유지 회색을 확인할 수 있습니다.
+`Export 4 PNG + JSON`은 전체 snapshot schema 33으로 `sceneContract`, 현재/저장 카메라,
+단계 9 optimization, 단계 10 upsampling과 단계 11 temporal 설정을 저장합니다. Custom 외형
+전용 파일은 schema 29를 유지합니다.
 
 우측 상단 성능 오버레이는 `F1` 창을 숨겨도 유지됩니다. F1의 `Performance`
 항목에서 VSync를 켜거나 끌 수 있습니다. CPU Frame은 `Present`와 VSync 대기를 포함하지만
-GPU Frame은 Present를 제외하며, View/Light Step 비용 비교에는 `GPU Cloud ms`를 사용합니다.
+GPU Frame은 Present를 제외하며, 최적화 비교에는 두 구간 합인 `GPU Cloud Total ms`를 사용합니다.
 재현 가능한 측정 절차는 [성능 측정 기준](doc/PERFORMANCE.md)에 정리되어 있습니다.
 
 ### 13-4B Weather 기반 세로 형상
@@ -150,6 +162,11 @@ PNG 없이 텍스트로 검사합니다.
 수정한 뒤 Ray·Noise·Density 자동 게이트는 모든 배율에서 통과합니다. 조명 적분은
 `singleScatteringAlbedo × (1-stepTransmittance)`로 바꿨으며, 보고 전용 1000×
 Accumulated Direct/Composite MAE도 각각 `0.00036347`/`0.00070073`으로 목표 `0.01` 이하다.
+단계 11 추가 뒤 전체 Debug 회귀는 45개다. `Stage11TemporalMath`는 4-phase와 jitter Full guide pixel,
+D32 plane source gate, 3×3 Cloud Depth 범위, 필터 fallback, invalid-current 정책, wind-aware
+reprojection, clip/EMA와 b11 ABI를 검사한다. `Stage11TemporalSmoke`는 Stratus/F5와 F8
+기본·yaw ±3°·pitch ±2°의 1920×1080 Scene·960×540 Cloud Data에서 세 필터 4-phase 경계·사선 평면,
+디버그 ID 68~73, Off hole, F5/F8 600표본 성능, resize/toggle과 D3D11 오류를 검사한다.
 
 ```powershell
 ctest --test-dir build -C Debug -R "Stage13Similarity" -V

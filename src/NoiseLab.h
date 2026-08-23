@@ -27,6 +27,8 @@
 #include "EnvironmentParameters.h"
 #include "FrameProfiler.h"
 #include "OptimizationParameters.h"
+#include "Stage10UpsamplingParameters.h"
+#include "Stage11TemporalParameters.h"
 
 class Camera;
 
@@ -115,6 +117,11 @@ public:
                     CloudLodParameters& cloudLodParameters,
                     OptimizationParameters& optimizationParameters,
                     Stage9OptimizationPreset& optimizationPreset,
+                    Stage10UpsamplingParameters& upsamplingParameters,
+                    Stage10ResolutionPreset& resolutionPreset,
+                    Stage11TemporalParameters& temporalParameters,
+                    bool temporalHistoryValid,
+                    std::uint32_t temporalAccumulatedFrames,
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
                     Stage7PhasePreset& phasePreset,
@@ -158,6 +165,7 @@ public:
     bool ConsumeCloudAppearanceSaveRequest();
     bool ConsumeCloudAppearanceEdited();
     bool ConsumeNoiseVolumeRegenerateRequest();
+    bool ConsumeTemporalResetRequest();
     bool ConsumeNoiseSourceRequest(NoiseSource& source);
     bool ConsumeWeatherGeneratorRequest(WeatherMapGeneratorSettings& settings);
     void SynchronizeWeatherGeneratorSettings(
@@ -180,6 +188,11 @@ public:
                         const CloudLodParameters& cloudLodParameters,
                         const OptimizationParameters& optimizationParameters,
                         Stage9OptimizationPreset optimizationPreset,
+                        const Stage10UpsamplingParameters& upsamplingParameters,
+                        Stage10ResolutionPreset resolutionPreset,
+                        const Stage11TemporalParameters& temporalParameters,
+                        int cloudRenderWidth,
+                        int cloudRenderHeight,
                         const LightParameters& lightParameters,
                         Stage6SunPreset sunPreset,
                         Stage7PhasePreset phasePreset,
@@ -235,6 +248,11 @@ private:
                            CloudLodParameters& cloudLodParameters,
                            OptimizationParameters& optimizationParameters,
                            Stage9OptimizationPreset& optimizationPreset,
+                           Stage10UpsamplingParameters& upsamplingParameters,
+                           Stage10ResolutionPreset& resolutionPreset,
+                           Stage11TemporalParameters& temporalParameters,
+                           bool temporalHistoryValid,
+                           std::uint32_t temporalAccumulatedFrames,
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
                            Stage7PhasePreset& phasePreset,
@@ -282,6 +300,11 @@ private:
                        const CloudLodParameters& cloudLodParameters,
                        const OptimizationParameters& optimizationParameters,
                        Stage9OptimizationPreset optimizationPreset,
+                       const Stage10UpsamplingParameters& upsamplingParameters,
+                       Stage10ResolutionPreset resolutionPreset,
+                       const Stage11TemporalParameters& temporalParameters,
+                       int cloudRenderWidth,
+                       int cloudRenderHeight,
                        const LightParameters& lightParameters,
                        Stage6SunPreset sunPreset,
                        Stage7PhasePreset phasePreset,
@@ -315,6 +338,7 @@ private:
     int m_cloudAppearancePresetRequest = -1;
     bool m_cloudAppearanceSaveRequest = false;
     bool m_cloudAppearanceEdited = false;
+    bool m_temporalResetRequested = false;
     bool m_noiseVolumeRegenerateRequest = false;
     int m_noiseSourceRequest = -1;
     bool m_weatherGeneratorRequestPending = false;

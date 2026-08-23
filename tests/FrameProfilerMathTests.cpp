@@ -30,13 +30,18 @@ int main()
     accumulator.RecordCpuMilliseconds(10.0);
     Require(std::abs(accumulator.Snapshot().cpuFrameMs - 19.0) < 1e-9,
             "CPU time must use alpha 0.1 EMA");
-    accumulator.RecordGpuMilliseconds(8.0, 5.0);
-    accumulator.RecordGpuMilliseconds(6.0, 3.0);
+    accumulator.RecordGpuMilliseconds(8.0, 5.0, 4.0);
+    accumulator.RecordGpuMilliseconds(6.0, 3.0, 2.0);
     Require(std::abs(accumulator.Snapshot().gpuFrameMs - 7.8) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuCloudMs - 4.8) < 1e-9,
             "GPU times must use alpha 0.1 EMA");
+    Require(std::abs(accumulator.Snapshot().gpuCloudRaymarchMs - 3.8) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuUpsampleCompositeMs - 1.0) < 1e-9,
+            "GPU cloud split must preserve raymarch and resolve timings");
     Require(std::abs(accumulator.Snapshot().rawGpuFrameMs - 6.0) < 1e-9 &&
                 std::abs(accumulator.Snapshot().rawGpuCloudMs - 3.0) < 1e-9 &&
+                std::abs(accumulator.Snapshot().rawGpuCloudRaymarchMs - 2.0) < 1e-9 &&
+                std::abs(accumulator.Snapshot().rawGpuUpsampleCompositeMs - 1.0) < 1e-9 &&
                 accumulator.Snapshot().gpuSampleIndex == 2u,
             "GPU snapshot must expose unique raw samples for percentile gates");
 

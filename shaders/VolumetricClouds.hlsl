@@ -34,6 +34,7 @@ cbuffer cbCamera : register(b0)
 // cbCamera의 time 선언 뒤 포함해야 Light Ray가 같은 애니메이션 시간을 사용한다.
 #include "CloudDomainParameters.hlsli"
 #include "OptimizationParameters.hlsli"
+#include "Stage11TemporalParameters.hlsli"
 #include "CloudEnvironment.hlsli"
 
 // t0: 앞선 DiagnosticScene PS가 R16G16B16A16_FLOAT에 쓴 linear RGB 장면색.
@@ -224,6 +225,8 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
 
         // 3. View Ray 소멸계수와 대표 표본을 준비한다.
         float extinction = max(extinctionCoefficient, 0.0);
+        float opacityDepthMoment = 0.0;
+        float opacityWeight = 0.0;
 
         // 디버그 모드는 같은 대표 위치에서 raw→threshold→final→UVW를 비교한다.
         float representativeDistance = (tStart + tEnd) * 0.5;
@@ -333,6 +336,10 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
                                      lighting.groundBounce +
                                      lighting.multipleScattering;
             }
+            float sampleOpacityContribution = result.transmittance *
+                (1.0 - sampledStepTransmittance);
+            opacityDepthMoment += sampleDistance * sampleOpacityContribution;
+            opacityWeight += sampleOpacityContribution;
             result.transmittance *= sampledStepTransmittance;
             // 단계 9 Early Exit 자리: 현재는 transmittanceThreshold를 사용하지 않고
             // 항상 stepCount 전체를 돌아 fine/coarse 적분의 동일성을 먼저 검증한다.
@@ -340,7 +347,8 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
 
         // 6. 디버그와 이후 temporal 단계가 사용할 최종 값을 기록한다.
         result.transmittance = saturate(result.transmittance);
-        result.representativeDepth = (tStart + tEnd) * 0.5;
+        result.representativeDepth = opacityWeight > 1e-6
+            ? opacityDepthMoment / opacityWeight : sceneDistance;
         debugData.stepCount = (float)stepCount;
         debugData.hit = 1.0;
     }
@@ -431,6 +439,8 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
     uint consecutiveEmpty = 0u;
     bool coarseSearch = false;
     float extinction = max(extinctionCoefficient, 0.0);
+    float opacityDepthMoment = 0.0;
+    float opacityWeight = 0.0;
     uint safeMaxSteps = max(maxViewSteps, 1u);
     [loop]
     for (uint iteration = 0u;
@@ -500,6 +510,10 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
             result.scattering += lighting.direct + lighting.skyAmbient +
                 lighting.groundBounce + lighting.multipleScattering;
         }
+        float sampleOpacityContribution = result.transmittance *
+            (1.0 - stepTransmittance);
+        opacityDepthMoment += sampleDistance * sampleOpacityContribution;
+        opacityWeight += sampleOpacityContribution;
         result.transmittance *= stepTransmittance;
         cursor += marchLength;
 
@@ -517,7 +531,8 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
     }
 
     result.transmittance = saturate(result.transmittance);
-    result.representativeDepth = 0.5 * (tStart + tEnd);
+    result.representativeDepth = opacityWeight > 1e-6
+        ? opacityDepthMoment / opacityWeight : sceneDistance;
     debugData.stepCount = debugData.executedViewSamples;
     debugData.hit = 1.0;
     return result;
@@ -754,6 +769,24 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
     return float4(ApplyLdrHighlightShoulder(composite), 1.0);
 }
 
+// 단계 10의 저해상도 패스는 최종 장면색을 만들지 않고 재구성에 필요한
+// 구름 radiance/T와 깊이 두 값을 MRT에 보존한다.
+struct CloudDataOutput
+{
+    float4 scatteringTransmittance : SV_TARGET0;
+    float2 cloudDepthSceneLimit : SV_TARGET1;
+};
+
+CloudDataOutput PackageCloudData(CloudResult cloud, float sceneDistance)
+{
+    CloudDataOutput output;
+    output.scatteringTransmittance = float4(
+        max(cloud.scattering, 0.0.xxx), saturate(cloud.transmittance));
+    output.cloudDepthSceneLimit = float2(
+        clamp(cloud.representativeDepth, 0.0, sceneDistance), sceneDistance);
+    return output;
+}
+
 // 승인 기준과 최적화 경로를 별도 엔트리로 컴파일한다. Reference에는 b9 분기나
 // 동적 최적화 반복이 들어가지 않아 비교 기준 자체의 비용이 바뀌지 않는다.
 float4 mainReference(VSOut input) : SV_TARGET
@@ -792,4 +825,42 @@ float4 mainOptimized(VSOut input) : SV_TARGET
         cameraPos, rayDirection, sceneDistance, marchDebug);
     return RenderCloudOutput(
         input, hasGeometry, rayDirection, cloud, marchDebug);
+}
+
+CloudDataOutput mainReferenceData(VSOut input)
+{
+    float2 uv = saturate(input.uv +
+        (temporalJitterEnabled != 0u ? jitterOffsetLowResTexels : 0.0.xx) /
+        max(renderSize, 1.0.xx));
+    float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
+    bool hasGeometry = deviceDepth < 0.999999;
+    float3 rayDirection = ReconstructWorldRay(uv);
+    float3 worldPosition = hasGeometry
+        ? ReconstructWorldPosition(uv, deviceDepth)
+        : cameraPos + rayDirection * farPlane;
+    float sceneDistance = hasGeometry
+        ? length(worldPosition - cameraPos) : farPlane;
+    CloudMarchDebug marchDebug = (CloudMarchDebug)0;
+    CloudResult cloud = RaymarchCloudReference(
+        cameraPos, rayDirection, sceneDistance, marchDebug);
+    return PackageCloudData(cloud, sceneDistance);
+}
+
+CloudDataOutput mainOptimizedData(VSOut input)
+{
+    float2 uv = saturate(input.uv +
+        (temporalJitterEnabled != 0u ? jitterOffsetLowResTexels : 0.0.xx) /
+        max(renderSize, 1.0.xx));
+    float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
+    bool hasGeometry = deviceDepth < 0.999999;
+    float3 rayDirection = ReconstructWorldRay(uv);
+    float3 worldPosition = hasGeometry
+        ? ReconstructWorldPosition(uv, deviceDepth)
+        : cameraPos + rayDirection * farPlane;
+    float sceneDistance = hasGeometry
+        ? length(worldPosition - cameraPos) : farPlane;
+    CloudMarchDebug marchDebug = (CloudMarchDebug)0;
+    CloudResult cloud = RaymarchCloudOptimized(
+        cameraPos, rayDirection, sceneDistance, marchDebug);
+    return PackageCloudData(cloud, sceneDistance);
 }
