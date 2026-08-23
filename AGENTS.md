@@ -87,10 +87,14 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
    상수버퍼는 C++ 구조체 ↔ HLSL cbuffer ↔ `doc/ARCHITECTURE.md` 표
    **세 곳을 동시에** 맞춥니다.
 2. **브랜치/커밋 규칙**을 따릅니다 → [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md)
+   - 단계 구현은 최신 `main`에서 만든 `feature/stage<번호>-<설명>` 브랜치에서만 진행합니다.
+   - `main` 직접 commit/push는 금지하며 GitHub PR의 merge commit으로만 병합합니다.
+   - 사용자 승인 뒤 main 병합 commit을 annotated `stage<번호>-approved` 태그로 고정하고,
+     원격 태그 검증 뒤 완료 브랜치를 삭제합니다. 기존 `stage11` 이름은 유지합니다.
 3. **빌드가 깨지지 않게** 유지합니다. 변경 후 위 빌드 명령으로 확인하세요.
 4. [포트폴리오 계획](doc/VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md)의 단계 경계와 사용자 승인
-   게이트를 지킵니다. 현재 단계 10에서는 저해상도 구름 타깃과 공간 업샘플링만 다루며
-   temporal·Cloud Shadow Map/Light Cache는 각각 단계 11~12 전까지 구현하지 않습니다.
+   게이트를 지킵니다. 현재 단계 12에서는 Cloud Shadow Map과 Light Cache만 다루며,
+   하늘·태양·지면 조명 통합과 최종 품질 preset은 각각 단계 14~15까지 구현하지 않습니다.
 
 ## 로컬 단계별 구현 문서 규칙
 
