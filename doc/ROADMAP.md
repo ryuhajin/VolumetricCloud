@@ -29,6 +29,16 @@
 중단된 단계 13 v1은 `feature/large-planar-cloud-layer`와 `stage13-paused-20260810`에
 보관한다. 새 구현은 코드를 병합하지 않고 수식·테스트·실패 기록만 참고한다.
 
+## 저장소 단계 진행 규칙
+
+- [x] GitHub 기본 브랜치를 `main`으로 변경하고 PR 필수·관리자 적용·force push/삭제 금지 보호 설정
+- [x] merge commit만 허용하고 squash/rebase merge 비활성화
+- [x] 구형 `feature/box-volume` 끝 `92ba69e`를 `archive-box-volume-20260823`으로 보존
+- [x] `stage13-approved`를 원격에 보존한 뒤 `feature/box-volume`,
+  `feature/km-optics-lighting` 로컬·원격 브랜치 삭제
+- [x] Stage 12부터 `feature/stage<번호>-<설명>` → PR merge commit →
+  `stage<번호>-approved` → 원격 검증 → 완료 브랜치 삭제 순서로 고정
+
 ## 현재 목표: 단계 12 Cloud Shadow Map과 Light Cache
 
 - [x] 단계 9: View Weather/Base precheck, empty-space skip, View early exit, 거리별 step과
