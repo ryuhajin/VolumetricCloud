@@ -11,9 +11,10 @@
 | `FPS` | 평활화된 CPU Frame 시간의 `1000 / ms` 값 |
 | `CPU Frame` | `Renderer::Render` 시작부터 `Present` 반환까지. VSync 대기 포함 |
 | `GPU Frame` | 진단 장면 시작부터 ImGui draw 종료까지. `Present` 제외 |
+| `GPU Shadow Cache` | 매 프레임 Near/Far `R32_FLOAT` 광학 깊이 배열을 생성하는 두 compute dispatch |
 | `Cloud Raymarch` | 선택 해상도에서 구름 scattering/T/depth를 MRT에 적분 |
 | `Spatial/Temporal Resolve` | Full-resolution 공간 복원, 선택적 history 재투영·clip과 장면 합성 |
-| `GPU Cloud Total` (`GPU Cloud`) | 위 두 구간의 합. 단계 9 JSON과 비교하는 호환 지표 |
+| `GPU Cloud Total` (`GPU Cloud`) | Shadow Cache+Raymarch+Resolve 세 구간의 합 |
 | `View` | `maxViewSteps @ stepSize(m)` |
 | `Light` | `maxLightSteps @ lightStepSize(m)` |
 | `VSync` | 현재 `Present(1, 0)` 또는 `Present(0, 0)` 경로 |
@@ -25,7 +26,7 @@ CPU Frame이 모니터 주사율 대기 시간을 포함한다. View/Light Ray �
 ## 비동기 GPU 계측 방식
 
 `FrameProfiler`는 8개 슬롯의 D3D11 timestamp query ring을 사용한다. 각 슬롯은 timestamp
-disjoint와 GPU Frame 시작·종료, Cloud 시작·Raymarch 종료·Cloud 종료 timestamp를 가진다. 현재 프레임을
+disjoint와 GPU Frame 시작·종료, Cloud 시작·Shadow Cache 종료·Raymarch 종료·Cloud 종료 timestamp를 가진다. 현재 프레임을
 기다리지 않고 `D3D11_ASYNC_GETDATA_DONOTFLUSH`로 완료된 과거 슬롯만 읽는다. 8개 슬롯이
 모두 사용 중이면 해당 프레임의 GPU 측정을 생략하고 렌더링을 계속한다.
 
@@ -40,7 +41,7 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 3. F1 Noise 창의 Animation에서 시간을 정지한다.
 4. 같은 F1 창의 Performance에서 VSync를 Off로 설정한다.
 5. 설정 변경 후 최소 2초 동안 워밍업한다.
-6. `Cloud Raymarch`, `Spatial/Temporal Resolve`, `GPU Cloud Total`을 기록하고 같은 조건에서 비교한다.
+6. `GPU Shadow Cache`, `Cloud Raymarch`, `Spatial/Temporal Resolve`, `GPU Cloud Total`을 기록하고 같은 조건에서 비교한다.
 7. View/Light Step을 바꿀 때 한 번에 한 파라미터만 변경한다.
 
 예를 들어 Light Step 8/16/32의 비용을 비교할 때 카메라와 나머지 설정을 고정한다. FPS는
@@ -153,6 +154,26 @@ vertical profile=0, layer 밖 밀도 0과 profile의 단일 곱, 정확한 prese
 Base/Final Density, View τ, Light T가 finite·non-black이고 각 preset hash가 서로 다른지
 확인한다. camera/domain/light/environment/LOD/Weather seed와 wind는 전환 전후 동일해야 한다.
 이 검사는 화면 미학이나 성능 합격을 대신하지 않는다.
+
+## Stage 12 Cloud Shadow 후보와 게이트
+
+Deep Cache는 화면 해상도와 별도로 `24km Near × 80 slice`와 `128km Far × 40 slice`를
+매 프레임 갱신한다. Fast256은 30MiB, Balanced512는 120MiB의 `R32_FLOAT` 배열을 사용한다.
+1920×1080 Full과 50% Axis는 같은 월드 cache를 공유하므로 창 크기나 Cloud Data 크기를
+cache 범위 계산에 사용하지 않는다.
+
+정식 후보 측정은 Direct/Fast256/Balanced512를 Full과 50%에서 각각 비교한다. VSync/UI/preview를
+끄고 120프레임 warmup 뒤 서로 다른 원시 timestamp 600개를 일곱 고정 장면에서 수집한다.
+모든 후보는 GPU Cloud Total p95 10ms 이하, Full은 Direct 대비 15% 이상 개선, 50%는 측정
+오차를 포함해 3% 이상 회귀하지 않아야 한다. Light/Surface `T MAE≤0.01`, `P99≤0.03`,
+Composite `SSIM≥0.99`, normalized `RMSE≤0.01`, seam `T P99≤0.03`도 함께 적용한다.
+두 해상도에서 모두 통과한 가장 높은 후보만 기본값으로 승격한다. 현재 구현 시작값은 Stage 11
+화면을 보존하는 DirectReference이며, 96×54 Fast256 D3D smoke의 Light T는
+`MAE=0.001635`, `P99=0.029349`였다. Full/50% 및 resize 전후 cache identity와 실제
+Surface T도 통과했다. 이 값은 정식 1080p 성능·사용자 화면 승인을 대신하지 않는다.
+2026-08-24 재검증에서는 raw Near/Far bottom-slice preview가 모두 0이 아닌 공간 변화를
+가지는지도 smoke gate에 추가했고 두 cache가 모두 통과했다. Preview exposure는 진단 표시만
+바꾸며 cache 생성·조회 비용에는 포함되지 않는다.
 
 ## 단계 13-5 km 광학·조명 smoke
 

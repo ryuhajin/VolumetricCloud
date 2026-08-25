@@ -65,7 +65,20 @@
   - [ ] 1080p Full reference 대비 4/8/16프레임 SSIM/RMSE/T 정량화 — Stage 15 최종 품질 측정으로 이관
   - [x] F5 건물 경계와 F8 사선 평면 세 필터·Weight scanline 사용자 재검증
   - [x] 안정성 기준에서 4×4 interleaved ray reduction과 ray-start random jitter 제외
-- [ ] 단계 12: Cloud Shadow Map과 Light Cache — 다음 구현 단계
+- [x] 단계 12: Cloud Shadow Map과 Deep Light Cache — 2026-08-25 사용자 승인
+  - [x] 화면 해상도와 독립적인 Near 24km×80 / Far 128km×40 `R32_FLOAT` 배열
+  - [x] Fast256 30MiB / Balanced512 120MiB 원자 리소스 교체와 b12/t6/t7/s2 계약
+  - [x] Base-only top→bottom tau compute, 높이 보간, cascade blend·far neutral fade
+  - [x] Cache 구름 자기 그림자와 Full Scene Depth 기반 지면·건물 그림자, Direct fallback
+  - [x] F3 mode/preset/surface와 Near/Far cache slice/cascade/Surface/Error 진단, schema 34
+  - [x] 2026-08-24 사용자 1차 검증 반영 — 지면·건물 중간 회색, Near/Far raw slice preview와
+    exposure, 표면/구름층 월드 위치 기준 cascade로 교체
+  - [x] CPU math와 Fast256 GPU smoke — Light T `MAE=0.001635`, `P99=0.029349`,
+    Full/50%/resize cache identity와 Near/Far texture structure 유지
+  - [x] 1080p 일곱 장면 Direct/Fast/Balanced 성능 gate와 기존 화질 smoke 통과,
+    가장 높은 합격 후보 Balanced512 기본값 승격
+  - [x] F5~F8·Full/50%·wind/이동 사용자 렌더 승인 — 2026-08-25, Surface T 정렬과
+    Direct/Cache 내부 명암, 상단 black slice, magenta/blue cascade 확인
 - [ ] 단계 14: 하늘·태양·지면과 구름 조명 통합
 - [ ] 단계 15: Low/Medium/High, 1080p 성능, 최종 캡처와 포트폴리오 설명
 

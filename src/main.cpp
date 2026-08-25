@@ -98,6 +98,11 @@ const char* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::TemporalHistoryWeight: return "TemporalHistoryWeight";
     case CloudDebugMode::TemporalCurrentHistoryDifference: return "TemporalCurrentHistoryDifference";
     case CloudDebugMode::TemporalCurrentSourceValidity: return "TemporalCurrentSourceValidity";
+    case CloudDebugMode::Stage12NearOpticalDepth: return "Stage12NearCacheTexture";
+    case CloudDebugMode::Stage12FarOpticalDepth: return "Stage12FarCacheTexture";
+    case CloudDebugMode::Stage12CascadeSelection: return "Stage12CascadeSelection";
+    case CloudDebugMode::Stage12SurfaceTransmittance: return "Stage12SurfaceTransmittance";
+    case CloudDebugMode::Stage12DirectCacheError: return "Stage12DirectCacheError";
     default: return "Unknown";
     }
 }
@@ -1579,8 +1584,8 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             continue;
         std::string metadata;
         if (ReadTextFile(entry.path(), metadata) &&
-            metadata.find("\"schemaVersion\": 32") != std::string::npos &&
-            metadata.find("\"implementationStage\": \"10\"") != std::string::npos &&
+            metadata.find("\"schemaVersion\": 34") != std::string::npos &&
+            metadata.find("\"implementationStage\": \"12\"") != std::string::npos &&
             metadata.find("\"lightingLook\": \"portfolioHero\"") != std::string::npos &&
             metadata.find("\"edgeInfluence\"") != std::string::npos &&
             metadata.find("\"ambientShadowCoupling\"") != std::string::npos &&
@@ -2812,6 +2817,427 @@ int RunStage11TemporalSmokeTest(Renderer& renderer, Camera& camera)
         !renderer.HasDebugLayerErrors() ? 0 : 7;
 }
 
+int RunStage12ShadowSmokeTest(Renderer& renderer, Camera& camera)
+{
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    if (!renderer.ApplyStage13OpenWorldPreset() ||
+        !renderer.ApplyCloudAppearancePreset(
+            CloudAppearancePreset::DenseMixedDefault))
+        return 2;
+    renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    if (!renderer.SetStage12ShadowPreset(Stage12ShadowPreset::Fast256))
+        return 3;
+    const Stage13CameraPreset& hero = stage13camera::Get(
+        Stage13CameraPresetId::HeroDepth);
+    camera.SetClipPlanes(stage13camera::kNearPlaneMeters,
+                         stage13camera::kFarPlaneMeters);
+    camera.SetLookAt(hero.position, hero.target);
+
+    renderer.SetStage12ShadowMode(Stage12ShadowMode::DirectReference);
+    CloudDiagnosticFrame direct;
+    if (!renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::LightTransmittance, direct))
+        return 4;
+    renderer.SetStage12ShadowMode(Stage12ShadowMode::DeepCache);
+    CloudDiagnosticFrame cached;
+    if (!renderer.CaptureCloudDiagnosticFrame(
+            camera, 0.0f, CloudDebugMode::LightTransmittance, cached))
+        return 5;
+
+    double sumError = 0.0;
+    std::size_t finiteCount = 0;
+    std::vector<double> errors;
+    errors.reserve(direct.pixels.size());
+    for (std::size_t index = 0; index < direct.pixels.size(); ++index)
+    {
+        const DirectX::XMFLOAT4& a = direct.pixels[index];
+        const DirectX::XMFLOAT4& b = cached.pixels[index];
+        if (!std::isfinite(a.x) || !std::isfinite(b.x))
+            return 6;
+        const double error = std::abs(static_cast<double>(a.x - b.x));
+        sumError += error;
+        errors.push_back(error);
+        ++finiteCount;
+    }
+    const double mae = finiteCount > 0 ? sumError / finiteCount : 1.0;
+    const double p99 = FramePercentile(errors, 0.99);
+    const bool lightQualityPassed = mae <= 0.01 && p99 <= 0.03;
+
+    const std::uintptr_t cacheIdentity = renderer.NearShadowCacheIdentity();
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Half);
+    const bool halfKeepsCache = cacheIdentity != 0 &&
+        renderer.NearShadowCacheIdentity() == cacheIdentity;
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Full);
+    const bool fullKeepsCache =
+        renderer.NearShadowCacheIdentity() == cacheIdentity;
+    renderer.Resize(128, 72);
+    const bool resizeKeepsCache =
+        renderer.NearShadowCacheIdentity() == cacheIdentity;
+    renderer.Resize(96, 54);
+    camera.SetAspect(96.0f / 54.0f);
+
+    constexpr CloudDebugMode diagnosticModes[] = {
+        CloudDebugMode::Stage12NearOpticalDepth,
+        CloudDebugMode::Stage12FarOpticalDepth,
+        CloudDebugMode::Stage12CascadeSelection,
+        CloudDebugMode::Stage12SurfaceTransmittance,
+        CloudDebugMode::Stage12DirectCacheError,
+    };
+    bool surfaceShadowObserved = false;
+    bool nearCacheTextureObserved = false;
+    bool farCacheTextureObserved = false;
+    for (CloudDebugMode mode : diagnosticModes)
+    {
+        CloudDiagnosticFrame frame;
+        if (!renderer.CaptureCloudDiagnosticFrame(camera, 0.0f, mode, frame))
+            return 7;
+        float minimumValue = 1.0f;
+        float maximumValue = 0.0f;
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+        {
+            if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+                !std::isfinite(pixel.z) || !std::isfinite(pixel.w))
+                return 8;
+            if (mode == CloudDebugMode::Stage12SurfaceTransmittance &&
+                pixel.x > 0.0001f && pixel.x < 0.99f)
+                surfaceShadowObserved = true;
+            minimumValue = std::min(minimumValue, pixel.x);
+            maximumValue = std::max(maximumValue, pixel.x);
+        }
+        const bool cacheTextureHasStructure = maximumValue > 0.02f &&
+            maximumValue - minimumValue > 0.02f;
+        if (mode == CloudDebugMode::Stage12NearOpticalDepth)
+            nearCacheTextureObserved = cacheTextureHasStructure;
+        if (mode == CloudDebugMode::Stage12FarOpticalDepth)
+            farCacheTextureObserved = cacheTextureHasStructure;
+    }
+
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(6)
+         << "STAGE12_SHADOW MAE=" << mae
+         << " P99=" << p99
+         << " CACHE_MIB="
+         << static_cast<double>(renderer.ShadowCacheBytes()) /
+                (1024.0 * 1024.0)
+         << " HALF_STABLE=" << (halfKeepsCache ? 1 : 0)
+         << " FULL_STABLE=" << (fullKeepsCache ? 1 : 0) << ' '
+         << " RESIZE_STABLE=" << (resizeKeepsCache ? 1 : 0)
+         << " SURFACE=" << (surfaceShadowObserved ? 1 : 0) << ' '
+         << " NEAR_TEXTURE=" << (nearCacheTextureObserved ? 1 : 0)
+         << " FAR_TEXTURE=" << (farCacheTextureObserved ? 1 : 0) << ' '
+         << (lightQualityPassed && halfKeepsCache && fullKeepsCache &&
+             resizeKeepsCache && surfaceShadowObserved &&
+             nearCacheTextureObserved && farCacheTextureObserved
+                ? "PASS" : "FAIL");
+    WriteDiagnosticLine(line.str());
+    return lightQualityPassed && halfKeepsCache && fullKeepsCache &&
+        resizeKeepsCache && surfaceShadowObserved &&
+        nearCacheTextureObserved && farCacheTextureObserved &&
+        !renderer.HasDebugLayerErrors() ? 0 : 9;
+}
+
+int RunStage12ShadowPerformanceTest(Renderer& renderer, Camera& camera)
+{
+    constexpr int kWarmupFrames = 120;
+    constexpr std::size_t kSamples = 600u;
+    constexpr int kMaximumAttempts = 1800;
+    struct Result
+    {
+        std::string candidate;
+        std::string resolution;
+        std::string scene;
+        double frameAverage = 0.0;
+        double frameP95 = 0.0;
+        double cloudAverage = 0.0;
+        double cloudP95 = 0.0;
+        double cacheAverage = 0.0;
+        double cacheP95 = 0.0;
+        double raymarchAverage = 0.0;
+        double raymarchP95 = 0.0;
+        double resolveAverage = 0.0;
+        double resolveP95 = 0.0;
+        std::uint64_t cacheBytes = 0u;
+    };
+    const struct Scene
+    {
+        const char* name;
+        CloudAppearancePreset appearance;
+        Stage13CameraPresetId cameraPreset;
+        bool zenith;
+        bool opaque;
+    } scenes[] = {
+        { "DenseZenith", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::HeroDepth, true, false },
+        { "DenseHorizon", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "StratusHorizon", CloudAppearancePreset::Stratus,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "CumulusHorizon", CloudAppearancePreset::Cumulus,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "CumulusInside", CloudAppearancePreset::Cumulus,
+          Stage13CameraPresetId::InsideLayer, false, false },
+        { "AboveLayer", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::AboveLayer, false, false },
+        { "DepthOccluded", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::HeroDepth, false, true },
+    };
+    const struct Candidate
+    {
+        const char* name;
+        Stage12ShadowMode mode;
+        Stage12ShadowPreset preset;
+    } candidates[] = {
+        { "DirectReference", Stage12ShadowMode::DirectReference,
+          Stage12ShadowPreset::Fast256 },
+        { "Fast256", Stage12ShadowMode::DeepCache,
+          Stage12ShadowPreset::Fast256 },
+        { "Balanced512", Stage12ShadowMode::DeepCache,
+          Stage12ShadowPreset::Balanced512 },
+    };
+    const Stage10ResolutionPreset resolutions[] = {
+        Stage10ResolutionPreset::Full,
+        Stage10ResolutionPreset::Half,
+    };
+
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetDebugMode(CloudDebugMode::Composite);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
+    camera.SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    if (!renderer.ApplyStage13OpenWorldPreset())
+        return 2;
+
+    const auto percentile95 = [](std::vector<double> values)
+    {
+        if (values.empty())
+            return std::numeric_limits<double>::infinity();
+        std::sort(values.begin(), values.end());
+        return values[static_cast<std::size_t>(
+            std::ceil(values.size() * 0.95)) - 1u];
+    };
+    const auto average = [](const std::vector<double>& values)
+    {
+        return values.empty()
+            ? std::numeric_limits<double>::infinity()
+            : std::accumulate(values.begin(), values.end(), 0.0) /
+                  static_cast<double>(values.size());
+    };
+
+    std::vector<Result> results;
+    for (Stage10ResolutionPreset resolution : resolutions)
+    {
+        renderer.ApplyStage10ResolutionPreset(resolution);
+        renderer.SetStage10UpsampleFilter(
+            resolution == Stage10ResolutionPreset::Full
+                ? Stage10UpsampleFilter::Nearest
+                : Stage10UpsampleFilter::Joint4);
+        for (const Candidate& candidate : candidates)
+        {
+            if (!renderer.SetStage12ShadowPreset(candidate.preset))
+                return 3;
+            renderer.SetStage12ShadowMode(candidate.mode);
+            for (const Scene& scene : scenes)
+            {
+                if (!renderer.ApplyCloudAppearancePreset(scene.appearance))
+                    return 4;
+                renderer.SetOpaqueSceneForTest(scene.opaque);
+                const Stage13CameraPreset& cameraPreset =
+                    stage13camera::Get(scene.cameraPreset);
+                if (scene.zenith)
+                    camera.SetLookAt(cameraPreset.position,
+                        { cameraPreset.position.x, 7000.0f,
+                          cameraPreset.position.z });
+                else
+                    camera.SetLookAt(cameraPreset.position, cameraPreset.target);
+
+                for (int frame = 0; frame < kWarmupFrames; ++frame)
+                    renderer.Render(camera, 0.0f);
+
+                std::vector<double> frameSamples;
+                std::vector<double> cloudSamples;
+                std::vector<double> cacheSamples;
+                std::vector<double> raymarchSamples;
+                std::vector<double> resolveSamples;
+                for (std::vector<double>* samples : {
+                         &frameSamples, &cloudSamples, &cacheSamples,
+                         &raymarchSamples, &resolveSamples })
+                    samples->reserve(kSamples);
+                std::uint64_t lastIndex =
+                    renderer.TimingSnapshot().gpuSampleIndex;
+                for (int attempt = 0;
+                     attempt < kMaximumAttempts &&
+                         cloudSamples.size() < kSamples;
+                     ++attempt)
+                {
+                    renderer.Render(camera, 0.0f);
+                    const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+                    if (!timing.gpuValid || timing.gpuSampleIndex == lastIndex)
+                    {
+                        Sleep(1);
+                        continue;
+                    }
+                    lastIndex = timing.gpuSampleIndex;
+                    const double values[] = {
+                        timing.rawGpuFrameMs,
+                        timing.rawGpuCloudMs,
+                        timing.rawGpuShadowCacheMs,
+                        timing.rawGpuCloudRaymarchMs,
+                        timing.rawGpuUpsampleCompositeMs,
+                    };
+                    bool valid = true;
+                    for (double value : values)
+                        valid = valid && std::isfinite(value) && value >= 0.0;
+                    if (!valid)
+                        return 5;
+                    frameSamples.push_back(values[0]);
+                    cloudSamples.push_back(values[1]);
+                    cacheSamples.push_back(values[2]);
+                    raymarchSamples.push_back(values[3]);
+                    resolveSamples.push_back(values[4]);
+                }
+                if (cloudSamples.size() != kSamples)
+                    return 6;
+
+                Result result;
+                result.candidate = candidate.name;
+                result.resolution =
+                    stage10upsampling::ResolutionPresetName(resolution);
+                result.scene = scene.name;
+                result.frameAverage = average(frameSamples);
+                result.frameP95 = percentile95(frameSamples);
+                result.cloudAverage = average(cloudSamples);
+                result.cloudP95 = percentile95(cloudSamples);
+                result.cacheAverage = average(cacheSamples);
+                result.cacheP95 = percentile95(cacheSamples);
+                result.raymarchAverage = average(raymarchSamples);
+                result.raymarchP95 = percentile95(raymarchSamples);
+                result.resolveAverage = average(resolveSamples);
+                result.resolveP95 = percentile95(resolveSamples);
+                result.cacheBytes = candidate.mode ==
+                    Stage12ShadowMode::DeepCache
+                    ? renderer.ShadowCacheBytes() : 0u;
+                results.push_back(result);
+
+                std::ostringstream line;
+                line << std::fixed << std::setprecision(6)
+                     << "[STAGE12][PERF][" << result.resolution << "]["
+                     << result.candidate << "][" << result.scene << "] "
+                     << "FRAME_P95=" << result.frameP95
+                     << " CLOUD_P95=" << result.cloudP95
+                     << " CACHE_P95=" << result.cacheP95
+                     << " RAYMARCH_P95=" << result.raymarchP95
+                     << " RESOLVE_P95=" << result.resolveP95;
+                WriteDiagnosticLine(line.str());
+            }
+        }
+    }
+
+    const auto meanSceneP95 = [&](const std::string& candidate,
+                                  const std::string& resolution)
+    {
+        double sum = 0.0;
+        std::size_t count = 0u;
+        for (const Result& result : results)
+            if (result.candidate == candidate &&
+                result.resolution == resolution)
+            {
+                sum += result.cloudP95;
+                ++count;
+            }
+        return count == std::size(scenes)
+            ? sum / static_cast<double>(count)
+            : std::numeric_limits<double>::infinity();
+    };
+    const auto allScenesUnderBudget = [&](const std::string& candidate)
+    {
+        for (const Result& result : results)
+            if (result.candidate == candidate && result.cloudP95 > 10.0)
+                return false;
+        return true;
+    };
+    const std::string fullName =
+        stage10upsampling::ResolutionPresetName(Stage10ResolutionPreset::Full);
+    const std::string halfName =
+        stage10upsampling::ResolutionPresetName(Stage10ResolutionPreset::Half);
+    const double directFull = meanSceneP95("DirectReference", fullName);
+    const double directHalf = meanSceneP95("DirectReference", halfName);
+    std::map<std::string, bool> qualifies;
+    for (const char* candidate : { "Fast256", "Balanced512" })
+    {
+        const double full = meanSceneP95(candidate, fullName);
+        const double half = meanSceneP95(candidate, halfName);
+        qualifies[candidate] = allScenesUnderBudget(candidate) &&
+            full <= directFull * 0.85 && half <= directHalf * 1.03;
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(6)
+             << "[STAGE12][GATE][" << candidate << "] FULL_MEAN_P95="
+             << full << " FULL_DIRECT=" << directFull
+             << " HALF_MEAN_P95=" << half
+             << " HALF_DIRECT=" << directHalf << ' '
+             << (qualifies[candidate] ? "PASS" : "FAIL");
+        WriteDiagnosticLine(line.str());
+    }
+    const std::string approvedCandidate = qualifies["Balanced512"]
+        ? "Balanced512" : (qualifies["Fast256"] ? "Fast256" : "None");
+
+    std::error_code error;
+    const std::filesystem::path directory =
+        std::filesystem::path(VCLOUD_SHADER_SOURCE_DIR).parent_path() /
+        "captures" / "stage12";
+    std::filesystem::create_directories(directory, error);
+    if (error)
+        return 7;
+    std::ofstream csv(directory / "performance.csv",
+                      std::ios::binary | std::ios::trunc);
+    csv << "adapter,driver,candidate,resolution,scene,samples,warmup,"
+           "frame_average_ms,frame_p95_ms,cloud_average_ms,cloud_p95_ms,"
+           "cache_average_ms,cache_p95_ms,raymarch_average_ms,raymarch_p95_ms,"
+           "resolve_average_ms,resolve_p95_ms,cache_bytes\n";
+    for (const Result& result : results)
+        csv << '"' << renderer.AdapterName() << "\",\""
+            << renderer.DriverVersion() << "\",\"" << result.candidate
+            << "\",\"" << result.resolution << "\",\"" << result.scene
+            << "\"," << kSamples << ',' << kWarmupFrames << ','
+            << result.frameAverage << ',' << result.frameP95 << ','
+            << result.cloudAverage << ',' << result.cloudP95 << ','
+            << result.cacheAverage << ',' << result.cacheP95 << ','
+            << result.raymarchAverage << ',' << result.raymarchP95 << ','
+            << result.resolveAverage << ',' << result.resolveP95 << ','
+            << result.cacheBytes << '\n';
+    if (!csv.good())
+        return 8;
+
+    std::ofstream json(directory / "performance.json",
+                       std::ios::binary | std::ios::trunc);
+    json << "{\n  \"adapter\": \"" << renderer.AdapterName()
+         << "\",\n  \"driver\": \"" << renderer.DriverVersion()
+         << "\",\n  \"resolution\": [1920, 1080],\n"
+         << "  \"samples\": " << kSamples
+         << ",\n  \"warmup\": " << kWarmupFrames
+         << ",\n  \"approvedCandidate\": \"" << approvedCandidate
+         << "\",\n  \"candidates\": {\n"
+         << "    \"Fast256\": {\"performanceGate\": "
+         << (qualifies["Fast256"] ? "true" : "false") << "},\n"
+         << "    \"Balanced512\": {\"performanceGate\": "
+         << (qualifies["Balanced512"] ? "true" : "false") << "}\n"
+         << "  }\n}\n";
+    if (!json.good())
+        return 9;
+
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Full);
+    if (!renderer.SetStage12ShadowPreset(Stage12ShadowPreset::Balanced512))
+        return 10;
+    renderer.SetStage12ShadowMode(Stage12ShadowMode::DeepCache);
+    return approvedCandidate != "None" && !renderer.HasDebugLayerErrors()
+        ? 0 : 1;
+}
+
 int RunStage13WeatherShapeGpuTest(Renderer& renderer, Camera& camera)
 {
     renderer.SetNoiseLabVisible(false);
@@ -3246,21 +3672,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage10-upsampling-smoke-test") != nullptr;
     const bool requestedStage11TemporalSmoke = commandLine &&
         wcsstr(commandLine, L"--stage11-temporal-smoke-test") != nullptr;
+    const bool requestedStage12ShadowSmoke = commandLine &&
+        wcsstr(commandLine, L"--stage12-shadow-smoke-test") != nullptr;
+    const bool requestedStage12Performance = commandLine &&
+        wcsstr(commandLine, L"--stage12-performance-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
         requestedStage8Smoke ||
         requestedPerformanceOverlaySmoke || requestedStage13DomainSmoke ||
         requestedStage13OpenWorldSmoke || requestedStage13NoiseVolumeSmoke ||
         requestedStage13WeatherShapeGpu || requestedStage13UnifiedSceneSmoke ||
         requestedStage13OpticsLightingSmoke || requestedStage9OptimizationSmoke ||
-        requestedStage10UpsamplingSmoke || requestedStage11TemporalSmoke;
+        requestedStage10UpsamplingSmoke || requestedStage11TemporalSmoke ||
+        requestedStage12ShadowSmoke;
     const int kWidth  = (requestedStage13LightingPerformance ||
-        requestedStage9Performance || requestedStage11TemporalSmoke) ? 1920 :
+        requestedStage9Performance || requestedStage11TemporalSmoke ||
+        requestedStage12Performance) ? 1920 :
         (requestedStage13SimilarityGpu ||
                          requestedStage13WeatherShapeGpu ||
                          requestedStage13UnifiedSceneSmoke) ? 320 :
         (requestedSmallGpuSmoke ? 96 : 1280);
     const int kHeight = (requestedStage9Performance ||
-        requestedStage11TemporalSmoke) ? 1080 :
+        requestedStage11TemporalSmoke || requestedStage12Performance) ? 1080 :
         (requestedStage13LightingPerformance ? 925 :
         (requestedStage13SimilarityGpu ||
                           requestedStage13WeatherShapeGpu ||
@@ -3297,6 +3729,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage9PerformanceTest = requestedStage9Performance;
     const bool stage10UpsamplingSmokeTest = requestedStage10UpsamplingSmoke;
     const bool stage11TemporalSmokeTest = requestedStage11TemporalSmoke;
+    const bool stage12ShadowSmokeTest = requestedStage12ShadowSmoke;
+    const bool stage12PerformanceTest = requestedStage12Performance;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -3310,13 +3744,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
         stage9OptimizationSmokeTest || stage9PerformanceTest ||
         stage10UpsamplingSmokeTest || stage11TemporalSmokeTest ||
+        stage12ShadowSmokeTest || stage12PerformanceTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest;
     const bool enableNoiseVolumes = !automatedTestRun ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
         stage13WeatherShapeGpuTest || stage13UnifiedSceneSmokeTest ||
         stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
         stage9OptimizationSmokeTest || stage9PerformanceTest ||
-        stage10UpsamplingSmokeTest || stage11TemporalSmokeTest;
+        stage10UpsamplingSmokeTest || stage11TemporalSmokeTest ||
+        stage12ShadowSmokeTest || stage12PerformanceTest;
 
     std::filesystem::path hotReloadShaderDirectory;
     if (shaderHotReloadSmokeTest)
@@ -3336,7 +3772,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 11 | Temporal Reprojection 초기화 중",
+                    L"VolumetricCloud - Stage 12 | Cloud Shadow 초기화 중",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
@@ -3349,6 +3785,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                     !stage9OptimizationSmokeTest &&
                     !stage9PerformanceTest &&
                     !stage10UpsamplingSmokeTest && !stage11TemporalSmokeTest &&
+                    !stage12ShadowSmokeTest && !stage12PerformanceTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -3388,6 +3825,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         !stage9OptimizationSmokeTest &&
         !stage9PerformanceTest &&
         !stage10UpsamplingSmokeTest && !stage11TemporalSmokeTest &&
+        !stage12ShadowSmokeTest && !stage12PerformanceTest &&
         !noiseLabSmokeTest &&
         !shaderHotReloadSmokeTest;
     if (interactiveRun)
@@ -3420,6 +3858,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return RunStage10UpsamplingSmokeTest(renderer, camera);
     if (stage11TemporalSmokeTest)
         return RunStage11TemporalSmokeTest(renderer, camera);
+    if (stage12ShadowSmokeTest)
+        return RunStage12ShadowSmokeTest(renderer, camera);
+    if (stage12PerformanceTest)
+        return RunStage12ShadowPerformanceTest(renderer, camera);
 
     struct VolumeFixture
     {
@@ -3659,7 +4101,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 32") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 34") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"A\": \"localThicknessPotential\"") != std::string::npos &&
                 metadata.find("\"localThickness\": {\"seed\": 4051") != std::string::npos &&
@@ -3751,7 +4193,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 32") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 34") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
@@ -3825,7 +4267,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 32") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 34") != std::string::npos &&
                 metadata.find("\"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\"") != std::string::npos &&
                 metadata.find("\"camera\": {") != std::string::npos &&
                 metadata.find("\"verticalFovDegrees\": 60") != std::string::npos &&
@@ -3833,7 +4275,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 metadata.find("\"physicalAdvectionMode\": \"legacyIndependentSpeeds\"") != std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"scatteringCoefficient\"") == std::string::npos &&
-                metadata.find("\"implementationStage\": \"10\"") != std::string::npos &&
+                metadata.find("\"implementationStage\": \"12\"") != std::string::npos &&
                 metadata.find("\"noiseVolumes\"") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"similarityScale\"") == std::string::npos &&

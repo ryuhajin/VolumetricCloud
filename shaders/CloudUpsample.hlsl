@@ -16,6 +16,7 @@ cbuffer cbCamera : register(b0)
 
 #include "CloudParameters.hlsli"
 #include "Stage10UpsamplingParameters.hlsli"
+#include "Stage12Shadow.hlsli"
 
 Texture2D<float4> sceneColorTexture : register(t0);
 Texture2D<float> sceneDepthTexture : register(t1);
@@ -276,6 +277,12 @@ float4 main(VSOut input) : SV_TARGET
     float3 background = hasGeometry
         ? sceneColorTexture.Load(int3(int2(input.position.xy), 0)).rgb
         : SkyColor(rayDirection);
+    if (hasGeometry && stage12SurfaceShadowEnabled != 0u)
+    {
+        float3 worldPosition = ReconstructWorldPosition(uv, deviceDepth);
+        background *= Stage12SurfaceFactor(
+            Stage12SurfaceTransmittance(worldPosition));
+    }
     float3 composite = cloud.scattering + background * cloud.transmittance;
     return float4(ApplyLdrHighlightShoulder(composite), 1.0);
 }

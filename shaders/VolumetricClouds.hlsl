@@ -114,6 +114,11 @@ struct CloudMarchDebug
     float skippedDistance;     // 단계 9: coarse search가 건너뛴 거리(m).
     float earlyExitSavings;    // 단계 9: 투과율 종료로 남긴 거리(m).
     float supportPrecheckSkips;// 단계 9: Texture3D를 읽지 않은 표본 수.
+    float stage12NearOpticalDepth;
+    float stage12FarOpticalDepth;
+    float stage12NearWeight;
+    float stage12FarValidity;
+    float stage12DirectCacheError;
 };
 
 // 화면 UV를 DirectX NDC로 바꾼다.
@@ -284,6 +289,20 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
                 representativeLight.transmittance, 1.0, actualStepLength,
                 phase.phaseFactor);
         }
+        if (debugMode >= 74 && debugMode <= 78)
+        {
+            Stage12ShadowSample cacheSample = SampleStage12DeepShadow(
+                representativePosition);
+            LightMarchResult directSample = ComputeLightTransmittanceStraight(
+                representativePosition, directionToSun);
+            debugData.stage12NearOpticalDepth = cacheSample.nearOpticalDepth;
+            debugData.stage12FarOpticalDepth = cacheSample.farOpticalDepth;
+            debugData.stage12NearWeight = cacheSample.nearWeight;
+            debugData.stage12FarValidity = cacheSample.farValidity;
+            debugData.stage12DirectCacheError = abs(
+                directSample.transmittance - cacheSample.transmittance) *
+                cacheSample.valid;
+        }
 
         // 4. 각 구간 중앙에서 Base를 만들고 필요한 위치에서만 Detail로 침식한다.
         [loop]
@@ -433,6 +452,20 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
             representativeSample.finalDensity,
             representativeLight.transmittance, 1.0,
             Stage9ViewStep(representativeDistance), phase.phaseFactor);
+    }
+    if (debugMode >= 74 && debugMode <= 78)
+    {
+        Stage12ShadowSample cacheSample = SampleStage12DeepShadow(
+            representativePosition);
+        LightMarchResult directSample = ComputeLightTransmittanceStraight(
+            representativePosition, directionToSun);
+        debugData.stage12NearOpticalDepth = cacheSample.nearOpticalDepth;
+        debugData.stage12FarOpticalDepth = cacheSample.farOpticalDepth;
+        debugData.stage12NearWeight = cacheSample.nearWeight;
+        debugData.stage12FarValidity = cacheSample.farValidity;
+        debugData.stage12DirectCacheError = abs(
+            directSample.transmittance - cacheSample.transmittance) *
+            cacheSample.valid;
     }
 
     float cursor = tStart;
@@ -760,11 +793,58 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
     if (debugMode == 63)
         return float4((saturate(marchDebug.supportPrecheckSkips /
             max(marchDebug.executedViewSamples, 1.0)) * marchDebug.hit).xxx, 1.0);
+    if (debugMode == 76)
+    {
+        float3 lookupPosition;
+        bool lookupValid = true;
+        if (hasGeometry)
+        {
+            float deviceDepth = sceneDepthTexture.SampleLevel(
+                pointClampSampler, uv, 0);
+            lookupPosition = ReconstructWorldPosition(uv, deviceDepth);
+        }
+        else
+        {
+            float middleHeight = 0.5 * (
+                stage12CloudBottomMeters + stage12CloudTopMeters);
+            float safeRayY = abs(rayDirection.y) > 1e-5
+                ? rayDirection.y : (rayDirection.y < 0.0 ? -1e-5 : 1e-5);
+            float planeDistance = (middleHeight - cameraPos.y) / safeRayY;
+            lookupValid = abs(rayDirection.y) > 1e-5 && planeDistance >= 0.0;
+            lookupPosition = cameraPos + rayDirection * max(planeDistance, 0.0);
+        }
+        if (!lookupValid)
+            return float4(0.0, 0.0, 0.0, 1.0);
+        Stage12ShadowSample cascade = SampleStage12DeepShadow(lookupPosition);
+        return float4(cascade.nearWeight, 0.0,
+                      cascade.farValidity, 1.0);
+    }
+    if (debugMode == 77)
+    {
+        if (!hasGeometry)
+            return float4(0.0, 0.0, 0.0, 1.0);
+        float deviceDepth = sceneDepthTexture.SampleLevel(
+            pointClampSampler, uv, 0);
+        float3 surfacePosition = ReconstructWorldPosition(uv, deviceDepth);
+        float surfaceT = Stage12SurfaceTransmittance(surfacePosition);
+        return float4(surfaceT.xxx, 1.0);
+    }
+    if (debugMode == 78)
+        return float4((saturate(marchDebug.stage12DirectCacheError * 10.0) *
+                       marchDebug.hit).xxx, 1.0);
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
         ? sceneColorTexture.SampleLevel(pointClampSampler, uv, 0).rgb
         : SkyColor(rayDirection);
+    if (hasGeometry && stage12SurfaceShadowEnabled != 0u)
+    {
+        float deviceDepth = sceneDepthTexture.SampleLevel(
+            pointClampSampler, uv, 0);
+        float3 worldPosition = ReconstructWorldPosition(uv, deviceDepth);
+        background *= Stage12SurfaceFactor(
+            Stage12SurfaceTransmittance(worldPosition));
+    }
     float3 composite = cloud.scattering + background * cloud.transmittance;
     return float4(ApplyLdrHighlightShoulder(composite), 1.0);
 }
@@ -792,6 +872,10 @@ CloudDataOutput PackageCloudData(CloudResult cloud, float sceneDistance)
 float4 mainReference(VSOut input) : SV_TARGET
 {
     float2 uv = saturate(input.uv);
+    if (debugMode == 74)
+        return Stage12DebugCacheTexture(uv, true);
+    if (debugMode == 75)
+        return Stage12DebugCacheTexture(uv, false);
     float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
     bool hasGeometry = deviceDepth < 0.999999;
     float3 rayDirection = ReconstructWorldRay(uv);
@@ -811,6 +895,10 @@ float4 mainReference(VSOut input) : SV_TARGET
 float4 mainOptimized(VSOut input) : SV_TARGET
 {
     float2 uv = saturate(input.uv);
+    if (debugMode == 74)
+        return Stage12DebugCacheTexture(uv, true);
+    if (debugMode == 75)
+        return Stage12DebugCacheTexture(uv, false);
     float deviceDepth = sceneDepthTexture.SampleLevel(pointClampSampler, uv, 0);
     bool hasGeometry = deviceDepth < 0.999999;
     float3 rayDirection = ReconstructWorldRay(uv);

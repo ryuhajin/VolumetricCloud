@@ -15,7 +15,11 @@ Full-resolution 공간 필터로 복원한 뒤 장면과 합성하는 두 패스
 건물 경계에서는 Full Scene의 geometry/sky class와 국소 D32 surface plane이 일치하는 low-res source만
 복원에 참여한다. 유효 current가 없는 픽셀은 잘못된 중심값으로 history를 덮지 않고, Full Scene
 anchor로 재투영한 history가 유효하면 그대로 유지한다.
-사용자 승인 전 시작값은 Temporal Off라 단계 10 화면을 보존한다.
+사용자 승인 뒤에도 시작값은 Temporal Off라 단계 10 화면을 보존한다.
+단계 12는 화면 해상도와 독립적인 Near/Far Deep Optical-Depth Cache를 매 프레임 생성한다.
+구름 조명은 반복 Light Ray 대신 높이별 cache를 읽을 수 있고, Full resolve는 Scene Depth로
+복원한 지면·건물 위치에서 같은 cache의 최하단 slice를 읽는다. 2026-08-25 자동·사용자
+검증을 통과한 기본 모드는 `DeepCache/Balanced512`이며 DirectReference는 회귀 비교로 남긴다.
 
 ## 모듈과 책임
 
@@ -23,18 +27,19 @@ anchor로 재투영한 history가 유효하면 그대로 유지한다.
 |---|---|
 | `Window` / `Camera` | Win32 입력, 숫자 0~9·F1~F8, 오빗/휠, WASD·Shift rig 이동, FOV·현재/저장 시점과 view/projection 제공 |
 | `Renderer` | D3D11 장치, 10km 지면·20층 건물, compute noise, 구름·Noise Lab 패스와 테스트 전용 legacy fixture |
-| `NoiseLab` | F1 외형/Noise/Optimization/Upsampling/Temporal, F2 Weather, F3 Lighting, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 33 snapshot 내보내기 |
+| `NoiseLab` | F1 외형/Noise/Optimization/Upsampling/Temporal, F2 Weather, F3 Lighting/Stage 12 Shadow, F4 Camera 독립 ImGui 창, 세 축 512² 단면, schema 34 snapshot 내보내기 |
 | `CloudAppearance` | Dense Mixed/Stratus/Cumulus 외형 계약, F1 요청값 0~3 공통 디코딩, Physical density CPU 기준, schema 29 Custom 원자 저장·엄격 로드 |
 | `CloudParameters` | 128바이트 AABB·Base·Detail·Weather·step 설정과 디버그 모드 |
 | `CloudLodParameters` | 16바이트 Detail 거리 LOD 시작·끝과 실제 volume 중립 평균 |
 | `OptimizationParameters` | 64바이트 b9 View/Light 후보와 Balanced~Fine Reference 활성 preset; Fast/4× 값은 실패 이력·schema 호환용 보존 |
 | `Stage10UpsamplingParameters` | 32바이트 b10 해상도 비율, 공간 필터와 Scene/Cloud/T 경계 가중치 |
 | `Stage11TemporalParameters` | 144바이트 b11 이전 View-Projection, jitter, history 거부·clip 설정과 상태 |
+| `Stage12ShadowParameters` | 160바이트 b12 light basis, Near/Far cache, cascade와 표면 합성 설정 |
 | `CloudShapeParameters` | 64바이트 Legacy/Weather Physical 모드, 타입별 두께와 세로 프로파일 |
 | `CloudDomainParameters` | AABB/평면층 선택, 구름 고도·두께와 View/Light 추적 제한 |
 | `LightParameters` | 80바이트 태양·Light Ray·외곽 범위 Dual-lobe Phase 설정 |
 | `EnvironmentParameters` | 80바이트 하늘·지면·태양 차폐 AO·다중 산란 설정 |
-| `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, Cloud Raymarch/Upsample/Total 분리 EMA |
+| `FrameProfiler` | CPU Frame과 8-slot 비동기 D3D11 timestamp query, Shadow Cache/Raymarch/Resolve/Cloud Total 분리 EMA |
 | `WeatherMap` | 256² RGBA8 Uniform 회귀/Periodic Perlin/Channel Debug 픽셀 생성과 해시, 공통 `CloudTypeMode` |
 | `DiagnosticScene.hlsl` | 평면·박스의 불투명 색상과 장치 깊이 출력 |
 | `Ray.hlsli` | 평행축 0 나누기를 피하는 slab Ray-AABB 교차 |
@@ -60,6 +65,7 @@ anchor로 재투영한 history가 유효하면 그대로 유지한다.
 | `Stage9OptimizationMath.h` | 가변 View 구간, coarse 되감기와 weighted cone CPU 기준 |
 | `Stage10UpsamplingMath.h` | 축 해상도, 픽셀 중심 UV, opacity 가중 깊이와 joint weight CPU 기준 |
 | `Stage11TemporalMath.h` | 4-phase jitter와 Full 복원 역보정, source class/depth 검증, invalid-current 유지 정책, 바람 재투영, clip·EMA CPU 기준 |
+| `Stage12ShadowMath.h` | light basis·태양 레이 UV 불변성·texel snap·cascade·slice·Beer-Lambert CPU 기준 |
 | `NoiseVolumeCache.h` | 테스트 전용 cache header·parameter/payload hash와 손상 거부 |
 | `Stage13CloudDomainMath.h` | 평면층의 아래·내부·위·수평·깊이 제한 교차 CPU 기준 |
 
@@ -67,44 +73,50 @@ anchor로 재투영한 history가 유효하면 그대로 유지한다.
 
 1. `Renderer`가 Y=0, X/Z ±5km 실제 사각 평면과 원점의 `20×60×20m` 건물을
    `R16G16B16A16_FLOAT` 색상 타깃과 `D32_FLOAT` 깊이에 항상 렌더링한다. linear RGB는
-   지면 `(0.10,0.14,0.12)`, 건물 `(0.02,0.025,0.035)`이다.
+   지면과 건물 모두 `(0.50,0.50,0.50)`이다. 단계 12 사용자 검증에서 표면 그림자의 밝기
+   차이를 어두운 기존 진단색보다 쉽게 읽도록 2026-08-24 중간 회색으로 바꿨다.
 2. 깊이 타깃을 DSV에서 해제하고 `R32_FLOAT` SRV로 전환한다.
-3. 선택한 구름 해상도(50/67/75/100% 축)의 풀스크린 삼각형이 Full-resolution 장면 깊이를
+3. Deep Cache 모드이고 PlanarLayer·태양 고도 3° 이상·리소스가 유효하면 Near/Far compute를
+   dispatch한다. `R32_FLOAT Texture2DArray`에 위에서 현재 높이까지 누적한 광학 깊이 `tau`를 쓴다.
+4. 선택한 구름 해상도(50/67/75/100% 축)의 풀스크린 삼각형이 Full-resolution 장면 깊이를
    읽어 월드 레이, 월드 위치와 장면 거리를 복원한다.
-4. 일반 실행은 Open World와 `Texture3D`를, 자동 회귀는 기존 AABB/13-2와
+5. 일반 실행은 Open World와 `Texture3D`를, 자동 회귀는 기존 AABB/13-2와
    `ProceduralLegacy`와 Legacy shape mode를 b1/b3/b5/b6/b7에 넣는다.
-5. DomainCB 선택에 따라 AABB 또는 Y 평면층의 진입·이탈 거리를 구하고 Scene Depth와
+6. DomainCB 선택에 따라 AABB 또는 Y 평면층의 진입·이탈 거리를 구하고 Scene Depth와
    S배 된 View/Light 제한을 적용한다.
-6. Physical Shape는 `windSpeed × effectiveTime`의 공통 수평 월드 변위를 Weather·Base·
+7. Physical Shape는 `windSpeed × effectiveTime`의 공통 수평 월드 변위를 Weather·Base·
    Detail에 적용하고 Base `t3`와 Detail `t4`를 linear-wrap 샘플링한다. Similarity/Legacy는
    기존 독립 속도와 단일 value noise 경로를 보존한다.
-7. 월드 XZ로 Weather Map R/G/B/A를 읽고 A/G로 타입별 물리 두께를 정한다. 13-4E는
+8. 월드 XZ로 Weather Map R/G/B/A를 읽고 A/G로 타입별 물리 두께를 정한다. 13-4E는
    Weather를 `support`와 70~100%의 완만한 수평 coverage로 분리하고, footprint는 threshold에
    20%만 반영한다. 세로 profile은 threshold가 아니라 최종 Base 밀도에 정확히 한 번 곱한다.
-8. Weather Base가 있을 때만 Detail Noise로 깎고, View 적분 결과를 MRT0
+9. Weather Base가 있을 때만 Detail Noise로 깎고, View 적분 결과를 MRT0
    `RGBA16_FLOAT(scattering.rgb,T)`와 MRT1 `RG32_FLOAT(opacity-weighted cloud depth,
    source scene limit)`에 기록한다.
-9. Full-resolution `CloudUpsample.hlsl`가 활성 Nearest/Bilinear/Joint4 중 선택한 공간 필터로
+10. Full-resolution `CloudUpsample.hlsl`가 활성 Nearest/Bilinear/Joint4 중 선택한 공간 필터로
    MRT를 복원한다. Joint9 경로는 schema 32와 실패 이력 호환용으로만 남는다. Joint는
    불투명/하늘 분류, Scene Depth, Cloud Depth와 T 차이를 가중치로 사용하며 전부 거부되면
    물체는 투명 구름, 하늘은 최근접 표본으로 폴백한다.
-10. Stable 4-Phase가 켜지면 저해상도 texel 기준 `±0.25` 네 위상을 Cloud UV·Ray·Scene Depth에
+11. Stable 4-Phase가 켜지면 저해상도 texel 기준 `±0.25` 네 위상을 Cloud UV·Ray·Scene Depth에
     함께 적용한다. Full Scene 카메라 투영은 흔들지 않는다.
-11. Temporal 공간 복원은 source의 finite/range와 Full Scene geometry/sky class를 먼저 검사한다.
+12. Temporal 공간 복원은 source의 finite/range와 Full Scene geometry/sky class를 먼저 검사한다.
     가까운 동일 표면은 `clamp(target×1%,1m,10m)` meter fast path로 통과시키고, 이를 넘는 F8
     사선 표면은 Full D32 Center/L/R/U/D의 작은 one-sided slope로 source device depth를 예측해
     `8e-7 + 2e-7×ManhattanPixelDistance` 안일 때 같은 평면으로 인정한다. Nearest는 invalid일 때
     결정적 3×3 검색, Bilinear/Joint는 invalid weight 제거·재정규화 뒤 같은 검색을 사용한다.
-12. `CloudTemporalResolve.hlsl`가 대표 Cloud Depth로 현재 월드 위치를 복원하고 Physical Wind의
+13. `CloudTemporalResolve.hlsl`가 대표 Cloud Depth로 현재 월드 위치를 복원하고 Physical Wind의
     `-normalize(windDirection) × windSpeed × dt`를 적용한 뒤 이전 View-Projection으로 history UV를
     구한다. 화면/`w`, motion, Scene class/depth, Cloud depth, T와 near fade를 검사한다. Cloud Depth는
     중심 한 값이 아니라 불투명한 current 3×3 대표 깊이 범위와 상대 margin 밖일 때만 거부하며,
     같은 3×3 `scattering/T` 범위를 history clipping에도 재사용한다.
     current source가 없으면 geometry는 Full Scene surface, sky는 far-plane point를 anchor로 쓰며,
     Scene 검사까지 통과한 history를 weight 1로 유지한다. history도 없으면 투명 구름으로 시작한다.
-13. 유효 history의 scattering/T를 현재 저해상도 3×3 범위로 clip해 EMA 혼합하고, 반대쪽 Full
+14. 유효 history의 scattering/T를 현재 저해상도 3×3 범위로 clip해 EMA 혼합하고, 반대쪽 Full
     `RGBA16F + RG16F` history와 Back Buffer에 동시에 쓴다. 성공한 draw 뒤에만 ping-pong index를
     바꾸며 거부 프레임은 현재값 100%로 새 history를 시작한다.
+15. Full 합성에서 불투명 Scene Depth의 월드 위치를 복원해 cache bottom slice를 읽는다.
+    `lerp(1, ambientFloor+(1-ambientFloor)*Tcloud, strength)`를 지면·옥상·벽의 기존 진단색에
+    동일하게 곱한다. 이 표면 계수는 Cloud history에 저장하지 않는다.
 
 ## 단계 13-4D 단일 씬 런타임 계약
 
@@ -130,6 +142,9 @@ Depth, Accumulated Direct, View Transmittance, Light Transmittance다. 기존 HL
 구름 타깃 크기를 기록한다. 단계 11은 schema 33/`implementationStage=11`이며 temporal mode,
 history weight, 거부 threshold, near fade와 neighborhood clamp를 추가한다. 구형 schema 32에는
 temporal 필드가 없으므로 다시 로드하는 경로에서는 Off로 해석한다.
+단계 12는 schema 34/`implementationStage=12`로 `stage12Shadow` mode/preset, 실제 배열 크기,
+월드 폭, 메모리와 표면 계수를 기록한다. schema 33 이하는 Shadow 필드가 없으므로
+`DirectReference`로 복원한다.
 13-4E Custom 외형 전용 원자 저장 파일은 schema 29를 유지한다. snapshot은 `sceneContract`, 현재/저장 카메라,
 `cloudTypeMode`, `openWorldPipelinePreset`을 기록하며 `cloudScene`, `domainStates`,
 `stage13Preset`, `similarityScale`, `diagnosticSceneEnabled`와 Stage1/2/4 preset 상태는
@@ -169,8 +184,8 @@ Pipeline Compare 버튼으로 들어간 1~5 단계의 main cloud pass만 effecti
 `FrameProfiler`의 CPU 범위는 `Renderer::Render` 시작부터 `Present` 반환까지라서 VSync 대기를
 포함한다. GPU Frame 범위는 진단 장면 직전부터 ImGui draw 직후까지이며 Present는 포함하지
 않는다. GPU Cloud Total은 `RenderCloudDataPass + RenderCloudUpsamplePass`이며 중간 timestamp로
-`Cloud Raymarch`와 `Spatial/Temporal Resolve`를 따로 표시한다. 구형 `GPU Cloud` 필드와 원시 표본은
-호환을 위해 두 패스의 합을 뜻한다.
+`GPU Shadow Cache`, `Cloud Raymarch`, `Spatial/Temporal Resolve`를 따로 표시한다. `GPU Cloud
+Total`과 구형 원시 `GPU Cloud` 필드는 세 구간의 합이다.
 
 GPU 시간은 8개 query 슬롯을 순환하며 완료된 과거 프레임만
 `D3D11_ASYNC_GETDATA_DONOTFLUSH`로 읽는다. 준비되지 않은 query 때문에 CPU나 GPU를 기다리지
@@ -384,6 +399,31 @@ signed RG `±16px`, 화면 밖 파랑을 사용한다. Validity는 초록 허용
 Difference는 clamp 전 raw history의 scattering을 R, T를 G, current/history 없음은 B로 ×4 표시한다.
 Current Source Validity는 valid 초록, class 불일치 빨강, geometry surface/plane 불일치 노랑,
 finite/guide/후보 없음 파랑, invalid current 대신 history를 유지한 픽셀은 회색이다.
+
+### `Stage12ShadowParameters` / `ShadowCB` (`b12`, 160바이트)
+
+| 묶음 | 필드 | 시작값과 역할 |
+|---|---|---|
+| 0 | mode, preset, Near/Far resolution | DeepCache, Balanced512, `512/512` |
+| 1 | `lightRight(float3)`, Near 폭 | 태양 수직 U축, 정사각형 전체 `24km` |
+| 2 | `lightUp(float3)`, Far 폭 | 태양 수직 V축, 정사각형 전체 `128km` |
+| 3 | `lightForward(float3)`, 층 바닥 | 표본→태양 축, `1500m` |
+| 4~5 | Near/Far snapped center, 층 상단·최대 tau | 카메라 XZ 기준, `7500m`, `9.21034` |
+| 6 | Near/Far slice, surface/cache 상태 | `80/40`, on, runtime ready |
+| 7 | Near blend, Far fade | `0.80~0.95`, `0.90~1.00` |
+| 8 | surface strength/floor, 최소 태양 Y, cache debug exposure | `1.0/0.35/sin(3°)/4.0` |
+| 9 | dispatch cascade, Near/Far debug slice, padding | compute용 Near=0/Far=1, preview 기본 bottom `0/0` |
+
+Near/Far는 각각 `t6/t7`, 공용 linear-clamp sampler는 `s2`다. Compute에서만 같은 배열을
+`u0`으로 한 벌씩 바인딩한다. Full/50%와 창 resize는 cache를 재생성하지 않으며 preset 변경은
+두 배열을 모두 만든 뒤 원자 교체한다. Fast256은 30MiB, Balanced512는 120MiB다.
+태양이 3°보다 낮거나 AABB 회귀·리소스·셰이더 실패이면 구름은 기존 Direct Light Ray로,
+표면은 `T=1`로 폴백한다. 디버그 ID 74/75는 카메라 레이의 대표점이 아니라 선택한 Near/Far
+배열 slice를 화면 UV에 직접 펼친다. `1-exp(-tau*exposure)`를 써 작은 tau도 보이게 하며
+slice 0이 실제 표면 Shadow Map이다. ID 76은 불투명 픽셀의 Full Scene 월드 위치, 하늘은
+구름층 중간 평면과의 교차 위치로 cascade를 표시한다. ID 77/78은 Surface T와 Direct/Cache
+절대 오차이며 숫자 0~9 계약은 바꾸지 않는다. Debug slice와 exposure는 cache 내용이나
+합성 결과를 바꾸지 않으므로 조작해도 Temporal history를 reset하지 않는다.
 
 ### `LightParameters` / `LightCB` (`b3`, 80바이트)
 

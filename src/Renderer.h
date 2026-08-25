@@ -27,6 +27,8 @@
 #include "OptimizationParameters.h"
 #include "Stage10UpsamplingParameters.h"
 #include "Stage11TemporalParameters.h"
+#include "Stage12ShadowMath.h"
+#include "Stage12ShadowParameters.h"
 #include "Stage13ScaleMath.h"
 #include "Stage13OpenWorldMath.h"
 #include "Stage13NoiseVolumeMath.h"
@@ -156,6 +158,32 @@ public:
     std::uint32_t TemporalAccumulatedFrames() const
     {
         return m_temporalAccumulatedFrames;
+    }
+    void SetStage12ShadowMode(Stage12ShadowMode mode);
+    bool SetStage12ShadowPreset(Stage12ShadowPreset preset);
+    Stage12ShadowMode ShadowMode() const
+    {
+        return static_cast<Stage12ShadowMode>(m_shadowParameters.shadowMode);
+    }
+    Stage12ShadowPreset ShadowPreset() const
+    {
+        return static_cast<Stage12ShadowPreset>(m_shadowParameters.shadowPreset);
+    }
+    const Stage12ShadowParameters& ShadowSettings() const
+    {
+        return m_shadowParameters;
+    }
+    Stage12ShadowParameters& MutableShadowSettings()
+    {
+        return m_shadowParameters;
+    }
+    std::uint64_t ShadowCacheBytes() const
+    {
+        return stage12shadow::CacheBytes(ShadowPreset());
+    }
+    std::uintptr_t NearShadowCacheIdentity() const
+    {
+        return reinterpret_cast<std::uintptr_t>(m_shadowNearTexture.Get());
     }
     bool ApplyOpenWorldPipelinePreset(OpenWorldPipelinePreset preset);
     bool ApplyCloudAppearancePreset(CloudAppearancePreset preset);
@@ -302,6 +330,7 @@ private:
     bool CreateSceneTargets();
     bool CreateCloudTargets();
     bool CreateTemporalHistoryTargets();
+    bool CreateDeepShadowResources(Stage12ShadowPreset preset);
     bool CreateDiagnosticScene();
     bool CreatePipelineStates();
     bool CreateConstantBuffers();
@@ -327,6 +356,8 @@ private:
     void MarkCloudAppearanceDirty();
     void ReleaseSizeDependentResources();
     void RenderDiagnosticScene(const Camera& camera);
+    void UpdateStage12ShadowParameters(const Camera& camera);
+    void RenderDeepShadowCaches(const Camera& camera, float timeSeconds);
     void RenderCloudPass(const Camera& camera, float timeSeconds,
                          ID3D11RenderTargetView* targetOverride = nullptr);
     void UpdateCloudConstantBuffers(const Camera& camera, float timeSeconds,
@@ -378,6 +409,13 @@ private:
     ComPtr<ID3D11RenderTargetView> m_temporalHistoryAuxRtv[2];
     ComPtr<ID3D11ShaderResourceView> m_temporalHistoryAuxSrv[2];
 
+    ComPtr<ID3D11Texture2D> m_shadowNearTexture;
+    ComPtr<ID3D11ShaderResourceView> m_shadowNearSrv;
+    ComPtr<ID3D11UnorderedAccessView> m_shadowNearUav;
+    ComPtr<ID3D11Texture2D> m_shadowFarTexture;
+    ComPtr<ID3D11ShaderResourceView> m_shadowFarSrv;
+    ComPtr<ID3D11UnorderedAccessView> m_shadowFarUav;
+
     ComPtr<ID3D11VertexShader> m_fullscreenVs;
     ComPtr<ID3D11PixelShader> m_cloudReferencePs;
     ComPtr<ID3D11PixelShader> m_cloudOptimizedPs;
@@ -390,6 +428,7 @@ private:
     ComPtr<ID3D11PixelShader> m_scenePs;
     ComPtr<ID3D11ComputeShader> m_noiseBaseCs;
     ComPtr<ID3D11ComputeShader> m_noiseDetailCs;
+    ComPtr<ID3D11ComputeShader> m_deepShadowCs;
     ComPtr<ID3D11InputLayout> m_sceneInputLayout;
 
     ComPtr<ID3D11Buffer> m_cameraCb;
@@ -403,6 +442,7 @@ private:
     ComPtr<ID3D11Buffer> m_optimizationCb;
     ComPtr<ID3D11Buffer> m_upsamplingCb;
     ComPtr<ID3D11Buffer> m_temporalCb;
+    ComPtr<ID3D11Buffer> m_shadowCb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
@@ -451,6 +491,7 @@ private:
     Stage10ResolutionPreset m_resolutionPreset =
         Stage10ResolutionPreset::Full;
     Stage11TemporalParameters m_temporalParameters;
+    Stage12ShadowParameters m_shadowParameters;
     bool m_temporalHistoryValid = false;
     bool m_temporalPreviousFrameValid = false;
     std::uint32_t m_temporalHistoryReadIndex = 0;
@@ -472,6 +513,7 @@ private:
     std::wstring m_noiseLabShaderPath;
     std::wstring m_sceneShaderPath;
     std::wstring m_noiseVolumeShaderPath;
+    std::wstring m_deepShadowShaderPath;
     bool m_noiseVolumesEnabled = true;
     std::map<std::wstring, std::filesystem::file_time_type> m_shaderWriteTimes;
     std::uint64_t m_shaderGeneration = 0;
