@@ -20,6 +20,7 @@
 #include "Noise.hlsli"
 #include "LightParameters.hlsli"
 #include "PhaseFunction.hlsli"
+#include "Stage12Shadow.hlsli"
 
 static const float kLightEarlyExitOpticalDepth = 9.21034037;
 
@@ -210,7 +211,14 @@ LightMarchResult ComputeLightTransmittance(
     float3 samplePosition, float3 lightDirection)
 {
     LightMarchResult result = { 1.0, 0.0, 0.0 };
-    if (lightSamplingMode == kLightSamplingDeterministicCone)
+    Stage12ShadowSample cached = SampleStage12DeepShadow(samplePosition);
+    if (cached.valid > 0.5)
+    {
+        result.transmittance = cached.transmittance;
+        result.opticalDepth = cached.opticalDepth;
+        result.stepCount = 0.0;
+    }
+    else if (lightSamplingMode == kLightSamplingDeterministicCone)
         result = ComputeLightTransmittanceCone(samplePosition, lightDirection);
     else
         result = ComputeLightTransmittanceStraight(samplePosition, lightDirection);

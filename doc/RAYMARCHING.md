@@ -883,3 +883,57 @@ history에는 합성된 장면색이 아니라 `scattering/T`와 현재 Cloud De
 geometry는 Full Scene surface, sky는 far-plane ray point로 history UV를 계산하고 Scene 검사까지
 통과한 history를 100% 유지한다. 이때 이전 Cloud Depth는 보존하고 Scene Limit만 현재 Full
 픽셀 값으로 갱신한다. history도 읽을 수 없으면 `scattering=0,T=1`로 시작한다.
+
+## 단계 12: Deep Optical-Depth Cache와 표면 Cloud Shadow
+
+태양 방향 단위 벡터를 `L`, 태양에 수직인 두 축을 `R/U`라 한다. Cache 좌표는 다음과 같아
+같은 태양 레이 위의 모든 점이 같은 열을 읽는다.
+
+```text
+uv(P) = (dot(P-C,R), dot(P-C,U)) / width + 0.5
+uv(P+sL) = uv(P)
+```
+
+중심 `C`는 카메라 XZ와 층 중간 높이에서 시작해 light-space의 cache texel 단위로 반올림한다.
+Near/Far 폭은 반경이 아니라 각각 24km/128km 정사각형 전체 폭이다. Full과 50% Cloud Data는
+같은 `C`, 폭, resolution을 사용한다.
+
+Compute 한 thread는 한 XY 열을 맡는다. top slice의 `tau=0`에서 시작해 아래로 내려오며 인접
+높이 구간 중앙의 Base-only 밀도를 누적한다. Detail Erosion은 기존 Light Ray와 같이 제외한다.
+
+```text
+dy = (top-bottom)/(sliceCount-1)
+ds = dy / L.y
+tau[i] = min(9.21034, tau[i+1] + densityBase(Pmid) * extinction * ds)
+T = exp(-tau)
+```
+
+조회할 때 XY는 hardware bilinear, 높이는 인접 두 array slice를 직접 lerp한다. 구름층 아래
+표면은 높이를 bottom으로 clamp해 전체 기둥 투과율을 읽는다. Near 가장자리 정규화 거리
+0.80까지 Near만, 0.80~0.95에서 Far로 smoothstep 전환하고 Far 0.90~1.00은 `T=1`로 fade한다.
+표면 진단 합성은 다음 고정식이며 Cloud history 밖에서 Full Scene 배경에만 적용한다.
+
+```text
+surfaceFactor = lerp(1,
+    surfaceAmbientFloor + (1-surfaceAmbientFloor)*Tcloud,
+    surfaceShadowStrength)
+default: ambientFloor=0.35, strength=1.0
+```
+
+법선 기반 `N dot L`과 정식 태양·하늘·지면 조명은 단계 14 범위다. 태양 `L.y<sin(3°)`, AABB,
+cache 실패에서는 구름이 기존 Direct Light Ray를 사용하고 표면은 중립 `T=1`을 사용한다.
+
+### Cache 배열 디버그 표시
+
+Near/Far 진단은 카메라 레이 중간 표본을 보여 주지 않고 선택한 `Texture2DArray` slice의 XY를
+화면 전체에 직접 펼친다. 실제 tau는 최대값 9.21034보다 훨씬 작은 영역이 많아 단순
+`tau/9.21034`가 거의 검게 보이므로 다음 노출식을 사용한다.
+
+```text
+preview = 1 - exp(-tau * debugExposure)   // 기본 exposure=4
+```
+
+검정은 빈 열, 밝은 회색·흰색은 누적 밀도가 있는 열이다. slice 0은 전체 구름층을 지난 표면
+Cloud Shadow Map이며, slice 번호가 커질수록 더 높은 지점부터 태양까지의 Light Cache를 본다.
+최상단 slice는 정의상 tau 0이므로 검정이 정상이다. Cascade 진단은 불투명 픽셀에는 복원한
+표면 월드 위치를, 하늘에는 구름층 중간 높이와 카메라 레이의 교차점을 사용한다.

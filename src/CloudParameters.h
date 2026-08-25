@@ -75,6 +75,11 @@ enum class CloudDebugMode : std::int32_t
     TemporalHistoryWeight = 71,
     TemporalCurrentHistoryDifference = 72,
     TemporalCurrentSourceValidity = 73,
+    Stage12NearOpticalDepth = 74,
+    Stage12FarOpticalDepth = 75,
+    Stage12CascadeSelection = 76,
+    Stage12SurfaceTransmittance = 77,
+    Stage12DirectCacheError = 78,
 };
 
 enum class Stage5WeatherPreset : std::int32_t

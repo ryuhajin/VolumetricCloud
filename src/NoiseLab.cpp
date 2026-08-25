@@ -296,6 +296,7 @@ void NoiseLab::BeginFrame(float applicationTime,
                           Stage11TemporalParameters& temporalParameters,
                           bool temporalHistoryValid,
                           std::uint32_t temporalAccumulatedFrames,
+                          Stage12ShadowParameters& shadowParameters,
                           LightParameters& lightParameters,
                           Stage6SunPreset& sunPreset,
                           Stage7PhasePreset& phasePreset,
@@ -349,6 +350,7 @@ void NoiseLab::BeginFrame(float applicationTime,
                           upsamplingParameters, resolutionPreset,
                           temporalParameters, temporalHistoryValid,
                           temporalAccumulatedFrames,
+                          shadowParameters,
                           lightParameters, sunPreset, phasePreset,
                           environmentParameters, environmentPreset,
                           weatherPreset, weatherGeneratorSettings,
@@ -380,6 +382,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                                  Stage11TemporalParameters& temporalParameters,
                                  bool temporalHistoryValid,
                                  std::uint32_t temporalAccumulatedFrames,
+                                 Stage12ShadowParameters& shadowParameters,
                                  LightParameters& lightParameters,
                                  Stage6SunPreset& sunPreset,
                                  Stage7PhasePreset& phasePreset,
@@ -517,6 +520,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     const OptimizationParameters optimizationBefore = optimizationParameters;
     const Stage10UpsamplingParameters upsamplingBefore = upsamplingParameters;
     const Stage11TemporalParameters temporalBefore = temporalParameters;
+    const Stage12ShadowParameters shadowBefore = shadowParameters;
     const NoiseVolumeParameters noiseVolumeBefore = noiseVolumeParameters;
     const LightParameters lightBefore = lightParameters;
     const CloudAppearanceSettings appearanceBefore = CaptureCloudAppearance(
@@ -1248,6 +1252,79 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     cloudParameters.detailWindSpeed = std::max(cloudParameters.detailWindSpeed, 0.0f);
 
     if (lightingPanel && ImGui::CollapsingHeader(
+            "Stage 12 Cloud Shadow / Deep Cache",
+            ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        int mode = static_cast<int>(shadowParameters.shadowMode);
+        const char* modes[] = { "Direct Reference", "Deep Cache" };
+        if (ImGui::Combo("Shadow Mode", &mode, modes,
+                         static_cast<int>(std::size(modes))))
+            shadowParameters.shadowMode = static_cast<std::uint32_t>(mode);
+
+        int preset = static_cast<int>(shadowParameters.shadowPreset);
+        const char* presets[] = { "Fast 256", "Balanced 512" };
+        if (ImGui::Combo("Cache Preset", &preset, presets,
+                         static_cast<int>(std::size(presets))))
+            shadowParameters.shadowPreset = static_cast<std::uint32_t>(preset);
+
+        bool surfaceEnabled = shadowParameters.surfaceShadowEnabled != 0u;
+        if (ImGui::Checkbox("Surface Cloud Shadow", &surfaceEnabled))
+            shadowParameters.surfaceShadowEnabled = surfaceEnabled ? 1u : 0u;
+        ImGui::SliderFloat("Surface Strength",
+                           &shadowParameters.surfaceShadowStrength,
+                           0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Surface Ambient Floor",
+                           &shadowParameters.surfaceAmbientFloor,
+                           0.0f, 1.0f, "%.2f");
+        int nearSlice = static_cast<int>(shadowParameters.debugNearSlice);
+        if (ImGui::SliderInt("Near Cache Debug Slice", &nearSlice, 0,
+                             static_cast<int>(shadowParameters.nearSliceCount - 1u)))
+            shadowParameters.debugNearSlice = static_cast<std::uint32_t>(nearSlice);
+        int farSlice = static_cast<int>(shadowParameters.debugFarSlice);
+        if (ImGui::SliderInt("Far Cache Debug Slice", &farSlice, 0,
+                             static_cast<int>(shadowParameters.farSliceCount - 1u)))
+            shadowParameters.debugFarSlice = static_cast<std::uint32_t>(farSlice);
+        ImGui::SliderFloat("Cache Debug Exposure",
+                           &shadowParameters.cacheDebugExposure,
+                           0.1f, 20.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+        shadowParameters = stage12shadow::Sanitize(shadowParameters);
+        const float layerHeight = shadowParameters.cloudTopMeters -
+            shadowParameters.cloudBottomMeters;
+        const float nearDebugHeight = shadowParameters.cloudBottomMeters +
+            layerHeight * static_cast<float>(shadowParameters.debugNearSlice) /
+            static_cast<float>(std::max(shadowParameters.nearSliceCount - 1u, 1u));
+        const float farDebugHeight = shadowParameters.cloudBottomMeters +
+            layerHeight * static_cast<float>(shadowParameters.debugFarSlice) /
+            static_cast<float>(std::max(shadowParameters.farSliceCount - 1u, 1u));
+        ImGui::Text("Debug slice height: Near %.0f m | Far %.0f m",
+                    nearDebugHeight, farDebugHeight);
+        ImGui::Text("Near: %ux%ux%u, %.3f m/texel",
+                    shadowParameters.nearResolution,
+                    shadowParameters.nearResolution,
+                    shadowParameters.nearSliceCount,
+                    shadowParameters.nearWidthMeters /
+                        static_cast<float>(shadowParameters.nearResolution));
+        ImGui::Text("Far: %ux%ux%u, %.3f m/texel",
+                    shadowParameters.farResolution,
+                    shadowParameters.farResolution,
+                    shadowParameters.farSliceCount,
+                    shadowParameters.farWidthMeters /
+                        static_cast<float>(shadowParameters.farResolution));
+        ImGui::Text("Cache memory: %.1f MiB | Ready: %s",
+                    static_cast<double>(stage12shadow::CacheBytes(
+                        static_cast<Stage12ShadowPreset>(
+                            shadowParameters.shadowPreset))) /
+                        (1024.0 * 1024.0),
+                    shadowParameters.cacheReady != 0u ? "yes" : "fallback");
+        ImGui::TextDisabled(
+            "World cache is independent of Full/50%% and window resize.");
+        ImGui::TextDisabled(
+            "Cache Texture: black=empty, white=optical depth; slice 0=surface shadow.");
+        ImGui::TextDisabled(
+            "Cascade: red=Near, blue=Far, magenta=blend, black=outside/unavailable.");
+    }
+
+    if (lightingPanel && ImGui::CollapsingHeader(
             "Lighting / Phase / Environment Debug View",
             ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -1272,6 +1349,11 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             { "Silver Lining Contribution", CloudDebugMode::SilverLiningContribution },
             { "Shaped Sun Visibility", CloudDebugMode::ShapedSunVisibility },
             { "Ambient Visibility", CloudDebugMode::AmbientVisibility },
+            { "Stage 12 Near Cache Texture", CloudDebugMode::Stage12NearOpticalDepth },
+            { "Stage 12 Far Cache Texture", CloudDebugMode::Stage12FarOpticalDepth },
+            { "Stage 12 Cascade World Lookup", CloudDebugMode::Stage12CascadeSelection },
+            { "Stage 12 Surface T", CloudDebugMode::Stage12SurfaceTransmittance },
+            { "Stage 12 Direct/Cache Error x10", CloudDebugMode::Stage12DirectCacheError },
         };
         int selected = 0;
         const auto current = static_cast<CloudDebugMode>(cloudParameters.debugMode);
@@ -2184,6 +2266,16 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     if (!CloudAppearanceSettingsEqual(appearanceBefore, appearanceAfter))
         m_cloudAppearanceEdited = true;
 
+    Stage12ShadowParameters historyShadowBefore = shadowBefore;
+    Stage12ShadowParameters historyShadowAfter = shadowParameters;
+    // Cache preview 조작은 실제 렌더 계약을 바꾸지 않으므로 Temporal history를
+    // 지우지 않는다. mode/preset/surface 등 나머지 필드는 계속 reset 대상이다.
+    historyShadowBefore.cacheDebugExposure = 0.0f;
+    historyShadowBefore.debugNearSlice = 0u;
+    historyShadowBefore.debugFarSlice = 0u;
+    historyShadowAfter.cacheDebugExposure = 0.0f;
+    historyShadowAfter.debugNearSlice = 0u;
+    historyShadowAfter.debugFarSlice = 0u;
     m_parametersChanged = m_parametersChanged ||
         std::memcmp(&before, &cloudParameters, sizeof(CloudParameters)) != 0 ||
         std::memcmp(&shapeBefore, &cloudShapeParameters,
@@ -2199,7 +2291,9 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         std::memcmp(&upsamplingBefore, &upsamplingParameters,
                     sizeof(Stage10UpsamplingParameters)) != 0 ||
         std::memcmp(&temporalBefore, &temporalParameters,
-                    sizeof(Stage11TemporalParameters)) != 0;
+                    sizeof(Stage11TemporalParameters)) != 0 ||
+        std::memcmp(&historyShadowBefore, &historyShadowAfter,
+                    sizeof(Stage12ShadowParameters)) != 0;
     const bool sunSettingsChanged =
         lightBefore.directionToSun.x != lightParameters.directionToSun.x ||
         lightBefore.directionToSun.y != lightParameters.directionToSun.y ||
@@ -2422,6 +2516,8 @@ void NoiseLab::DrawPerformanceOverlay(const FrameTimingSnapshot& timing,
         if (timing.gpuValid)
         {
             ImGui::Text("GPU Frame  %7.3f ms", timing.gpuFrameMs);
+            ImGui::Text("GPU Shadow Cache    %7.3f ms",
+                        timing.gpuShadowCacheMs);
             ImGui::Text("Cloud Raymarch      %7.3f ms",
                         timing.gpuCloudRaymarchMs);
             ImGui::Text("Spatial/Temporal Resolve %7.3f ms",
@@ -2781,6 +2877,7 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
                              const Stage10UpsamplingParameters& upsampling,
                              Stage10ResolutionPreset resolutionPreset,
                              const Stage11TemporalParameters& temporal,
+                             const Stage12ShadowParameters& shadow,
                              int cloudRenderWidth,
                              int cloudRenderHeight,
                              const LightParameters& light,
@@ -2863,8 +2960,8 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         : 0.0;
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 33,\n"
-           << "  \"implementationStage\": \"11\",\n"
+           << "  \"schemaVersion\": 34,\n"
+           << "  \"implementationStage\": \"12\",\n"
            << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\",\n"
            << "  \"physicalAdvectionMode\": \""
            << (physicalShape ? "rigidSharedWindSpeed"
@@ -2910,6 +3007,31 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << temporal.nearHistoryFadeEndMeters
            << "], \"neighborhoodClamp\": "
            << (temporal.neighborhoodClampingEnabled != 0u ? "true" : "false")
+           << "},\n"
+           << "  \"stage12Shadow\": {\"mode\": \""
+           << stage12shadow::ModeName(static_cast<Stage12ShadowMode>(
+                  shadow.shadowMode))
+           << "\", \"preset\": \""
+           << stage12shadow::PresetName(static_cast<Stage12ShadowPreset>(
+                  shadow.shadowPreset))
+           << "\", \"near\": {\"size\": [" << shadow.nearResolution
+           << ", " << shadow.nearResolution << ", "
+           << shadow.nearSliceCount << "], \"widthMeters\": "
+           << shadow.nearWidthMeters
+           << "}, \"far\": {\"size\": [" << shadow.farResolution
+           << ", " << shadow.farResolution << ", "
+           << shadow.farSliceCount << "], \"widthMeters\": "
+           << shadow.farWidthMeters << "}, \"memoryMiB\": "
+           << (static_cast<double>(stage12shadow::CacheBytes(
+                  static_cast<Stage12ShadowPreset>(shadow.shadowPreset))) /
+               (1024.0 * 1024.0))
+           << ", \"surfaceEnabled\": "
+           << (shadow.surfaceShadowEnabled != 0u ? "true" : "false")
+           << ", \"surfaceStrength\": " << shadow.surfaceShadowStrength
+           << ", \"surfaceAmbientFloor\": " << shadow.surfaceAmbientFloor
+           << ", \"debugNearSlice\": " << shadow.debugNearSlice
+           << ", \"debugFarSlice\": " << shadow.debugFarSlice
+           << ", \"debugExposure\": " << shadow.cacheDebugExposure
            << "},\n"
            << "  \"cloudTypeMode\": \""
            << cloudTypeModeNames[cloudTypeIndex] << "\",\n";
@@ -3250,6 +3372,7 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const Stage10UpsamplingParameters& upsamplingParameters,
                               Stage10ResolutionPreset resolutionPreset,
                               const Stage11TemporalParameters& temporalParameters,
+                              const Stage12ShadowParameters& shadowParameters,
                               int cloudRenderWidth,
                               int cloudRenderHeight,
                               const LightParameters& lightParameters,
@@ -3293,6 +3416,7 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                                        upsamplingParameters,
                                        resolutionPreset,
                                        temporalParameters,
+                                       shadowParameters,
                                        cloudRenderWidth,
                                        cloudRenderHeight,
                                        lightParameters, sunPreset,

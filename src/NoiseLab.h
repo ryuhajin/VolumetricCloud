@@ -29,6 +29,7 @@
 #include "OptimizationParameters.h"
 #include "Stage10UpsamplingParameters.h"
 #include "Stage11TemporalParameters.h"
+#include "Stage12ShadowParameters.h"
 
 class Camera;
 
@@ -122,6 +123,7 @@ public:
                     Stage11TemporalParameters& temporalParameters,
                     bool temporalHistoryValid,
                     std::uint32_t temporalAccumulatedFrames,
+                    Stage12ShadowParameters& shadowParameters,
                     LightParameters& lightParameters,
                     Stage6SunPreset& sunPreset,
                     Stage7PhasePreset& phasePreset,
@@ -191,6 +193,7 @@ public:
                         const Stage10UpsamplingParameters& upsamplingParameters,
                         Stage10ResolutionPreset resolutionPreset,
                         const Stage11TemporalParameters& temporalParameters,
+                        const Stage12ShadowParameters& shadowParameters,
                         int cloudRenderWidth,
                         int cloudRenderHeight,
                         const LightParameters& lightParameters,
@@ -253,6 +256,7 @@ private:
                            Stage11TemporalParameters& temporalParameters,
                            bool temporalHistoryValid,
                            std::uint32_t temporalAccumulatedFrames,
+                           Stage12ShadowParameters& shadowParameters,
                            LightParameters& lightParameters,
                            Stage6SunPreset& sunPreset,
                            Stage7PhasePreset& phasePreset,
@@ -303,6 +307,7 @@ private:
                        const Stage10UpsamplingParameters& upsamplingParameters,
                        Stage10ResolutionPreset resolutionPreset,
                        const Stage11TemporalParameters& temporalParameters,
+                       const Stage12ShadowParameters& shadowParameters,
                        int cloudRenderWidth,
                        int cloudRenderHeight,
                        const LightParameters& lightParameters,

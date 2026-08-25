@@ -169,7 +169,7 @@ void AppendGroundPlane(std::vector<DiagnosticSceneVertex>& vertices,
 {
     const std::uint32_t base = static_cast<std::uint32_t>(vertices.size());
     constexpr float h = stage13scene::kGroundHalfSizeMeters;
-    constexpr XMFLOAT3 color = { 0.10f, 0.14f, 0.12f };
+    constexpr XMFLOAT3 color = { 0.50f, 0.50f, 0.50f };
     vertices.push_back({ { -h, 0.0f, -h }, color });
     vertices.push_back({ {  h, 0.0f, -h }, color });
     vertices.push_back({ {  h, 0.0f,  h }, color });
@@ -202,6 +202,7 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_noiseLabShaderPath = m_shaderDir + L"NoiseLab.hlsl";
     m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
     m_noiseVolumeShaderPath = m_shaderDir + L"NoiseVolume.hlsl";
+    m_deepShadowShaderPath = m_shaderDir + L"CloudDeepShadow.hlsl";
     std::filesystem::path shaderDirectory(m_shaderDir);
     if (shaderDirectory.filename().empty())
         shaderDirectory = shaderDirectory.parent_path();
@@ -279,6 +280,10 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
         MessageBoxW(hwnd, L"단계 8 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
     }
+
+    // 단계 12 cache는 화면 크기와 독립적이다. 실패해도 DirectReference로
+    // 렌더를 계속할 수 있으므로 앱 초기화 자체를 중단하지 않는다.
+    CreateDeepShadowResources(ShadowPreset());
 
     UpdateShaderWriteTimes();
     return true;
@@ -446,6 +451,81 @@ bool Renderer::CreateTemporalHistoryTargets()
     return true;
 }
 
+bool Renderer::CreateDeepShadowResources(Stage12ShadowPreset preset)
+{
+    if (!m_device)
+        return false;
+    const UINT resolution = stage12shadow::Resolution(preset);
+    const auto createArray = [&](UINT slices,
+                                 ComPtr<ID3D11Texture2D>& texture,
+                                 ComPtr<ID3D11ShaderResourceView>& srv,
+                                 ComPtr<ID3D11UnorderedAccessView>& uav)
+    {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = resolution;
+        desc.Height = resolution;
+        desc.MipLevels = 1;
+        desc.ArraySize = slices;
+        desc.Format = DXGI_FORMAT_R32_FLOAT;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+                         D3D11_BIND_UNORDERED_ACCESS;
+        ComPtr<ID3D11Texture2D> newTexture;
+        if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &newTexture)))
+            return false;
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = desc.Format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+        srvDesc.Texture2DArray.MostDetailedMip = 0;
+        srvDesc.Texture2DArray.MipLevels = 1;
+        srvDesc.Texture2DArray.FirstArraySlice = 0;
+        srvDesc.Texture2DArray.ArraySize = slices;
+        ComPtr<ID3D11ShaderResourceView> newSrv;
+        if (FAILED(m_device->CreateShaderResourceView(
+                newTexture.Get(), &srvDesc, &newSrv)))
+            return false;
+
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = desc.Format;
+        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+        uavDesc.Texture2DArray.MipSlice = 0;
+        uavDesc.Texture2DArray.FirstArraySlice = 0;
+        uavDesc.Texture2DArray.ArraySize = slices;
+        ComPtr<ID3D11UnorderedAccessView> newUav;
+        if (FAILED(m_device->CreateUnorderedAccessView(
+                newTexture.Get(), &uavDesc, &newUav)))
+            return false;
+        texture = newTexture;
+        srv = newSrv;
+        uav = newUav;
+        return true;
+    };
+
+    ComPtr<ID3D11Texture2D> nearTexture;
+    ComPtr<ID3D11ShaderResourceView> nearSrv;
+    ComPtr<ID3D11UnorderedAccessView> nearUav;
+    ComPtr<ID3D11Texture2D> farTexture;
+    ComPtr<ID3D11ShaderResourceView> farSrv;
+    ComPtr<ID3D11UnorderedAccessView> farUav;
+    if (!createArray(stage12shadow::kNearSlices,
+                     nearTexture, nearSrv, nearUav) ||
+        !createArray(stage12shadow::kFarSlices,
+                     farTexture, farSrv, farUav))
+        return false;
+
+    // 두 배열이 모두 준비된 뒤에만 기존 세트를 교체한다.
+    m_shadowNearTexture = nearTexture;
+    m_shadowNearSrv = nearSrv;
+    m_shadowNearUav = nearUav;
+    m_shadowFarTexture = farTexture;
+    m_shadowFarSrv = farSrv;
+    m_shadowFarUav = farUav;
+    stage12shadow::ApplyPreset(m_shadowParameters, preset);
+    return true;
+}
+
 bool Renderer::EnsureCloudTargets()
 {
     const Stage10UpsamplingParameters sanitized =
@@ -472,7 +552,9 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     // 동적 단계 9 shader는 /Od에서 하드웨어 instruction 한도를 넘길 수 있다.
     // 실제 최적화 비용을 재는 경로이기도 하므로 Debug에서도 최소 O1을 사용한다.
     compileFlags |= (std::strcmp(entryPoint, "mainOptimized") == 0 ||
-                     std::strcmp(entryPoint, "mainOptimizedData") == 0)
+                     std::strcmp(entryPoint, "mainOptimizedData") == 0 ||
+                     (std::strcmp(entryPoint, "main") == 0 &&
+                      path == m_deepShadowShaderPath))
         ? D3DCOMPILE_OPTIMIZATION_LEVEL1
         : D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
@@ -510,6 +592,7 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3DBlob> scenePsBlob;
     ComPtr<ID3DBlob> noiseBaseCsBlob;
     ComPtr<ID3DBlob> noiseDetailCsBlob;
+    ComPtr<ID3DBlob> deepShadowCsBlob;
     if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainReference", "ps_5_0", cloudReferencePsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors) ||
@@ -520,6 +603,7 @@ bool Renderer::CreateShaders(bool showErrors)
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors) ||
+        !CompileShaderFromFile(m_deepShadowShaderPath, "main", "cs_5_0", deepShadowCsBlob, showErrors) ||
         (m_noiseVolumesEnabled &&
          (!CompileShaderFromFile(m_noiseVolumeShaderPath, "CSBase", "cs_5_0", noiseBaseCsBlob, showErrors) ||
           !CompileShaderFromFile(m_noiseVolumeShaderPath, "CSDetail", "cs_5_0", noiseDetailCsBlob, showErrors))))
@@ -540,6 +624,7 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3D11PixelShader> scenePs;
     ComPtr<ID3D11ComputeShader> noiseBaseCs;
     ComPtr<ID3D11ComputeShader> noiseDetailCs;
+    ComPtr<ID3D11ComputeShader> deepShadowCs;
     ComPtr<ID3D11InputLayout> inputLayout;
 
     if (FAILED(m_device->CreateVertexShader(
@@ -573,6 +658,9 @@ bool Renderer::CreateShaders(bool showErrors)
         FAILED(m_device->CreatePixelShader(
             scenePsBlob->GetBufferPointer(), scenePsBlob->GetBufferSize(),
             nullptr, &scenePs)) ||
+        FAILED(m_device->CreateComputeShader(
+            deepShadowCsBlob->GetBufferPointer(), deepShadowCsBlob->GetBufferSize(),
+            nullptr, &deepShadowCs)) ||
         (m_noiseVolumesEnabled &&
          (FAILED(m_device->CreateComputeShader(
               noiseBaseCsBlob->GetBufferPointer(), noiseBaseCsBlob->GetBufferSize(),
@@ -631,6 +719,7 @@ bool Renderer::CreateShaders(bool showErrors)
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
+    m_deepShadowCs = deepShadowCs;
     if (m_noiseVolumesEnabled)
     {
         m_noiseBaseCs = noiseBaseCs;
@@ -658,7 +747,7 @@ bool Renderer::CreateDiagnosticScene()
     // 13-4D 단일 씬은 10km 실제 평면과 3m×20층(60m) 건물 하나만 사용한다.
     AppendGroundPlane(vertices, indices);
     AppendBox(vertices, indices, { 0.0f, 30.0f, 0.0f }, { 10.0f, 30.0f, 10.0f },
-              { 0.02f, 0.025f, 0.035f });
+              { 0.50f, 0.50f, 0.50f });
 
     D3D11_BUFFER_DESC vertexDesc = {};
     vertexDesc.ByteWidth = static_cast<UINT>(vertices.size() * sizeof(DiagnosticSceneVertex));
@@ -1024,6 +1113,8 @@ bool Renderer::CreateConstantBuffers()
                                &m_upsamplingCb) &&
            createDynamicBuffer(sizeof(Stage11TemporalParameters),
                                &m_temporalCb) &&
+           createDynamicBuffer(sizeof(Stage12ShadowParameters),
+                               &m_shadowCb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
 }
 
@@ -1191,6 +1282,14 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
                     sizeof(m_optimizationParameters));
         m_context->Unmap(m_optimizationCb.Get(), 0);
     }
+    UpdateStage12ShadowParameters(camera);
+    if (SUCCEEDED(m_context->Map(
+            m_shadowCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_shadowParameters,
+                    sizeof(m_shadowParameters));
+        m_context->Unmap(m_shadowCb.Get(), 0);
+    }
 
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     ID3D11RenderTargetView* cloudTarget =
@@ -1232,19 +1331,134 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->PSSetConstantBuffers(8, 1, &cloudLodBuffer);
     ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
     m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
+    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
         m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
     };
     m_context->PSSetShaderResources(0, 5, resources);
+    ID3D11ShaderResourceView* shadowResources[2] = {
+        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
+    };
+    m_context->PSSetShaderResources(6, 2, shadowResources);
     ID3D11SamplerState* samplers[2] = {
         m_pointClampSampler.Get(), m_weatherLinearWrapSampler.Get()
     };
     m_context->PSSetSamplers(0, 2, samplers);
+    ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(2, 1, &shadowSampler);
     m_context->Draw(3, 0);
 
-    ID3D11ShaderResourceView* nullResources[5] = {};
-    m_context->PSSetShaderResources(0, 5, nullResources);
+    ID3D11ShaderResourceView* nullResources[8] = {};
+    m_context->PSSetShaderResources(0, 8, nullResources);
+}
+
+void Renderer::UpdateStage12ShadowParameters(const Camera& camera)
+{
+    m_shadowParameters = stage12shadow::Sanitize(m_shadowParameters);
+    const stage12shadow::LightBasis basis =
+        stage12shadow::BuildLightBasis(m_lightParameters.directionToSun);
+    m_shadowParameters.lightRight = basis.right;
+    m_shadowParameters.lightUp = basis.up;
+    m_shadowParameters.lightForward = basis.forward;
+    m_shadowParameters.cloudBottomMeters =
+        m_cloudDomainParameters.cloudBottomAltitude;
+    m_shadowParameters.cloudTopMeters =
+        m_cloudDomainParameters.cloudBottomAltitude +
+        m_cloudDomainParameters.cloudLayerThickness;
+    const XMFLOAT3 cameraPosition = camera.GetPosition();
+    const XMFLOAT3 rawCenter{
+        cameraPosition.x,
+        0.5f * (m_shadowParameters.cloudBottomMeters +
+                m_shadowParameters.cloudTopMeters),
+        cameraPosition.z
+    };
+    m_shadowParameters.nearCenter = stage12shadow::SnappedCenter(
+        rawCenter, basis, m_shadowParameters.nearWidthMeters,
+        m_shadowParameters.nearResolution);
+    m_shadowParameters.farCenter = stage12shadow::SnappedCenter(
+        rawCenter, basis, m_shadowParameters.farWidthMeters,
+        m_shadowParameters.farResolution);
+    const bool resourcesReady = m_deepShadowCs && m_shadowNearSrv &&
+        m_shadowNearUav && m_shadowFarSrv && m_shadowFarUav;
+    const bool supportedDomain = m_cloudDomainParameters.domainType ==
+        static_cast<std::uint32_t>(CloudDomainType::PlanarLayer);
+    m_shadowParameters.cacheReady = resourcesReady && supportedDomain &&
+        basis.valid && basis.forward.y >= m_shadowParameters.minimumSunY
+        ? 1u : 0u;
+}
+
+void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
+{
+    UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
+    if (m_shadowParameters.shadowMode !=
+            static_cast<std::uint32_t>(Stage12ShadowMode::DeepCache) ||
+        m_shadowParameters.cacheReady == 0u)
+        return;
+
+    ID3D11Buffer* cameraBuffer = m_cameraCb.Get();
+    ID3D11Buffer* cloudBuffer = m_cloudCb.Get();
+    ID3D11Buffer* domainBuffer = m_cloudDomainCb.Get();
+    ID3D11Buffer* noiseBuffer = m_noiseVolumeCb.Get();
+    ID3D11Buffer* shapeBuffer = m_cloudShapeCb.Get();
+    ID3D11Buffer* lodBuffer = m_cloudLodCb.Get();
+    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
+    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    m_context->CSSetConstantBuffers(0, 1, &cameraBuffer);
+    m_context->CSSetConstantBuffers(1, 1, &cloudBuffer);
+    m_context->CSSetConstantBuffers(5, 1, &domainBuffer);
+    m_context->CSSetConstantBuffers(6, 1, &noiseBuffer);
+    m_context->CSSetConstantBuffers(7, 1, &shapeBuffer);
+    m_context->CSSetConstantBuffers(8, 1, &lodBuffer);
+    m_context->CSSetConstantBuffers(9, 1, &optimizationBuffer);
+    m_context->CSSetConstantBuffers(12, 1, &shadowBuffer);
+    ID3D11ShaderResourceView* densityResources[3] = {
+        m_weatherMapSrv.Get(), m_baseNoiseVolumeSrv.Get(),
+        m_detailNoiseVolumeSrv.Get()
+    };
+    m_context->CSSetShaderResources(2, 3, densityResources);
+    ID3D11SamplerState* weatherSampler = m_weatherLinearWrapSampler.Get();
+    m_context->CSSetSamplers(1, 1, &weatherSampler);
+    m_context->CSSetShader(m_deepShadowCs.Get(), nullptr, 0);
+
+    const auto dispatch = [&](std::uint32_t cascade,
+                              ID3D11UnorderedAccessView* uav,
+                              std::uint32_t resolution) -> bool
+    {
+        m_shadowParameters.dispatchCascade = cascade;
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (FAILED(m_context->Map(
+                m_shadowCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            return false;
+        std::memcpy(mapped.pData, &m_shadowParameters,
+                    sizeof(m_shadowParameters));
+        m_context->Unmap(m_shadowCb.Get(), 0);
+        m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+        const UINT groups = (resolution + 7u) / 8u;
+        m_context->Dispatch(groups, groups, 1);
+        ID3D11UnorderedAccessView* nullUav = nullptr;
+        m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+        return true;
+    };
+    const bool nearDispatched = dispatch(
+        0u, m_shadowNearUav.Get(), m_shadowParameters.nearResolution);
+    const bool farDispatched = nearDispatched && dispatch(
+        1u, m_shadowFarUav.Get(), m_shadowParameters.farResolution);
+    if (!farDispatched)
+        m_shadowParameters.cacheReady = 0u;
+    m_shadowParameters.dispatchCascade = 0u;
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (SUCCEEDED(m_context->Map(
+            m_shadowCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_shadowParameters,
+                    sizeof(m_shadowParameters));
+        m_context->Unmap(m_shadowCb.Get(), 0);
+    }
+    ID3D11ShaderResourceView* nullSrvs[3] = {};
+    m_context->CSSetShaderResources(2, 3, nullSrvs);
+    m_context->CSSetShader(nullptr, nullptr, 0);
 }
 
 void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
@@ -1282,6 +1496,7 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
         m_upsamplingParameters);
     m_temporalParameters = stage11temporal::Sanitize(
         m_temporalParameters);
+    UpdateStage12ShadowParameters(camera);
 
     const auto update = [&](ID3D11Buffer* buffer, const void* data,
                             std::size_t size)
@@ -1313,6 +1528,8 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
            sizeof(m_upsamplingParameters));
     update(m_temporalCb.Get(), &m_temporalParameters,
            sizeof(m_temporalParameters));
+    update(m_shadowCb.Get(), &m_shadowParameters,
+           sizeof(m_shadowParameters));
 }
 
 void Renderer::BindCloudRaymarchResources(ID3D11PixelShader* pixelShader)
@@ -1339,15 +1556,23 @@ void Renderer::BindCloudRaymarchResources(ID3D11PixelShader* pixelShader)
     m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
     ID3D11Buffer* temporalBuffer = m_temporalCb.Get();
     m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
+    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
         m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
     };
     m_context->PSSetShaderResources(0, 5, resources);
+    ID3D11ShaderResourceView* shadowResources[2] = {
+        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
+    };
+    m_context->PSSetShaderResources(6, 2, shadowResources);
     ID3D11SamplerState* samplers[2] = {
         m_pointClampSampler.Get(), m_weatherLinearWrapSampler.Get()
     };
     m_context->PSSetSamplers(0, 2, samplers);
+    ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(2, 1, &shadowSampler);
 }
 
 void Renderer::UnbindCloudShaderResources(UINT count)
@@ -1391,7 +1616,7 @@ void Renderer::RenderCloudDataPass(const Camera& camera, float timeSeconds)
         ? m_cloudReferenceDataPs.Get() : m_cloudOptimizedDataPs.Get();
     BindCloudRaymarchResources(shader);
     m_context->Draw(3, 0);
-    UnbindCloudShaderResources(5);
+    UnbindCloudShaderResources(8);
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
@@ -1420,14 +1645,22 @@ void Renderer::RenderCloudUpsamplePass(const Camera& camera,
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
     ID3D11Buffer* upsamplingBuffer = m_upsamplingCb.Get();
     m_context->PSSetConstantBuffers(10, 1, &upsamplingBuffer);
+    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
     ID3D11ShaderResourceView* resources[4] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
         m_cloudScatteringTransmittanceSrv.Get(),
         m_cloudDepthSceneLimitSrv.Get()
     };
     m_context->PSSetShaderResources(0, 4, resources);
+    ID3D11ShaderResourceView* shadowResources[2] = {
+        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
+    };
+    m_context->PSSetShaderResources(6, 2, shadowResources);
+    ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(2, 1, &shadowSampler);
     m_context->Draw(3, 0);
-    UnbindCloudShaderResources(4);
+    UnbindCloudShaderResources(8);
 }
 
 void Renderer::PrepareTemporalFrame(const Camera& camera, float timeSeconds)
@@ -1546,6 +1779,8 @@ bool Renderer::RenderCloudTemporalPass(
     ID3D11Buffer* temporalBuffer = m_temporalCb.Get();
     m_context->PSSetConstantBuffers(10, 1, &upsamplingBuffer);
     m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
+    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
     ID3D11ShaderResourceView* resources[6] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
         m_cloudScatteringTransmittanceSrv.Get(),
@@ -1554,10 +1789,15 @@ bool Renderer::RenderCloudTemporalPass(
         m_temporalHistoryAuxSrv[m_temporalHistoryReadIndex].Get()
     };
     m_context->PSSetShaderResources(0, 6, resources);
+    ID3D11ShaderResourceView* shadowResources[2] = {
+        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
+    };
+    m_context->PSSetShaderResources(6, 2, shadowResources);
     ID3D11SamplerState* sampler = m_linearClampSampler.Get();
     m_context->PSSetSamplers(0, 1, &sampler);
+    m_context->PSSetSamplers(2, 1, &sampler);
     m_context->Draw(3, 0);
-    UnbindCloudShaderResources(6);
+    UnbindCloudShaderResources(8);
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
     CommitTemporalFrame(camera, timeSeconds);
     return true;
@@ -1605,6 +1845,7 @@ bool Renderer::CaptureCloudDiagnosticFrame(
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
     RenderDiagnosticScene(camera);
+    RenderDeepShadowCaches(camera, timeSeconds);
     if (!forceDirectComposite && (mode == CloudDebugMode::Composite ||
         (static_cast<std::int32_t>(mode) >= 64 &&
          static_cast<std::int32_t>(mode) <= 73)) && EnsureCloudTargets())
@@ -1709,6 +1950,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     const CloudDomainParameters domainBeforeNoiseLab = m_cloudDomainParameters;
     const NoiseVolumeParameters noiseVolumeBeforeNoiseLab = m_noiseVolumeParameters;
     const LightParameters lightBeforeNoiseLab = m_lightParameters;
+    const Stage12ShadowPreset shadowPresetBeforeNoiseLab = ShadowPreset();
     m_noiseLab.SetOpenWorldPipelinePreset(m_openWorldPipelinePreset);
     m_noiseLab.BeginFrame(timeSeconds, camera, m_cloudParameters,
                           m_cloudShapeParameters,
@@ -1718,6 +1960,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_upsamplingParameters, m_resolutionPreset,
                           m_temporalParameters, m_temporalHistoryValid,
                           m_temporalAccumulatedFrames,
+                          m_shadowParameters,
                           m_lightParameters, m_sunPreset, m_phasePreset,
                           m_environmentParameters, m_environmentPreset,
                           m_weatherPreset, m_weatherGeneratorSettings,
@@ -1732,6 +1975,12 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_frameProfiler.Snapshot(), m_vsyncEnabled,
                           m_shaderGeneration, m_shaderStatus, m_shaderError);
+    if (ShadowPreset() != shadowPresetBeforeNoiseLab &&
+        !CreateDeepShadowResources(ShadowPreset()))
+    {
+        stage12shadow::ApplyPreset(
+            m_shadowParameters, shadowPresetBeforeNoiseLab);
+    }
     if (m_noiseLab.ConsumeParametersChanged())
     {
         if (m_temporalParameters.temporalEnabled != 0u)
@@ -1855,6 +2104,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
 
     RenderDiagnosticScene(camera);
     m_frameProfiler.BeginCloudPass(m_context.Get());
+    RenderDeepShadowCaches(camera, effectiveTime);
+    m_frameProfiler.MarkShadowCacheEnd(m_context.Get());
     const CloudDebugMode debugMode = DebugMode();
     if ((debugMode == CloudDebugMode::Composite ||
         (static_cast<std::int32_t>(debugMode) >= 64 &&
@@ -1897,6 +2148,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                                   m_upsamplingParameters,
                                   m_resolutionPreset,
                                   m_temporalParameters,
+                                  m_shadowParameters,
                                   m_cloudRenderWidth,
                                   m_cloudRenderHeight,
                                   m_lightParameters,
@@ -2165,6 +2417,29 @@ void Renderer::SetStage11TemporalMode(Stage11TemporalMode mode)
         ResetTemporalHistory(Stage11HistoryResetReason::TemporalToggle);
         m_frameProfiler.ResetMeasurements();
     }
+}
+
+void Renderer::SetStage12ShadowMode(Stage12ShadowMode mode)
+{
+    const Stage12ShadowMode previous = ShadowMode();
+    m_shadowParameters.shadowMode = static_cast<std::uint32_t>(mode);
+    m_shadowParameters = stage12shadow::Sanitize(m_shadowParameters);
+    if (previous != mode)
+    {
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
+        m_frameProfiler.ResetMeasurements();
+    }
+}
+
+bool Renderer::SetStage12ShadowPreset(Stage12ShadowPreset preset)
+{
+    if (preset == ShadowPreset())
+        return true;
+    if (!CreateDeepShadowResources(preset))
+        return false;
+    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
+    m_frameProfiler.ResetMeasurements();
+    return true;
 }
 
 void Renderer::ResetTemporalHistory(Stage11HistoryResetReason reason)
@@ -2731,6 +3006,7 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
         m_optimizationParameters, m_optimizationPreset,
         m_upsamplingParameters, m_resolutionPreset,
         m_temporalParameters,
+        m_shadowParameters,
         m_cloudRenderWidth, m_cloudRenderHeight,
         m_lightParameters, m_sunPreset, m_phasePreset,
         m_environmentParameters, m_environmentPreset, m_weatherPreset,

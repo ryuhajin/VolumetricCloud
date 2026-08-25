@@ -382,6 +382,21 @@ add_test(NAME VolumetricCloud.Stage11TemporalSmoke
 set_tests_properties(VolumetricCloud.Stage11TemporalSmoke
                      PROPERTIES TIMEOUT 300)
 
+# 단계 12 light-space, cascade, slice, Beer-Lambert와 cache ABI를 검사한다.
+add_executable(VolumetricCloud.Stage12ShadowMathTests
+    tests/Stage12ShadowMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage12ShadowMathTests PRIVATE src)
+if(MSVC)
+    target_compile_options(VolumetricCloud.Stage12ShadowMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage12ShadowMath
+         COMMAND VolumetricCloud.Stage12ShadowMathTests)
+add_test(NAME VolumetricCloud.Stage12ShadowSmoke
+         COMMAND VolumetricCloud --stage12-shadow-smoke-test)
+set_tests_properties(VolumetricCloud.Stage12ShadowSmoke
+                     PROPERTIES TIMEOUT 300)
+
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)
 #  빌드 후 build/<Config>/shaders/ 에 hlsl이 위치하게 됨

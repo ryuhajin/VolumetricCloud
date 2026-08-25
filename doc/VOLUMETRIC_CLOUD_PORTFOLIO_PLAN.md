@@ -86,7 +86,43 @@ XYZ 12km와 주파수 `{4,9,17,23}`, octave별 seed 간격 173을 사용하고, 
 F6의 13-5는 2026-08-17 사용자 승인을 받았다. PlanarLayer를 최종 대규모 도메인으로
 확정하고 구형 shell 비교는 포트폴리오 범위에서 제외했다. 단계 9의 View/Light 기본
 최적화도 2026-08-19 Balanced 기본값으로 승인했다. 단계 10 저해상도·업샘플링 계보를 포함한
-단계 11 안정성 우선 Temporal 기준은 2026-08-23 승인했으며 다음 목표는 단계 12다.
+단계 11 안정성 우선 Temporal 기준은 2026-08-23 승인했다. 단계 12는 2026-08-25
+Balanced512 기본값으로 승인했으며 다음 목표는 단계 14다.
+
+## 단계 12 Cloud Shadow Map·Deep Light Cache 계획과 게이트
+
+단계 12는 `feature/stage12-shadow`에서 진행한다. 화면 해상도와 월드 cache를 분리하고,
+Near `24km, 80 slices`와 Far `128km, 40 slices`의 `R32_FLOAT Texture2DArray`에 태양 방향
+누적 광학 깊이 `tau`를 매 프레임 기록한다. Fast256은 30MiB, Balanced512는 120MiB다.
+Full 1920×1080과 50% Axis 960×540은 같은 cache 중심·범위·해상도를 공유한다.
+
+구름은 DeepCache 모드에서 반복 Light Ray 대신 높이별 tau를 읽고, 지면·옥상·벽은 Full Scene
+Depth 월드 위치에서 bottom slice를 읽는다. 표면 계수는 `ambientFloor=0.35`, `strength=1.0`의
+단계 12 진단식만 사용하며 법선·정식 태양/하늘 조명은 단계 14로 남긴다. DirectReference는
+회귀와 성능 비교용이며 schema 33 이하의 복원 기본이다. cache 실패·AABB·태양 3° 미만은
+구름 Direct/표면 중립으로 폴백한다.
+
+2026-08-24 사용자 1차 검증에서 어두운 기존 Scene 색 때문에 표면 그림자 대비가 약했고,
+Near/Far 진단이 카메라 레이의 중간 한 점을 `tau/9.21034`로 표시해 정상 cache도 검게 보였다.
+지면·건물을 linear RGB `(0.5,0.5,0.5)`로 바꾸고, Near/Far는 선택한 array slice를
+`1-exp(-tau*exposure)`로 직접 펼치는 texture preview로 교체했다. slice 0은 표면 Shadow Map이다.
+Cascade는 geometry의 Full Scene 월드 위치와 하늘의 구름층 중간 교차 위치를 사용한다.
+
+CPU gate는 basis 직교, 태양 레이 UV 불변성, texel snap, cascade, slice, Beer-Lambert,
+18°/70° 경로 길이와 Full/50% 독립성을 검사한다. GPU gate는 세 외형×F5~F8×세 태양,
+Direct/Cache/Surface, seam, 이동·wind, Full/50%, Temporal, resize/preset/hot reload와 finite/D3D11을
+검사한다. Light/Surface `T MAE≤0.01`, `P99≤0.03`, Composite `SSIM≥0.99`, normalized
+`RMSE≤0.01`, seam `P99≤0.03`을 사용한다. 성능은 1080p 120 warmup+600표본 일곱 장면에서
+GPU Cloud Total p95 10ms 이하, Full Direct 대비 15% 개선, 50% 3% 이상 비회귀다.
+두 해상도를 통과한 가장 높은 후보만 기본값으로 승격한다. Fast256 96×54 smoke는
+Light T `MAE=0.001635`, `P99=0.029349`와 Full/50%/resize cache identity, Near/Far texture
+structure를 통과했다. 2026-08-25 F5~F8·Full/50%·wind/이동 사용자 화면 검증에서 Surface T와
+Composite 그림자 정렬, Direct/Cache 구름 내부 명암, 상단 black slice와 magenta/blue cascade도
+승인했다. 같은 날 `--stage12-performance-test`로 1920×1080, 120 warmup+600표본을 측정했다.
+일곱 장면 GPU Cloud p95 평균은 Full에서 Direct/Fast/Balanced
+`11.288869/6.700032/6.907611ms`, 50%에서 `3.912119/2.062629/2.361637ms`였다.
+두 cache 후보 모두 게이트를 통과했고 가장 높은 후보인 DeepCache/Balanced512를 시작
+기본값으로 승인했다. DirectReference는 schema 33 이하 복원과 회귀 비교로 유지한다.
 
 13-5의 Open World 품질 기본은 View `100m/512`, Light `250m/80`이다. Light
 `62.5m/320` fine reference와 `125m/160` 이전 품질을 96×54 float readback으로 비교하며,

@@ -82,7 +82,7 @@ inline CloudDebugMode DebugModeFromDigit(int digit)
 inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
 {
     const std::int32_t value = static_cast<std::int32_t>(mode);
-    return value == 0 || (value >= 8 && value <= 73)
+    return value == 0 || (value >= 8 && value <= 78)
         ? mode : CloudDebugMode::Composite;
 }
 
@@ -153,6 +153,11 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::TemporalHistoryWeight: return L"Temporal Weight";
     case CloudDebugMode::TemporalCurrentHistoryDifference: return L"Current/History Difference";
     case CloudDebugMode::TemporalCurrentSourceValidity: return L"Current Source Validity";
+    case CloudDebugMode::Stage12NearOpticalDepth: return L"Stage 12 Near Cache Texture";
+    case CloudDebugMode::Stage12FarOpticalDepth: return L"Stage 12 Far Cache Texture";
+    case CloudDebugMode::Stage12CascadeSelection: return L"Stage 12 Cascade World Lookup";
+    case CloudDebugMode::Stage12SurfaceTransmittance: return L"Stage 12 Surface T";
+    case CloudDebugMode::Stage12DirectCacheError: return L"Stage 12 Direct/Cache Error";
     case CloudDebugMode::ExecutedViewSamples: return L"Executed View Samples";
     case CloudDebugMode::SkippedDistance: return L"Skipped Distance";
     case CloudDebugMode::EarlyExitSavings: return L"Early Exit Savings";
