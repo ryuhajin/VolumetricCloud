@@ -155,6 +155,45 @@ Base/Final Density, View τ, Light T가 finite·non-black이고 각 preset hash�
 확인한다. camera/domain/light/environment/LOD/Weather seed와 wind는 전환 전후 동일해야 한다.
 이 검사는 화면 미학이나 성능 합격을 대신하지 않는다.
 
+## Stage 14 대기·HDR 계측과 게이트
+
+프로파일러는 `Atmosphere LUT`, `Shadow Cache`, `Opaque Scene`, `Cloud Raymarch`, `Resolve`,
+`Tone Map`, `GPU Frame`을 별도 timestamp 구간으로 기록한다. 정적 상태에서 hash가 같으면
+Atmosphere 구간에는 LUT dispatch가 없으며, 전체 LUT 최초/정적 rebuild 시간은 별도 기록하고
+프레임 성능 gate에는 포함하지 않는다. 시간 재생·카메라 이동 중 실제 갱신 구간의 p95만
+Atmosphere `2ms` 이하를 요구한다.
+
+정식 측정은 Release 1920×1080, VSync/UI/preview Off, 120 warmup 뒤 원시 timestamp 600개를
+Stage 12와 같은 일곱 장면에서 수집한다. GPU Frame p95 `16.67ms`, GPU Cloud p95 `10ms`,
+Stage 12 동등 장면 대비 `+5%` 이내가 gate다. Full Direct, Full split, 50% spatial, Temporal
+display 비교는 `MAE≤0.01`, `P99≤0.03`을 함께 만족해야 한다.
+
+정식 명령은 Release 실행 파일의 `--stage14-performance-test`다. 과거 실행의 부하 차이를
+회귀로 오인하지 않도록 같은 프로세스에서 `ManualReference + LegacyShoulder` Stage 12 호환
+경로를 먼저 측정하고, 같은 장면·Balanced·Full·Temporal Off·Balanced512 조건에서
+`Physical EarthClear + ACES`를 측정한다. `GPU Cloud Total`은 두 경로 모두
+Shadow Cache+Raymarch+Resolve 세 구간의 합이다. 결과는 로컬
+`captures/stage14/performance.csv`와 `performance.json`에 기록한다.
+
+2026-08-28 RTX 4080 SUPER/driver `32.0.15.9186` 측정에서 물리 경로의 일곱 장면
+GPU Cloud p95 평균은 `7.37616ms`, 같은 실행의 Stage 12 호환 경로는 `7.07040ms`로
+비율 `1.04325`(`+4.325%`)를 기록해 회귀 gate를 통과했다. 물리 경로의 장면별 GPU Cloud
+p95는 `5.42720~9.34810ms`, GPU Frame p95는 `5.51219~9.47302ms`로 모든 절대 gate도
+통과했다. 정적 장면 Atmosphere p95는 `0ms`였고, 강제 SunPlayback/CameraMotion 갱신 p95는
+각각 `0.019456/0.008192ms`로 `2ms` gate를 통과했다. D3D11 debug layer 오류는 없었다.
+
+구름 View step마다 반복하던 태양 Transmittance·Sky Irradiance·Ground 입사광 LUT 조회는
+View ray마다 구름층 대표 고도에서 한 번 준비하는 `CloudLightingContext`로 옮겼다. 표본별
+밀도·높이 가중치·AO·다중 산란 적분은 그대로 유지하며, 이 최적화 뒤 위 성능값과 Stage 14
+LUT 수치 smoke를 다시 통과했다.
+
+현재 `Stage14AtmosphereSmoke`는 여섯 LUT의 모든 texel이 finite/non-negative인지 읽고,
+Transmittance 전체 RGB를 CPU 40-step 기준과 비교해 `MAE=0.000189`, `P99=0.000485`로
+`0.01/0.03` gate를 통과했다. 또한 최초 여섯 LUT 생성, 정적 dispatch 생략, Exposure 변경 시
+LUT 유지, Ground 변경 시 Multi 이후, 태양 변경 시 Sky View/Aerial, 카메라 회전 시 Aerial만
+generation이 증가하는지를 D3D11 debug layer와 함께 검사해 통과했다. 이 smoke는 Sky
+radiance의 독립 CPU 기준 비교를 대신하지 않는다.
+
 ## Stage 12 Cloud Shadow 후보와 게이트
 
 Deep Cache는 화면 해상도와 별도로 `24km Near × 80 slice`와 `128km Far × 40 slice`를

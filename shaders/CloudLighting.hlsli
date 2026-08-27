@@ -21,6 +21,7 @@
 #include "LightParameters.hlsli"
 #include "PhaseFunction.hlsli"
 #include "Stage12Shadow.hlsli"
+#include "Stage14Atmosphere.hlsli"
 
 static const float kLightEarlyExitOpticalDepth = 9.21034037;
 
@@ -62,15 +63,16 @@ DirectLightingResponse EvaluateDirectLightingResponse(
 }
 
 float3 ComputeDirectInteractionColor(
-    float density, float viewTransmittance, float viewStepLength)
+    float density, float viewTransmittance, float viewStepLength,
+    float3 incidentSun)
 {
     float safeDensity = max(density, 0.0);
     float safeLength = max(viewStepLength, 0.0);
     float safeExtinction = max(extinctionCoefficient, 0.0);
     float stepTransmittance = exp(-safeDensity * safeExtinction * safeLength);
     float interactionFraction = saturate(1.0 - stepTransmittance);
-    return saturate(viewTransmittance) * max(sunColor, 0.0.xxx) *
-           max(sunIntensity, 0.0) * saturate(singleScatteringAlbedo) *
+    return saturate(viewTransmittance) * max(incidentSun, 0.0.xxx) *
+           saturate(singleScatteringAlbedo) *
            interactionFraction;
 }
 
@@ -231,12 +233,12 @@ LightMarchResult ComputeLightTransmittance(
 float3 IntegrateSingleScattering(
     float density, float lightTransmittance,
     float viewTransmittance, float viewStepLength,
-    float phaseFactor)
+    float phaseFactor, float3 incidentSun)
 {
     DirectLightingResponse response = EvaluateDirectLightingResponse(
         lightTransmittance, phaseFactor);
     return ComputeDirectInteractionColor(
-        density, viewTransmittance, viewStepLength) *
+        density, viewTransmittance, viewStepLength, incidentSun) *
         response.shapedTransmittance * max(response.scopedPhase, 0.0);
 }
 

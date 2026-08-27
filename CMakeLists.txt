@@ -397,6 +397,21 @@ add_test(NAME VolumetricCloud.Stage12ShadowSmoke
 set_tests_properties(VolumetricCloud.Stage12ShadowSmoke
                      PROPERTIES TIMEOUT 300)
 
+# 단계 14 구면 대기, 밀도·위상·Beer-Lambert, LUT 좌표와 HDR 출력을 검사한다.
+add_executable(VolumetricCloud.Stage14AtmosphereMathTests
+    tests/Stage14AtmosphereMathTests.cpp
+)
+target_include_directories(VolumetricCloud.Stage14AtmosphereMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage14AtmosphereMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage14AtmosphereMath
+         COMMAND VolumetricCloud.Stage14AtmosphereMathTests)
+add_test(NAME VolumetricCloud.Stage14AtmosphereSmoke
+         COMMAND VolumetricCloud --stage14-atmosphere-smoke-test)
+set_tests_properties(VolumetricCloud.Stage14AtmosphereSmoke
+                     PROPERTIES TIMEOUT 300)
+
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)
 #  빌드 후 build/<Config>/shaders/ 에 hlsl이 위치하게 됨

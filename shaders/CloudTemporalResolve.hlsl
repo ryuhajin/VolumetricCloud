@@ -18,6 +18,7 @@ cbuffer cbCamera : register(b0)
 #include "Stage10UpsamplingParameters.hlsli"
 #include "Stage11TemporalParameters.hlsli"
 #include "Stage12Shadow.hlsli"
+#include "Stage14Atmosphere.hlsli"
 
 Texture2D<float4> sceneColorTexture : register(t0);
 Texture2D<float> sceneDepthTexture : register(t1);
@@ -824,14 +825,16 @@ TemporalOutput main(VSOut input)
 
     float3 background = hasGeometry
         ? sceneColorTexture.Load(int3(pixel, 0)).rgb
-        : SkyColor(rayDirection);
-    if (hasGeometry && stage12SurfaceShadowEnabled != 0u)
+        : 0.0.xxx;
+    if (modeFlags.x != kAtmosphereModePhysical && hasGeometry &&
+        stage12SurfaceShadowEnabled != 0u)
     {
         float3 worldPosition = ReconstructWorldPosition(uv, deviceDepth);
         background *= Stage12SurfaceFactor(
             Stage12SurfaceTransmittance(worldPosition));
     }
-    output.composite = float4(ApplyLdrHighlightShoulder(
-        resolved.rgb + background * resolved.a), 1.0);
+    output.composite = float4(max(ComposeStage14Atmosphere(
+        uv, rayDirection, hasGeometry, background, sceneLimit,
+        resolved.rgb, resolved.a, output.historyAux.x), 0.0.xxx), 1.0);
     return output;
 }

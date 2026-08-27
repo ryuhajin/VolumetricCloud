@@ -1584,8 +1584,8 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             continue;
         std::string metadata;
         if (ReadTextFile(entry.path(), metadata) &&
-            metadata.find("\"schemaVersion\": 34") != std::string::npos &&
-            metadata.find("\"implementationStage\": \"12\"") != std::string::npos &&
+            metadata.find("\"schemaVersion\": 35") != std::string::npos &&
+            metadata.find("\"implementationStage\": \"14\"") != std::string::npos &&
             metadata.find("\"lightingLook\": \"portfolioHero\"") != std::string::npos &&
             metadata.find("\"edgeInfluence\"") != std::string::npos &&
             metadata.find("\"ambientShadowCoupling\"") != std::string::npos &&
@@ -2939,6 +2939,548 @@ int RunStage12ShadowSmokeTest(Renderer& renderer, Camera& camera)
         !renderer.HasDebugLayerErrors() ? 0 : 9;
 }
 
+int RunStage14AtmosphereSmokeTest(Renderer& renderer, Camera& camera)
+{
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.EnableFrameHashCapture(true);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+
+    const Stage13CameraPreset& horizon = stage13camera::Get(
+        Stage13CameraPresetId::GroundHorizon);
+    camera.SetClipPlanes(stage13camera::kNearPlaneMeters,
+                         stage13camera::kFarPlaneMeters);
+    camera.SetLookAt(horizon.position, horizon.target);
+
+    AtmosphereParameters& atmosphere = renderer.MutableAtmosphereSettings();
+    atmosphere.mode = AtmosphereMode::Physical;
+    stage14atmosphere::ApplyPreset(atmosphere, AtmospherePreset::EarthClear);
+    atmosphere.sunAzimuthDegrees = -60.0f;
+    atmosphere.sunElevationDegrees = 18.0f;
+    GroundLightingParameters& ground = renderer.MutableGroundLightingSettings();
+    stage14ground::ApplyPreset(ground, GroundMaterialPreset::Concrete);
+    ToneMappingParameters& tone = renderer.MutableToneMappingSettings();
+    tone.mode = ToneMappingMode::AcesFitted;
+    tone.exposureEv = 0.0f;
+    tone.whiteBalanceKelvin = 6500.0f;
+
+    renderer.Render(camera, 0.0f);
+    std::array<std::uint64_t, 6> initial = {};
+    for (std::size_t index = 0; index < initial.size(); ++index)
+        initial[index] = renderer.AtmosphereLutGeneration(index);
+    const bool initialGenerated = std::all_of(
+        initial.begin(), initial.end(),
+        [](std::uint64_t value) { return value > 0u; });
+    const std::uint64_t initialFrameHash = renderer.LastCloudFrameHash();
+    Stage14LutValidationResult lutValidation;
+    const bool lutReadback = renderer.ValidateStage14Luts(lutValidation) &&
+        lutValidation.finiteNonNegative &&
+        lutValidation.transmittanceMae <= 0.01 &&
+        lutValidation.transmittanceP99 <= 0.03;
+
+    renderer.Render(camera, 1.0f / 60.0f);
+    bool staticStable = true;
+    for (std::size_t index = 0; index < initial.size(); ++index)
+        staticStable &= renderer.AtmosphereLutGeneration(index) == initial[index];
+
+    tone.exposureEv = 1.0f;
+    renderer.Render(camera, 2.0f / 60.0f);
+    bool toneStable = true;
+    for (std::size_t index = 0; index < initial.size(); ++index)
+        toneStable &= renderer.AtmosphereLutGeneration(index) == initial[index];
+    const bool toneChangedDisplay = renderer.LastCloudFrameHash() != 0u &&
+        renderer.LastCloudFrameHash() != initialFrameHash;
+
+    stage14ground::ApplyPreset(ground, GroundMaterialPreset::Snow);
+    renderer.Render(camera, 3.0f / 60.0f);
+    std::array<std::uint64_t, 6> afterGround = {};
+    for (std::size_t index = 0; index < afterGround.size(); ++index)
+        afterGround[index] = renderer.AtmosphereLutGeneration(index);
+    bool groundInvalidation = afterGround[0] == initial[0];
+    for (std::size_t index = 1; index < afterGround.size(); ++index)
+        groundInvalidation &= afterGround[index] > initial[index];
+
+    atmosphere.sunElevationDegrees = 3.0f;
+    renderer.Render(camera, 4.0f / 60.0f);
+    std::array<std::uint64_t, 6> afterSun = {};
+    for (std::size_t index = 0; index < afterSun.size(); ++index)
+        afterSun[index] = renderer.AtmosphereLutGeneration(index);
+    const bool sunInvalidation = afterSun[0] == afterGround[0] &&
+        afterSun[1] == afterGround[1] && afterSun[3] == afterGround[3] &&
+        afterSun[2] > afterGround[2] && afterSun[4] > afterGround[4] &&
+        afterSun[5] > afterGround[5];
+
+    camera.SetLookAt(horizon.position,
+        { horizon.target.x + 500.0f, horizon.target.y, horizon.target.z });
+    renderer.Render(camera, 5.0f / 60.0f);
+    std::array<std::uint64_t, 6> afterCamera = {};
+    for (std::size_t index = 0; index < afterCamera.size(); ++index)
+        afterCamera[index] = renderer.AtmosphereLutGeneration(index);
+    const bool cameraInvalidation =
+        afterCamera[0] == afterSun[0] && afterCamera[1] == afterSun[1] &&
+        afterCamera[2] == afterSun[2] && afterCamera[3] == afterSun[3] &&
+        afterCamera[4] > afterSun[4] && afterCamera[5] > afterSun[5];
+
+    const bool passed = initialGenerated && initialFrameHash != 0u && lutReadback &&
+        staticStable && toneStable && toneChangedDisplay &&
+        groundInvalidation && sunInvalidation && cameraInvalidation &&
+        !renderer.HasDebugLayerErrors();
+    std::ostringstream line;
+    line << "STAGE14_ATMOSPHERE INITIAL=" << (initialGenerated ? 1 : 0)
+         << " LUT_FINITE=" << (lutValidation.finiteNonNegative ? 1 : 0)
+         << std::fixed << std::setprecision(6)
+         << " TRANS_MAE=" << lutValidation.transmittanceMae
+         << " TRANS_P99=" << lutValidation.transmittanceP99
+         << " STATIC=" << (staticStable ? 1 : 0)
+         << " TONE_STABLE=" << (toneStable ? 1 : 0)
+         << " TONE_DISPLAY=" << (toneChangedDisplay ? 1 : 0)
+         << " GROUND_INVALIDATION=" << (groundInvalidation ? 1 : 0)
+         << " SUN_INVALIDATION=" << (sunInvalidation ? 1 : 0)
+         << " CAMERA_INVALIDATION=" << (cameraInvalidation ? 1 : 0) << ' '
+         << (passed ? "PASS" : "FAIL");
+    WriteDiagnosticLine(line.str());
+    return passed ? 0 : 9;
+}
+
+int RunStage14PerformanceTest(Renderer& renderer, Camera& camera)
+{
+    constexpr int kWarmupFrames = 120;
+    constexpr std::size_t kSamples = 600u;
+    constexpr int kMaximumAttempts = 2400;
+    constexpr double kFrameP95BudgetMs = 16.67;
+    constexpr double kCloudP95BudgetMs = 10.0;
+    constexpr double kAtmosphereUpdateP95BudgetMs = 2.0;
+    constexpr double kStage12RegressionRatio = 1.05;
+
+    struct Result
+    {
+        std::string path;
+        std::string scene;
+        double frameAverage = 0.0;
+        double frameP95 = 0.0;
+        double cloudAverage = 0.0;
+        double cloudP95 = 0.0;
+        double atmosphereAverage = 0.0;
+        double atmosphereP95 = 0.0;
+        double shadowAverage = 0.0;
+        double shadowP95 = 0.0;
+        double opaqueAverage = 0.0;
+        double opaqueP95 = 0.0;
+        double raymarchAverage = 0.0;
+        double raymarchP95 = 0.0;
+        double resolveAverage = 0.0;
+        double resolveP95 = 0.0;
+        double toneAverage = 0.0;
+        double toneP95 = 0.0;
+        double stage12CloudP95 = 0.0;
+        double stage12Ratio = std::numeric_limits<double>::infinity();
+        bool passed = false;
+    };
+    struct UpdateResult
+    {
+        std::string name;
+        double atmosphereAverage = 0.0;
+        double atmosphereP95 = 0.0;
+        bool passed = false;
+    };
+    const struct Scene
+    {
+        const char* name;
+        CloudAppearancePreset appearance;
+        Stage13CameraPresetId cameraPreset;
+        bool zenith;
+        bool opaque;
+    } scenes[] = {
+        { "DenseZenith", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::HeroDepth, true, false },
+        { "DenseHorizon", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "StratusHorizon", CloudAppearancePreset::Stratus,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "CumulusHorizon", CloudAppearancePreset::Cumulus,
+          Stage13CameraPresetId::GroundHorizon, false, false },
+        { "CumulusInside", CloudAppearancePreset::Cumulus,
+          Stage13CameraPresetId::InsideLayer, false, false },
+        { "AboveLayer", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::AboveLayer, false, false },
+        { "DepthOccluded", CloudAppearancePreset::DenseMixedDefault,
+          Stage13CameraPresetId::HeroDepth, false, true },
+    };
+
+    const auto percentile95 = [](std::vector<double> values)
+    {
+        if (values.empty())
+            return std::numeric_limits<double>::infinity();
+        std::sort(values.begin(), values.end());
+        return values[static_cast<std::size_t>(
+            std::ceil(values.size() * 0.95)) - 1u];
+    };
+    const auto average = [](const std::vector<double>& values)
+    {
+        return values.empty()
+            ? std::numeric_limits<double>::infinity()
+            : std::accumulate(values.begin(), values.end(), 0.0) /
+                  static_cast<double>(values.size());
+    };
+    const std::filesystem::path repositoryRoot =
+        std::filesystem::path(VCLOUD_SHADER_SOURCE_DIR).parent_path();
+
+    renderer.SetNoiseLabVisible(false);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetVSyncEnabled(false);
+    renderer.SetDebugMode(CloudDebugMode::Composite);
+    renderer.SetOpaqueSceneForTest(false);
+    if (!renderer.ApplyStage13OpenWorldPreset())
+        return 4;
+    renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
+    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Full);
+    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Nearest);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    if (!renderer.SetStage12ShadowPreset(Stage12ShadowPreset::Balanced512))
+        return 5;
+    renderer.SetStage12ShadowMode(Stage12ShadowMode::DeepCache);
+    camera.SetClipPlanes(
+        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+
+    AtmosphereParameters& atmosphere = renderer.MutableAtmosphereSettings();
+    atmosphere.mode = AtmosphereMode::Physical;
+    stage14atmosphere::ApplyPreset(atmosphere, AtmospherePreset::EarthClear);
+    atmosphere.sunAzimuthDegrees = -60.0f;
+    atmosphere.sunElevationDegrees = 18.0f;
+    atmosphere.timePlaybackEnabled = false;
+    GroundLightingParameters& ground = renderer.MutableGroundLightingSettings();
+    stage14ground::ApplyPreset(ground, GroundMaterialPreset::Concrete);
+    ToneMappingParameters& tone = renderer.MutableToneMappingSettings();
+    tone.mode = ToneMappingMode::AcesFitted;
+    tone.exposureEv = 0.0f;
+    tone.whiteBalanceKelvin = 6500.0f;
+
+    const auto collectSamples = [&](const auto& beforeRender,
+                                    std::array<std::vector<double>, 8>& samples)
+    {
+        for (auto& values : samples)
+            values.reserve(kSamples);
+        std::uint64_t lastIndex = renderer.TimingSnapshot().gpuSampleIndex;
+        for (int attempt = 0;
+             attempt < kMaximumAttempts && samples[0].size() < kSamples;
+             ++attempt)
+        {
+            beforeRender(attempt);
+            renderer.Render(camera, 0.0f);
+            const FrameTimingSnapshot timing = renderer.TimingSnapshot();
+            if (!timing.gpuValid || timing.gpuSampleIndex == lastIndex)
+            {
+                Sleep(1);
+                continue;
+            }
+            lastIndex = timing.gpuSampleIndex;
+            const double values[] = {
+                timing.rawGpuFrameMs,
+                timing.rawGpuCloudMs,
+                timing.rawGpuAtmosphereLutMs,
+                timing.rawGpuShadowCacheMs,
+                timing.rawGpuOpaqueSceneMs,
+                timing.rawGpuCloudRaymarchMs,
+                timing.rawGpuUpsampleCompositeMs,
+                timing.rawGpuToneMapMs,
+            };
+            if (!std::all_of(std::begin(values), std::end(values),
+                    [](double value)
+                    {
+                        return std::isfinite(value) && value >= 0.0;
+                    }))
+                return false;
+            for (std::size_t index = 0; index < samples.size(); ++index)
+                samples[index].push_back(values[index]);
+        }
+        return samples[0].size() == kSamples;
+    };
+
+    const struct MeasurementPath
+    {
+        const char* name;
+        AtmosphereMode atmosphereMode;
+        ToneMappingMode toneMode;
+    } measurementPaths[] = {
+        { "Stage12Equivalent", AtmosphereMode::ManualReference,
+          ToneMappingMode::LegacyShoulder },
+        { "Stage14Physical", AtmosphereMode::Physical,
+          ToneMappingMode::AcesFitted },
+    };
+    std::vector<Result> results;
+    for (const MeasurementPath& path : measurementPaths)
+    {
+        atmosphere.mode = path.atmosphereMode;
+        tone.mode = path.toneMode;
+        for (const Scene& scene : scenes)
+        {
+            if (!renderer.ApplyCloudAppearancePreset(scene.appearance))
+                return 6;
+            renderer.SetOpaqueSceneForTest(scene.opaque);
+            const Stage13CameraPreset& cameraPreset =
+                stage13camera::Get(scene.cameraPreset);
+            if (scene.zenith)
+                camera.SetLookAt(cameraPreset.position,
+                    { cameraPreset.position.x, 7000.0f,
+                      cameraPreset.position.z });
+            else
+                camera.SetLookAt(cameraPreset.position, cameraPreset.target);
+
+            for (int frame = 0; frame < kWarmupFrames; ++frame)
+                renderer.Render(camera, 0.0f);
+            std::array<std::vector<double>, 8> samples;
+            if (!collectSamples([](int) {}, samples))
+                return 7;
+
+            Result result;
+            result.path = path.name;
+            result.scene = scene.name;
+            result.frameAverage = average(samples[0]);
+            result.frameP95 = percentile95(samples[0]);
+            result.cloudAverage = average(samples[1]);
+            result.cloudP95 = percentile95(samples[1]);
+            result.atmosphereAverage = average(samples[2]);
+            result.atmosphereP95 = percentile95(samples[2]);
+            result.shadowAverage = average(samples[3]);
+            result.shadowP95 = percentile95(samples[3]);
+            result.opaqueAverage = average(samples[4]);
+            result.opaqueP95 = percentile95(samples[4]);
+            result.raymarchAverage = average(samples[5]);
+            result.raymarchP95 = percentile95(samples[5]);
+            result.resolveAverage = average(samples[6]);
+            result.resolveP95 = percentile95(samples[6]);
+            result.toneAverage = average(samples[7]);
+            result.toneP95 = percentile95(samples[7]);
+            result.passed = result.frameP95 <= kFrameP95BudgetMs &&
+                result.cloudP95 <= kCloudP95BudgetMs;
+            results.push_back(result);
+        }
+    }
+
+    std::map<std::string, double> stage12Baseline;
+    for (const Result& result : results)
+        if (result.path == "Stage12Equivalent")
+            stage12Baseline[result.scene] = result.cloudP95;
+    if (stage12Baseline.size() != std::size(scenes))
+        return 8;
+    for (Result& result : results)
+    {
+        result.stage12CloudP95 = stage12Baseline.at(result.scene);
+        result.stage12Ratio = result.cloudP95 / result.stage12CloudP95;
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(6)
+             << "[STAGE14][PERF][" << result.path << "][" << result.scene
+             << "] FRAME_P95=" << result.frameP95
+             << " CLOUD_P95=" << result.cloudP95
+             << " ATMOSPHERE_P95=" << result.atmosphereP95;
+        if (result.path == "Stage14Physical")
+            line << " STAGE12_CLOUD_P95=" << result.stage12CloudP95
+                 << " RATIO=" << result.stage12Ratio;
+        line << ' ' << (result.passed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(line.str());
+    }
+
+    renderer.SetOpaqueSceneForTest(false);
+    if (!renderer.ApplyCloudAppearancePreset(
+            CloudAppearancePreset::DenseMixedDefault))
+        return 8;
+    const Stage13CameraPreset& horizon = stage13camera::Get(
+        Stage13CameraPresetId::GroundHorizon);
+    camera.SetLookAt(horizon.position, horizon.target);
+    atmosphere.mode = AtmosphereMode::Physical;
+    tone.mode = ToneMappingMode::AcesFitted;
+
+    const auto measureAtmosphereUpdate = [&](const char* name,
+                                             const auto& update)
+    {
+        for (int frame = 0; frame < kWarmupFrames; ++frame)
+        {
+            update(frame);
+            renderer.Render(camera, 0.0f);
+        }
+        std::array<std::vector<double>, 8> samples;
+        const bool collected = collectSamples(
+            [&](int attempt) { update(kWarmupFrames + attempt); }, samples);
+        UpdateResult result;
+        result.name = name;
+        if (collected)
+        {
+            result.atmosphereAverage = average(samples[2]);
+            result.atmosphereP95 = percentile95(samples[2]);
+            result.passed = result.atmosphereP95 <=
+                kAtmosphereUpdateP95BudgetMs;
+        }
+        return std::pair<UpdateResult, bool>{ result, collected };
+    };
+
+    const auto sunUpdate = measureAtmosphereUpdate(
+        "SunPlayback",
+        [&](int frame)
+        {
+            atmosphere.sunAzimuthDegrees = -60.0f +
+                0.05f * static_cast<float>(frame % 600);
+            atmosphere.sunElevationDegrees = 18.0f +
+                0.01f * static_cast<float>(frame % 120);
+        });
+    if (!sunUpdate.second)
+        return 9;
+    atmosphere.sunAzimuthDegrees = -60.0f;
+    atmosphere.sunElevationDegrees = 18.0f;
+    camera.SetLookAt(horizon.position, horizon.target);
+    const auto cameraUpdate = measureAtmosphereUpdate(
+        "CameraMotion",
+        [&](int frame)
+        {
+            const float offset = 250.0f * std::sin(
+                static_cast<float>(frame) * 0.01745329252f);
+            camera.SetLookAt(horizon.position,
+                { horizon.target.x + offset,
+                  horizon.target.y, horizon.target.z });
+        });
+    if (!cameraUpdate.second)
+        return 10;
+    const UpdateResult updateResults[] = {
+        sunUpdate.first, cameraUpdate.first
+    };
+    for (const UpdateResult& result : updateResults)
+    {
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(6)
+             << "[STAGE14][PERF][" << result.name
+             << "] ATMOSPHERE_AVG=" << result.atmosphereAverage
+             << " ATMOSPHERE_P95=" << result.atmosphereP95 << ' '
+             << (result.passed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(line.str());
+    }
+
+    std::error_code error;
+    const std::filesystem::path directory =
+        repositoryRoot / "captures" / "stage14";
+    std::filesystem::create_directories(directory, error);
+    if (error)
+        return 11;
+    std::ofstream csv(directory / "performance.csv",
+                      std::ios::binary | std::ios::trunc);
+    csv << "adapter,driver,path,scene,samples,warmup,frame_average_ms,frame_p95_ms,"
+           "cloud_average_ms,cloud_p95_ms,atmosphere_average_ms,"
+           "atmosphere_p95_ms,shadow_average_ms,shadow_p95_ms,"
+           "opaque_average_ms,opaque_p95_ms,raymarch_average_ms,"
+           "raymarch_p95_ms,resolve_average_ms,resolve_p95_ms,"
+           "tone_average_ms,tone_p95_ms,stage12_cloud_p95_ms,"
+           "stage12_ratio,passed\n";
+    for (const Result& result : results)
+        csv << '"' << renderer.AdapterName() << "\",\""
+            << renderer.DriverVersion() << "\",\"" << result.path
+            << "\",\"" << result.scene
+            << "\"," << kSamples << ',' << kWarmupFrames << ','
+            << result.frameAverage << ',' << result.frameP95 << ','
+            << result.cloudAverage << ',' << result.cloudP95 << ','
+            << result.atmosphereAverage << ',' << result.atmosphereP95 << ','
+            << result.shadowAverage << ',' << result.shadowP95 << ','
+            << result.opaqueAverage << ',' << result.opaqueP95 << ','
+            << result.raymarchAverage << ',' << result.raymarchP95 << ','
+            << result.resolveAverage << ',' << result.resolveP95 << ','
+            << result.toneAverage << ',' << result.toneP95 << ','
+            << result.stage12CloudP95 << ',' << result.stage12Ratio << ','
+            << (result.passed ? 1 : 0) << '\n';
+    if (!csv.good())
+        return 12;
+
+    const bool sceneGatePassed = std::all_of(
+        results.begin(), results.end(),
+        [](const Result& result)
+        {
+            return result.path != "Stage14Physical" || result.passed;
+        });
+    const double currentMeanSceneP95 = std::accumulate(
+        results.begin(), results.end(), 0.0,
+        [](double sum, const Result& result)
+        {
+            return sum + (result.path == "Stage14Physical"
+                ? result.cloudP95 : 0.0);
+        }) / static_cast<double>(std::size(scenes));
+    const double stage12MeanSceneP95 = std::accumulate(
+        results.begin(), results.end(), 0.0,
+        [](double sum, const Result& result)
+        {
+            return sum + (result.path == "Stage12Equivalent"
+                ? result.cloudP95 : 0.0);
+        }) / static_cast<double>(std::size(scenes));
+    const double stage12MeanRatio = currentMeanSceneP95 / stage12MeanSceneP95;
+    const bool regressionGatePassed =
+        stage12MeanRatio <= kStage12RegressionRatio;
+    const bool updateGatePassed = std::all_of(
+        std::begin(updateResults), std::end(updateResults),
+        [](const UpdateResult& result) { return result.passed; });
+    const bool debugLayerPassed = !renderer.HasDebugLayerErrors();
+    const bool passed = sceneGatePassed && regressionGatePassed &&
+        updateGatePassed && debugLayerPassed;
+
+    std::ofstream json(directory / "performance.json",
+                       std::ios::binary | std::ios::trunc);
+    json << "{\n  \"adapter\": \"" << renderer.AdapterName()
+         << "\",\n  \"driver\": \"" << renderer.DriverVersion()
+         << "\",\n  \"resolution\": [1920, 1080],\n"
+         << "  \"samples\": " << kSamples
+         << ",\n  \"warmup\": " << kWarmupFrames
+         << ",\n  \"configuration\": \"Full/Balanced/TemporalOff/"
+            "Balanced512; same-run ManualReference and PhysicalEarthClear\",\n"
+         << "  \"gates\": {\"frameP95Ms\": " << kFrameP95BudgetMs
+         << ", \"cloudP95Ms\": " << kCloudP95BudgetMs
+         << ", \"atmosphereUpdateP95Ms\": "
+         << kAtmosphereUpdateP95BudgetMs
+         << ", \"stage12MaximumRatio\": " << kStage12RegressionRatio
+         << "},\n  \"stage12Regression\": {\"currentMeanSceneP95Ms\": "
+         << currentMeanSceneP95 << ", \"baselineMeanSceneP95Ms\": "
+         << stage12MeanSceneP95 << ", \"ratio\": " << stage12MeanRatio
+         << ", \"passed\": "
+         << (regressionGatePassed ? "true" : "false")
+         << "},\n  \"atmosphereUpdates\": [\n";
+    for (std::size_t index = 0; index < std::size(updateResults); ++index)
+    {
+        const UpdateResult& result = updateResults[index];
+        json << "    {\"name\": \"" << result.name
+             << "\", \"averageMs\": " << result.atmosphereAverage
+             << ", \"p95Ms\": " << result.atmosphereP95
+             << ", \"passed\": " << (result.passed ? "true" : "false")
+             << "}" << (index + 1u == std::size(updateResults) ? "\n" : ",\n");
+    }
+    json << "  ],\n  \"scenes\": [\n";
+    for (std::size_t index = 0; index < results.size(); ++index)
+    {
+        const Result& result = results[index];
+        json << "    {\"path\": \"" << result.path
+             << "\", \"name\": \"" << result.scene
+             << "\", \"frameP95Ms\": " << result.frameP95
+             << ", \"cloudP95Ms\": " << result.cloudP95
+             << ", \"atmosphereP95Ms\": " << result.atmosphereP95
+             << ", \"stage12CloudP95Ms\": " << result.stage12CloudP95
+             << ", \"stage12Ratio\": " << result.stage12Ratio
+             << ", \"passed\": " << (result.passed ? "true" : "false")
+             << "}" << (index + 1u == results.size() ? "\n" : ",\n");
+    }
+    json << "  ],\n  \"debugLayerPassed\": "
+         << (debugLayerPassed ? "true" : "false")
+         << ",\n  \"passed\": " << (passed ? "true" : "false")
+         << "\n}\n";
+    if (!json.good())
+        return 13;
+
+    {
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(6)
+             << "[STAGE14][GATE] MEAN_CLOUD_P95=" << currentMeanSceneP95
+             << " STAGE12_MEAN_CLOUD_P95=" << stage12MeanSceneP95
+             << " RATIO=" << stage12MeanRatio << ' '
+             << (regressionGatePassed ? "PASS" : "FAIL");
+        WriteDiagnosticLine(line.str());
+    }
+    WriteDiagnosticLine(std::string("STAGE14_PERFORMANCE ") +
+        (passed ? "PASS" : "FAIL"));
+    return passed ? 0 : 1;
+}
+
 int RunStage12ShadowPerformanceTest(Renderer& renderer, Camera& camera)
 {
     constexpr int kWarmupFrames = 120;
@@ -3676,6 +4218,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         wcsstr(commandLine, L"--stage12-shadow-smoke-test") != nullptr;
     const bool requestedStage12Performance = commandLine &&
         wcsstr(commandLine, L"--stage12-performance-test") != nullptr;
+    const bool requestedStage14AtmosphereSmoke = commandLine &&
+        wcsstr(commandLine, L"--stage14-atmosphere-smoke-test") != nullptr;
+    const bool requestedStage14Performance = commandLine &&
+        wcsstr(commandLine, L"--stage14-performance-test") != nullptr;
     const bool requestedSmallGpuSmoke = requestedStage6Smoke || requestedStage7Smoke ||
         requestedStage8Smoke ||
         requestedPerformanceOverlaySmoke || requestedStage13DomainSmoke ||
@@ -3683,16 +4229,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         requestedStage13WeatherShapeGpu || requestedStage13UnifiedSceneSmoke ||
         requestedStage13OpticsLightingSmoke || requestedStage9OptimizationSmoke ||
         requestedStage10UpsamplingSmoke || requestedStage11TemporalSmoke ||
-        requestedStage12ShadowSmoke;
+        requestedStage12ShadowSmoke || requestedStage14AtmosphereSmoke;
     const int kWidth  = (requestedStage13LightingPerformance ||
         requestedStage9Performance || requestedStage11TemporalSmoke ||
-        requestedStage12Performance) ? 1920 :
+        requestedStage12Performance || requestedStage14Performance) ? 1920 :
         (requestedStage13SimilarityGpu ||
                          requestedStage13WeatherShapeGpu ||
                          requestedStage13UnifiedSceneSmoke) ? 320 :
         (requestedSmallGpuSmoke ? 96 : 1280);
     const int kHeight = (requestedStage9Performance ||
-        requestedStage11TemporalSmoke || requestedStage12Performance) ? 1080 :
+        requestedStage11TemporalSmoke || requestedStage12Performance ||
+        requestedStage14Performance) ? 1080 :
         (requestedStage13LightingPerformance ? 925 :
         (requestedStage13SimilarityGpu ||
                           requestedStage13WeatherShapeGpu ||
@@ -3731,6 +4278,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const bool stage11TemporalSmokeTest = requestedStage11TemporalSmoke;
     const bool stage12ShadowSmokeTest = requestedStage12ShadowSmoke;
     const bool stage12PerformanceTest = requestedStage12Performance;
+    const bool stage14AtmosphereSmokeTest = requestedStage14AtmosphereSmoke;
+    const bool stage14PerformanceTest = requestedStage14Performance;
     const bool noiseLabSmokeTest = commandLine &&
         wcsstr(commandLine, L"--noise-lab-smoke-test") != nullptr;
     const bool shaderHotReloadSmokeTest = commandLine &&
@@ -3745,6 +4294,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage9OptimizationSmokeTest || stage9PerformanceTest ||
         stage10UpsamplingSmokeTest || stage11TemporalSmokeTest ||
         stage12ShadowSmokeTest || stage12PerformanceTest ||
+        stage14AtmosphereSmokeTest || stage14PerformanceTest ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest;
     const bool enableNoiseVolumes = !automatedTestRun ||
         stage13OpenWorldSmokeTest || stage13NoiseVolumeSmokeTest ||
@@ -3752,7 +4302,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage13OpticsLightingSmokeTest || stage13LightingPerformanceTest ||
         stage9OptimizationSmokeTest || stage9PerformanceTest ||
         stage10UpsamplingSmokeTest || stage11TemporalSmokeTest ||
-        stage12ShadowSmokeTest || stage12PerformanceTest;
+        stage12ShadowSmokeTest || stage12PerformanceTest ||
+        stage14PerformanceTest;
 
     std::filesystem::path hotReloadShaderDirectory;
     if (shaderHotReloadSmokeTest)
@@ -3772,7 +4323,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     // ---- 객체 생성 ----
     Window   window(hInstance, kWidth, kHeight,
-                    L"VolumetricCloud - Stage 12 | Cloud Shadow 초기화 중",
+                    L"VolumetricCloud - Stage 14 | 대기 LUT 초기화 중",
                     !smokeTest && !stage1SmokeTest && !stage2SmokeTest &&
                     !stage3SmokeTest && !stage4SmokeTest && !stage5SmokeTest &&
                     !stage6SmokeTest && !stage7SmokeTest && !stage8SmokeTest &&
@@ -3786,6 +4337,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                     !stage9PerformanceTest &&
                     !stage10UpsamplingSmokeTest && !stage11TemporalSmokeTest &&
                     !stage12ShadowSmokeTest && !stage12PerformanceTest &&
+                    !stage14AtmosphereSmokeTest && !stage14PerformanceTest &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest);
     Camera   camera;
     Renderer renderer;
@@ -3794,6 +4346,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 
     if (!renderer.Init(window.GetHandle(), kWidth, kHeight, enableNoiseVolumes))
         return -1; // 초기화 실패 (오류 메시지는 Renderer가 표시)
+
+    // 단계 13 이하의 GPU 회귀는 당시 승인한 고정 하늘/환경광과 LDR shoulder를
+    // 비교한다. Stage 14 전용 smoke를 제외한 자동 실행은 schema 34 호환 복원과
+    // 같은 Manual Reference/Legacy Shoulder로 고정해 새 물리 기본값이 과거 gate의
+    // 의미를 바꾸지 않게 한다.
+    if (automatedTestRun && !stage14AtmosphereSmokeTest &&
+        !stage14PerformanceTest)
+    {
+        renderer.MutableAtmosphereSettings().mode =
+            AtmosphereMode::ManualReference;
+        renderer.MutableToneMappingSettings().mode =
+            ToneMappingMode::LegacyShoulder;
+    }
 
     // 숨김 자동 검증은 D3D 분기 확인이 목적이다. 합성 모드를 사용하는 Foundation,
     // Noise Lab, Hot Reload smoke가 단계 6의 기본 128×16 중첩 비용을 그대로 쓰지
@@ -3826,6 +4391,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         !stage9PerformanceTest &&
         !stage10UpsamplingSmokeTest && !stage11TemporalSmokeTest &&
         !stage12ShadowSmokeTest && !stage12PerformanceTest &&
+        !stage14AtmosphereSmokeTest && !stage14PerformanceTest &&
         !noiseLabSmokeTest &&
         !shaderHotReloadSmokeTest;
     if (interactiveRun)
@@ -3862,6 +4428,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         return RunStage12ShadowSmokeTest(renderer, camera);
     if (stage12PerformanceTest)
         return RunStage12ShadowPerformanceTest(renderer, camera);
+    if (stage14AtmosphereSmokeTest)
+        return RunStage14AtmosphereSmokeTest(renderer, camera);
+    if (stage14PerformanceTest)
+        return RunStage14PerformanceTest(renderer, camera);
 
     struct VolumeFixture
     {
@@ -4101,7 +4671,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 34") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 35") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"A\": \"localThicknessPotential\"") != std::string::npos &&
                 metadata.find("\"localThickness\": {\"seed\": 4051") != std::string::npos &&
@@ -4193,7 +4763,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 34") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 35") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
@@ -4267,15 +4837,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 34") != std::string::npos &&
-                metadata.find("\"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\"") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 35") != std::string::npos &&
+                metadata.find("\"developerUiLayout\": \"F1Noise_F2Weather_F3LightingAtmosphere_F4Camera\"") != std::string::npos &&
                 metadata.find("\"camera\": {") != std::string::npos &&
                 metadata.find("\"verticalFovDegrees\": 60") != std::string::npos &&
                 metadata.find("\"savedPosition\": null") != std::string::npos &&
                 metadata.find("\"physicalAdvectionMode\": \"legacyIndependentSpeeds\"") != std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"scatteringCoefficient\"") == std::string::npos &&
-                metadata.find("\"implementationStage\": \"12\"") != std::string::npos &&
+                metadata.find("\"implementationStage\": \"14\"") != std::string::npos &&
                 metadata.find("\"noiseVolumes\"") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"similarityScale\"") == std::string::npos &&

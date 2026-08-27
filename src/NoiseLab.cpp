@@ -21,6 +21,7 @@
 #include "Stage13CameraPresets.h"
 #include "Stage13WeatherShapeMath.h"
 #include "Stage13OpticsLightingMath.h"
+#include "Stage14AtmosphereMath.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -100,6 +101,393 @@ void WriteAppearanceSettingsJson(std::ostream& output,
            << ", \"cumulusUpperMassStart\": " << value.cumulusUpperMassStart
            << ", \"cumulusUpperMassEnd\": " << value.cumulusUpperMassEnd
            << "}";
+}
+
+void DrawSunDirectionDiagram(const Camera& camera,
+                             const DirectX::XMFLOAT3& directionToSun)
+{
+    // XZ 위에서 태양 위치, 실제 광선 진행, 그림자 방향과 카메라 시선을
+    // 한 그림에 표시한다. Stage 14 각도와 렌더링이 같은 방향을 공유하는지
+    // 이 도식 하나로 확인할 수 있다.
+    constexpr float diagramSize = 220.0f;
+    ImGui::InvisibleButton("##SunDirectionDiagram",
+                           ImVec2(diagramSize, diagramSize));
+    const ImVec2 diagramMin = ImGui::GetItemRectMin();
+    const ImVec2 diagramMax = ImGui::GetItemRectMax();
+    const ImVec2 center(
+        (diagramMin.x + diagramMax.x) * 0.5f,
+        (diagramMin.y + diagramMax.y) * 0.5f);
+    const float radius = diagramSize * 0.38f;
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(diagramMin, diagramMax,
+                            IM_COL32(20, 25, 34, 255), 6.0f);
+    drawList->AddRect(diagramMin, diagramMax,
+                      IM_COL32(100, 110, 125, 255), 6.0f);
+    drawList->AddLine(ImVec2(center.x - radius, center.y),
+                      ImVec2(center.x + radius, center.y),
+                      IM_COL32(75, 85, 100, 255));
+    drawList->AddLine(ImVec2(center.x, center.y - radius),
+                      ImVec2(center.x, center.y + radius),
+                      IM_COL32(75, 85, 100, 255));
+    drawList->AddText(ImVec2(center.x + radius - 16.0f, center.y + 3.0f),
+                      IM_COL32(180, 190, 205, 255), "+X");
+    drawList->AddText(ImVec2(center.x - radius, center.y + 3.0f),
+                      IM_COL32(180, 190, 205, 255), "-X");
+    drawList->AddText(ImVec2(center.x + 4.0f, center.y - radius),
+                      IM_COL32(180, 190, 205, 255), "+Z");
+    drawList->AddText(ImVec2(center.x + 4.0f, center.y + radius - 14.0f),
+                      IM_COL32(180, 190, 205, 255), "-Z");
+
+    const auto horizontalPoint = [&](float x, float z, float scale)
+    {
+        const float length = std::sqrt(x * x + z * z);
+        const float safeLength = length > 1e-5f ? length : 1.0f;
+        return ImVec2(center.x + x / safeLength * radius * scale,
+                      center.y - z / safeLength * radius * scale);
+    };
+    const auto addArrow = [&](ImVec2 from, ImVec2 to, ImU32 color,
+                              float thickness)
+    {
+        drawList->AddLine(from, to, color, thickness);
+        const float dx = to.x - from.x;
+        const float dy = to.y - from.y;
+        const float length = std::sqrt(dx * dx + dy * dy);
+        if (length <= 1e-5f)
+            return;
+        const float ux = dx / length;
+        const float uy = dy / length;
+        constexpr float head = 9.0f;
+        constexpr float half = 4.5f;
+        drawList->AddTriangleFilled(
+            to,
+            ImVec2(to.x - ux * head - uy * half,
+                   to.y - uy * head + ux * half),
+            ImVec2(to.x - ux * head + uy * half,
+                   to.y - uy * head - ux * half), color);
+    };
+
+    const ImVec2 sunPoint = horizontalPoint(
+        directionToSun.x, directionToSun.z, 0.82f);
+    const ImVec2 shadowPoint = horizontalPoint(
+        -directionToSun.x, -directionToSun.z, 0.82f);
+    drawList->AddCircleFilled(sunPoint, 8.0f,
+                              IM_COL32(255, 220, 70, 255));
+    drawList->AddText(ImVec2(sunPoint.x + 8.0f, sunPoint.y - 8.0f),
+                      IM_COL32(255, 230, 120, 255), "SUN");
+    addArrow(sunPoint, center, IM_COL32(255, 160, 50, 255), 2.5f);
+    addArrow(center, shadowPoint, IM_COL32(230, 85, 65, 255), 2.5f);
+
+    const DirectX::XMFLOAT3 cameraPosition = camera.GetPosition();
+    const DirectX::XMFLOAT3 cameraTarget = camera.GetTarget();
+    const float cameraForwardX = cameraTarget.x - cameraPosition.x;
+    const float cameraForwardZ = cameraTarget.z - cameraPosition.z;
+    const ImVec2 cameraPoint = horizontalPoint(
+        cameraForwardX, cameraForwardZ, 0.60f);
+    addArrow(center, cameraPoint, IM_COL32(70, 210, 255, 255), 2.0f);
+    drawList->AddText(
+        ImVec2(diagramMin.x + 7.0f, diagramMax.y - 19.0f),
+        IM_COL32(70, 210, 255, 255), "CAMERA");
+
+    ImGui::Text("To Sun: X %.3f  Y %.3f  Z %.3f",
+                directionToSun.x, directionToSun.y, directionToSun.z);
+    ImGui::Text("Incoming light / shadow: X %.3f  Z %.3f",
+                -directionToSun.x, -directionToSun.z);
+    const float cameraHorizontalLength = std::sqrt(
+        cameraForwardX * cameraForwardX + cameraForwardZ * cameraForwardZ);
+    const float cameraRightX = cameraHorizontalLength > 1e-5f
+        ? cameraForwardZ / cameraHorizontalLength : 1.0f;
+    const float cameraRightZ = cameraHorizontalLength > 1e-5f
+        ? -cameraForwardX / cameraHorizontalLength : 0.0f;
+    const float sunScreenSide = directionToSun.x * cameraRightX +
+                                directionToSun.z * cameraRightZ;
+    const char* sunSide = sunScreenSide < -0.10f ? "LEFT" :
+        (sunScreenSide > 0.10f ? "RIGHT" : "CENTER");
+    const char* shadowSide = sunScreenSide < -0.10f ? "RIGHT" :
+        (sunScreenSide > 0.10f ? "LEFT" : "CENTER");
+    ImGui::Text("Current camera: Sun %s / Shadow %s", sunSide, shadowSide);
+    ImGui::TextDisabled(
+        "Yellow=Sun, orange=light travel, red=shadow away, cyan=camera forward.");
+    ImGui::TextDisabled(
+        "Screen left/right depends on the cyan camera direction.");
+}
+
+void DrawEnvironmentGroundControls(
+    AtmosphereMode atmosphereMode,
+    GroundLightingParameters& groundLightingParameters,
+    EnvironmentParameters& environmentParameters,
+    Stage8EnvironmentPreset& environmentPreset)
+{
+    static const char* presetNames[] = {
+        "Off", "Balanced", "Strong Fill", "Ground Check",
+        "Portfolio Hero", "Custom"
+    };
+    const int presetIndex = std::clamp(
+        static_cast<int>(environmentPreset), 0, 5);
+    ImGui::Text("Cloud Environment Preset: %s", presetNames[presetIndex]);
+    if (ImGui::Button("Environment Off"))
+    {
+        stage8environment::ApplyPreset(
+            environmentParameters, Stage8EnvironmentPreset::Off);
+        environmentPreset = Stage8EnvironmentPreset::Off;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Balanced Ambient"))
+    {
+        stage8environment::ApplyPreset(
+            environmentParameters, Stage8EnvironmentPreset::Balanced);
+        environmentPreset = Stage8EnvironmentPreset::Balanced;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Strong Fill"))
+    {
+        stage8environment::ApplyPreset(
+            environmentParameters, Stage8EnvironmentPreset::StrongFill);
+        environmentPreset = Stage8EnvironmentPreset::StrongFill;
+    }
+    if (ImGui::Button("Ground Check"))
+    {
+        stage8environment::ApplyPreset(
+            environmentParameters, Stage8EnvironmentPreset::GroundCheck);
+        environmentPreset = Stage8EnvironmentPreset::GroundCheck;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Portfolio Ambient"))
+    {
+        stage8environment::ApplyPreset(
+            environmentParameters, Stage8EnvironmentPreset::PortfolioHero);
+        environmentPreset = Stage8EnvironmentPreset::PortfolioHero;
+    }
+
+    if (ImGui::TreeNodeEx("Ground Reflection",
+                          ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        int groundPreset = static_cast<int>(groundLightingParameters.preset);
+        const char* groundPresets[] = {
+            "Concrete", "Grass", "Snow", "Desert", "Custom"
+        };
+        if (ImGui::Combo("Ground Preset", &groundPreset, groundPresets, 5))
+            stage14ground::ApplyPreset(
+                groundLightingParameters,
+                static_cast<GroundMaterialPreset>(groundPreset));
+        if (groundLightingParameters.preset == GroundMaterialPreset::Custom)
+            ImGui::ColorEdit3("Custom Ground Albedo",
+                &groundLightingParameters.albedo.x,
+                ImGuiColorEditFlags_Float);
+        ImGui::ColorButton("Ground Linear Albedo",
+            ImVec4(groundLightingParameters.albedo.x,
+                   groundLightingParameters.albedo.y,
+                   groundLightingParameters.albedo.z, 1.0f));
+        ImGui::SameLine();
+        ImGui::Text("linear %.2f %.2f %.2f",
+                    groundLightingParameters.albedo.x,
+                    groundLightingParameters.albedo.y,
+                    groundLightingParameters.albedo.z);
+        ImGui::SliderFloat("Ground Bounce Multiplier",
+            &groundLightingParameters.bounceMultiplier, 0.0f, 2.0f, "%.2f");
+        ImGui::TextDisabled(
+            "Physical: surface albedo also colors the cloud-bottom bounce.");
+        ImGui::TreePop();
+    }
+
+    bool edited = false;
+    if (ImGui::TreeNodeEx("Cloud Ambient Visibility",
+                          ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        edited |= ImGui::SliderFloat(
+            "Ambient Occlusion Strength",
+            &environmentParameters.ambientOcclusionStrength,
+            0.0f, 8.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##AmbientOcclusion"))
+        {
+            environmentParameters.ambientOcclusionStrength = 1.50f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Ambient Height Influence",
+            &environmentParameters.ambientHeightInfluence,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##AmbientHeight"))
+        {
+            environmentParameters.ambientHeightInfluence = 0.65f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Ambient Shadow Coupling",
+            &environmentParameters.ambientShadowCoupling,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##AmbientShadowCoupling"))
+        {
+            environmentParameters.ambientShadowCoupling = 0.0f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Ambient Shadow Exponent",
+            &environmentParameters.ambientShadowExponent,
+            0.1f, 8.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##AmbientShadowExponent"))
+        {
+            environmentParameters.ambientShadowExponent = 1.0f;
+            edited = true;
+        }
+
+        std::array<float, 64> skyWeights = {};
+        std::array<float, 64> groundWeights = {};
+        for (std::size_t index = 0; index < skyWeights.size(); ++index)
+        {
+            const float height = static_cast<float>(index) /
+                static_cast<float>(skyWeights.size() - 1);
+            const stage8::Weights weights = stage8::EvaluateWeights(
+                height, 0.0f, environmentParameters);
+            skyWeights[index] = weights.sky;
+            groundWeights[index] = weights.ground;
+        }
+        ImGui::PlotLines("Sky Height Weight", skyWeights.data(),
+                         static_cast<int>(skyWeights.size()), 0,
+                         "bottom 0 -> top 1", 0.0f, 1.0f,
+                         ImVec2(0.0f, 60.0f));
+        ImGui::PlotLines("Ground Height Weight", groundWeights.data(),
+                         static_cast<int>(groundWeights.size()), 0,
+                         "bottom 0 -> top 1", 0.0f, 1.0f,
+                         ImVec2(0.0f, 60.0f));
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Cloud Multiple Scattering",
+                          ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        bool multipleEnabled =
+            environmentParameters.multipleScatteringEnabled >= 0.5f;
+        if (ImGui::Checkbox("Enable Multiple Scattering", &multipleEnabled))
+        {
+            environmentParameters.multipleScatteringEnabled =
+                multipleEnabled ? 1.0f : 0.0f;
+            edited = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##MultipleEnabled"))
+        {
+            environmentParameters.multipleScatteringEnabled = 1.0f;
+            edited = true;
+        }
+        int octaves = static_cast<int>(
+            environmentParameters.multipleScatteringOctaves);
+        if (ImGui::SliderInt("Scattering Octaves", &octaves, 0, 4))
+        {
+            environmentParameters.multipleScatteringOctaves =
+                static_cast<std::uint32_t>(octaves);
+            edited = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringOctaves"))
+        {
+            environmentParameters.multipleScatteringOctaves = 2u;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Scattering Attenuation",
+            &environmentParameters.multipleScatteringAttenuation,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringAttenuation"))
+        {
+            environmentParameters.multipleScatteringAttenuation = 0.20f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Scattering Extinction Factor",
+            &environmentParameters.multipleScatteringExtinctionFactor,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringExtinction"))
+        {
+            environmentParameters.multipleScatteringExtinctionFactor = 0.50f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Scattering Phase Factor",
+            &environmentParameters.multipleScatteringPhaseFactor,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##ScatteringPhase"))
+        {
+            environmentParameters.multipleScatteringPhaseFactor = 0.25f;
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Multiple Interior Blend",
+            &environmentParameters.multipleScatteringInteriorBlend,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##MultipleInteriorBlend"))
+        {
+            environmentParameters.multipleScatteringInteriorBlend = 0.0f;
+            edited = true;
+        }
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Manual Reference Colors",
+                          ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const bool manualReference =
+            atmosphereMode == AtmosphereMode::ManualReference;
+        ImGui::BeginDisabled(!manualReference);
+        edited |= ImGui::ColorEdit3(
+            "Sky Color", &environmentParameters.skyColor.x,
+            ImGuiColorEditFlags_Float);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##SkyColor"))
+        {
+            environmentParameters.skyColor = { 0.35f, 0.50f, 0.75f };
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Sky Strength", &environmentParameters.skyStrength,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##SkyStrength"))
+        {
+            environmentParameters.skyStrength = 0.12f;
+            edited = true;
+        }
+        edited |= ImGui::ColorEdit3(
+            "Ground Color", &environmentParameters.groundColor.x,
+            ImGuiColorEditFlags_Float);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##GroundColor"))
+        {
+            environmentParameters.groundColor = { 0.18f, 0.12f, 0.08f };
+            edited = true;
+        }
+        edited |= ImGui::SliderFloat(
+            "Ground Strength", &environmentParameters.groundStrength,
+            0.0f, 1.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##GroundStrength"))
+        {
+            environmentParameters.groundStrength = 0.05f;
+            edited = true;
+        }
+        ImGui::EndDisabled();
+        if (!manualReference)
+            ImGui::TextDisabled(
+                "Physical mode samples atmosphere LUTs and Ground Reflection instead.");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::Button("Reset All Environment"))
+    {
+        stage8environment::ApplyPreset(
+            environmentParameters, Stage8EnvironmentPreset::Balanced);
+        environmentPreset = Stage8EnvironmentPreset::Balanced;
+    }
+    environmentParameters = stage8environment::Sanitize(environmentParameters);
+    if (edited)
+        environmentPreset = Stage8EnvironmentPreset::Custom;
 }
 }
 
@@ -302,6 +690,13 @@ void NoiseLab::BeginFrame(float applicationTime,
                           Stage7PhasePreset& phasePreset,
                           EnvironmentParameters& environmentParameters,
                           Stage8EnvironmentPreset& environmentPreset,
+                          AtmosphereParameters& atmosphereParameters,
+                          GroundLightingParameters& groundLightingParameters,
+                          ToneMappingParameters& toneMappingParameters,
+                          const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
+                          const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
+                          const std::array<std::uint64_t, 6>& atmosphereLutHashes,
+                          const std::string& atmosphereStatus,
                           Stage5WeatherPreset weatherPreset,
                           const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                           CloudTypeMode cloudTypeMode,
@@ -324,6 +719,11 @@ void NoiseLab::BeginFrame(float applicationTime,
 {
     if (!m_initialized)
         return;
+    m_atmosphereSnapshot = atmosphereParameters;
+    m_groundLightingSnapshot = groundLightingParameters;
+    m_toneMappingSnapshot = toneMappingParameters;
+    m_atmosphereLutGenerations = atmosphereLutGenerations;
+    m_atmosphereLutHashes = atmosphereLutHashes;
     m_currentApplicationTime = applicationTime;
     m_cameraMoveSpeedMetersPerSecond =
         stage13scene::SanitizeMoveSpeed(
@@ -353,6 +753,10 @@ void NoiseLab::BeginFrame(float applicationTime,
                           shadowParameters,
                           lightParameters, sunPreset, phasePreset,
                           environmentParameters, environmentPreset,
+                          atmosphereParameters, groundLightingParameters,
+                          toneMappingParameters, atmosphereLutSrvs,
+                          atmosphereLutGenerations, atmosphereLutHashes,
+                          atmosphereStatus,
                           weatherPreset, weatherGeneratorSettings,
                           cloudTypeMode, cloudAppearancePreset,
                           cloudAppearanceDirty, hasSavedCustomAppearance,
@@ -388,6 +792,13 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                                  Stage7PhasePreset& phasePreset,
                                  EnvironmentParameters& environmentParameters,
                                  Stage8EnvironmentPreset& environmentPreset,
+                                 AtmosphereParameters& atmosphereParameters,
+                                 GroundLightingParameters& groundLightingParameters,
+                                 ToneMappingParameters& toneMappingParameters,
+                                 const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
+                                 const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
+                                 const std::array<std::uint64_t, 6>& atmosphereLutHashes,
+                                 const std::string& atmosphereStatus,
                                  Stage5WeatherPreset weatherPreset,
                                  const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                                  CloudTypeMode cloudTypeMode,
@@ -523,6 +934,8 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     const Stage12ShadowParameters shadowBefore = shadowParameters;
     const NoiseVolumeParameters noiseVolumeBefore = noiseVolumeParameters;
     const LightParameters lightBefore = lightParameters;
+    const AtmosphereParameters atmosphereBefore = atmosphereParameters;
+    const GroundLightingParameters groundBefore = groundLightingParameters;
     const CloudAppearanceSettings appearanceBefore = CaptureCloudAppearance(
         cloudParameters, cloudShapeParameters, m_weatherGeneratorDraft);
     const bool physicalShape = cloudShapeParameters.shapeMode ==
@@ -1251,6 +1664,313 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         cloudParameters.detailErosionStrength, 0.0f, 1.0f);
     cloudParameters.detailWindSpeed = std::max(cloudParameters.detailWindSpeed, 0.0f);
 
+    if (lightingPanel && ImGui::CollapsingHeader("Atmosphere Debug"))
+    {
+        static const char* debugViews[] = {
+            "None", "Transmittance", "1-T", "Optical Depth",
+            "Multi Scattering", "Sky View", "Sky Irradiance",
+            "Aerial Radiance", "Aerial Transmittance", "Atmosphere Sun",
+            "Surface Direct", "Surface Sky", "Aerial Only", "HDR Pre-Tone"
+        };
+        int debugView = static_cast<int>(atmosphereParameters.debugView);
+        if (ImGui::Combo("Atmosphere Debug View", &debugView,
+                         debugViews, static_cast<int>(std::size(debugViews))))
+            atmosphereParameters.debugView = static_cast<Stage14DebugView>(
+                debugView);
+        const char* channels[] = { "RGB", "R", "G", "B" };
+        int channel = static_cast<int>(atmosphereParameters.debugChannel);
+        if (ImGui::Combo("LUT Channel", &channel, channels, 4))
+            atmosphereParameters.debugChannel =
+                static_cast<Stage14DebugChannel>(channel);
+        ImGui::SliderFloat("LUT Debug Exposure",
+            &atmosphereParameters.debugExposure,
+            0.01f, 64.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        int aerialSlice = static_cast<int>(atmosphereParameters.aerialSlice);
+        if (ImGui::SliderInt("Aerial Slice", &aerialSlice, 0, 31))
+            atmosphereParameters.aerialSlice = static_cast<float>(aerialSlice);
+
+        const char* lutNames[4] = {
+            "Transmittance 256x64 RGBA16F (height / zenith)",
+            "Multi Scattering 32x32 RGBA16F (sun zenith / height)",
+            "Sky View 192x108 RGBA16F (sun-relative azimuth / view zenith)",
+            "Sky Irradiance 64x16 RGBA16F (sun zenith / height)"
+        };
+        for (int index = 0; index < 4; ++index)
+        {
+            ImGui::Text("%s | generation %llu", lutNames[index],
+                static_cast<unsigned long long>(atmosphereLutGenerations[index]));
+            if (atmosphereLutSrvs[index])
+                ImGui::Image(ImTextureRef(static_cast<ImTextureID>(
+                    reinterpret_cast<std::uintptr_t>(atmosphereLutSrvs[index]))),
+                    ImVec2(256.0f, index == 2 ? 144.0f : 64.0f));
+        }
+        ImGui::Text("Aerial Radiance/T 32^3 RGBA16F | generations %llu/%llu",
+            static_cast<unsigned long long>(atmosphereLutGenerations[4]),
+            static_cast<unsigned long long>(atmosphereLutGenerations[5]));
+        ImGui::TextDisabled(
+            "3D LUT slice is shown fullscreen by the Atmosphere Debug View.");
+    }
+
+    if (lightingPanel && ImGui::CollapsingHeader(
+            "Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        bool acesEnabled = toneMappingParameters.mode ==
+                           ToneMappingMode::AcesFitted;
+        if (ImGui::Checkbox("ACES", &acesEnabled))
+            toneMappingParameters.mode = acesEnabled
+                ? ToneMappingMode::AcesFitted : ToneMappingMode::LinearDebug;
+        ImGui::SliderFloat("Exposure EV", &toneMappingParameters.exposureEv,
+                           -8.0f, 8.0f, "%+.2f EV");
+        ImGui::SliderFloat("White Balance",
+            &toneMappingParameters.whiteBalanceKelvin,
+            3500.0f, 10000.0f, "%.0f K");
+
+        ImGui::SeparatorText("Temporal Status (read-only)");
+        ImGui::Text("History: %s | accumulated %u",
+                    temporalHistoryValid ? "valid" : "invalid",
+                    temporalAccumulatedFrames);
+        ImGui::Text("Phase %u | last reset reason %u",
+                    temporalParameters.frameIndex & 3u,
+                    temporalParameters.resetReason);
+        ImGui::TextDisabled(
+            "Exposure/White Balance do not reset history. Controls remain in F1 > Temporal.");
+    }
+
+    if (lightingPanel && ImGui::CollapsingHeader(
+            "Lighting & Atmosphere", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        int atmosphereMode = static_cast<int>(atmosphereParameters.mode);
+        const char* atmosphereModes[] = { "Physical", "Manual Reference" };
+        if (ImGui::Combo("Atmosphere Mode", &atmosphereMode,
+                         atmosphereModes, 2))
+            atmosphereParameters.mode = static_cast<AtmosphereMode>(
+                atmosphereMode);
+        ImGui::TextWrapped("%s", atmosphereStatus.c_str());
+
+        ImGui::SeparatorText("Sun Direction & Time");
+        const bool timePlaying = atmosphereParameters.timePlaybackEnabled;
+        if (ImGui::TreeNodeEx("Angle & Directional Light",
+                              ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::BeginDisabled(timePlaying);
+            bool angleChanged = false;
+            if (ImGui::Button("Morning 18 deg"))
+            {
+                atmosphereParameters.sunAzimuthDegrees = -60.0f;
+                atmosphereParameters.sunElevationDegrees = 18.0f;
+                sunPreset = Stage6SunPreset::LowEast;
+                angleChanged = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Noon 70 deg"))
+            {
+                atmosphereParameters.sunAzimuthDegrees = 30.0f;
+                atmosphereParameters.sunElevationDegrees = 70.0f;
+                sunPreset = Stage6SunPreset::Custom;
+                angleChanged = true;
+            }
+            if (ImGui::Button("Sunset 3 deg"))
+            {
+                atmosphereParameters.sunAzimuthDegrees = 105.0f;
+                atmosphereParameters.sunElevationDegrees = 3.0f;
+                sunPreset = Stage6SunPreset::Custom;
+                angleChanged = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Twilight -4 deg"))
+            {
+                atmosphereParameters.sunAzimuthDegrees = 115.0f;
+                atmosphereParameters.sunElevationDegrees = -4.0f;
+                sunPreset = Stage6SunPreset::Custom;
+                angleChanged = true;
+            }
+            angleChanged |= ImGui::SliderFloat("Sun Azimuth",
+                &atmosphereParameters.sunAzimuthDegrees,
+                -180.0f, 180.0f, "%.1f deg");
+            angleChanged |= ImGui::SliderFloat("Sun Elevation",
+                &atmosphereParameters.sunElevationDegrees,
+                -6.0f, 90.0f, "%.1f deg");
+            ImGui::EndDisabled();
+            if (angleChanged)
+            {
+                atmosphereParameters.timePlaybackEnabled = false;
+                atmosphereParameters.sunControlMode = SunControlMode::Angles;
+                if (sunPreset != Stage6SunPreset::LowEast)
+                    sunPreset = Stage6SunPreset::Custom;
+            }
+            if (timePlaying)
+                ImGui::TextDisabled(
+                    "Angle controls are locked while Time of Day is playing.");
+            const stage14math::Float3 sun = stage14math::DirectionFromAngles(
+                atmosphereParameters.sunAzimuthDegrees,
+                atmosphereParameters.sunElevationDegrees);
+            DrawSunDirectionDiagram(camera, { sun.x, sun.y, sun.z });
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNodeEx("Time of Day",
+                              ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::SliderFloat("Time of Day",
+                &atmosphereParameters.timeOfDayHours,
+                5.5f, 19.5f, "%.2f h");
+            if (!atmosphereParameters.timePlaybackEnabled)
+            {
+                if (ImGui::Button("Play Time"))
+                {
+                    atmosphereParameters.timePlaybackEnabled = true;
+                    atmosphereParameters.sunControlMode =
+                        SunControlMode::TimeOfDay;
+                    const stage14math::SunAngles path =
+                        stage14math::TimeOfDayPath(
+                            atmosphereParameters.timeOfDayHours);
+                    atmosphereParameters.sunAzimuthDegrees =
+                        path.azimuthDegrees;
+                    atmosphereParameters.sunElevationDegrees =
+                        path.elevationDegrees;
+                }
+            }
+            else if (ImGui::Button("Pause Time"))
+            {
+                // Renderer가 이번 프레임에 계산한 시간 방향을 Angle 원본에
+                // 남긴 채 제어권만 넘겨 정지 순간 화면 점프를 막는다.
+                const stage14math::SunAngles path = stage14math::TimeOfDayPath(
+                    atmosphereParameters.timeOfDayHours);
+                atmosphereParameters.sunAzimuthDegrees = path.azimuthDegrees;
+                atmosphereParameters.sunElevationDegrees = path.elevationDegrees;
+                atmosphereParameters.timePlaybackEnabled = false;
+                atmosphereParameters.sunControlMode = SunControlMode::Angles;
+                sunPreset = Stage6SunPreset::Custom;
+            }
+            ImGui::SliderFloat("Playback Speed",
+                &atmosphereParameters.timePlaybackMinutesPerSecond,
+                30.0f, 120.0f, "%.1f simulated min/s");
+            const stage14math::SunAngles path = stage14math::TimeOfDayPath(
+                atmosphereParameters.timeOfDayHours);
+            ImGui::Text("Path result: azimuth %.1f, elevation %.1f",
+                        path.azimuthDegrees, path.elevationDegrees);
+            ImGui::TextDisabled(
+                "Playback always loops from 19:30 back to 05:30.");
+            ImGui::TextDisabled(
+                "While paused, the time slider selects the next play start only.");
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNodeEx("Sun Appearance",
+                              ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::ColorEdit3("Sun Tint", &lightParameters.sunColor.x,
+                              ImGuiColorEditFlags_Float);
+            ImGui::SliderFloat("Sun Multiplier", &lightParameters.sunIntensity,
+                               0.0f, 5.0f, "%.2f");
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNodeEx("Direct Light Sampling",
+                              ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            bool lightChanged = false;
+            lightChanged |= ImGui::SliderFloat(
+                "Single Scattering Albedo (omega)",
+                &lightParameters.singleScatteringAlbedo,
+                0.0f, 1.0f, "%.2f");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##Scatter"))
+            {
+                lightParameters.singleScatteringAlbedo = 1.0f;
+                lightChanged = true;
+            }
+            ImGui::TextDisabled(
+                "Extinguished light converted to scattering (sigma_s / sigma_t).");
+            int lightSteps = static_cast<int>(lightParameters.maxLightSteps);
+            if (ImGui::SliderInt("Max Light Steps", &lightSteps, 1, 512))
+            {
+                lightParameters.maxLightSteps =
+                    static_cast<std::uint32_t>(lightSteps);
+                lightChanged = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##LightSteps"))
+            {
+                lightParameters.maxLightSteps = 80u;
+                lightChanged = true;
+            }
+            lightChanged |= ImGui::SliderFloat(
+                "Light Step Size", &lightParameters.lightStepSize,
+                0.01f, 1000.0f, "%.3f m", ImGuiSliderFlags_Logarithmic);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##LightStepSize"))
+            {
+                lightParameters.lightStepSize = 250.0f;
+                lightChanged = true;
+            }
+            lightChanged |= ImGui::SliderFloat(
+                "Light Ray Bias", &lightParameters.lightRayBias,
+                0.001f, 100.0f, "%.3f m", ImGuiSliderFlags_Logarithmic);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##LightBias"))
+            {
+                lightParameters.lightRayBias = 1.0f;
+                lightChanged = true;
+            }
+            if (lightChanged)
+                sunPreset = Stage6SunPreset::Custom;
+            ImGui::TextDisabled(
+                "Light Ray samples Base Density only; Detail is omitted.");
+            ImGui::TreePop();
+        }
+        lightParameters = stage6light::Sanitize(lightParameters);
+        const stage14math::Float3 canonicalSun =
+            stage14math::DirectionFromAngles(
+                atmosphereParameters.sunAzimuthDegrees,
+                atmosphereParameters.sunElevationDegrees);
+        lightParameters.directionToSun = {
+            canonicalSun.x, canonicalSun.y, canonicalSun.z
+        };
+
+        ImGui::SeparatorText("Atmosphere Model");
+        int atmospherePreset = static_cast<int>(atmosphereParameters.preset);
+        const char* atmospherePresets[] = {
+            "Earth Clear", "Earth Hazy", "Custom"
+        };
+        if (ImGui::Combo("Atmosphere Preset", &atmospherePreset,
+                         atmospherePresets, 3))
+            stage14atmosphere::ApplyPreset(
+                atmosphereParameters,
+                static_cast<AtmospherePreset>(atmospherePreset));
+        if (ImGui::SliderFloat("Turbidity", &atmosphereParameters.turbidity,
+                               0.25f, 4.0f, "%.2f"))
+            atmosphereParameters.preset = AtmospherePreset::Custom;
+        if (ImGui::TreeNode("Atmosphere Advanced"))
+        {
+            bool advancedChanged = false;
+            advancedChanged |= ImGui::SliderFloat("Rayleigh Scale",
+                &atmosphereParameters.rayleighScale, 0.25f, 4.0f, "%.2f");
+            advancedChanged |= ImGui::SliderFloat("Mie Absorption",
+                &atmosphereParameters.mieAbsorptionScale, 0.0f, 4.0f, "%.2f");
+            advancedChanged |= ImGui::SliderFloat("Mie g",
+                &atmosphereParameters.mieG, 0.0f, 0.95f, "%.3f");
+            advancedChanged |= ImGui::SliderFloat("Ozone Scale",
+                &atmosphereParameters.ozoneScale, 0.0f, 4.0f, "%.2f");
+            advancedChanged |= ImGui::SliderFloat("Rayleigh Height",
+                &atmosphereParameters.rayleighScaleHeightKm,
+                4.0f, 16.0f, "%.1f km");
+            advancedChanged |= ImGui::SliderFloat("Mie Height",
+                &atmosphereParameters.mieScaleHeightKm,
+                0.5f, 4.0f, "%.2f km");
+            if (advancedChanged)
+                atmosphereParameters.preset = AtmospherePreset::Custom;
+            ImGui::TreePop();
+        }
+
+        ImGui::SeparatorText(
+            "Environment, Ground & Cloud Multiple Scattering");
+        DrawEnvironmentGroundControls(
+            atmosphereParameters.mode, groundLightingParameters,
+            environmentParameters, environmentPreset);
+
+    }
+
     if (lightingPanel && ImGui::CollapsingHeader(
             "Stage 12 Cloud Shadow / Deep Cache",
             ImGuiTreeNodeFlags_DefaultOpen))
@@ -1415,14 +2135,14 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::SliderFloat("Detail LOD End",
                            &cloudLodParameters.detailLodEndMeters,
                            1000.0f, 50000.0f, "%.0f m");
-        if (ImGui::Button("Quality LOD 32-48km"))
+        if (ImGui::Button("Approved 32–48km"))
         {
             cloudLodParameters.detailLodEnabled = 1u;
             cloudLodParameters.detailLodStartMeters = 32000.0f;
             cloudLodParameters.detailLodEndMeters = 48000.0f;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Balanced LOD 24-40km"))
+        if (ImGui::Button("Aggressive 24–40km"))
         {
             cloudLodParameters.detailLodEnabled = 1u;
             cloudLodParameters.detailLodStartMeters = 24000.0f;
@@ -1455,8 +2175,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         }
         if (ImGui::Button("Portfolio Hero"))
         {
-            lightParameters.directionToSun = stage6light::Preset(
-                Stage6SunPreset::LowEast).directionToSun;
+            atmosphereParameters.sunAzimuthDegrees = -60.0f;
+            atmosphereParameters.sunElevationDegrees = 18.0f;
+            atmosphereParameters.timePlaybackEnabled = false;
+            atmosphereParameters.sunControlMode = SunControlMode::Angles;
             lightParameters.sunColor = { 1.0f, 0.78f, 0.62f };
             lightParameters.sunIntensity = 1.15f;
             stage6light::ApplyPhasePreset(
@@ -1470,231 +2192,6 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::TextDisabled(
             "Shadow Isolation shows direct self-shadow only; Balanced adds softer fill.");
 
-    }
-
-    if (lightingPanel && ImGui::CollapsingHeader(
-            "Directional light", ImGuiTreeNodeFlags_DefaultOpen))
-    {
-        static const char* sunPresetNames[] = {
-            "Noon", "Low East", "Low West", "Custom Sun"
-        };
-        const int sunPresetIndex = std::clamp(static_cast<int>(sunPreset), 0, 3);
-        ImGui::Text("Current: %s", sunPresetNames[sunPresetIndex]);
-        if (ImGui::Button("Noon"))
-        {
-            lightParameters.directionToSun =
-                stage6light::Preset(Stage6SunPreset::Noon).directionToSun;
-            sunPreset = Stage6SunPreset::Noon;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Low East"))
-        {
-            lightParameters.directionToSun =
-                stage6light::Preset(Stage6SunPreset::LowEast).directionToSun;
-            sunPreset = Stage6SunPreset::LowEast;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Low West"))
-        {
-            lightParameters.directionToSun =
-                stage6light::Preset(Stage6SunPreset::LowWest).directionToSun;
-            sunPreset = Stage6SunPreset::LowWest;
-        }
-
-        float azimuth = 0.0f;
-        float elevation = 0.0f;
-        stage6light::AnglesFromDirection(
-            lightParameters.directionToSun, azimuth, elevation);
-
-        // XZ 위에서 태양 위치, 실제 광선 진행, 그림자 방향과 카메라 시선을
-        // 한 그림에 표시한다. 화면의 좌/우는 카메라 회전에 따라 달라지므로
-        // 월드 방향만 텍스트로 나열하는 것보다 오판을 줄인다.
-        const float diagramSize = 220.0f;
-        ImGui::InvisibleButton("##DirectionalLightDiagram",
-                               ImVec2(diagramSize, diagramSize));
-        const ImVec2 diagramMin = ImGui::GetItemRectMin();
-        const ImVec2 diagramMax = ImGui::GetItemRectMax();
-        const ImVec2 center(
-            (diagramMin.x + diagramMax.x) * 0.5f,
-            (diagramMin.y + diagramMax.y) * 0.5f);
-        const float radius = diagramSize * 0.38f;
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-        drawList->AddRectFilled(diagramMin, diagramMax,
-                                IM_COL32(20, 25, 34, 255), 6.0f);
-        drawList->AddRect(diagramMin, diagramMax,
-                          IM_COL32(100, 110, 125, 255), 6.0f);
-        drawList->AddLine(ImVec2(center.x - radius, center.y),
-                          ImVec2(center.x + radius, center.y),
-                          IM_COL32(75, 85, 100, 255));
-        drawList->AddLine(ImVec2(center.x, center.y - radius),
-                          ImVec2(center.x, center.y + radius),
-                          IM_COL32(75, 85, 100, 255));
-        drawList->AddText(ImVec2(center.x + radius - 16.0f, center.y + 3.0f),
-                          IM_COL32(180, 190, 205, 255), "+X");
-        drawList->AddText(ImVec2(center.x - radius, center.y + 3.0f),
-                          IM_COL32(180, 190, 205, 255), "-X");
-        drawList->AddText(ImVec2(center.x + 4.0f, center.y - radius),
-                          IM_COL32(180, 190, 205, 255), "+Z");
-        drawList->AddText(ImVec2(center.x + 4.0f, center.y + radius - 14.0f),
-                          IM_COL32(180, 190, 205, 255), "-Z");
-
-        const auto horizontalPoint = [&](float x, float z, float scale)
-        {
-            const float length = std::sqrt(x * x + z * z);
-            const float safeLength = length > 1e-5f ? length : 1.0f;
-            return ImVec2(center.x + x / safeLength * radius * scale,
-                          center.y - z / safeLength * radius * scale);
-        };
-        const auto addArrow = [&](ImVec2 from, ImVec2 to, ImU32 color,
-                                  float thickness)
-        {
-            drawList->AddLine(from, to, color, thickness);
-            const float dx = to.x - from.x;
-            const float dy = to.y - from.y;
-            const float length = std::sqrt(dx * dx + dy * dy);
-            if (length <= 1e-5f)
-                return;
-            const float ux = dx / length;
-            const float uy = dy / length;
-            const float head = 9.0f;
-            const float half = 4.5f;
-            drawList->AddTriangleFilled(
-                to,
-                ImVec2(to.x - ux * head - uy * half,
-                       to.y - uy * head + ux * half),
-                ImVec2(to.x - ux * head + uy * half,
-                       to.y - uy * head - ux * half), color);
-        };
-
-        const DirectX::XMFLOAT3 directionToSun = lightParameters.directionToSun;
-        const ImVec2 sunPoint = horizontalPoint(
-            directionToSun.x, directionToSun.z, 0.82f);
-        const ImVec2 shadowPoint = horizontalPoint(
-            -directionToSun.x, -directionToSun.z, 0.82f);
-        drawList->AddCircleFilled(sunPoint, 8.0f,
-                                  IM_COL32(255, 220, 70, 255));
-        drawList->AddText(ImVec2(sunPoint.x + 8.0f, sunPoint.y - 8.0f),
-                          IM_COL32(255, 230, 120, 255), "SUN");
-        addArrow(sunPoint, center, IM_COL32(255, 160, 50, 255), 2.5f);
-        addArrow(center, shadowPoint, IM_COL32(230, 85, 65, 255), 2.5f);
-
-        const DirectX::XMFLOAT3 cameraPosition = camera.GetPosition();
-        const DirectX::XMFLOAT3 cameraTarget = camera.GetTarget();
-        const float cameraForwardX = cameraTarget.x - cameraPosition.x;
-        const float cameraForwardZ = cameraTarget.z - cameraPosition.z;
-        const ImVec2 cameraPoint = horizontalPoint(
-            cameraForwardX, cameraForwardZ, 0.60f);
-        addArrow(center, cameraPoint, IM_COL32(70, 210, 255, 255), 2.0f);
-        drawList->AddText(
-            ImVec2(diagramMin.x + 7.0f, diagramMax.y - 19.0f),
-            IM_COL32(70, 210, 255, 255), "CAMERA");
-
-        ImGui::Text("To Sun: X %.3f  Y %.3f  Z %.3f",
-                    directionToSun.x, directionToSun.y, directionToSun.z);
-        ImGui::Text("Incoming light / shadow: X %.3f  Z %.3f",
-                    -directionToSun.x, -directionToSun.z);
-        const float cameraHorizontalLength = std::sqrt(
-            cameraForwardX * cameraForwardX +
-            cameraForwardZ * cameraForwardZ);
-        const float cameraRightX = cameraHorizontalLength > 1e-5f
-            ? cameraForwardZ / cameraHorizontalLength : 1.0f;
-        const float cameraRightZ = cameraHorizontalLength > 1e-5f
-            ? -cameraForwardX / cameraHorizontalLength : 0.0f;
-        const float sunScreenSide = directionToSun.x * cameraRightX +
-                                    directionToSun.z * cameraRightZ;
-        const char* sunSide = sunScreenSide < -0.10f ? "LEFT" :
-            (sunScreenSide > 0.10f ? "RIGHT" : "CENTER");
-        const char* shadowSide = sunScreenSide < -0.10f ? "RIGHT" :
-            (sunScreenSide > 0.10f ? "LEFT" : "CENTER");
-        ImGui::Text("Current camera: Sun %s / Shadow %s",
-                    sunSide, shadowSide);
-        ImGui::TextDisabled(
-            "Yellow=Sun, orange=light travel, red=shadow away, cyan=camera forward.");
-        ImGui::TextDisabled(
-            "Screen left/right depends on the cyan camera direction.");
-
-        bool lightChanged = false;
-        lightChanged |= ImGui::SliderFloat("Sun Azimuth", &azimuth,
-                                            -180.0f, 180.0f, "%.1f deg");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##Azimuth"))
-        {
-            azimuth = 45.0f;
-            lightChanged = true;
-        }
-        lightChanged |= ImGui::SliderFloat("Sun Elevation", &elevation,
-                                            0.0f, 90.0f, "%.1f deg");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##Elevation"))
-        {
-            elevation = 70.0f;
-            lightChanged = true;
-        }
-        if (lightChanged)
-            lightParameters.directionToSun =
-                stage6light::DirectionFromAngles(azimuth, elevation);
-
-        lightChanged |= ImGui::ColorEdit3("Sun Color", &lightParameters.sunColor.x,
-                                           ImGuiColorEditFlags_Float);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##SunColor"))
-        {
-            lightParameters.sunColor = { 1.0f, 0.95f, 0.85f };
-            lightChanged = true;
-        }
-        lightChanged |= ImGui::SliderFloat("Sun Intensity", &lightParameters.sunIntensity,
-                                            0.0f, 5.0f, "%.2f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##SunIntensity"))
-        {
-            lightParameters.sunIntensity = 1.0f;
-            lightChanged = true;
-        }
-        lightChanged |= ImGui::SliderFloat("Single Scattering Albedo (omega)",
-                                            &lightParameters.singleScatteringAlbedo,
-                                            0.0f, 1.0f, "%.2f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##Scatter"))
-        {
-            lightParameters.singleScatteringAlbedo = 1.0f;
-            lightChanged = true;
-        }
-        ImGui::TextDisabled(
-            "Extinguished light converted to scattering (sigma_s / sigma_t)." );
-        int lightSteps = static_cast<int>(lightParameters.maxLightSteps);
-        if (ImGui::SliderInt("Max Light Steps", &lightSteps, 1, 512))
-        {
-            lightParameters.maxLightSteps = static_cast<std::uint32_t>(lightSteps);
-            lightChanged = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##LightSteps"))
-        {
-            lightParameters.maxLightSteps = 80u;
-            lightChanged = true;
-        }
-        lightChanged |= ImGui::SliderFloat("Light Step Size", &lightParameters.lightStepSize,
-                                            0.01f, 1000.0f, "%.3f m",
-                                            ImGuiSliderFlags_Logarithmic);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##LightStepSize"))
-        {
-            lightParameters.lightStepSize = 250.0f;
-            lightChanged = true;
-        }
-        lightChanged |= ImGui::SliderFloat("Light Ray Bias", &lightParameters.lightRayBias,
-                                            0.001f, 100.0f, "%.3f m",
-                                            ImGuiSliderFlags_Logarithmic);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##LightBias"))
-        {
-            lightParameters.lightRayBias = 1.0f;
-            lightChanged = true;
-        }
-        if (lightChanged)
-            sunPreset = Stage6SunPreset::Custom;
-        lightParameters = stage6light::Sanitize(lightParameters);
-        ImGui::TextDisabled("Light Ray samples Base Density only; Detail is omitted.");
     }
 
     if (lightingPanel && ImGui::CollapsingHeader(
@@ -1868,243 +2365,21 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             "cosTheta +1: camera looks toward sun / -1: opposite direction");
     }
 
-    if (lightingPanel && ImGui::CollapsingHeader(
-            "Environment & Multiple Scattering", ImGuiTreeNodeFlags_DefaultOpen))
-    {
-        static const char* presetNames[] = {
-            "Off", "Balanced", "Strong Fill", "Ground Check",
-            "Portfolio Hero", "Custom"
-        };
-        const int presetIndex = std::clamp(
-            static_cast<int>(environmentPreset), 0, 5);
-        ImGui::Text("Current: %s", presetNames[presetIndex]);
-
-        if (ImGui::Button("Environment Off"))
-        {
-            stage8environment::ApplyPreset(
-                environmentParameters, Stage8EnvironmentPreset::Off);
-            environmentPreset = Stage8EnvironmentPreset::Off;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Balanced Ambient"))
-        {
-            stage8environment::ApplyPreset(
-                environmentParameters, Stage8EnvironmentPreset::Balanced);
-            environmentPreset = Stage8EnvironmentPreset::Balanced;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Strong Fill"))
-        {
-            stage8environment::ApplyPreset(
-                environmentParameters, Stage8EnvironmentPreset::StrongFill);
-            environmentPreset = Stage8EnvironmentPreset::StrongFill;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Ground Check"))
-        {
-            stage8environment::ApplyPreset(
-                environmentParameters, Stage8EnvironmentPreset::GroundCheck);
-            environmentPreset = Stage8EnvironmentPreset::GroundCheck;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Portfolio Ambient"))
-        {
-            stage8environment::ApplyPreset(
-                environmentParameters, Stage8EnvironmentPreset::PortfolioHero);
-            environmentPreset = Stage8EnvironmentPreset::PortfolioHero;
-        }
-
-        bool edited = false;
-        edited |= ImGui::ColorEdit3(
-            "Sky Color", &environmentParameters.skyColor.x,
-            ImGuiColorEditFlags_Float);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##SkyColor"))
-        {
-            environmentParameters.skyColor = { 0.35f, 0.50f, 0.75f };
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Sky Strength", &environmentParameters.skyStrength,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##SkyStrength"))
-        {
-            environmentParameters.skyStrength = 0.12f;
-            edited = true;
-        }
-        edited |= ImGui::ColorEdit3(
-            "Ground Color", &environmentParameters.groundColor.x,
-            ImGuiColorEditFlags_Float);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##GroundColor"))
-        {
-            environmentParameters.groundColor = { 0.18f, 0.12f, 0.08f };
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Ground Strength", &environmentParameters.groundStrength,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##GroundStrength"))
-        {
-            environmentParameters.groundStrength = 0.05f;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Ambient Occlusion Strength",
-            &environmentParameters.ambientOcclusionStrength,
-            0.0f, 8.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##AmbientOcclusion"))
-        {
-            environmentParameters.ambientOcclusionStrength = 1.50f;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Ambient Height Influence",
-            &environmentParameters.ambientHeightInfluence,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##AmbientHeight"))
-        {
-            environmentParameters.ambientHeightInfluence = 0.65f;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Ambient Shadow Coupling",
-            &environmentParameters.ambientShadowCoupling,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##AmbientShadowCoupling"))
-        {
-            environmentParameters.ambientShadowCoupling = 0.0f;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Ambient Shadow Exponent",
-            &environmentParameters.ambientShadowExponent,
-            0.1f, 8.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##AmbientShadowExponent"))
-        {
-            environmentParameters.ambientShadowExponent = 1.0f;
-            edited = true;
-        }
-
-        bool multipleEnabled =
-            environmentParameters.multipleScatteringEnabled >= 0.5f;
-        if (ImGui::Checkbox("Enable Multiple Scattering", &multipleEnabled))
-        {
-            environmentParameters.multipleScatteringEnabled =
-                multipleEnabled ? 1.0f : 0.0f;
-            edited = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##MultipleEnabled"))
-        {
-            environmentParameters.multipleScatteringEnabled = 1.0f;
-            edited = true;
-        }
-        int octaves = static_cast<int>(
-            environmentParameters.multipleScatteringOctaves);
-        if (ImGui::SliderInt("Scattering Octaves", &octaves, 0, 4))
-        {
-            environmentParameters.multipleScatteringOctaves =
-                static_cast<std::uint32_t>(octaves);
-            edited = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##ScatteringOctaves"))
-        {
-            environmentParameters.multipleScatteringOctaves = 2u;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Scattering Attenuation",
-            &environmentParameters.multipleScatteringAttenuation,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##ScatteringAttenuation"))
-        {
-            environmentParameters.multipleScatteringAttenuation = 0.20f;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Scattering Extinction Factor",
-            &environmentParameters.multipleScatteringExtinctionFactor,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##ScatteringExtinction"))
-        {
-            environmentParameters.multipleScatteringExtinctionFactor = 0.50f;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Scattering Phase Factor",
-            &environmentParameters.multipleScatteringPhaseFactor,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##ScatteringPhase"))
-        {
-            environmentParameters.multipleScatteringPhaseFactor = 0.25f;
-            edited = true;
-        }
-        edited |= ImGui::SliderFloat(
-            "Multiple Interior Blend",
-            &environmentParameters.multipleScatteringInteriorBlend,
-            0.0f, 1.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##MultipleInteriorBlend"))
-        {
-            environmentParameters.multipleScatteringInteriorBlend = 0.0f;
-            edited = true;
-        }
-        if (ImGui::Button("Reset All Environment"))
-        {
-            stage8environment::ApplyPreset(
-                environmentParameters, Stage8EnvironmentPreset::Balanced);
-            environmentPreset = Stage8EnvironmentPreset::Balanced;
-        }
-
-        environmentParameters =
-            stage8environment::Sanitize(environmentParameters);
-        if (edited)
-            environmentPreset = Stage8EnvironmentPreset::Custom;
-
-        std::array<float, 64> skyWeights = {};
-        std::array<float, 64> groundWeights = {};
-        for (std::size_t index = 0; index < skyWeights.size(); ++index)
-        {
-            const float height = static_cast<float>(index) /
-                static_cast<float>(skyWeights.size() - 1);
-            const stage8::Weights weights = stage8::EvaluateWeights(
-                height, 0.0f, environmentParameters);
-            skyWeights[index] = weights.sky;
-            groundWeights[index] = weights.ground;
-        }
-        ImGui::PlotLines("Sky Height Weight", skyWeights.data(),
-                         static_cast<int>(skyWeights.size()), 0,
-                         "bottom 0 -> top 1", 0.0f, 1.0f,
-                         ImVec2(0.0f, 60.0f));
-        ImGui::PlotLines("Ground Height Weight", groundWeights.data(),
-                         static_cast<int>(groundWeights.size()), 0,
-                         "bottom 0 -> top 1", 0.0f, 1.0f,
-                         ImVec2(0.0f, 60.0f));
-        ImGui::TextDisabled(
-            "Analytic colors only; no Cube Map or indirect-light texture.");
-    }
-
     if (cameraPanel && ImGui::CollapsingHeader(
             "Camera Transform", ImGuiTreeNodeFlags_DefaultOpen))
     {
         const DirectX::XMFLOAT3 position = camera.GetPosition();
+        const DirectX::XMFLOAT3 forward = camera.GetForward();
         const DirectX::XMFLOAT3 target = camera.GetTarget();
         ImGui::Text("Position:  X %.3f  Y %.3f  Z %.3f m",
                     position.x, position.y, position.z);
-        ImGui::Text("Target:    X %.3f  Y %.3f  Z %.3f m",
+        ImGui::Text("Forward:   X %.3f  Y %.3f  Z %.3f",
+                    forward.x, forward.y, forward.z);
+        ImGui::Text("Yaw/Pitch: %.2f / %.2f deg",
+                    camera.GetYawDegrees(), camera.GetPitchDegrees());
+        ImGui::Text("Reference Target: X %.3f  Y %.3f  Z %.3f m",
                     target.x, target.y, target.z);
-        ImGui::Text("Distance: %.3f m", camera.GetDistance());
+        ImGui::Text("Reference Distance: %.3f m", camera.GetDistance());
         ImGui::Text("Clip: %.3f m - %.1f m",
                     camera.GetNearPlane(), camera.GetFarPlane());
         float fovYDegrees = camera.GetFovYDegrees();
@@ -2136,7 +2411,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         if (ImGui::SmallButton("Reset##CameraMoveSpeed"))
             cameraMoveSpeedMetersPerSecond = stage13scene::kMoveSpeedMetersPerSecond;
         ImGui::TextDisabled(
-            "WASD moves in the unified scene; Shift is 4x. Mouse drag rotates; wheel zooms.");
+            "LMB drag: free look | Wheel: forward/back | WASD: free fly | Shift: 4x.");
     }
 
     if (cameraPanel && ImGui::CollapsingHeader(
@@ -2261,6 +2536,13 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     upsamplingParameters = stage10upsampling::Sanitize(
         upsamplingParameters);
     temporalParameters = stage11temporal::Sanitize(temporalParameters);
+    atmosphereParameters = stage14atmosphere::Sanitize(atmosphereParameters);
+    groundLightingParameters = stage14ground::Sanitize(
+        groundLightingParameters);
+    toneMappingParameters = stage14tone::Sanitize(toneMappingParameters);
+    m_atmosphereSnapshot = atmosphereParameters;
+    m_groundLightingSnapshot = groundLightingParameters;
+    m_toneMappingSnapshot = toneMappingParameters;
     const CloudAppearanceSettings appearanceAfter = CaptureCloudAppearance(
         cloudParameters, cloudShapeParameters, m_weatherGeneratorDraft);
     if (!CloudAppearanceSettingsEqual(appearanceBefore, appearanceAfter))
@@ -2293,7 +2575,23 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         std::memcmp(&temporalBefore, &temporalParameters,
                     sizeof(Stage11TemporalParameters)) != 0 ||
         std::memcmp(&historyShadowBefore, &historyShadowAfter,
-                    sizeof(Stage12ShadowParameters)) != 0;
+                    sizeof(Stage12ShadowParameters)) != 0 ||
+        groundBefore.preset != groundLightingParameters.preset ||
+        groundBefore.albedo.x != groundLightingParameters.albedo.x ||
+        groundBefore.albedo.y != groundLightingParameters.albedo.y ||
+        groundBefore.albedo.z != groundLightingParameters.albedo.z ||
+        groundBefore.bounceMultiplier !=
+            groundLightingParameters.bounceMultiplier ||
+        atmosphereBefore.bottomRadiusKm != atmosphereParameters.bottomRadiusKm ||
+        atmosphereBefore.topRadiusKm != atmosphereParameters.topRadiusKm ||
+        atmosphereBefore.rayleighScaleHeightKm !=
+            atmosphereParameters.rayleighScaleHeightKm ||
+        atmosphereBefore.mieScaleHeightKm != atmosphereParameters.mieScaleHeightKm ||
+        atmosphereBefore.rayleighScale != atmosphereParameters.rayleighScale ||
+        atmosphereBefore.mieAbsorptionScale != atmosphereParameters.mieAbsorptionScale ||
+        atmosphereBefore.mieG != atmosphereParameters.mieG ||
+        atmosphereBefore.ozoneScale != atmosphereParameters.ozoneScale ||
+        atmosphereBefore.turbidity != atmosphereParameters.turbidity;
     const bool sunSettingsChanged =
         lightBefore.directionToSun.x != lightParameters.directionToSun.x ||
         lightBefore.directionToSun.y != lightParameters.directionToSun.y ||
@@ -2516,13 +2814,18 @@ void NoiseLab::DrawPerformanceOverlay(const FrameTimingSnapshot& timing,
         if (timing.gpuValid)
         {
             ImGui::Text("GPU Frame  %7.3f ms", timing.gpuFrameMs);
+            ImGui::Text("Atmosphere LUT      %7.3f ms",
+                        timing.gpuAtmosphereLutMs);
             ImGui::Text("GPU Shadow Cache    %7.3f ms",
                         timing.gpuShadowCacheMs);
+            ImGui::Text("Opaque Scene        %7.3f ms",
+                        timing.gpuOpaqueSceneMs);
             ImGui::Text("Cloud Raymarch      %7.3f ms",
                         timing.gpuCloudRaymarchMs);
             ImGui::Text("Spatial/Temporal Resolve %7.3f ms",
                         timing.gpuUpsampleCompositeMs);
             ImGui::Text("GPU Cloud Total     %7.3f ms", timing.gpuCloudMs);
+            ImGui::Text("Tone Map            %7.3f ms", timing.gpuToneMapMs);
         }
         else
         {
@@ -2960,9 +3263,67 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
         : 0.0;
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 34,\n"
-           << "  \"implementationStage\": \"12\",\n"
-           << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3Lighting_F4Camera\",\n"
+           << "  \"schemaVersion\": 35,\n"
+           << "  \"implementationStage\": \"14\",\n"
+           << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3LightingAtmosphere_F4Camera\",\n"
+           << "  \"legacyRestorePolicy\": \"schema34OrOlder_ManualReference_LegacyShoulder\",\n"
+           << "  \"atmosphere\": {\"mode\": \""
+           << (m_atmosphereSnapshot.mode == AtmosphereMode::Physical
+                   ? "physical" : "manualReference")
+           << "\", \"preset\": "
+           << static_cast<std::uint32_t>(m_atmosphereSnapshot.preset)
+           << ", \"sunControl\": "
+           << static_cast<std::uint32_t>(m_atmosphereSnapshot.sunControlMode)
+           << ", \"sunAnglesDegrees\": ["
+           << m_atmosphereSnapshot.sunAzimuthDegrees << ", "
+           << m_atmosphereSnapshot.sunElevationDegrees
+           << "], \"timeOfDayHours\": "
+           << m_atmosphereSnapshot.timeOfDayHours
+           << ", \"timePlaybackMinutesPerSecond\": "
+           << m_atmosphereSnapshot.timePlaybackMinutesPerSecond
+           << ", \"timePlaybackEnabled\": "
+           << (m_atmosphereSnapshot.timePlaybackEnabled ? "true" : "false")
+           << ", \"timeLoopEnabled\": "
+           << (m_atmosphereSnapshot.timeLoopEnabled ? "true" : "false")
+           << ", \"radiiKm\": [" << m_atmosphereSnapshot.bottomRadiusKm
+           << ", " << m_atmosphereSnapshot.topRadiusKm
+           << "], \"scaleHeightsKm\": ["
+           << m_atmosphereSnapshot.rayleighScaleHeightKm << ", "
+           << m_atmosphereSnapshot.mieScaleHeightKm
+           << "], \"rayleighScale\": " << m_atmosphereSnapshot.rayleighScale
+           << ", \"mieAbsorptionScale\": "
+           << m_atmosphereSnapshot.mieAbsorptionScale
+           << ", \"mieG\": " << m_atmosphereSnapshot.mieG
+           << ", \"ozoneScale\": " << m_atmosphereSnapshot.ozoneScale
+           << ", \"turbidity\": " << m_atmosphereSnapshot.turbidity
+           << "},\n"
+           << "  \"groundLighting\": {\"preset\": "
+           << static_cast<std::uint32_t>(m_groundLightingSnapshot.preset)
+           << ", \"albedoLinear\": [" << m_groundLightingSnapshot.albedo.x
+           << ", " << m_groundLightingSnapshot.albedo.y << ", "
+           << m_groundLightingSnapshot.albedo.z
+           << "], \"bounceMultiplier\": "
+           << m_groundLightingSnapshot.bounceMultiplier << "},\n"
+           << "  \"toneMapping\": {\"mode\": "
+           << static_cast<std::uint32_t>(m_toneMappingSnapshot.mode)
+           << ", \"exposureEv\": " << m_toneMappingSnapshot.exposureEv
+           << ", \"whiteBalanceKelvin\": "
+           << m_toneMappingSnapshot.whiteBalanceKelvin << "},\n"
+           << "  \"atmosphereLuts\": {\"format\": \"RGBA16_FLOAT\", "
+              "\"sizes\": [[256,64],[32,32],[192,108],[64,16],[32,32,32],[32,32,32]], "
+              "\"generations\": ["
+           << m_atmosphereLutGenerations[0] << ", "
+           << m_atmosphereLutGenerations[1] << ", "
+           << m_atmosphereLutGenerations[2] << ", "
+           << m_atmosphereLutGenerations[3] << ", "
+           << m_atmosphereLutGenerations[4] << ", "
+           << m_atmosphereLutGenerations[5] << "], \"hashFnv1a64\": [\""
+           << std::hex << m_atmosphereLutHashes[0] << "\", \""
+           << m_atmosphereLutHashes[1] << "\", \""
+           << m_atmosphereLutHashes[2] << "\", \""
+           << m_atmosphereLutHashes[3] << "\", \""
+           << m_atmosphereLutHashes[4] << "\", \""
+           << m_atmosphereLutHashes[5] << "\"]}" << std::dec << ",\n"
            << "  \"physicalAdvectionMode\": \""
            << (physicalShape ? "rigidSharedWindSpeed"
                              : "legacyIndependentSpeeds") << "\",\n"

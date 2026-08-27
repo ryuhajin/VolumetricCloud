@@ -47,6 +47,22 @@ int main()
                 accumulator.Snapshot().gpuSampleIndex == 2u,
             "GPU snapshot must expose unique raw samples for percentile gates");
 
+    accumulator.Reset();
+    accumulator.RecordStage14GpuMilliseconds(
+        12.0, 1.0, 0.5, 0.4, 6.0, 1.5, 0.6);
+    accumulator.RecordStage14GpuMilliseconds(
+        10.0, 0.8, 0.4, 0.3, 5.0, 1.0, 0.5);
+    Require(std::abs(accumulator.Snapshot().gpuAtmosphereLutMs - 0.98) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuCloudMs - 7.84) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuShadowCacheMs - 0.49) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuOpaqueSceneMs - 0.39) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuCloudRaymarchMs - 5.9) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuUpsampleCompositeMs - 1.45) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuToneMapMs - 0.59) < 1e-9,
+            "Stage 14 GPU split must preserve every pass EMA");
+    Require(std::abs(accumulator.Snapshot().rawGpuCloudMs - 6.4) < 1e-9,
+            "Stage 14 GPU Cloud Total must include shadow, raymarch and resolve");
+
     const FrameTimingSnapshot valid = accumulator.Snapshot();
     accumulator.RecordCpuMilliseconds(0.0);
     accumulator.RecordCpuMilliseconds(-1.0);

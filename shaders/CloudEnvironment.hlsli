@@ -24,6 +24,60 @@ struct EnvironmentLightingSample
     float diagnosticWeight;
 };
 
+// 대기 LUT는 구름 표본마다 다시 읽지 않는다. 한 View Ray에서 구름층 대표 고도의
+// 입사광을 한 번 읽으면 수십~수백 View step의 중복 texture fetch를 제거할 수 있다.
+// 구름 내부 높이 변화는 아래의 sky/ground 가중치가 담당한다.
+struct CloudLightingContext
+{
+    float3 sunIncident;
+    float3 skyIncident;
+    float3 groundIncident;
+};
+
+CloudLightingContext BuildCloudLightingContext()
+{
+    CloudLightingContext context = (CloudLightingContext)0;
+    if (modeFlags.x == kAtmosphereModePhysical)
+    {
+        float representativeAltitudeKm = max(
+            cloudBottomAltitude + 0.5 * cloudLayerThickness, 0.0) * 0.001;
+        float3 atmosphereSun = AtmosphereSunDirection();
+        float3 representativeSun = SampleAtmosphereSunRadiance(
+            representativeAltitudeKm, atmosphereSun);
+        float atmosphereThicknessKm = max(
+            AtmosphereTopRadiusKm() - AtmosphereBottomRadiusKm(), 1.0e-6);
+        float sunUv = atmosphereSun.y * 0.5 + 0.5;
+        float3 representativeSky = atmosphereSkyIrradianceLut.SampleLevel(
+            atmosphereLinearClampSampler,
+            float2(sunUv, saturate(representativeAltitudeKm /
+                atmosphereThicknessKm)), 0).rgb;
+        float3 groundSky = atmosphereSkyIrradianceLut.SampleLevel(
+            atmosphereLinearClampSampler, float2(sunUv, 0.0), 0).rgb;
+        float3 groundSun = SampleAtmosphereSunRadiance(0.0, atmosphereSun) *
+            saturate(atmosphereSun.y);
+        context.sunIncident = representativeSun;
+        context.skyIncident = representativeSky;
+        context.groundIncident = max(groundAlbedoAndDebugExposure.xyz,
+            0.0.xxx) * (groundSun + groundSky) / kAtmospherePi *
+            max(sunTintAndGroundBounce.w, 0.0);
+    }
+    else
+    {
+        context.sunIncident = max(sunColor, 0.0.xxx) *
+            max(sunIntensity, 0.0);
+        context.skyIncident = max(skyColor, 0.0.xxx) *
+            max(skyStrength, 0.0);
+        context.groundIncident = max(groundColor, 0.0.xxx) *
+            max(groundStrength, 0.0);
+    }
+    return context;
+}
+
+float3 CloudSunIncident(CloudLightingContext context)
+{
+    return max(context.sunIncident, 0.0.xxx);
+}
+
 float ComputeInteractionFraction(float density, float viewStepLength)
 {
     float safeDensity = max(density, 0.0);
@@ -67,7 +121,8 @@ float ComputeMultipleScatteringFactor(float lightOpticalDepth,
 
 EnvironmentLightingSample EvaluateEnvironmentLighting(
     CloudDensitySample densitySample, LightMarchResult lightResult,
-    PhaseSample phase, float viewTransmittance, float viewStepLength)
+    PhaseSample phase, float viewTransmittance, float viewStepLength,
+    CloudLightingContext context)
 {
     EnvironmentLightingSample result = (EnvironmentLightingSample)0;
     float density = max(densitySample.finalDensity, 0.0);
@@ -92,21 +147,22 @@ EnvironmentLightingSample EvaluateEnvironmentLighting(
     DirectLightingResponse directResponse = EvaluateDirectLightingResponse(
         lightResult.transmittance, phase.phaseFactor);
     float3 directInteraction = ComputeDirectInteractionColor(
-        density, viewTransmittance, viewStepLength);
+        density, viewTransmittance, viewStepLength,
+        CloudSunIncident(context));
     result.direct = directInteraction * directResponse.shapedTransmittance *
                     max(directResponse.scopedPhase, 0.0);
     result.silverLiningContribution = directInteraction *
         directResponse.shapedTransmittance *
         max(directResponse.scopedPhase - 1.0, 0.0);
-    result.skyAmbient = common * max(skyColor, 0.0.xxx) *
-                        max(skyStrength, 0.0) * skyWeight * visibility;
-    result.groundBounce = common * max(groundColor, 0.0.xxx) *
-                          max(groundStrength, 0.0) * groundWeight * visibility;
+    result.skyAmbient = common * max(context.skyIncident, 0.0.xxx) *
+                        skyWeight * visibility;
+    result.groundBounce = common * context.groundIncident * groundWeight *
+                          visibility;
     float multipleFactor = ComputeMultipleScatteringFactor(
         lightResult.opticalDepth, lightResult.transmittance,
         phase.phaseFactor);
-    result.multipleScattering = common * max(sunColor, 0.0.xxx) *
-                                max(sunIntensity, 0.0) * multipleFactor;
+    float3 multipleIncident = CloudSunIncident(context);
+    result.multipleScattering = common * multipleIncident * multipleFactor;
     result.shapedSunVisibility = directResponse.shapedTransmittance;
     result.ambientVisibility = saturate(visibility);
     result.diagnosticWeight = common;
