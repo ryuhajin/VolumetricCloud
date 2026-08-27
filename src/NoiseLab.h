@@ -30,6 +30,9 @@
 #include "Stage10UpsamplingParameters.h"
 #include "Stage11TemporalParameters.h"
 #include "Stage12ShadowParameters.h"
+#include "AtmosphereParameters.h"
+#include "GroundLightingParameters.h"
+#include "ToneMappingParameters.h"
 
 class Camera;
 
@@ -129,6 +132,13 @@ public:
                     Stage7PhasePreset& phasePreset,
                     EnvironmentParameters& environmentParameters,
                     Stage8EnvironmentPreset& environmentPreset,
+                    AtmosphereParameters& atmosphereParameters,
+                    GroundLightingParameters& groundLightingParameters,
+                    ToneMappingParameters& toneMappingParameters,
+                    const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
+                    const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
+                    const std::array<std::uint64_t, 6>& atmosphereLutHashes,
+                    const std::string& atmosphereStatus,
                     Stage5WeatherPreset weatherPreset,
                     const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                     CloudTypeMode cloudTypeMode,
@@ -262,6 +272,13 @@ private:
                            Stage7PhasePreset& phasePreset,
                            EnvironmentParameters& environmentParameters,
                            Stage8EnvironmentPreset& environmentPreset,
+                           AtmosphereParameters& atmosphereParameters,
+                           GroundLightingParameters& groundLightingParameters,
+                           ToneMappingParameters& toneMappingParameters,
+                           const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
+                           const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
+                           const std::array<std::uint64_t, 6>& atmosphereLutHashes,
+                           const std::string& atmosphereStatus,
                            Stage5WeatherPreset weatherPreset,
                            const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                            CloudTypeMode cloudTypeMode,
@@ -373,4 +390,9 @@ private:
     CameraSnapshot m_currentCamera;
     CameraSnapshot m_savedCamera;
     std::string m_exportStatus;
+    AtmosphereParameters m_atmosphereSnapshot;
+    GroundLightingParameters m_groundLightingSnapshot;
+    ToneMappingParameters m_toneMappingSnapshot;
+    std::array<std::uint64_t, 6> m_atmosphereLutGenerations = {};
+    std::array<std::uint64_t, 6> m_atmosphereLutHashes = {};
 };

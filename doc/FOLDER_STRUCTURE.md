@@ -9,6 +9,7 @@ VolumetricCloud/
 │  ├─ RAYMARCHING.md               # 교차·적분·noise 밀도 수식
 │  ├─ PERFORMANCE.md               # 동일 조건 성능 측정 절차와 지표 범위
 │  ├─ STAGE13_4B_DEBUGGING_GUIDE.md # F1~F4·단축키·카메라·형상 판독 초보자 가이드
+│  ├─ STAGE14_ATMOSPHERE_VALIDATION_GUIDE.md # 대기 LUT·지면·HDR 사용자 화면 승인 가이드
 │  ├─ ROADMAP.md                   # 사용자 승인 기반 0~15단계
 │  ├─ VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md # 단계 13~15 포트폴리오 구현·승인 계획
 │  ├─ FOLDER_STRUCTURE.md
@@ -17,9 +18,9 @@ VolumetricCloud/
 │     └─ feature-rebuild-foundation.md
 ├─ src/
 │  ├─ main.cpp
-│  ├─ Window.* / Camera.*          # 입력, 오빗과 고정 검증 카메라
-│  ├─ Renderer.*                   # 저해상도 구름 MRT, Deep Shadow cache, Full temporal·표면 합성
-│  ├─ NoiseLab.*                   # F1~F4 ImGui, 업샘플/Temporal/Shadow 비교, PNG/schema 34 snapshot
+│  ├─ Window.* / Camera.*          # 입력, FPS 자유 시점과 고정 검증 카메라
+│  ├─ Renderer.*                   # 대기 LUT, Deep Shadow, HDR 장면·구름·Aerial 합성과 Tone Map
+│  ├─ NoiseLab.*                   # F1~F4 ImGui, 대기/LUT/Temporal/Shadow, PNG/schema 35 snapshot
 │  ├─ CloudAppearance.*            # 13-4E 외형 preset, density CPU 기준, Custom JSON 원자 저장
 │  ├─ WeatherMap.*                 # 256² CPU periodic Perlin/Channel Debug RGBA 생성과 해시
 │  ├─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
@@ -31,6 +32,11 @@ VolumetricCloud/
 │  ├─ Stage11TemporalMath.h        # jitter·D32 plane source gate·3×3 Cloud Depth·재투영·EMA CPU 기준
 │  ├─ Stage12ShadowParameters.h    # 160바이트 Deep Cache/cascade/표면 설정(b12)
 │  ├─ Stage12ShadowMath.h          # light basis·UV·snap·slice·Beer-Lambert CPU 기준
+│  ├─ AtmosphereParameters.h       # 물리 대기·태양 시간·LUT 디버그 CPU 설정
+│  ├─ GroundLightingParameters.h   # Concrete/Grass/Snow/Desert/Custom와 지면 반사광
+│  ├─ ToneMappingParameters.h      # ACES/Linear/Legacy, Exposure와 white balance
+│  ├─ Stage14Parameters.h          # 224바이트 Stage14CB(b13)와 LUT 크기 계약
+│  ├─ Stage14AtmosphereMath.h      # 구면 대기·밀도·위상·LUT UV·HDR CPU 기준
 │  ├─ CloudShapeParameters.h       # 64바이트 물리 두께·타입 Vertical Profile 설정(b7)
 │  ├─ CloudDomainParameters.h      # AABB/최종 평면 도메인 선택과 추적 한계(b5)
 │  ├─ LightParameters.h            # CPU/HLSL 공유 태양광 설정과 프리셋
@@ -72,6 +78,9 @@ VolumetricCloud/
 │  ├─ Stage11TemporalParameters.hlsli # CPU와 공유하는 144바이트 TemporalCB(b11)
 │  ├─ Stage12ShadowParameters.hlsli # CPU와 공유하는 160바이트 ShadowCB(b12)
 │  ├─ Stage12Shadow.hlsli          # t6/t7 cache 조회·cascade·표면 계수
+│  ├─ Stage14Atmosphere.hlsli      # b13/t8~t13/s3와 공통 태양·하늘·Aerial 조회/합성
+│  ├─ Stage14AtmosphereLut.hlsl    # 여섯 RGBA16F compute LUT 생성
+│  ├─ Stage14ToneMap.hlsl          # ACES/white balance/sRGB/dither와 LUT fullscreen debug
 │  ├─ CloudShapeParameters.hlsli   # CPU와 공유하는 64바이트 CloudShapeCB(b7)
 │  ├─ CloudDomainParameters.hlsli  # CPU와 공유하는 32바이트 DomainCB(b5)와 교차 선택
 │  ├─ CloudAdvection.hlsli         # Physical Weather/Base/Detail 공통 수평 Bulk 이동
@@ -98,11 +107,12 @@ VolumetricCloud/
 │  ├─ Stage10UpsamplingMathTests.cpp # 크기·UV·대표 깊이·joint weight 회귀
 │  ├─ Stage11TemporalMathTests.cpp # 4-phase·D32 평면·3×3 depth·재투영·clip·EMA 회귀
 │  ├─ Stage12ShadowMathTests.cpp   # basis·ray UV·snap·cascade·slice·cache ABI 회귀
+│  ├─ Stage14AtmosphereMathTests.cpp # 대기·LUT UV·시간·지면·ACES/white balance 회귀
 │  ├─ Stage13ScaleMathTests.cpp    # 1×~1000× 공간 단위 상사 불변식 테스트
 │  ├─ Stage13OpenWorldMathTests.cpp # 13-3 실제값·View/Light budget·fade 테스트
 │  ├─ Stage13NoiseVolumeMathTests.cpp # 13-4 규격·주기·cache CPU 테스트
 │  ├─ Stage13WeatherShapeMathTests.cpp # 13-4B 분포·두께·프로파일·주파수 테스트
-│  ├─ Stage13CameraControlMathTests.cpp # F5~F8 교차·행렬·휠 줌 테스트
+│  ├─ Stage13CameraControlMathTests.cpp # F5~F8 교차·FPS 회전·휠 이동 테스트
 │  ├─ Stage13SceneMathTests.cpp    # 단일 씬 크기·입력·이동·디버그 매핑 회귀
 │  ├─ Stage13OpticsLightingMathTests.cpp # km τ·Light 후보·Detail LOD 회귀
 │  ├─ CloudAppearanceTests.cpp     # 13-4E 점유율·preset·density·Custom JSON 회귀

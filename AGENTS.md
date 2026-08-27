@@ -9,7 +9,8 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
 학습 프로젝트입니다. 단계 0~8과 **단계 13 대규모 평면 구름층**은 사용자 승인을 받았으며,
 단계 9 기본 최적화는 2026-08-19 Balanced 기본값으로, 단계 11 Jitter·Temporal Reprojection은
 2026-08-23 안정성 우선 기준으로 사용자 승인을 받았습니다. 단계 12 Cloud Shadow Map과
-Light Cache는 2026-08-25 Balanced512 기본값으로 사용자 승인되어 단계 14 진입 준비 상태입니다.
+Light Cache는 2026-08-25 Balanced512 기본값으로 사용자 승인됐으며, 현재는
+`feature/stage14-atmosphere-integration`에서 대기·지면·구름 HDR 조명을 구현·검증 중입니다.
 단계 9는 `stage9-approved`, 단계 11은 `stage11` 태그에
 고정했고 초기 단계 13 평면 구름층 실험은 별도 브랜치에 보관했습니다. 새 포트폴리오 계획은 사용자 승인을 받았고
 단계 13-0 공간 단위 계약과 단계 13-1 AABB/평면층 교차는 사용자 승인을 받았고,
@@ -38,21 +39,23 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 |------|------|-----------|
 | 진입점 | `src/main.cpp` | 창·카메라·렌더러 생성 + 메인 루프 |
 | 윈도우/입력 | `src/Window.*` | Win32 창, 마우스/WASD → Camera, 리사이즈 → Renderer |
-| 카메라 | `src/Camera.*` | 오빗·rig 평행 이동 카메라 → view/proj/invViewProj |
-| 렌더러 | `src/Renderer.*` | D3D11 초기화, 진단 장면, 저해상도 구름 MRT, Full 공간 복원·합성 |
-| 노이즈 도구 | `src/NoiseLab.*` | ImGui 3축 단면, 파라미터 조절, PNG/JSON 내보내기 |
+| 카메라 | `src/Camera.*` | position+yaw/pitch FPS 자유 시점과 프리셋 호환 → view/proj/invViewProj |
+| 렌더러 | `src/Renderer.*` | D3D11 초기화, 대기/Shadow compute, HDR 장면·구름·Aerial 합성과 Tone Map |
+| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 ImGui, 3축 단면, 대기/LUT UI와 schema 35 내보내기 |
 | 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | 거리 LOD 설정 | `src/CloudLodParameters.h` | 16바이트 b8 Detail 거리 LOD와 측정 중립 평균 |
 | 최적화 설정 | `src/OptimizationParameters.h` | 64바이트 b9 View/Light 후보와 단계 9 preset |
 | 업샘플 설정 | `src/Stage10UpsamplingParameters.h` | 32바이트 b10 해상도·공간 필터·경계 가중치 |
 | Temporal 설정 | `src/Stage11TemporalParameters.h` | 144바이트 b11 jitter·이전 행렬·history 거부 설정 |
+| Shadow 설정 | `src/Stage12ShadowParameters.h` | 160바이트 b12 Deep Cache/cascade/표면 설정 |
+| 대기 통합 설정 | `src/AtmosphereParameters.h`, `src/GroundLightingParameters.h`, `src/ToneMappingParameters.h`, `src/Stage14Parameters.h` | CPU 분리 설정과 224바이트 b13/LUT 규격 |
 | 도메인 설정 | `src/CloudDomainParameters.h` | AABB/평면층 선택과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
 | 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 29 Custom 원자 저장/복원 |
 | 형상 설정 | `src/CloudShapeParameters.h` | 64바이트 b7 물리 두께·타입별 Vertical Profile 설정 |
 | 조명 설정 | `src/LightParameters.h` | 80바이트 LightCB와 태양·외곽 범위 Phase 프리셋·sanitize |
 | 환경광 설정 | `src/EnvironmentParameters.h` | 80바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
-| 성능 계측 | `src/FrameProfiler.*` | Raymarch/Upsample/Total을 나누는 8-slot GPU timestamp와 CPU/GPU EMA |
+| 성능 계측 | `src/FrameProfiler.*` | Atmosphere/Shadow/Opaque/Raymarch/Resolve/Tone/Frame GPU timestamp와 EMA |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
 | Ray | `shaders/Ray.hlsli` | 평행축을 안전하게 처리하는 slab AABB 교차 |
@@ -63,6 +66,8 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | Lighting | `shaders/CloudLighting.hlsli` | Base-only 태양 Light Ray와 직접 단일 산란 |
 | Phase | `shaders/PhaseFunction.hlsli` | 방향 부호가 고정된 Dual-lobe HG와 안전한 Phase Factor |
 | Environment | `shaders/CloudEnvironment.hlsli` | 하늘·지면·AO와 광학 깊이 재사용 다중 산란 |
+| Atmosphere | `shaders/Stage14Atmosphere.hlsli`, `shaders/Stage14AtmosphereLut.hlsl` | b13/t8~t13/s3 조회·합성과 여섯 compute LUT |
+| Tone Map | `shaders/Stage14ToneMap.hlsl` | Exposure·Bradford WB·ACES·sRGB·dither와 LUT debug |
 | 수치 기준 | `src/Stage1VolumeMath.h` | 단계 1 CPU 회귀 검사용 교차·적분 |
 | Noise 기준 | `src/Stage2NoiseMath.h` | 단계 2 CPU 회귀 검사용 noise·밀도·바람 좌표 |
 | 높이 기준 | `src/Stage3HeightMath.h` | 단계 3 CPU 회귀 검사용 높이·fade·최종 밀도 |
@@ -71,6 +76,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 조명 기준 | `src/Stage6LightMath.h` | 단계 6 CPU 회귀 검사용 광학 깊이·단일 산란 |
 | Phase 기준 | `src/Stage7PhaseMath.h` | 단계 7 CPU 회귀 검사용 HG·방향·Dual-lobe 수학 |
 | 환경광 기준 | `src/Stage8AmbientMath.h` | 단계 8 CPU 회귀 검사용 높이·AO·octave 수학 |
+| 대기 기준 | `src/Stage14AtmosphereMath.h` | 단계 14 구면·밀도·phase·LUT UV·시간·HDR CPU 기준 |
 | 단위 기준 | `src/Stage13ScaleMath.h` | 단계 13-0 CPU 회귀와 13-2 런타임 프리셋의 meter 상사 변환 수학 |
 | 오픈 월드 기준 | `src/Stage13OpenWorldMath.h` | 단계 13-3 실제 km 시작값과 sampling budget 수학 |
 | 3D noise 기준 | `src/Stage13NoiseVolumeMath.h` | 단계 13-4 Texture3D 규격·주기 noise CPU 기준 수학 |

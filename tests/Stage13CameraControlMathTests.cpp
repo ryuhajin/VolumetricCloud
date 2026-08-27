@@ -78,6 +78,15 @@ int main()
             Near(stage13scene::MovementDistance(0.1f, false, 1000.0f), 100.0f) &&
             Near(stage13scene::MovementDistance(0.1f, true, 1000.0f), 400.0f),
             "unified defaults and Shift multiplier must produce exact distances");
+    Require(Near(stage13scene::WheelMovementDistance(
+                     120.0f, false, 100.0f), 25.0f) &&
+            Near(stage13scene::WheelMovementDistance(
+                     -120.0f, false, 100.0f), -25.0f) &&
+            Near(stage13scene::WheelMovementDistance(
+                     120.0f, true, 100.0f), 100.0f) &&
+            Near(stage13scene::WheelMovementDistance(
+                     NAN, true, 100.0f), 0.0f),
+            "wheel must move 0.25 seconds per notch and Shift must remain 4x");
     const CloudDebugMode digitModes[] = {
         CloudDebugMode::Composite, CloudDebugMode::RawNoise,
         CloudDebugMode::WeatherCoverage, CloudDebugMode::BaseDensity,
@@ -113,10 +122,16 @@ int main()
         camera.SetClipPlanes(kNearPlaneMeters, kFarPlaneMeters);
         camera.SetLookAt(preset.position, preset.target);
         const DirectX::XMFLOAT3 actual = camera.GetPosition();
+        const DirectX::XMFLOAT3 actualForward = camera.GetForward();
+        const DirectX::XMFLOAT3 expectedForward = Direction(preset);
         Require(Near(actual.x, preset.position.x, 0.02f) &&
                 Near(actual.y, preset.position.y, 0.02f) &&
                 Near(actual.z, preset.position.z, 0.02f),
                 "SetLookAt must reconstruct the requested camera position");
+        Require(Near(actualForward.x, expectedForward.x, 1e-4f) &&
+                Near(actualForward.y, expectedForward.y, 1e-4f) &&
+                Near(actualForward.z, expectedForward.z, 1e-4f),
+                "SetLookAt must preserve each preset center direction");
         Require(FiniteMatrix(camera.GetViewProj()),
                 "preset View-Projection matrix must be finite");
     }
@@ -139,26 +154,52 @@ int main()
     Require(f8Direction.y < 0.0f && f8Interval.hit,
             "F8 center ray must look downward and enter the cloud layer");
 
-    Camera zoomCamera;
-    zoomCamera.SetLookAt({ 0.0f, 0.0f, 1000.0f }, { 0.0f, 0.0f, 0.0f });
-    zoomCamera.Zoom(120.0f, CameraZoomSpeed::Normal);
-    Require(Near(zoomCamera.GetDistance(), 800.0f),
-            "normal wheel-in must divide distance by 1.25");
-    zoomCamera.Zoom(-120.0f, CameraZoomSpeed::Normal);
-    Require(Near(zoomCamera.GetDistance(), 1000.0f),
-            "normal wheel round trip must restore distance");
-    zoomCamera.Zoom(120.0f, CameraZoomSpeed::Fast);
-    Require(Near(zoomCamera.GetDistance(), 500.0f),
-            "Shift+wheel-in must divide distance by 2");
-    zoomCamera.Zoom(-120.0f, CameraZoomSpeed::Fast);
-    Require(Near(zoomCamera.GetDistance(), 1000.0f),
-            "fast wheel round trip must restore distance");
-    zoomCamera.Zoom(12000.0f, CameraZoomSpeed::Fast);
-    Require(Near(zoomCamera.GetDistance(), 1.5f),
-            "large wheel-in delta must clamp at the minimum distance");
-    zoomCamera.Zoom(-12000.0f, CameraZoomSpeed::Fast);
-    Require(Near(zoomCamera.GetDistance(), 100000.0f),
-            "large wheel-out delta must clamp at the maximum distance");
+    Camera lookCamera;
+    lookCamera.SetLookAt(f5.position, f5.target);
+    const DirectX::XMFLOAT3 lookPosition = lookCamera.GetPosition();
+    const float lookDistance = lookCamera.GetDistance();
+    const DirectX::XMFLOAT3 forwardBeforeRight = lookCamera.GetForward();
+    lookCamera.Rotate(40.0f, 0.0f);
+    const DirectX::XMFLOAT3 forwardAfterRight = lookCamera.GetForward();
+    Require(Near(lookCamera.GetPosition().x, lookPosition.x) &&
+            Near(lookCamera.GetPosition().y, lookPosition.y) &&
+            Near(lookCamera.GetPosition().z, lookPosition.z) &&
+            Near(lookCamera.GetDistance(), lookDistance),
+            "free look must not orbit or change reference distance");
+    Require(forwardAfterRight.x < forwardBeforeRight.x,
+            "dragging right from the F5 -Z view must turn toward screen right");
+    const float forwardYBeforeUp = forwardAfterRight.y;
+    lookCamera.Rotate(0.0f, -40.0f);
+    Require(lookCamera.GetForward().y > forwardYBeforeUp,
+            "dragging upward must raise the FPS view direction");
+    lookCamera.Rotate(0.0f, -100000.0f);
+    Require(lookCamera.GetPitchDegrees() < 90.0f &&
+            lookCamera.GetPitchDegrees() > 89.0f &&
+            Near(lookCamera.GetPosition().y, f5.position.y),
+            "zenith free look must clamp pitch without moving F5 underground");
+    Camera f6ZenithCamera;
+    f6ZenithCamera.SetLookAt(f6.position, f6.target);
+    f6ZenithCamera.Rotate(0.0f, -100000.0f);
+    Require(Near(f6ZenithCamera.GetPosition().y, f6.position.y) &&
+            f6ZenithCamera.GetForward().y > 0.999f,
+            "zenith free look must keep the F6 ground-horizon altitude");
+    for (int index = 0; index < 10000; ++index)
+        f6ZenithCamera.Rotate(1000.0f, 0.0f);
+    Require(Finite(f6ZenithCamera.GetForward()) &&
+            FiniteMatrix(f6ZenithCamera.GetViewProj()),
+            "wrapped FPS yaw must remain finite after repeated rotation");
+    lookCamera.Rotate(NAN, INFINITY);
+    Require(Finite(lookCamera.GetForward()),
+            "invalid look input must preserve a finite direction");
+
+    Camera orbitCompatibility;
+    orbitCompatibility.SetOrbit(0.55f, 0.30f, 12.0f,
+                                { 0.0f, -0.2f, 0.0f });
+    const DirectX::XMFLOAT3 orbitPosition = orbitCompatibility.GetPosition();
+    Require(Near(orbitPosition.x, 12.0f * std::cos(0.30f) * std::sin(0.55f)) &&
+            Near(orbitPosition.y, -0.2f + 12.0f * std::sin(0.30f)) &&
+            Near(orbitPosition.z, 12.0f * std::cos(0.30f) * std::cos(0.55f)),
+            "legacy SetOrbit must preserve its original starting pose");
 
     Camera fovCamera;
     fovCamera.SetFovYDegrees(75.0f);
@@ -183,7 +224,7 @@ int main()
     const DirectX::XMFLOAT3 positionBefore = moveCamera.GetPosition();
     const DirectX::XMFLOAT3 targetBefore = moveCamera.GetTarget();
     const float distanceBefore = moveCamera.GetDistance();
-    moveCamera.TranslateRigLocal(2.0f, -1.0f);
+    moveCamera.MoveLocal(2.0f, -1.0f);
     const DirectX::XMFLOAT3 positionAfter = moveCamera.GetPosition();
     const DirectX::XMFLOAT3 targetAfter = moveCamera.GetTarget();
     Require(Near(positionAfter.x - positionBefore.x,
@@ -193,9 +234,29 @@ int main()
             Near(positionAfter.z - positionBefore.z,
                  targetAfter.z - targetBefore.z) &&
             Near(moveCamera.GetDistance(), distanceBefore),
-            "WASD rig translation must move eye and target equally without changing orbit distance");
+            "FPS translation must move position and reference target equally");
+    const DirectX::XMFLOAT3 wheelStart = moveCamera.GetPosition();
+    const DirectX::XMFLOAT3 wheelForward = moveCamera.GetForward();
+    const float wheelDistance = stage13scene::WheelMovementDistance(
+        120.0f, false, 100.0f);
+    moveCamera.MoveLocal(wheelDistance, 0.0f);
+    const DirectX::XMFLOAT3 wheelEnd = moveCamera.GetPosition();
+    Require(Near(wheelEnd.x - wheelStart.x,
+                 wheelForward.x * wheelDistance) &&
+            Near(wheelEnd.y - wheelStart.y,
+                 wheelForward.y * wheelDistance) &&
+            Near(wheelEnd.z - wheelStart.z,
+                 wheelForward.z * wheelDistance) &&
+            Near(moveCamera.GetDistance(), distanceBefore),
+            "wheel travel must move along full pitched forward without zooming");
+    moveCamera.MoveLocal(-wheelDistance, 0.0f);
+    const DirectX::XMFLOAT3 wheelRoundTrip = moveCamera.GetPosition();
+    Require(Near(wheelRoundTrip.x, wheelStart.x) &&
+            Near(wheelRoundTrip.y, wheelStart.y) &&
+            Near(wheelRoundTrip.z, wheelStart.z),
+            "opposite wheel deltas must restore the FPS position");
     const DirectX::XMFLOAT3 finiteBefore = moveCamera.GetPosition();
-    moveCamera.TranslateRigLocal(NAN, INFINITY);
+    moveCamera.MoveLocal(NAN, INFINITY);
     const DirectX::XMFLOAT3 finiteAfter = moveCamera.GetPosition();
     Require(Near(finiteBefore.x, finiteAfter.x) &&
             Near(finiteBefore.y, finiteAfter.y) &&
@@ -203,8 +264,8 @@ int main()
             "invalid movement input must leave the camera unchanged");
 
     std::cout << "[CAMERA][PRESETS] F5_F6_BELOW=1 F7_INSIDE=1 F8_ABOVE=1 BUILDING_CLEAR=1 PASS\n";
-    std::cout << "[CAMERA][ZOOM] NORMAL_RATIO=1.25 FAST_RATIO=2.00 RANGE_M=1.5-100000 PASS\n";
+    std::cout << "[CAMERA][FPS] FREE_LOOK_POSITION_FIXED=1 WHEEL_SECONDS=0.25 SHIFT=4 PASS\n";
     std::cout << "[CAMERA][F4-UI] FOV_DEG=20-120 DEBUG_NAME=1 MANUAL_MARK=1 PASS\n";
-    std::cout << "[CAMERA][UNIFIED-SCENE] PRESETS=4 DIGITS=10 WASD_RIG_TRANSLATION=1 PASS\n";
+    std::cout << "[CAMERA][UNIFIED-SCENE] PRESETS=4 DIGITS=10 WASD_FREE_FLY=1 PASS\n";
     return 0;
 }

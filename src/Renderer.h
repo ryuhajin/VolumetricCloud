@@ -1,5 +1,5 @@
 // ============================================================================
-//  Renderer.h - Direct3D 11 단계 8 환경광·다중 산란 렌더링
+//  Renderer.h - Direct3D 11 단계 14 대기·지면·구름 HDR 통합 렌더링
 // ============================================================================
 #pragma once
 
@@ -34,6 +34,10 @@
 #include "Stage13NoiseVolumeMath.h"
 #include "Stage13SceneMath.h"
 #include "Stage13OpticsLightingMath.h"
+#include "AtmosphereParameters.h"
+#include "GroundLightingParameters.h"
+#include "Stage14Parameters.h"
+#include "ToneMappingParameters.h"
 #include "WeatherMap.h"
 
 class Camera;
@@ -42,6 +46,8 @@ struct DiagnosticSceneVertex
 {
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT3 color;
+    DirectX::XMFLOAT3 normal;
+    std::uint32_t materialId = 0;
 };
 
 struct CloudDiagnosticFrame
@@ -56,6 +62,14 @@ struct SceneDepthDiagnosticFrame
     int width = 0;
     int height = 0;
     std::vector<float> deviceDepth;
+};
+
+struct Stage14LutValidationResult
+{
+    bool finiteNonNegative = false;
+    double transmittanceMae = 1.0;
+    double transmittanceP99 = 1.0;
+    std::size_t comparedChannelCount = 0;
 };
 
 class Renderer
@@ -251,6 +265,35 @@ public:
     Stage8EnvironmentPreset EnvironmentPreset() const { return m_environmentPreset; }
     const LightParameters& LightSettings() const { return m_lightParameters; }
     const EnvironmentParameters& EnvironmentSettings() const { return m_environmentParameters; }
+    const AtmosphereParameters& AtmosphereSettings() const
+    {
+        return m_atmosphereParameters;
+    }
+    AtmosphereParameters& MutableAtmosphereSettings()
+    {
+        return m_atmosphereParameters;
+    }
+    const GroundLightingParameters& GroundLightingSettings() const
+    {
+        return m_groundLightingParameters;
+    }
+    GroundLightingParameters& MutableGroundLightingSettings()
+    {
+        return m_groundLightingParameters;
+    }
+    const ToneMappingParameters& ToneMappingSettings() const
+    {
+        return m_toneMappingParameters;
+    }
+    ToneMappingParameters& MutableToneMappingSettings()
+    {
+        return m_toneMappingParameters;
+    }
+    std::uint64_t AtmosphereLutGeneration(std::size_t index) const
+    {
+        return index < 6 ? m_atmosphereLutGenerations[index] : 0u;
+    }
+    bool ValidateStage14Luts(Stage14LutValidationResult& result);
     const CloudLodParameters& LodSettings() const { return m_cloudLodParameters; }
     std::uint64_t WeatherMapHash() const { return m_weatherMapHash; }
     const WeatherMapGeneratorSettings& WeatherGeneratorSettings() const
@@ -320,6 +363,30 @@ private:
     static_assert(sizeof(CameraCB) == 224, "CameraCB must match cbCamera");
     static_assert(sizeof(SceneCB) == 64, "SceneCB must match cbScene");
 
+    struct AtmosphereLut2D
+    {
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+    };
+
+    struct AtmosphereLut3D
+    {
+        ComPtr<ID3D11Texture3D> texture;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+    };
+
+    struct AtmosphereLutSet
+    {
+        AtmosphereLut2D transmittance;
+        AtmosphereLut2D multiScattering;
+        AtmosphereLut2D skyView;
+        AtmosphereLut2D skyIrradiance;
+        AtmosphereLut3D aerialRadiance;
+        AtmosphereLut3D aerialTransmittance;
+    };
+
     bool CompileShaderFromFile(const std::wstring& path,
                                const char* entryPoint,
                                const char* target,
@@ -334,6 +401,14 @@ private:
     bool CreateDiagnosticScene();
     bool CreatePipelineStates();
     bool CreateConstantBuffers();
+    bool EnsureAtmosphereLuts(const Camera& camera);
+    bool CreateAtmosphereLut2D(UINT width, UINT height,
+                               AtmosphereLut2D& target) const;
+    bool CreateAtmosphereLut3D(UINT size, AtmosphereLut3D& target) const;
+    stage14::GpuParameters BuildStage14GpuParameters(
+        const Camera& camera) const;
+    void BindAtmosphereResources();
+    void RenderToneMapPass();
     bool CreateWeatherMapTexture(Stage5WeatherPreset preset);
     bool GenerateNoiseVolumes(
         ID3D11ComputeShader* baseShader, ID3D11ComputeShader* detailShader,
@@ -392,6 +467,9 @@ private:
     ComPtr<ID3D11Texture2D> m_sceneDepth;
     ComPtr<ID3D11DepthStencilView> m_sceneDepthDsv;
     ComPtr<ID3D11ShaderResourceView> m_sceneDepthSrv;
+    ComPtr<ID3D11Texture2D> m_hdrComposite;
+    ComPtr<ID3D11RenderTargetView> m_hdrCompositeRtv;
+    ComPtr<ID3D11ShaderResourceView> m_hdrCompositeSrv;
 
     ComPtr<ID3D11Texture2D> m_cloudScatteringTransmittance;
     ComPtr<ID3D11RenderTargetView> m_cloudScatteringTransmittanceRtv;
@@ -426,9 +504,15 @@ private:
     ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
+    ComPtr<ID3D11PixelShader> m_toneMapPs;
     ComPtr<ID3D11ComputeShader> m_noiseBaseCs;
     ComPtr<ID3D11ComputeShader> m_noiseDetailCs;
     ComPtr<ID3D11ComputeShader> m_deepShadowCs;
+    ComPtr<ID3D11ComputeShader> m_atmosphereTransmittanceCs;
+    ComPtr<ID3D11ComputeShader> m_atmosphereMultiScatteringCs;
+    ComPtr<ID3D11ComputeShader> m_atmosphereSkyViewCs;
+    ComPtr<ID3D11ComputeShader> m_atmosphereSkyIrradianceCs;
+    ComPtr<ID3D11ComputeShader> m_atmosphereAerialCs;
     ComPtr<ID3D11InputLayout> m_sceneInputLayout;
 
     ComPtr<ID3D11Buffer> m_cameraCb;
@@ -443,6 +527,7 @@ private:
     ComPtr<ID3D11Buffer> m_upsamplingCb;
     ComPtr<ID3D11Buffer> m_temporalCb;
     ComPtr<ID3D11Buffer> m_shadowCb;
+    ComPtr<ID3D11Buffer> m_stage14Cb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
@@ -464,6 +549,16 @@ private:
     CloudDomainParameters m_cloudDomainParameters;
     LightParameters m_lightParameters;
     EnvironmentParameters m_environmentParameters;
+    AtmosphereParameters m_atmosphereParameters;
+    GroundLightingParameters m_groundLightingParameters;
+    ToneMappingParameters m_toneMappingParameters;
+    stage14::GpuParameters m_stage14GpuParameters = {};
+    AtmosphereLutSet m_atmosphereLuts;
+    std::uint64_t m_atmosphereLutHashes[6] = {};
+    std::uint64_t m_atmosphereLutGenerations[6] = {};
+    bool m_atmosphereLutsValid = false;
+    bool m_stage14SunDirectionInitialized = false;
+    std::string m_atmosphereStatus = "Not generated";
     Stage5WeatherPreset m_weatherPreset = Stage5WeatherPreset::ChannelDebug;
     Stage6SunPreset m_sunPreset = Stage6SunPreset::Custom;
     Stage7PhasePreset m_phasePreset = Stage7PhasePreset::Off;
@@ -498,6 +593,8 @@ private:
     std::uint32_t m_temporalAccumulatedFrames = 0;
     float m_previousTemporalTimeSeconds = 0.0f;
     float m_previousTemporalFovYDegrees = 60.0f;
+    float m_previousAtmosphereTimeSeconds = 0.0f;
+    bool m_previousAtmosphereTimeValid = false;
     std::uint64_t m_baseNoiseVolumeHash = 0;
     std::uint64_t m_detailNoiseVolumeHash = 0;
     double m_noiseVolumeGenerationMilliseconds = 0.0;
@@ -514,6 +611,8 @@ private:
     std::wstring m_sceneShaderPath;
     std::wstring m_noiseVolumeShaderPath;
     std::wstring m_deepShadowShaderPath;
+    std::wstring m_atmosphereLutShaderPath;
+    std::wstring m_toneMapShaderPath;
     bool m_noiseVolumesEnabled = true;
     std::map<std::wstring, std::filesystem::file_time_type> m_shaderWriteTimes;
     std::uint64_t m_shaderGeneration = 0;

@@ -19,13 +19,19 @@ struct FrameTimingSnapshot
     double gpuFrameMs = 0.0;
     double gpuCloudMs = 0.0;
     double gpuShadowCacheMs = 0.0;
+    double gpuAtmosphereLutMs = 0.0;
+    double gpuOpaqueSceneMs = 0.0;
     double gpuCloudRaymarchMs = 0.0;
     double gpuUpsampleCompositeMs = 0.0;
+    double gpuToneMapMs = 0.0;
     double rawGpuFrameMs = 0.0;
     double rawGpuCloudMs = 0.0;
     double rawGpuShadowCacheMs = 0.0;
+    double rawGpuAtmosphereLutMs = 0.0;
+    double rawGpuOpaqueSceneMs = 0.0;
     double rawGpuCloudRaymarchMs = 0.0;
     double rawGpuUpsampleCompositeMs = 0.0;
+    double rawGpuToneMapMs = 0.0;
     std::uint64_t gpuSampleIndex = 0;
     bool cpuValid = false;
     bool gpuValid = false;
@@ -44,6 +50,11 @@ public:
                                double cloudMilliseconds,
                                double cloudRaymarchMilliseconds = -1.0,
                                double shadowCacheMilliseconds = 0.0);
+    void RecordStage14GpuMilliseconds(
+        double frameMilliseconds, double atmosphereMilliseconds,
+        double shadowCacheMilliseconds, double opaqueSceneMilliseconds,
+        double cloudRaymarchMilliseconds, double resolveMilliseconds,
+        double toneMapMilliseconds);
     const FrameTimingSnapshot& Snapshot() const { return m_snapshot; }
 
 private:
@@ -70,9 +81,12 @@ public:
     // timestamp query는 End로 기록하고 GetData에는 DONOTFLUSH만 사용한다.
     void BeginGpuFrame(ID3D11DeviceContext* context);
     void BeginCloudPass(ID3D11DeviceContext* context);
+    void MarkAtmosphereLutEnd(ID3D11DeviceContext* context);
     void MarkShadowCacheEnd(ID3D11DeviceContext* context);
+    void MarkOpaqueSceneEnd(ID3D11DeviceContext* context);
     void MarkCloudRaymarchEnd(ID3D11DeviceContext* context);
     void EndCloudPass(ID3D11DeviceContext* context);
+    void MarkToneMapEnd(ID3D11DeviceContext* context);
     void EndGpuFrame(ID3D11DeviceContext* context);
 
     const FrameTimingSnapshot& Snapshot() const
@@ -90,9 +104,12 @@ private:
         ComPtr<ID3D11Query> disjoint;
         ComPtr<ID3D11Query> frameStart;
         ComPtr<ID3D11Query> cloudStart;
+        ComPtr<ID3D11Query> atmosphereLutEnd;
         ComPtr<ID3D11Query> shadowCacheEnd;
+        ComPtr<ID3D11Query> opaqueSceneEnd;
         ComPtr<ID3D11Query> cloudRaymarchEnd;
         ComPtr<ID3D11Query> cloudEnd;
+        ComPtr<ID3D11Query> toneMapEnd;
         ComPtr<ID3D11Query> frameEnd;
         bool inFlight = false;
         std::uint64_t generation = 0;

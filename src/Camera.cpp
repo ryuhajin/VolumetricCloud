@@ -5,78 +5,83 @@
 using namespace DirectX;
 
 Camera::Camera()
-    : m_yaw(0.0f)
-    , m_pitch(0.2f)
-    , m_distance(8.0f)
-    , m_target(0.0f, 0.0f, 0.0f)
+    : m_position(0.0f, 0.0f, 0.0f)
+    , m_yaw(0.0f)
+    , m_pitch(0.0f)
+    , m_referenceDistance(8.0f)
     , m_aspect(16.0f / 9.0f)
     , m_fovY(XMConvertToRadians(60.0f))
     , m_nearZ(0.1f)
     , m_farZ(60000.0f)
 {
+    // 기존 기본 orbit pose를 그대로 FPS position/forward로 변환한다.
+    SetOrbit(0.0f, 0.2f, 8.0f, { 0.0f, 0.0f, 0.0f });
 }
 
 void Camera::Rotate(float dxPixels, float dyPixels)
 {
     // 픽셀 이동량을 라디안으로 (감도 상수)
     const float sensitivity = 0.005f;
-    m_yaw   += dxPixels * sensitivity;
-    m_pitch += dyPixels * sensitivity;
+    if (!std::isfinite(dxPixels) || !std::isfinite(dyPixels))
+        return;
+    m_yaw += dxPixels * sensitivity;
+    m_yaw = std::remainder(m_yaw, XM_2PI);
+    // 화면 위로 드래그(dy<0)하면 시선도 위로 향한다.
+    m_pitch -= dyPixels * sensitivity;
 
     // 짐벌 뒤집힘 방지: pitch를 거의 ±90° 안쪽으로 제한
     const float limit = XM_PIDIV2 - 0.01f;
     m_pitch = std::clamp(m_pitch, -limit, limit);
 }
 
-void Camera::Zoom(float wheelDelta, CameraZoomSpeed speed)
-{
-    // 지수식은 여러 notch가 한 메시지로 들어와도 음수 거리를 만들지 않는다.
-    // 일반은 한 notch마다 1.25배, Shift 고속은 2배 거리 비율을 사용한다.
-    const float notches = wheelDelta / 120.0f;
-    const float base = speed == CameraZoomSpeed::Fast ? 2.0f : 1.25f;
-    const float factor = std::pow(base, -notches);
-    m_distance = std::clamp(m_distance * factor, 1.5f, 100000.0f);
-}
-
 void Camera::SetOrbit(float yaw, float pitch, float distance,
                       const XMFLOAT3& target)
 {
-    m_yaw = yaw;
-    m_pitch = std::clamp(pitch, -XM_PIDIV2 + 0.01f, XM_PIDIV2 - 0.01f);
-    m_distance = std::clamp(distance, 1.5f, 100000.0f);
-    m_target = target;
+    if (!std::isfinite(yaw) || !std::isfinite(pitch) ||
+        !std::isfinite(distance) || !std::isfinite(target.x) ||
+        !std::isfinite(target.y) || !std::isfinite(target.z))
+        return;
+    const float safePitch = std::clamp(
+        pitch, -XM_PIDIV2 + 0.01f, XM_PIDIV2 - 0.01f);
+    const float safeDistance = std::clamp(distance, 1.5f, 100000.0f);
+    const float cosPitch = std::cos(safePitch);
+    const XMFLOAT3 position = {
+        target.x + safeDistance * cosPitch * std::sin(yaw),
+        target.y + safeDistance * std::sin(safePitch),
+        target.z + safeDistance * cosPitch * std::cos(yaw)
+    };
+    SetLookAt(position, target);
 }
 
 void Camera::SetLookAt(const XMFLOAT3& position, const XMFLOAT3& target)
 {
-    const float offsetX = position.x - target.x;
-    const float offsetY = position.y - target.y;
-    const float offsetZ = position.z - target.z;
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z) || !std::isfinite(target.x) ||
+        !std::isfinite(target.y) || !std::isfinite(target.z))
+        return;
+    const float offsetX = target.x - position.x;
+    const float offsetY = target.y - position.y;
+    const float offsetZ = target.z - position.z;
     const float distance = std::sqrt(
         offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ);
     if (!std::isfinite(distance) || distance < 1e-5f)
         return;
 
-    m_target = target;
-    m_distance = std::clamp(distance, 1.5f, 100000.0f);
+    m_position = position;
+    m_referenceDistance = std::clamp(distance, 1.5f, 100000.0f);
     m_yaw = std::atan2(offsetX, offsetZ);
     m_pitch = std::asin(std::clamp(offsetY / distance, -1.0f, 1.0f));
     const float limit = XM_PIDIV2 - 0.01f;
     m_pitch = std::clamp(m_pitch, -limit, limit);
 }
 
-void Camera::TranslateRigLocal(float forwardMeters, float rightMeters)
+void Camera::MoveLocal(float forwardMeters, float rightMeters)
 {
     if (!std::isfinite(forwardMeters) || !std::isfinite(rightMeters))
         return;
 
-    const XMFLOAT3 position = GetPosition();
-    XMVECTOR forward = XMVectorSubtract(
-        XMLoadFloat3(&m_target), XMLoadFloat3(&position));
-    const float forwardLength = XMVectorGetX(XMVector3Length(forward));
-    if (!std::isfinite(forwardLength) || forwardLength < 1e-5f)
-        return;
-    forward = XMVectorScale(forward, 1.0f / forwardLength);
+    const XMFLOAT3 forwardValue = GetForward();
+    XMVECTOR forward = XMLoadFloat3(&forwardValue);
 
     const XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     XMVECTOR right = XMVector3Cross(worldUp, forward);
@@ -89,8 +94,8 @@ void Camera::TranslateRigLocal(float forwardMeters, float rightMeters)
     const XMVECTOR delta = XMVectorAdd(
         XMVectorScale(forward, forwardMeters),
         XMVectorScale(right, rightMeters));
-    XMVECTOR target = XMVectorAdd(XMLoadFloat3(&m_target), delta);
-    XMStoreFloat3(&m_target, target);
+    XMVECTOR position = XMVectorAdd(XMLoadFloat3(&m_position), delta);
+    XMStoreFloat3(&m_position, position);
 }
 
 void Camera::SetClipPlanes(float nearZ, float farZ)
@@ -118,20 +123,44 @@ void Camera::SetDebugName(const wchar_t* name)
 
 DirectX::XMFLOAT3 Camera::GetPosition() const
 {
-    // 구면 좌표 → 데카르트 좌표 (타깃 기준 오프셋)
-    float cosP = cosf(m_pitch);
-    XMFLOAT3 pos;
-    pos.x = m_target.x + m_distance * cosP * sinf(m_yaw);
-    pos.y = m_target.y + m_distance * sinf(m_pitch);
-    pos.z = m_target.z + m_distance * cosP * cosf(m_yaw);
-    return pos;
+    return m_position;
+}
+
+DirectX::XMFLOAT3 Camera::GetForward() const
+{
+    const float cosPitch = std::cos(m_pitch);
+    return {
+        cosPitch * std::sin(m_yaw),
+        std::sin(m_pitch),
+        cosPitch * std::cos(m_yaw)
+    };
+}
+
+DirectX::XMFLOAT3 Camera::GetTarget() const
+{
+    const XMFLOAT3 forward = GetForward();
+    return {
+        m_position.x + forward.x * m_referenceDistance,
+        m_position.y + forward.y * m_referenceDistance,
+        m_position.z + forward.z * m_referenceDistance
+    };
+}
+
+float Camera::GetYawDegrees() const
+{
+    return XMConvertToDegrees(m_yaw);
+}
+
+float Camera::GetPitchDegrees() const
+{
+    return XMConvertToDegrees(m_pitch);
 }
 
 DirectX::XMMATRIX Camera::GetViewProj() const
 {
-    XMFLOAT3 posf = GetPosition();
-    XMVECTOR eye = XMLoadFloat3(&posf);
-    XMVECTOR at  = XMLoadFloat3(&m_target);
+    const XMFLOAT3 target = GetTarget();
+    XMVECTOR eye = XMLoadFloat3(&m_position);
+    XMVECTOR at  = XMLoadFloat3(&target);
     XMVECTOR up  = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
@@ -154,9 +183,9 @@ DirectX::XMMATRIX Camera::GetInvProjection() const
 
 DirectX::XMMATRIX Camera::GetInvViewRotation() const
 {
-    const XMFLOAT3 position = GetPosition();
-    const XMVECTOR eye = XMLoadFloat3(&position);
-    const XMVECTOR at = XMLoadFloat3(&m_target);
+    const XMFLOAT3 target = GetTarget();
+    const XMVECTOR eye = XMLoadFloat3(&m_position);
+    const XMVECTOR at = XMLoadFloat3(&target);
     const XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     XMMATRIX inverseView = XMMatrixInverse(
         nullptr, XMMatrixLookAtLH(eye, at, up));

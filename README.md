@@ -8,8 +8,9 @@ DirectX 11 + HLSL로 볼류메트릭 클라우드를 기능별로 검증하며 �
 형태는 2026-08-14, 13-4C 개발 UI와 Local Cloud Inspector는 2026-08-16 사용자 승인을
 받았습니다. 이 이력은 보존되며 현재 런타임은 **단계 13-4D 단일 포트폴리오 디버깅 씬**이
 Local Inspector를 대체합니다. 단계 13은 2026-08-17, 단계 9 Balanced는 2026-08-19,
-단계 11 Jitter·Temporal Reprojection 안정성 기준은 2026-08-23 사용자 승인을 받았습니다.
-현재 다음 목표는 단계 12 Cloud Shadow Map과 Light Cache입니다. 일반 실행은
+단계 11 Jitter·Temporal Reprojection 안정성 기준은 2026-08-23, 단계 12 Cloud Shadow Map과
+Deep Light Cache는 2026-08-25 사용자 승인을 받았습니다. 현재 단계 14에서 Rayleigh·Mie·오존
+대기 LUT, 지면 재질 반사광, 공통 Aerial Perspective와 HDR/ACES 출력을 통합 중입니다. 일반 실행은
 Planar Layer, 1.5~7.5km 전역 층과 XZ별 1~6km 로컬 두께, 64km Periodic Perlin Weather와 함께 결정적 seed로
 생성한 Base `128³ RGBA8`, Detail `32³ RGBA8` Texture3D를 사용합니다.
 자동 테스트의 이전 단계 경로는 기존 절차 noise/AABB 기준을 유지합니다.
@@ -48,6 +49,10 @@ Planar Layer, 1.5~7.5km 전역 층과 XZ별 1~6km 로컬 두께, 64km Periodic P
 - 50% 2×2 4-phase jitter와 Full RGBA16F/RG16F temporal history ping-pong
 - 대표 Cloud Depth·Physical Wind 기반 재투영, Scene/Cloud/T 거부와 neighborhood clipping
 - 우측 상단 FPS·CPU/GPU Frame·Cloud Raymarch·Spatial/Temporal Resolve·GPU Cloud Total 오버레이
+- `b13`, `t8~t13`, `s3`의 Transmittance/Multi/Sky View/Sky Irradiance/Aerial R/T LUT
+- Physical 태양·하늘광을 공유하는 구름/지면/건물 조명과 Concrete/Grass/Snow/Desert 지면 preset
+- Full/Spatial/Temporal 공통 대기 원근, RGBA16F HDR composite와 Exposure/white balance/ACES 최종 출력
+- F3 Lighting & Atmosphere의 시간 재생, 대기·지면·Tone 조절과 실제 LUT thumbnail/3D slice 진단
 - 원본 noise, threshold, 최종 밀도와 noise UVW 디버그
 - ImGui Noise Lab의 XY/XZ/YZ 동기 단면, 높이 출력과 프로파일 곡선
 - 공용 `Noise.hlsli` 저장 시 Noise Lab·구름 동시 핫리로드
@@ -67,11 +72,13 @@ cmake --build build --config Debug
 처음 실행하는 사용자는 키 목록보다 먼저
 [Stage 13-4B 초보자 디버깅 가이드북](doc/STAGE13_4B_DEBUGGING_GUIDE.md)을 따라가세요.
 F1~F4 개발 창, 단축키가 표시하는 계산값, 검정/흰색 판독법과 증상별 원인을 설명합니다.
+Stage 14의 F3 대기 LUT, 태양 시간, 지면 재질과 HDR 화면 판정은
+[Stage 14 대기·지면 조명 사용자 검증 가이드](doc/STAGE14_ATMOSPHERE_VALIDATION_GUIDE.md)를 사용합니다.
 
 | 입력 | 동작 |
 |---|---|
-| 마우스 왼쪽 드래그 | 오빗 회전 |
-| 휠 | 한 notch마다 1.25× 일반 줌 |
+| 마우스 왼쪽 드래그 | 위치를 고정한 FPS 자유 시점 회전 |
+| 휠 | 현재 시선 방향 전진/후진; 이동속도 0.25초분, Shift 4배 |
 | `F1` | Noise·밀도·VSync·Time 창 표시/숨김 |
 | `F2` | Weather Map·Generator 창 표시/숨김 |
 | `F3` | Light 후보, XZ 방향광 도식, Phase·환경광 창 표시/숨김 |
@@ -100,7 +107,7 @@ CPU가 만드는 별도 RGBA8 Texture2D이고, Light Ray는 Weather·Type·Heigh
 
 개발 UI는 실제 구름 위에 뜨는 네 독립 창입니다. F1/F3은 각각 하나의 메인 Debug View
 콤보를 제공하고 F2는 Periodic Perlin·Channel Debug와 Cloud Type Mode를 관리합니다.
-F4는 네 고정 카메라와 현재/저장 카메라만 관리합니다. 마우스 오빗·휠과 `WASD` 이동을
+F4는 네 고정 카메라와 현재/저장 카메라만 관리합니다. 좌클릭 FPS free-look과 휠·`WASD` 이동을
 지원하며 Shift는 표시 속도의 4배입니다.
 Base/Detail 파장당 표본, 대표 광학 깊이, View/Light budget과 Weather texel 크기를 함께 표시합니다.
 Noise Lab의 `3D Noise Volumes`에서 현재 noise source를 확인하고 `Regenerate 3D Noise`를
@@ -109,7 +116,9 @@ F1의 `Open World Render Pipeline Compare`는 현재 기하와 카메라를 고�
 1000x→Texture3D→Periodic Weather→Physical Shape→Full Open World를 누적 적용합니다.
 Open World 시작값과 `Open World Render Defaults`는 항상 마지막 최신 경로입니다.
 F1의 `Temporal`에서 Off/Stable 4-Phase, history weight, near-cloud fade와 reset을 조작하고
-phase/history valid/누적 프레임을 확인할 수 있습니다. 승인 전 일반 시작값은 Off입니다.
+phase/history valid/누적 프레임을 확인할 수 있습니다. F3 독립 `Tone Mapping`에도 Exposure와
+White Balance 변경 때 history가 유지되는지 바로 볼 수 있는 읽기 전용 Temporal 상태를 표시합니다.
+승인 전 일반 시작값은 Off입니다.
 Temporal On/Off의 50% 공간 복원은 Full Scene과 geometry/sky class·D32 surface plane이 맞는
 low-res source만 사용하며, On에서 유효 current가 없으면 검증된 Full history를 유지합니다.
 `Current Source Validity` debug에서 valid 초록, class 빨강, surface/plane 노랑,
@@ -146,7 +155,13 @@ Coverage 기본은 `4/11/0.42/-0.02/1.15`, Threshold/Softness `0.56/0.14`이고 
 ```powershell
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
+build/Release/VolumetricCloud.exe --stage14-atmosphere-smoke-test
+build/Release/VolumetricCloud.exe --stage14-performance-test
 ```
+
+Stage 14 성능 명령은 1920×1080에서 UI/VSync를 끄고 Stage 12와 같은 일곱 장면의
+`ManualReference` 호환 경로와 `Physical EarthClear` 경로를 각각 120프레임 warmup 뒤
+600개의 고유 GPU timestamp로 측정합니다. PNG를 만들지 않으며 로컬 JSON/CSV만 저장합니다.
 
 `Foundation*`부터 `Stage8*`까지는 승인된 이전 단계 회귀를 검사합니다.
 `Stage13ScaleMath`는 단위 계약과 바람 좌표 불변식을, `Stage13CloudDomainMath`는 평면층

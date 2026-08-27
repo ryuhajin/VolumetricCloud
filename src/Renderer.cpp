@@ -3,10 +3,12 @@
 #include "Stage13CameraPresets.h"
 #include "Stage13SceneMath.h"
 #include "Stage11TemporalMath.h"
+#include "Stage14AtmosphereMath.h"
 
 #include <d3dcompiler.h>
 #include <SetupAPI.h>
 #include <devguid.h>
+#include <DirectXPackedVector.h>
 
 #include <algorithm>
 #include <chrono>
@@ -114,6 +116,27 @@ std::string CurrentLocalTimeText()
     return text;
 }
 
+void HashBytes(std::uint64_t& hash, const void* data, std::size_t size)
+{
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    for (std::size_t index = 0; index < size; ++index)
+    {
+        hash ^= bytes[index];
+        hash *= 1099511628211ull;
+    }
+}
+
+template <typename T>
+void HashValue(std::uint64_t& hash, const T& value)
+{
+    HashBytes(hash, &value, sizeof(value));
+}
+
+std::uint64_t BeginStage14Hash()
+{
+    return 1469598103934665603ull;
+}
+
 std::wstring ResolveShaderDir()
 {
     wchar_t overrideDirectory[32768] = {};
@@ -149,18 +172,36 @@ void AppendBox(std::vector<DiagnosticSceneVertex>& vertices,
         { x0, y0, z0 }, { x1, y0, z0 }, { x1, y1, z0 }, { x0, y1, z0 },
         { x0, y0, z1 }, { x1, y0, z1 }, { x1, y1, z1 }, { x0, y1, z1 },
     };
-    for (const XMFLOAT3& position : positions)
-        vertices.push_back({ position, color });
-
-    const std::uint32_t localIndices[36] = {
-        0, 2, 1, 0, 3, 2,
-        4, 5, 6, 4, 6, 7,
-        0, 1, 5, 0, 5, 4,
-        3, 7, 6, 3, 6, 2,
-        0, 4, 7, 0, 7, 3,
-        1, 2, 6, 1, 6, 5,
+    // 같은 모서리를 공유하면 normal이 보간되므로 면마다 네 정점을 둔다.
+    const std::uint32_t facePositions[24] = {
+        0, 1, 2, 3, 4, 5, 6, 7,
+        0, 1, 5, 4, 3, 7, 6, 2,
+        0, 4, 7, 3, 1, 2, 6, 5,
     };
-    for (const std::uint32_t index : localIndices)
+    const XMFLOAT3 faceNormals[6] = {
+        { 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, 1.0f },
+        { 0.0f, -1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f },
+        { -1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f },
+    };
+    for (std::uint32_t face = 0; face < 6; ++face)
+    {
+        for (std::uint32_t corner = 0; corner < 4; ++corner)
+        {
+            vertices.push_back({
+                positions[facePositions[face * 4u + corner]], color,
+                faceNormals[face], 1u
+            });
+        }
+    }
+    const std::uint32_t faceIndices[36] = {
+         0,  2,  1,  0,  3,  2,
+         4,  5,  6,  4,  6,  7,
+         8,  9, 10,  8, 10, 11,
+        12, 13, 14, 12, 14, 15,
+        16, 17, 18, 16, 18, 19,
+        20, 21, 22, 20, 22, 23,
+    };
+    for (const std::uint32_t index : faceIndices)
         indices.push_back(base + index);
 }
 
@@ -170,10 +211,11 @@ void AppendGroundPlane(std::vector<DiagnosticSceneVertex>& vertices,
     const std::uint32_t base = static_cast<std::uint32_t>(vertices.size());
     constexpr float h = stage13scene::kGroundHalfSizeMeters;
     constexpr XMFLOAT3 color = { 0.50f, 0.50f, 0.50f };
-    vertices.push_back({ { -h, 0.0f, -h }, color });
-    vertices.push_back({ {  h, 0.0f, -h }, color });
-    vertices.push_back({ {  h, 0.0f,  h }, color });
-    vertices.push_back({ { -h, 0.0f,  h }, color });
+    constexpr XMFLOAT3 normal = { 0.0f, 1.0f, 0.0f };
+    vertices.push_back({ { -h, 0.0f, -h }, color, normal, 0u });
+    vertices.push_back({ {  h, 0.0f, -h }, color, normal, 0u });
+    vertices.push_back({ {  h, 0.0f,  h }, color, normal, 0u });
+    vertices.push_back({ { -h, 0.0f,  h }, color, normal, 0u });
     const std::uint32_t planeIndices[] = {
         base + 0u, base + 2u, base + 1u,
         base + 0u, base + 3u, base + 2u,
@@ -203,6 +245,11 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
     m_noiseVolumeShaderPath = m_shaderDir + L"NoiseVolume.hlsl";
     m_deepShadowShaderPath = m_shaderDir + L"CloudDeepShadow.hlsl";
+    m_atmosphereLutShaderPath = m_shaderDir + L"Stage14AtmosphereLut.hlsl";
+    m_toneMapShaderPath = m_shaderDir + L"Stage14ToneMap.hlsl";
+    // Physical 모드에서 기존 색·세기는 대기 결과의 예술적 tint/multiplier다.
+    m_lightParameters.sunColor = { 1.0f, 1.0f, 1.0f };
+    m_lightParameters.sunIntensity = 1.0f;
     std::filesystem::path shaderDirectory(m_shaderDir);
     if (shaderDirectory.filename().empty())
         shaderDirectory = shaderDirectory.parent_path();
@@ -314,6 +361,14 @@ bool Renderer::CreateSceneTargets()
             m_sceneColor.Get(), nullptr, &m_sceneColorRtv)) ||
         FAILED(m_device->CreateShaderResourceView(
             m_sceneColor.Get(), nullptr, &m_sceneColorSrv)))
+        return false;
+
+    if (FAILED(m_device->CreateTexture2D(
+            &colorDesc, nullptr, &m_hdrComposite)) ||
+        FAILED(m_device->CreateRenderTargetView(
+            m_hdrComposite.Get(), nullptr, &m_hdrCompositeRtv)) ||
+        FAILED(m_device->CreateShaderResourceView(
+            m_hdrComposite.Get(), nullptr, &m_hdrCompositeSrv)))
         return false;
 
     D3D11_TEXTURE2D_DESC depthDesc = colorDesc;
@@ -554,7 +609,8 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     compileFlags |= (std::strcmp(entryPoint, "mainOptimized") == 0 ||
                      std::strcmp(entryPoint, "mainOptimizedData") == 0 ||
                      (std::strcmp(entryPoint, "main") == 0 &&
-                      path == m_deepShadowShaderPath))
+                     (path == m_deepShadowShaderPath ||
+                      path == m_atmosphereLutShaderPath)))
         ? D3DCOMPILE_OPTIMIZATION_LEVEL1
         : D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
@@ -590,9 +646,15 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
+    ComPtr<ID3DBlob> toneMapPsBlob;
     ComPtr<ID3DBlob> noiseBaseCsBlob;
     ComPtr<ID3DBlob> noiseDetailCsBlob;
     ComPtr<ID3DBlob> deepShadowCsBlob;
+    ComPtr<ID3DBlob> atmosphereTransmittanceCsBlob;
+    ComPtr<ID3DBlob> atmosphereMultiScatteringCsBlob;
+    ComPtr<ID3DBlob> atmosphereSkyViewCsBlob;
+    ComPtr<ID3DBlob> atmosphereSkyIrradianceCsBlob;
+    ComPtr<ID3DBlob> atmosphereAerialCsBlob;
     if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainReference", "ps_5_0", cloudReferencePsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors) ||
@@ -603,7 +665,13 @@ bool Renderer::CreateShaders(bool showErrors)
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors) ||
+        !CompileShaderFromFile(m_toneMapShaderPath, "main", "ps_5_0", toneMapPsBlob, showErrors) ||
         !CompileShaderFromFile(m_deepShadowShaderPath, "main", "cs_5_0", deepShadowCsBlob, showErrors) ||
+        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSTransmittance", "cs_5_0", atmosphereTransmittanceCsBlob, showErrors) ||
+        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSMultiScattering", "cs_5_0", atmosphereMultiScatteringCsBlob, showErrors) ||
+        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSSkyView", "cs_5_0", atmosphereSkyViewCsBlob, showErrors) ||
+        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSSkyIrradiance", "cs_5_0", atmosphereSkyIrradianceCsBlob, showErrors) ||
+        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSAerialPerspective", "cs_5_0", atmosphereAerialCsBlob, showErrors) ||
         (m_noiseVolumesEnabled &&
          (!CompileShaderFromFile(m_noiseVolumeShaderPath, "CSBase", "cs_5_0", noiseBaseCsBlob, showErrors) ||
           !CompileShaderFromFile(m_noiseVolumeShaderPath, "CSDetail", "cs_5_0", noiseDetailCsBlob, showErrors))))
@@ -622,9 +690,15 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
+    ComPtr<ID3D11PixelShader> toneMapPs;
     ComPtr<ID3D11ComputeShader> noiseBaseCs;
     ComPtr<ID3D11ComputeShader> noiseDetailCs;
     ComPtr<ID3D11ComputeShader> deepShadowCs;
+    ComPtr<ID3D11ComputeShader> atmosphereTransmittanceCs;
+    ComPtr<ID3D11ComputeShader> atmosphereMultiScatteringCs;
+    ComPtr<ID3D11ComputeShader> atmosphereSkyViewCs;
+    ComPtr<ID3D11ComputeShader> atmosphereSkyIrradianceCs;
+    ComPtr<ID3D11ComputeShader> atmosphereAerialCs;
     ComPtr<ID3D11InputLayout> inputLayout;
 
     if (FAILED(m_device->CreateVertexShader(
@@ -658,9 +732,32 @@ bool Renderer::CreateShaders(bool showErrors)
         FAILED(m_device->CreatePixelShader(
             scenePsBlob->GetBufferPointer(), scenePsBlob->GetBufferSize(),
             nullptr, &scenePs)) ||
+        FAILED(m_device->CreatePixelShader(
+            toneMapPsBlob->GetBufferPointer(), toneMapPsBlob->GetBufferSize(),
+            nullptr, &toneMapPs)) ||
         FAILED(m_device->CreateComputeShader(
             deepShadowCsBlob->GetBufferPointer(), deepShadowCsBlob->GetBufferSize(),
             nullptr, &deepShadowCs)) ||
+        FAILED(m_device->CreateComputeShader(
+            atmosphereTransmittanceCsBlob->GetBufferPointer(),
+            atmosphereTransmittanceCsBlob->GetBufferSize(), nullptr,
+            &atmosphereTransmittanceCs)) ||
+        FAILED(m_device->CreateComputeShader(
+            atmosphereMultiScatteringCsBlob->GetBufferPointer(),
+            atmosphereMultiScatteringCsBlob->GetBufferSize(), nullptr,
+            &atmosphereMultiScatteringCs)) ||
+        FAILED(m_device->CreateComputeShader(
+            atmosphereSkyViewCsBlob->GetBufferPointer(),
+            atmosphereSkyViewCsBlob->GetBufferSize(), nullptr,
+            &atmosphereSkyViewCs)) ||
+        FAILED(m_device->CreateComputeShader(
+            atmosphereSkyIrradianceCsBlob->GetBufferPointer(),
+            atmosphereSkyIrradianceCsBlob->GetBufferSize(), nullptr,
+            &atmosphereSkyIrradianceCs)) ||
+        FAILED(m_device->CreateComputeShader(
+            atmosphereAerialCsBlob->GetBufferPointer(),
+            atmosphereAerialCsBlob->GetBufferSize(), nullptr,
+            &atmosphereAerialCs)) ||
         (m_noiseVolumesEnabled &&
          (FAILED(m_device->CreateComputeShader(
               noiseBaseCsBlob->GetBufferPointer(), noiseBaseCsBlob->GetBufferSize(),
@@ -678,6 +775,10 @@ bool Renderer::CreateShaders(bool showErrors)
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
           D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+          D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 24,
+          D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "MATERIALID", 0, DXGI_FORMAT_R32_UINT, 0, 36,
           D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
     if (FAILED(m_device->CreateInputLayout(
@@ -719,7 +820,16 @@ bool Renderer::CreateShaders(bool showErrors)
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
+    m_toneMapPs = toneMapPs;
     m_deepShadowCs = deepShadowCs;
+    m_atmosphereTransmittanceCs = atmosphereTransmittanceCs;
+    m_atmosphereMultiScatteringCs = atmosphereMultiScatteringCs;
+    m_atmosphereSkyViewCs = atmosphereSkyViewCs;
+    m_atmosphereSkyIrradianceCs = atmosphereSkyIrradianceCs;
+    m_atmosphereAerialCs = atmosphereAerialCs;
+    // 새 shader 세대는 기존 정상 LUT를 보존하되 다음 프레임에 원자 재생성한다.
+    std::fill(std::begin(m_atmosphereLutHashes),
+              std::end(m_atmosphereLutHashes), 0ull);
     if (m_noiseVolumesEnabled)
     {
         m_noiseBaseCs = noiseBaseCs;
@@ -1115,7 +1225,525 @@ bool Renderer::CreateConstantBuffers()
                                &m_temporalCb) &&
            createDynamicBuffer(sizeof(Stage12ShadowParameters),
                                &m_shadowCb) &&
+           createDynamicBuffer(sizeof(stage14::GpuParameters),
+                               &m_stage14Cb) &&
            createDynamicBuffer(sizeof(SceneCB), &m_sceneCb);
+}
+
+bool Renderer::CreateAtmosphereLut2D(
+    UINT width, UINT height, AtmosphereLut2D& target) const
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+                     D3D11_BIND_UNORDERED_ACCESS;
+    AtmosphereLut2D candidate;
+    if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &candidate.texture)) ||
+        FAILED(m_device->CreateShaderResourceView(
+            candidate.texture.Get(), nullptr, &candidate.srv)) ||
+        FAILED(m_device->CreateUnorderedAccessView(
+            candidate.texture.Get(), nullptr, &candidate.uav)))
+        return false;
+    target = candidate;
+    return true;
+}
+
+bool Renderer::CreateAtmosphereLut3D(UINT size,
+                                     AtmosphereLut3D& target) const
+{
+    D3D11_TEXTURE3D_DESC desc = {};
+    desc.Width = size;
+    desc.Height = size;
+    desc.Depth = size;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+                     D3D11_BIND_UNORDERED_ACCESS;
+    AtmosphereLut3D candidate;
+    if (FAILED(m_device->CreateTexture3D(&desc, nullptr, &candidate.texture)) ||
+        FAILED(m_device->CreateShaderResourceView(
+            candidate.texture.Get(), nullptr, &candidate.srv)) ||
+        FAILED(m_device->CreateUnorderedAccessView(
+            candidate.texture.Get(), nullptr, &candidate.uav)))
+        return false;
+    target = candidate;
+    return true;
+}
+
+stage14::GpuParameters Renderer::BuildStage14GpuParameters(
+    const Camera& camera) const
+{
+    const AtmosphereParameters atmosphere =
+        stage14atmosphere::Sanitize(m_atmosphereParameters);
+    const GroundLightingParameters ground =
+        stage14ground::Sanitize(m_groundLightingParameters);
+    const ToneMappingParameters tone =
+        stage14tone::Sanitize(m_toneMappingParameters);
+    const stage14math::Float3 sun = stage14math::DirectionFromAngles(
+        atmosphere.sunAzimuthDegrees, atmosphere.sunElevationDegrees);
+    const float cameraHeightKm = std::max(camera.GetPosition().y, 0.0f) * 0.001f;
+
+    stage14::GpuParameters gpu = {};
+    gpu.planetRadiiDensityHeights = {
+        atmosphere.bottomRadiusKm, atmosphere.topRadiusKm,
+        atmosphere.rayleighScaleHeightKm, atmosphere.mieScaleHeightKm
+    };
+    gpu.rayleighScatteringAndScale = {
+        atmosphere.rayleighScatteringPerKm.x,
+        atmosphere.rayleighScatteringPerKm.y,
+        atmosphere.rayleighScatteringPerKm.z,
+        atmosphere.rayleighScale
+    };
+    gpu.mieScatteringExtinctionGAbsorption = {
+        atmosphere.mieScatteringPerKm, atmosphere.mieExtinctionPerKm,
+        atmosphere.mieG, atmosphere.mieAbsorptionScale
+    };
+    gpu.ozoneAbsorptionAndScale = {
+        atmosphere.ozoneAbsorptionPerKm.x,
+        atmosphere.ozoneAbsorptionPerKm.y,
+        atmosphere.ozoneAbsorptionPerKm.z,
+        atmosphere.ozoneScale
+    };
+    gpu.ozoneLayerTurbidityAerialDistance = {
+        atmosphere.ozoneCenterKm, atmosphere.ozoneHalfWidthKm,
+        atmosphere.turbidity, 128.0f
+    };
+    gpu.solarIrradianceAndMultiplier = {
+        atmosphere.solarIrradiance.x, atmosphere.solarIrradiance.y,
+        atmosphere.solarIrradiance.z, std::max(m_lightParameters.sunIntensity, 0.0f)
+    };
+    gpu.sunDirectionAndCameraHeight = { sun.x, sun.y, sun.z, cameraHeightKm };
+    gpu.sunTintAndGroundBounce = {
+        std::max(m_lightParameters.sunColor.x, 0.0f),
+        std::max(m_lightParameters.sunColor.y, 0.0f),
+        std::max(m_lightParameters.sunColor.z, 0.0f),
+        ground.bounceMultiplier
+    };
+    gpu.groundAlbedoAndDebugExposure = {
+        ground.albedo.x, ground.albedo.y, ground.albedo.z,
+        atmosphere.debugExposure
+    };
+    gpu.toneAndTime = {
+        tone.exposureEv, tone.whiteBalanceKelvin,
+        atmosphere.timeOfDayHours, atmosphere.sunElevationDegrees
+    };
+    gpu.modeFlags = {
+        static_cast<std::uint32_t>(atmosphere.mode),
+        static_cast<std::uint32_t>(tone.mode),
+        static_cast<std::uint32_t>(atmosphere.debugView),
+        static_cast<std::uint32_t>(atmosphere.debugChannel)
+    };
+    gpu.transmittanceMultiSize = {
+        static_cast<float>(stage14::kTransmittanceWidth),
+        static_cast<float>(stage14::kTransmittanceHeight),
+        static_cast<float>(stage14::kMultiScatteringWidth),
+        static_cast<float>(stage14::kMultiScatteringHeight)
+    };
+    gpu.skyViewIrradianceSize = {
+        static_cast<float>(stage14::kSkyViewWidth),
+        static_cast<float>(stage14::kSkyViewHeight),
+        static_cast<float>(stage14::kSkyIrradianceWidth),
+        static_cast<float>(stage14::kSkyIrradianceHeight)
+    };
+    const std::uint64_t maximumGeneration = *std::max_element(
+        std::begin(m_atmosphereLutGenerations),
+        std::end(m_atmosphereLutGenerations));
+    gpu.aerialDebugGeneration = {
+        stage14::kAerialSize,
+        static_cast<std::uint32_t>(atmosphere.aerialSlice),
+        static_cast<std::uint32_t>(maximumGeneration & 0xffffffffu), 0u
+    };
+    return gpu;
+}
+
+bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
+{
+    m_atmosphereParameters = stage14atmosphere::Sanitize(
+        m_atmosphereParameters);
+    m_groundLightingParameters = stage14ground::Sanitize(
+        m_groundLightingParameters);
+    m_toneMappingParameters = stage14tone::Sanitize(
+        m_toneMappingParameters);
+    // schema 34 자동 회귀처럼 첫 프레임부터 Manual Reference인 경우에는
+    // Stage 14가 생기기 전 LightParameters 방향을 Angle 원본으로 승격한다.
+    // Physical을 한 번이라도 사용한 일반 실행은 이미 Angle이 원본이므로
+    // 이후 Manual 전환에서도 같은 방향을 그대로 유지한다.
+    if (!m_stage14SunDirectionInitialized &&
+        m_atmosphereParameters.mode == AtmosphereMode::ManualReference)
+    {
+        stage6light::AnglesFromDirection(
+            m_lightParameters.directionToSun,
+            m_atmosphereParameters.sunAzimuthDegrees,
+            m_atmosphereParameters.sunElevationDegrees);
+    }
+    const stage14math::Float3 sun = stage14math::DirectionFromAngles(
+        m_atmosphereParameters.sunAzimuthDegrees,
+        m_atmosphereParameters.sunElevationDegrees);
+    // Physical/Manual 모두 같은 각도를 사용해야 방향 도식과 실제 그림자가
+    // 서로 다른 원본을 참조하지 않는다.
+    m_lightParameters.directionToSun = { sun.x, sun.y, sun.z };
+    m_stage14SunDirectionInitialized = true;
+    m_stage14GpuParameters = BuildStage14GpuParameters(camera);
+
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (m_stage14Cb && SUCCEEDED(m_context->Map(
+            m_stage14Cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &m_stage14GpuParameters,
+                    sizeof(m_stage14GpuParameters));
+        m_context->Unmap(m_stage14Cb.Get(), 0);
+    }
+
+    if (m_atmosphereParameters.mode != AtmosphereMode::Physical)
+        return m_atmosphereLutsValid;
+    if (!m_atmosphereTransmittanceCs || !m_atmosphereMultiScatteringCs ||
+        !m_atmosphereSkyViewCs || !m_atmosphereSkyIrradianceCs ||
+        !m_atmosphereAerialCs)
+    {
+        if (!m_atmosphereLutsValid)
+            m_atmosphereParameters.mode = AtmosphereMode::ManualReference;
+        m_atmosphereStatus = "Physical disabled: LUT shaders unavailable";
+        return false;
+    }
+
+    std::uint64_t baseHash = BeginStage14Hash();
+    HashValue(baseHash, m_atmosphereParameters.bottomRadiusKm);
+    HashValue(baseHash, m_atmosphereParameters.topRadiusKm);
+    HashValue(baseHash, m_atmosphereParameters.rayleighScaleHeightKm);
+    HashValue(baseHash, m_atmosphereParameters.mieScaleHeightKm);
+    HashValue(baseHash, m_atmosphereParameters.rayleighScatteringPerKm);
+    HashValue(baseHash, m_atmosphereParameters.rayleighScale);
+    HashValue(baseHash, m_atmosphereParameters.mieScatteringPerKm);
+    HashValue(baseHash, m_atmosphereParameters.mieExtinctionPerKm);
+    HashValue(baseHash, m_atmosphereParameters.mieAbsorptionScale);
+    HashValue(baseHash, m_atmosphereParameters.mieG);
+    HashValue(baseHash, m_atmosphereParameters.ozoneAbsorptionPerKm);
+    HashValue(baseHash, m_atmosphereParameters.ozoneScale);
+    HashValue(baseHash, m_atmosphereParameters.ozoneCenterKm);
+    HashValue(baseHash, m_atmosphereParameters.ozoneHalfWidthKm);
+    HashValue(baseHash, m_atmosphereParameters.turbidity);
+    HashValue(baseHash, m_atmosphereParameters.solarIrradiance);
+
+    std::uint64_t multiHash = baseHash;
+    HashValue(multiHash, m_groundLightingParameters.albedo);
+    std::uint64_t skyViewHash = multiHash;
+    HashValue(skyViewHash, sun);
+    const float cameraHeightKm = std::max(camera.GetPosition().y, 0.0f) * 0.001f;
+    HashValue(skyViewHash, cameraHeightKm);
+    const std::uint64_t skyIrradianceHash = multiHash;
+    std::uint64_t aerialHash = skyViewHash;
+    XMFLOAT4X4 invProjection = {};
+    XMFLOAT4X4 invViewRotation = {};
+    XMStoreFloat4x4(&invProjection, XMMatrixTranspose(camera.GetInvProjection()));
+    XMStoreFloat4x4(&invViewRotation,
+                    XMMatrixTranspose(camera.GetInvViewRotation()));
+    HashValue(aerialHash, invProjection);
+    HashValue(aerialHash, invViewRotation);
+    HashValue(aerialHash, camera.GetFarPlane());
+
+    const std::uint64_t requestedHashes[6] = {
+        baseHash, multiHash, skyViewHash, skyIrradianceHash,
+        aerialHash, aerialHash
+    };
+    bool dirty[6] = {};
+    for (std::size_t index = 0; index < 6; ++index)
+        dirty[index] = !m_atmosphereLutsValid ||
+                       requestedHashes[index] != m_atmosphereLutHashes[index];
+    if (dirty[0])
+        std::fill(std::begin(dirty), std::end(dirty), true);
+    if (dirty[1])
+        dirty[2] = dirty[3] = dirty[4] = dirty[5] = true;
+    if (dirty[2])
+        dirty[4] = dirty[5] = true;
+    if (!std::any_of(std::begin(dirty), std::end(dirty),
+                     [](bool value) { return value; }))
+        return true;
+
+    AtmosphereLutSet candidate = m_atmosphereLuts;
+    const bool resourcesCreated =
+        (!dirty[0] || CreateAtmosphereLut2D(
+            stage14::kTransmittanceWidth, stage14::kTransmittanceHeight,
+            candidate.transmittance)) &&
+        (!dirty[1] || CreateAtmosphereLut2D(
+            stage14::kMultiScatteringWidth, stage14::kMultiScatteringHeight,
+            candidate.multiScattering)) &&
+        (!dirty[2] || CreateAtmosphereLut2D(
+            stage14::kSkyViewWidth, stage14::kSkyViewHeight,
+            candidate.skyView)) &&
+        (!dirty[3] || CreateAtmosphereLut2D(
+            stage14::kSkyIrradianceWidth, stage14::kSkyIrradianceHeight,
+            candidate.skyIrradiance)) &&
+        (!(dirty[4] || dirty[5]) ||
+         (CreateAtmosphereLut3D(stage14::kAerialSize,
+                                candidate.aerialRadiance) &&
+          CreateAtmosphereLut3D(stage14::kAerialSize,
+                                candidate.aerialTransmittance)));
+    if (!resourcesCreated)
+    {
+        if (!m_atmosphereLutsValid)
+            m_atmosphereParameters.mode = AtmosphereMode::ManualReference;
+        m_atmosphereStatus = "LUT allocation failed; last good set kept";
+        return false;
+    }
+
+    CameraCB cameraData = {};
+    XMStoreFloat4x4(&cameraData.invViewProj,
+                    XMMatrixTranspose(camera.GetInvViewProj()));
+    XMStoreFloat4x4(&cameraData.invProjection,
+                    XMMatrixTranspose(camera.GetInvProjection()));
+    XMStoreFloat4x4(&cameraData.invViewRotation,
+                    XMMatrixTranspose(camera.GetInvViewRotation()));
+    cameraData.cameraPos = camera.GetPosition();
+    cameraData.renderSize = {
+        static_cast<float>(std::max(m_width, 1)),
+        static_cast<float>(std::max(m_height, 1))
+    };
+    cameraData.nearPlane = camera.GetNearPlane();
+    cameraData.farPlane = camera.GetFarPlane();
+    if (m_cameraCb && SUCCEEDED(m_context->Map(
+            m_cameraCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        std::memcpy(mapped.pData, &cameraData, sizeof(cameraData));
+        m_context->Unmap(m_cameraCb.Get(), 0);
+    }
+
+    ID3D11Buffer* stage14Buffer = m_stage14Cb.Get();
+    ID3D11Buffer* cameraBuffer = m_cameraCb.Get();
+    m_context->CSSetConstantBuffers(0, 1, &cameraBuffer);
+    m_context->CSSetConstantBuffers(13, 1, &stage14Buffer);
+    ID3D11SamplerState* atmosphereSampler = m_linearClampSampler.Get();
+    m_context->CSSetSamplers(3, 1, &atmosphereSampler);
+
+    const auto bindInputs = [&](int outputIndex)
+    {
+        ID3D11ShaderResourceView* inputs[6] = {
+            candidate.transmittance.srv.Get(),
+            candidate.multiScattering.srv.Get(),
+            candidate.skyView.srv.Get(),
+            candidate.skyIrradiance.srv.Get(),
+            candidate.aerialRadiance.srv.Get(),
+            candidate.aerialTransmittance.srv.Get()
+        };
+        if (outputIndex >= 0 && outputIndex < 6)
+            inputs[outputIndex] = nullptr;
+        if (outputIndex == 4 || outputIndex == 5)
+            inputs[4] = inputs[5] = nullptr;
+        m_context->CSSetShaderResources(8, 6, inputs);
+    };
+    const auto dispatch2D = [&](ID3D11ComputeShader* shader,
+                                ID3D11UnorderedAccessView* uav,
+                                UINT width, UINT height, int outputIndex)
+    {
+        bindInputs(outputIndex);
+        m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+        m_context->CSSetShader(shader, nullptr, 0);
+        m_context->Dispatch((width + 7u) / 8u, (height + 7u) / 8u, 1u);
+        ID3D11UnorderedAccessView* nullUav = nullptr;
+        m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+    };
+    if (dirty[0])
+        dispatch2D(m_atmosphereTransmittanceCs.Get(),
+                   candidate.transmittance.uav.Get(),
+                   stage14::kTransmittanceWidth,
+                   stage14::kTransmittanceHeight, 0);
+    if (dirty[1])
+        dispatch2D(m_atmosphereMultiScatteringCs.Get(),
+                   candidate.multiScattering.uav.Get(),
+                   stage14::kMultiScatteringWidth,
+                   stage14::kMultiScatteringHeight, 1);
+    if (dirty[2])
+        dispatch2D(m_atmosphereSkyViewCs.Get(), candidate.skyView.uav.Get(),
+                   stage14::kSkyViewWidth, stage14::kSkyViewHeight, 2);
+    if (dirty[3])
+        dispatch2D(m_atmosphereSkyIrradianceCs.Get(),
+                   candidate.skyIrradiance.uav.Get(),
+                   stage14::kSkyIrradianceWidth,
+                   stage14::kSkyIrradianceHeight, 3);
+    if (dirty[4] || dirty[5])
+    {
+        bindInputs(4);
+        ID3D11UnorderedAccessView* outputs[2] = {
+            candidate.aerialRadiance.uav.Get(),
+            candidate.aerialTransmittance.uav.Get()
+        };
+        m_context->CSSetUnorderedAccessViews(0, 2, outputs, nullptr);
+        m_context->CSSetShader(m_atmosphereAerialCs.Get(), nullptr, 0);
+        m_context->Dispatch(
+            (stage14::kAerialSize + 3u) / 4u,
+            (stage14::kAerialSize + 3u) / 4u,
+            (stage14::kAerialSize + 3u) / 4u);
+        ID3D11UnorderedAccessView* nullOutputs[2] = {};
+        m_context->CSSetUnorderedAccessViews(0, 2, nullOutputs, nullptr);
+    }
+    ID3D11ShaderResourceView* nullInputs[6] = {};
+    m_context->CSSetShaderResources(8, 6, nullInputs);
+    m_context->CSSetShader(nullptr, nullptr, 0);
+
+    m_atmosphereLuts = candidate;
+    for (std::size_t index = 0; index < 6; ++index)
+    {
+        if (dirty[index])
+            ++m_atmosphereLutGenerations[index];
+        m_atmosphereLutHashes[index] = requestedHashes[index];
+    }
+    m_atmosphereLutsValid = true;
+    m_atmosphereStatus = "Physical LUT generation succeeded";
+    return true;
+}
+
+void Renderer::BindAtmosphereResources()
+{
+    ID3D11Buffer* stage14Buffer = m_stage14Cb.Get();
+    m_context->PSSetConstantBuffers(13, 1, &stage14Buffer);
+    ID3D11ShaderResourceView* resources[6] = {
+        m_atmosphereLuts.transmittance.srv.Get(),
+        m_atmosphereLuts.multiScattering.srv.Get(),
+        m_atmosphereLuts.skyView.srv.Get(),
+        m_atmosphereLuts.skyIrradiance.srv.Get(),
+        m_atmosphereLuts.aerialRadiance.srv.Get(),
+        m_atmosphereLuts.aerialTransmittance.srv.Get()
+    };
+    m_context->PSSetShaderResources(8, 6, resources);
+    ID3D11SamplerState* sampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(3, 1, &sampler);
+}
+
+bool Renderer::ValidateStage14Luts(Stage14LutValidationResult& result)
+{
+    result = {};
+    if (!m_atmosphereLutsValid || !m_atmosphereLuts.transmittance.texture)
+        return false;
+
+    bool finiteNonNegative = true;
+    std::vector<double> transmittanceErrors;
+    const auto read2D = [&](ID3D11Texture2D* source, bool compareTransmittance)
+    {
+        if (!source)
+            return false;
+        D3D11_TEXTURE2D_DESC desc = {};
+        source->GetDesc(&desc);
+        D3D11_TEXTURE2D_DESC stagingDesc = desc;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture2D> staging;
+        if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &staging)))
+            return false;
+        m_context->CopyResource(staging.Get(), source);
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+            return false;
+        for (UINT y = 0; y < desc.Height; ++y)
+        {
+            const auto* row = reinterpret_cast<const std::uint16_t*>(
+                static_cast<const std::uint8_t*>(mapped.pData) +
+                static_cast<std::size_t>(y) * mapped.RowPitch);
+            for (UINT x = 0; x < desc.Width; ++x)
+            {
+                float values[4] = {};
+                for (int channel = 0; channel < 4; ++channel)
+                {
+                    values[channel] = DirectX::PackedVector::XMConvertHalfToFloat(
+                        row[static_cast<std::size_t>(x) * 4u + channel]);
+                    finiteNonNegative &= std::isfinite(values[channel]) &&
+                                         values[channel] >= 0.0f;
+                }
+                if (compareTransmittance)
+                {
+                    const stage14math::Float2 uv = {
+                        (static_cast<float>(x) + 0.5f) /
+                            static_cast<float>(desc.Width),
+                        (static_cast<float>(y) + 0.5f) /
+                            static_cast<float>(desc.Height)
+                    };
+                    const stage14math::Float3 reference =
+                        stage14math::EarthClearTransmittanceAtUv(uv);
+                    const float expected[3] = {
+                        reference.x, reference.y, reference.z
+                    };
+                    for (int channel = 0; channel < 3; ++channel)
+                        transmittanceErrors.push_back(std::abs(
+                            static_cast<double>(values[channel] -
+                                                expected[channel])));
+                }
+            }
+        }
+        m_context->Unmap(staging.Get(), 0);
+        return true;
+    };
+    const auto read3D = [&](ID3D11Texture3D* source)
+    {
+        if (!source)
+            return false;
+        D3D11_TEXTURE3D_DESC desc = {};
+        source->GetDesc(&desc);
+        D3D11_TEXTURE3D_DESC stagingDesc = desc;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture3D> staging;
+        if (FAILED(m_device->CreateTexture3D(&stagingDesc, nullptr, &staging)))
+            return false;
+        m_context->CopyResource(staging.Get(), source);
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+            return false;
+        for (UINT z = 0; z < desc.Depth; ++z)
+        {
+            for (UINT y = 0; y < desc.Height; ++y)
+            {
+                const auto* row = reinterpret_cast<const std::uint16_t*>(
+                    static_cast<const std::uint8_t*>(mapped.pData) +
+                    static_cast<std::size_t>(z) * mapped.DepthPitch +
+                    static_cast<std::size_t>(y) * mapped.RowPitch);
+                for (UINT x = 0; x < desc.Width; ++x)
+                {
+                    for (int channel = 0; channel < 4; ++channel)
+                    {
+                        const float value =
+                            DirectX::PackedVector::XMConvertHalfToFloat(
+                                row[static_cast<std::size_t>(x) * 4u + channel]);
+                        finiteNonNegative &= std::isfinite(value) && value >= 0.0f;
+                    }
+                }
+            }
+        }
+        m_context->Unmap(staging.Get(), 0);
+        return true;
+    };
+
+    const bool readSucceeded =
+        read2D(m_atmosphereLuts.transmittance.texture.Get(), true) &&
+        read2D(m_atmosphereLuts.multiScattering.texture.Get(), false) &&
+        read2D(m_atmosphereLuts.skyView.texture.Get(), false) &&
+        read2D(m_atmosphereLuts.skyIrradiance.texture.Get(), false) &&
+        read3D(m_atmosphereLuts.aerialRadiance.texture.Get()) &&
+        read3D(m_atmosphereLuts.aerialTransmittance.texture.Get());
+    if (!readSucceeded || transmittanceErrors.empty())
+        return false;
+    result.comparedChannelCount = transmittanceErrors.size();
+    double sum = 0.0;
+    for (double error : transmittanceErrors)
+        sum += error;
+    result.transmittanceMae = sum /
+        static_cast<double>(transmittanceErrors.size());
+    std::sort(transmittanceErrors.begin(), transmittanceErrors.end());
+    const std::size_t p99Index = std::min(
+        transmittanceErrors.size() - 1u,
+        static_cast<std::size_t>(std::ceil(
+            0.99 * static_cast<double>(transmittanceErrors.size()))) - 1u);
+    result.transmittanceP99 = transmittanceErrors[p99Index];
+    result.finiteNonNegative = finiteNonNegative;
+    return true;
 }
 
 void Renderer::ReleaseSizeDependentResources()
@@ -1127,6 +1755,9 @@ void Renderer::ReleaseSizeDependentResources()
     m_sceneDepthSrv.Reset();
     m_sceneDepthDsv.Reset();
     m_sceneDepth.Reset();
+    m_hdrCompositeSrv.Reset();
+    m_hdrCompositeRtv.Reset();
+    m_hdrComposite.Reset();
     m_cloudScatteringTransmittanceSrv.Reset();
     m_cloudScatteringTransmittanceRtv.Reset();
     m_cloudScatteringTransmittance.Reset();
@@ -1202,7 +1833,17 @@ void Renderer::RenderDiagnosticScene(const Camera& camera)
     m_context->VSSetShader(m_sceneVs.Get(), nullptr, 0);
     m_context->VSSetConstantBuffers(0, 1, m_sceneCb.GetAddressOf());
     m_context->PSSetShader(m_scenePs.Get(), nullptr, 0);
+    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    ID3D11ShaderResourceView* shadowResources[2] = {
+        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
+    };
+    m_context->PSSetShaderResources(6, 2, shadowResources);
+    ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(2, 1, &shadowSampler);
+    BindAtmosphereResources();
     m_context->DrawIndexed(m_sceneIndexCount, 0, 0);
+    UnbindCloudShaderResources(14);
 
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
 }
@@ -1293,7 +1934,7 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
 
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     ID3D11RenderTargetView* cloudTarget =
-        targetOverride ? targetOverride : m_backBufferRtv.Get();
+        targetOverride ? targetOverride : m_hdrCompositeRtv.Get();
     m_context->OMSetRenderTargets(1, &cloudTarget, nullptr);
     m_context->ClearRenderTargetView(cloudTarget, clearColor);
     m_context->OMSetDepthStencilState(nullptr, 0);
@@ -1333,6 +1974,7 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
     m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    BindAtmosphereResources();
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
         m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
@@ -1350,8 +1992,7 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->PSSetSamplers(2, 1, &shadowSampler);
     m_context->Draw(3, 0);
 
-    ID3D11ShaderResourceView* nullResources[8] = {};
-    m_context->PSSetShaderResources(0, 8, nullResources);
+    UnbindCloudShaderResources(14);
 }
 
 void Renderer::UpdateStage12ShadowParameters(const Camera& camera)
@@ -1558,6 +2199,7 @@ void Renderer::BindCloudRaymarchResources(ID3D11PixelShader* pixelShader)
     m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
     m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    BindAtmosphereResources();
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
         m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
@@ -1616,7 +2258,7 @@ void Renderer::RenderCloudDataPass(const Camera& camera, float timeSeconds)
         ? m_cloudReferenceDataPs.Get() : m_cloudOptimizedDataPs.Get();
     BindCloudRaymarchResources(shader);
     m_context->Draw(3, 0);
-    UnbindCloudShaderResources(8);
+    UnbindCloudShaderResources(14);
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
@@ -1626,7 +2268,7 @@ void Renderer::RenderCloudUpsamplePass(const Camera& camera,
 {
     UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
     ID3D11RenderTargetView* target = targetOverride
-        ? targetOverride : m_backBufferRtv.Get();
+        ? targetOverride : m_hdrCompositeRtv.Get();
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     m_context->OMSetRenderTargets(1, &target, nullptr);
     m_context->ClearRenderTargetView(target, clearColor);
@@ -1647,6 +2289,7 @@ void Renderer::RenderCloudUpsamplePass(const Camera& camera,
     m_context->PSSetConstantBuffers(10, 1, &upsamplingBuffer);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
     m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    BindAtmosphereResources();
     ID3D11ShaderResourceView* resources[4] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
         m_cloudScatteringTransmittanceSrv.Get(),
@@ -1660,7 +2303,7 @@ void Renderer::RenderCloudUpsamplePass(const Camera& camera,
     ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
     m_context->PSSetSamplers(2, 1, &shadowSampler);
     m_context->Draw(3, 0);
-    UnbindCloudShaderResources(8);
+    UnbindCloudShaderResources(14);
 }
 
 void Renderer::PrepareTemporalFrame(const Camera& camera, float timeSeconds)
@@ -1753,7 +2396,7 @@ bool Renderer::RenderCloudTemporalPass(
 
     UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
     ID3D11RenderTargetView* outputTarget = targetOverride
-        ? targetOverride : m_backBufferRtv.Get();
+        ? targetOverride : m_hdrCompositeRtv.Get();
     ID3D11RenderTargetView* targets[3] = {
         m_temporalHistoryCloudRtv[writeIndex].Get(),
         m_temporalHistoryAuxRtv[writeIndex].Get(),
@@ -1781,6 +2424,7 @@ bool Renderer::RenderCloudTemporalPass(
     m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
     m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    BindAtmosphereResources();
     ID3D11ShaderResourceView* resources[6] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
         m_cloudScatteringTransmittanceSrv.Get(),
@@ -1797,7 +2441,7 @@ bool Renderer::RenderCloudTemporalPass(
     m_context->PSSetSamplers(0, 1, &sampler);
     m_context->PSSetSamplers(2, 1, &sampler);
     m_context->Draw(3, 0);
-    UnbindCloudShaderResources(8);
+    UnbindCloudShaderResources(14);
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
     CommitTemporalFrame(camera, timeSeconds);
     return true;
@@ -1844,6 +2488,9 @@ bool Renderer::CaptureCloudDiagnosticFrame(
     viewport.Height = static_cast<float>(m_height);
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
+    // Offscreen 진단도 일반 Render와 같은 b13/LUT 상태를 먼저 준비해야 한다.
+    // Manual Reference에서는 LUT를 만들지 않더라도 mode flag를 업로드한다.
+    EnsureAtmosphereLuts(camera);
     RenderDiagnosticScene(camera);
     RenderDeepShadowCaches(camera, timeSeconds);
     if (!forceDirectComposite && (mode == CloudDebugMode::Composite ||
@@ -1883,6 +2530,26 @@ bool Renderer::CaptureCloudDiagnosticFrame(
                     source, rowBytes);
     }
     m_context->Unmap(staging.Get(), 0);
+    // schema 34 이하의 회귀 fixture는 Composite가 Back Buffer에 직접 쓰이던
+    // 시절의 0.8-knee shoulder 값을 비교한다. 현재 일반 경로는 HDR을 보존하고
+    // 최종 pass에서 처리하므로 readback에만 동일 곡선을 재현한다.
+    if (mode == CloudDebugMode::Composite &&
+        m_toneMappingParameters.mode == ToneMappingMode::LegacyShoulder)
+    {
+        for (DirectX::XMFLOAT4& pixel : frame.pixels)
+        {
+            const float peak = std::max(pixel.x, std::max(pixel.y, pixel.z));
+            if (peak <= 0.8f)
+                continue;
+            const float excess = peak - 0.8f;
+            const float mappedPeak = 0.8f + excess * 0.2f /
+                (excess + 0.2f);
+            const float scale = mappedPeak / std::max(peak, 1.0e-6f);
+            pixel.x = std::max(pixel.x, 0.0f) * scale;
+            pixel.y = std::max(pixel.y, 0.0f) * scale;
+            pixel.z = std::max(pixel.z, 0.0f) * scale;
+        }
+    }
     return true;
 }
 
@@ -1899,6 +2566,7 @@ bool Renderer::CaptureSceneDepthDiagnosticFrame(
     viewport.Height = static_cast<float>(m_height);
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
+    EnsureAtmosphereLuts(camera);
     RenderDiagnosticScene(camera);
     D3D11_TEXTURE2D_DESC stagingDesc = {};
     m_sceneDepth->GetDesc(&stagingDesc);
@@ -1950,8 +2618,53 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     const CloudDomainParameters domainBeforeNoiseLab = m_cloudDomainParameters;
     const NoiseVolumeParameters noiseVolumeBeforeNoiseLab = m_noiseVolumeParameters;
     const LightParameters lightBeforeNoiseLab = m_lightParameters;
+    const AtmosphereParameters atmosphereBeforeNoiseLab =
+        m_atmosphereParameters;
     const Stage12ShadowPreset shadowPresetBeforeNoiseLab = ShadowPreset();
+    if (m_atmosphereParameters.timePlaybackEnabled)
+    {
+        float deltaSeconds = 0.0f;
+        if (m_previousAtmosphereTimeValid)
+        {
+            const float candidate = timeSeconds - m_previousAtmosphereTimeSeconds;
+            if (std::isfinite(candidate) && candidate >= 0.0f && candidate <= 0.25f)
+                deltaSeconds = candidate;
+        }
+        m_atmosphereParameters.sunControlMode = SunControlMode::TimeOfDay;
+        m_atmosphereParameters.timeOfDayHours =
+            stage14math::AdvanceLoopingTimeOfDay(
+                m_atmosphereParameters.timeOfDayHours, deltaSeconds,
+                m_atmosphereParameters.timePlaybackMinutesPerSecond);
+        const stage14math::SunAngles path = stage14math::TimeOfDayPath(
+            m_atmosphereParameters.timeOfDayHours);
+        m_atmosphereParameters.sunAzimuthDegrees = path.azimuthDegrees;
+        m_atmosphereParameters.sunElevationDegrees = path.elevationDegrees;
+    }
+    else
+    {
+        m_atmosphereParameters.sunControlMode = SunControlMode::Angles;
+    }
+    m_previousAtmosphereTimeSeconds = timeSeconds;
+    m_previousAtmosphereTimeValid = true;
     m_noiseLab.SetOpenWorldPipelinePreset(m_openWorldPipelinePreset);
+    const std::array<ID3D11ShaderResourceView*, 6> atmosphereLutSrvs = {
+        m_atmosphereLuts.transmittance.srv.Get(),
+        m_atmosphereLuts.multiScattering.srv.Get(),
+        m_atmosphereLuts.skyView.srv.Get(),
+        m_atmosphereLuts.skyIrradiance.srv.Get(),
+        m_atmosphereLuts.aerialRadiance.srv.Get(),
+        m_atmosphereLuts.aerialTransmittance.srv.Get()
+    };
+    const std::array<std::uint64_t, 6> atmosphereLutGenerations = {
+        m_atmosphereLutGenerations[0], m_atmosphereLutGenerations[1],
+        m_atmosphereLutGenerations[2], m_atmosphereLutGenerations[3],
+        m_atmosphereLutGenerations[4], m_atmosphereLutGenerations[5]
+    };
+    const std::array<std::uint64_t, 6> atmosphereLutHashes = {
+        m_atmosphereLutHashes[0], m_atmosphereLutHashes[1],
+        m_atmosphereLutHashes[2], m_atmosphereLutHashes[3],
+        m_atmosphereLutHashes[4], m_atmosphereLutHashes[5]
+    };
     m_noiseLab.BeginFrame(timeSeconds, camera, m_cloudParameters,
                           m_cloudShapeParameters,
                           m_cloudDomainParameters,
@@ -1963,6 +2676,10 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_shadowParameters,
                           m_lightParameters, m_sunPreset, m_phasePreset,
                           m_environmentParameters, m_environmentPreset,
+                          m_atmosphereParameters, m_groundLightingParameters,
+                          m_toneMappingParameters, atmosphereLutSrvs,
+                          atmosphereLutGenerations, atmosphereLutHashes,
+                          m_atmosphereStatus,
                           m_weatherPreset, m_weatherGeneratorSettings,
                           m_cloudTypeMode, m_cloudAppearancePreset,
                           m_cloudAppearanceDirty,
@@ -1975,6 +2692,14 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_frameProfiler.Snapshot(), m_vsyncEnabled,
                           m_shaderGeneration, m_shaderStatus, m_shaderError);
+    const float sunAzimuthDelta = std::abs(
+        m_atmosphereParameters.sunAzimuthDegrees -
+        atmosphereBeforeNoiseLab.sunAzimuthDegrees);
+    const float sunElevationDelta = std::abs(
+        m_atmosphereParameters.sunElevationDegrees -
+        atmosphereBeforeNoiseLab.sunElevationDegrees);
+    if (std::max(sunAzimuthDelta, sunElevationDelta) > 0.25f)
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     if (ShadowPreset() != shadowPresetBeforeNoiseLab &&
         !CreateDeepShadowResources(ShadowPreset()))
     {
@@ -2102,10 +2827,14 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
 
-    RenderDiagnosticScene(camera);
+    // Stage 14 물리 대기 LUT가 Stage 12 cache와 모든 장면 조명보다 먼저 온다.
+    EnsureAtmosphereLuts(camera);
+    m_frameProfiler.MarkAtmosphereLutEnd(m_context.Get());
     m_frameProfiler.BeginCloudPass(m_context.Get());
     RenderDeepShadowCaches(camera, effectiveTime);
     m_frameProfiler.MarkShadowCacheEnd(m_context.Get());
+    RenderDiagnosticScene(camera);
+    m_frameProfiler.MarkOpaqueSceneEnd(m_context.Get());
     const CloudDebugMode debugMode = DebugMode();
     if ((debugMode == CloudDebugMode::Composite ||
         (static_cast<std::int32_t>(debugMode) >= 64 &&
@@ -2123,6 +2852,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
     }
     m_frameProfiler.EndCloudPass(m_context.Get());
+    RenderToneMapPass();
+    m_frameProfiler.MarkToneMapEnd(m_context.Get());
     if (m_captureFrameHashes)
         CaptureCloudFrameHash();
     if (m_renderNoiseLabPreviews)
@@ -2173,6 +2904,35 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     m_frameProfiler.EndGpuFrame(m_context.Get());
     m_swapChain->Present(m_vsyncEnabled ? 1u : 0u, 0);
     m_frameProfiler.EndCpuFrame();
+}
+
+void Renderer::RenderToneMapPass()
+{
+    if (!m_toneMapPs || !m_hdrCompositeSrv || !m_backBufferRtv)
+        return;
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    m_context->OMSetRenderTargets(1, m_backBufferRtv.GetAddressOf(), nullptr);
+    m_context->ClearRenderTargetView(m_backBufferRtv.Get(), clearColor);
+    m_context->OMSetDepthStencilState(nullptr, 0);
+    m_context->RSSetState(nullptr);
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+    m_context->IASetInputLayout(nullptr);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
+    m_context->PSSetShader(m_toneMapPs.Get(), nullptr, 0);
+    BindAtmosphereResources();
+    ID3D11ShaderResourceView* hdr = m_hdrCompositeSrv.Get();
+    m_context->PSSetShaderResources(0, 1, &hdr);
+    ID3D11SamplerState* sampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(0, 1, &sampler);
+    m_context->Draw(3, 0);
+    // 다음 프레임의 LUT compute dispatch가 같은 리소스를 UAV로 다시 바인딩할 수
+    // 있으므로 HDR뿐 아니라 단계 14의 t8~t13도 명시적으로 해제한다.
+    UnbindCloudShaderResources(14);
 }
 
 void Renderer::CaptureCloudFrameHash()
@@ -2299,6 +3059,12 @@ void Renderer::ApplyStage6SunPreset(Stage6SunPreset preset)
     // 방향 프리셋은 사용자가 조절한 색·세기·품질 설정을 보존한다.
     m_lightParameters.directionToSun =
         stage6light::Preset(preset).directionToSun;
+    stage6light::AnglesFromDirection(
+        m_lightParameters.directionToSun,
+        m_atmosphereParameters.sunAzimuthDegrees,
+        m_atmosphereParameters.sunElevationDegrees);
+    m_atmosphereParameters.timePlaybackEnabled = false;
+    m_atmosphereParameters.sunControlMode = SunControlMode::Angles;
     m_sunPreset = preset;
 }
 
@@ -2333,6 +3099,10 @@ void Renderer::ApplyPortfolioHeroLighting()
     ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     m_lightParameters.directionToSun = stage6light::Preset(
         Stage6SunPreset::LowEast).directionToSun;
+    m_atmosphereParameters.sunAzimuthDegrees = -60.0f;
+    m_atmosphereParameters.sunElevationDegrees = 18.0f;
+    m_atmosphereParameters.timePlaybackEnabled = false;
+    m_atmosphereParameters.sunControlMode = SunControlMode::Angles;
     m_lightParameters.sunColor = { 1.0f, 0.78f, 0.62f };
     m_lightParameters.sunIntensity = 1.15f;
     stage6light::ApplyPhasePreset(

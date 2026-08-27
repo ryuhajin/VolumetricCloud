@@ -22,6 +22,7 @@ inline constexpr float kMinimumMoveSpeedMetersPerSecond = 1.0f;
 inline constexpr float kMaximumMoveSpeedMetersPerSecond = 2000.0f;
 inline constexpr float kFastMoveMultiplier = 4.0f;
 inline constexpr float kMaximumMovementDeltaSeconds = 0.1f;
+inline constexpr float kWheelMovementSecondsPerNotch = 0.25f;
 
 inline float SanitizeMoveSpeed(float speedMetersPerSecond)
 {
@@ -181,5 +182,17 @@ inline float MovementDistance(
     const float speed = SanitizeMoveSpeed(speedMetersPerSecond) *
         (fast ? kFastMoveMultiplier : 1.0f);
     return safeDelta * speed;
+}
+
+inline float WheelMovementDistance(
+    float wheelDelta, bool fast,
+    float speedMetersPerSecond = kMoveSpeedMetersPerSecond)
+{
+    if (!std::isfinite(wheelDelta))
+        return 0.0f;
+    const float notches = wheelDelta / 120.0f;
+    const float speed = SanitizeMoveSpeed(speedMetersPerSecond) *
+        (fast ? kFastMoveMultiplier : 1.0f);
+    return notches * speed * kWheelMovementSecondsPerNotch;
 }
 }

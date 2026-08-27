@@ -232,6 +232,7 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
         float extinction = max(extinctionCoefficient, 0.0);
         float opacityDepthMoment = 0.0;
         float opacityWeight = 0.0;
+        CloudLightingContext lightingContext = BuildCloudLightingContext();
 
         // 디버그 모드는 같은 대표 위치에서 raw→threshold→final→UVW를 비교한다.
         float representativeDistance = (tStart + tEnd) * 0.5;
@@ -287,7 +288,7 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
             debugData.directScattering = IntegrateSingleScattering(
                 representativeSample.finalDensity,
                 representativeLight.transmittance, 1.0, actualStepLength,
-                phase.phaseFactor);
+                phase.phaseFactor, CloudSunIncident(lightingContext));
         }
         if (debugMode >= 74 && debugMode <= 78)
         {
@@ -339,7 +340,7 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
                 }
                 EnvironmentLightingSample lighting = EvaluateEnvironmentLighting(
                     densitySample, light, phase, result.transmittance,
-                    actualStepLength);
+                    actualStepLength, lightingContext);
                 debugData.accumulatedDirect += lighting.direct;
                 debugData.accumulatedSky += lighting.skyAmbient;
                 debugData.accumulatedGround += lighting.groundBounce;
@@ -407,6 +408,7 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
     debugData.actualStepLength = max(stepSize, 1e-4);
 
     float representativeDistance = 0.5 * (tStart + tEnd);
+    CloudLightingContext lightingContext = BuildCloudLightingContext();
     float3 representativePosition = rayOrigin +
         rayDirection * representativeDistance;
     CloudDensitySample representativeSample = SampleCloudDensityOptimized(
@@ -451,7 +453,8 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
         debugData.directScattering = IntegrateSingleScattering(
             representativeSample.finalDensity,
             representativeLight.transmittance, 1.0,
-            Stage9ViewStep(representativeDistance), phase.phaseFactor);
+            Stage9ViewStep(representativeDistance), phase.phaseFactor,
+            CloudSunIncident(lightingContext));
     }
     if (debugMode >= 74 && debugMode <= 78)
     {
@@ -529,7 +532,8 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
                 samplePosition, directionToSun);
             debugData.totalLightSamples += light.stepCount;
             EnvironmentLightingSample lighting = EvaluateEnvironmentLighting(
-                densitySample, light, phase, result.transmittance, marchLength);
+                densitySample, light, phase, result.transmittance, marchLength,
+                lightingContext);
             debugData.accumulatedDirect += lighting.direct;
             debugData.accumulatedSky += lighting.skyAmbient;
             debugData.accumulatedGround += lighting.groundBounce;
@@ -575,7 +579,7 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
 // UV → 레이 → 깊이 → 교차 → 레이 마칭 → 디버그 → 합성 순서를 한곳에서 보여 준다.
 float4 RenderCloudOutput(VSOut input, bool hasGeometry,
                          float3 rayDirection, CloudResult cloud,
-                         CloudMarchDebug marchDebug)
+                         CloudMarchDebug marchDebug, float sceneDistance)
 {
     float2 uv = saturate(input.uv);
     // 5. 1~7은 13-4D에서 삭제한 사용자 디버그 ID다. CPU가 오래된 값을
@@ -836,8 +840,9 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
         ? sceneColorTexture.SampleLevel(pointClampSampler, uv, 0).rgb
-        : SkyColor(rayDirection);
-    if (hasGeometry && stage12SurfaceShadowEnabled != 0u)
+        : 0.0.xxx;
+    if (modeFlags.x != kAtmosphereModePhysical && hasGeometry &&
+        stage12SurfaceShadowEnabled != 0u)
     {
         float deviceDepth = sceneDepthTexture.SampleLevel(
             pointClampSampler, uv, 0);
@@ -845,8 +850,11 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
         background *= Stage12SurfaceFactor(
             Stage12SurfaceTransmittance(worldPosition));
     }
-    float3 composite = cloud.scattering + background * cloud.transmittance;
-    return float4(ApplyLdrHighlightShoulder(composite), 1.0);
+    float3 composite = ComposeStage14Atmosphere(
+        uv, rayDirection, hasGeometry, background, sceneDistance,
+        cloud.scattering, cloud.transmittance,
+        cloud.representativeDepth);
+    return float4(max(composite, 0.0.xxx), 1.0);
 }
 
 // 단계 10의 저해상도 패스는 최종 장면색을 만들지 않고 재구성에 필요한
@@ -889,7 +897,7 @@ float4 mainReference(VSOut input) : SV_TARGET
     cloud = RaymarchCloudReference(
         cameraPos, rayDirection, sceneDistance, marchDebug);
     return RenderCloudOutput(
-        input, hasGeometry, rayDirection, cloud, marchDebug);
+        input, hasGeometry, rayDirection, cloud, marchDebug, sceneDistance);
 }
 
 float4 mainOptimized(VSOut input) : SV_TARGET
@@ -912,7 +920,7 @@ float4 mainOptimized(VSOut input) : SV_TARGET
     cloud = RaymarchCloudOptimized(
         cameraPos, rayDirection, sceneDistance, marchDebug);
     return RenderCloudOutput(
-        input, hasGeometry, rayDirection, cloud, marchDebug);
+        input, hasGeometry, rayDirection, cloud, marchDebug, sceneDistance);
 }
 
 CloudDataOutput mainReferenceData(VSOut input)

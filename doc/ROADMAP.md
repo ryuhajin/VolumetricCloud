@@ -79,7 +79,18 @@
     가장 높은 합격 후보 Balanced512 기본값 승격
   - [x] F5~F8·Full/50%·wind/이동 사용자 렌더 승인 — 2026-08-25, Surface T 정렬과
     Direct/Cache 내부 명암, 상단 black slice, magenta/blue cascade 확인
-- [ ] 단계 14: 하늘·태양·지면과 구름 조명 통합
+- [ ] 단계 14: 하늘·태양·지면과 구름 조명 통합 — 구현·자동 검증 진행 중
+  - [x] 224바이트 b13과 Trans/Multi/Sky View/Sky Irradiance/Aerial R/T 여섯 compute LUT
+  - [x] 계수·지면·태양·카메라별 hash 무효화, 마지막 정상 LUT 원자 보존과 Manual 폴백
+  - [x] face normal/material ID 진단 장면, 지면 preset/건물 콘크리트 Lambert HDR 조명
+  - [x] 구름 직접 태양광, Sky Irradiance, 전역 Ground Bounce와 기존 AO/multiple 연결
+  - [x] Direct/Spatial/Temporal 공통 Aerial 합성, RGBA16F HDR와 ACES/white balance 최종 패스
+  - [x] F3 Sun/Time/Atmosphere/Ground/Tone/LUT UI와 schema 35 snapshot
+  - [x] CPU math 및 GPU LUT generation/invalidation D3D smoke
+  - [x] GPU Transmittance 전체 RGB readback `MAE=0.000189`, `P99=0.000485`, 여섯 LUT finite/non-negative
+  - [x] Debug/Release 빌드, 전체 49 CTest, hot reload, D3D11 debug layer 검증
+  - [x] 1080p 일곱 장면 성능 gate — GPU Cloud p95 평균 `7.37616ms`, Stage 12 호환 대비 `+4.325%`
+  - [ ] 사용자 화면 체크리스트 승인
 - [ ] 단계 15: Low/Medium/High, 1080p 성능, 최종 캡처와 포트폴리오 설명
 
 세부 결정과 수치는 [VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md](VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md)를 따른다.

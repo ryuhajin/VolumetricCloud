@@ -104,7 +104,7 @@ void Window::UpdateCameraMovement(float deltaSeconds)
         return;
     forward /= inputLength;
     right /= inputLength;
-    m_camera->TranslateRigLocal(
+    m_camera->MoveLocal(
         forward * moveDistance, right * moveDistance);
     MarkCameraManuallyAdjusted();
 }
@@ -150,9 +150,13 @@ void Window::UpdateDebugTitle()
     const wchar_t* noiseSourceName =
         m_renderer->CurrentNoiseSource() == NoiseSource::Texture3D
             ? L"Texture3D" : L"Procedural Legacy";
+    const wchar_t* atmosphereModeName =
+        m_renderer->AtmosphereSettings().mode == AtmosphereMode::Physical
+            ? L"Physical Atmosphere" : L"Manual Atmosphere";
     wchar_t title[512] = {};
-    swprintf_s(title, L"VolumetricCloud - Stage 13-5 | %ls | Unified 50km Portfolio Scene | %ls | %ls | %ls | %ls | %ls | %ls | WASD %.0f m/s Shift 4x",
+    swprintf_s(title, L"VolumetricCloud - Stage 14 | %ls | %ls | Unified 50km Portfolio Scene | %ls | %ls | %ls | %ls | %ls | %ls | WASD %.0f m/s Shift 4x",
                stage13scene::DebugModeName(m_renderer->DebugMode()),
+               atmosphereModeName,
                noiseSourceName,
                weatherPresetNames[(weatherPresetIndex >= 0 && weatherPresetIndex <= 2) ? weatherPresetIndex : 1],
                sunPresetNames[(sunPresetIndex >= 0 && sunPresetIndex <= 3) ? sunPresetIndex : 3],
@@ -294,10 +298,16 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEWHEEL:
         if (m_camera)
         {
-            m_camera->Zoom(
+            const float distance = stage13scene::WheelMovementDistance(
                 static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)),
-                CameraZoomSpeed::Normal);
-            MarkCameraManuallyAdjusted();
+                (GetKeyState(VK_SHIFT) & 0x8000) != 0,
+                m_renderer ? m_renderer->CameraMoveSpeed() :
+                    stage13scene::kMoveSpeedMetersPerSecond);
+            if (std::abs(distance) > 1e-5f)
+            {
+                m_camera->MoveLocal(distance, 0.0f);
+                MarkCameraManuallyAdjusted();
+            }
         }
         return 0;
 
