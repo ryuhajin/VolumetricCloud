@@ -20,6 +20,7 @@ void FrameTimingAccumulator::RecordCpuMilliseconds(double milliseconds)
     if (!std::isfinite(milliseconds) || milliseconds <= 0.0)
         return;
     m_lastRawCpuFrameMs = milliseconds;
+    m_snapshot.rawCpuFrameMs = milliseconds;
     m_snapshot.cpuFrameMs = m_snapshot.cpuValid
         ? m_snapshot.cpuFrameMs +
               kEmaAlpha * (milliseconds - m_snapshot.cpuFrameMs)

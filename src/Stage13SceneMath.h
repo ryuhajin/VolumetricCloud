@@ -83,7 +83,9 @@ inline CloudDebugMode DebugModeFromDigit(int digit)
 inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
 {
     const std::int32_t value = static_cast<std::int32_t>(mode);
-    return value == 0 || (value >= 8 && value <= 78)
+    // 79~80은 숫자 키/UI에 노출하지 않는 자동 검증용 내부 출력이다.
+    // 제거된 과거 ID 1~7과 이후 미정의 값은 계속 막는다.
+    return value == 0 || (value >= 8 && value <= 80)
         ? mode : CloudDebugMode::Composite;
 }
 
@@ -163,6 +165,8 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::SkippedDistance: return L"Skipped Distance";
     case CloudDebugMode::EarlyExitSavings: return L"Early Exit Savings";
     case CloudDebugMode::SupportPrecheckSkip: return L"Support Precheck Skip";
+    case CloudDebugMode::Stage15ResolvedCloud: return L"Stage 15 Resolved Cloud";
+    case CloudDebugMode::UpsampleAcceptedTapCount: return L"Upsample Accepted Tap Count";
     default: return L"Composite";
     }
 }

@@ -35,8 +35,10 @@ struct CloudTap
     float3 scattering;
     float transmittance;
     float cloudDepth;
-    float sourceSceneLimit;
+    float sceneLimit;
 };
+
+#include "CloudSpatialResolve.hlsli"
 
 float2 UvToNdc(float2 uv)
 {
@@ -90,7 +92,7 @@ CloudTap LoadCloudTap(int2 pixel, uint2 dimensions)
     tap.scattering = max(colorT.rgb, 0.0.xxx);
     tap.transmittance = saturate(colorT.a);
     tap.cloudDepth = max(depths.x, 0.0);
-    tap.sourceSceneLimit = max(depths.y, 0.0);
+    tap.sceneLimit = max(depths.y, 0.0);
     return tap;
 }
 
@@ -145,22 +147,43 @@ CloudTap BilinearCloud(float2 uv, uint2 dimensions)
         result.scattering += taps[index].scattering * weights[index];
         result.transmittance += taps[index].transmittance * weights[index];
         result.cloudDepth += taps[index].cloudDepth * weights[index];
-        result.sourceSceneLimit += taps[index].sourceSceneLimit * weights[index];
+        result.sceneLimit += taps[index].sceneLimit * weights[index];
     }
     return result;
 }
 
-CloudTap JointCloud(float2 uv, uint2 dimensions, float targetSceneLimit,
-                    bool targetHasGeometry, uint tapCount,
+CloudTap TransparentCloud(float targetSceneLimit)
+{
+    CloudTap transparent = (CloudTap)0;
+    transparent.transmittance = 1.0;
+    transparent.cloudDepth = targetSceneLimit;
+    transparent.sceneLimit = targetSceneLimit;
+    return transparent;
+}
+
+CloudTap JointCloud(float2 uv, int2 targetPixel, float targetDeviceDepth,
+                    uint2 dimensions, float targetSceneLimit, uint tapCount,
                     out float sceneAcceptance,
                     out float cloudDepthAcceptance,
-                    out float transmittanceAcceptance)
+                    out float transmittanceAcceptance,
+                    out uint acceptedTapCount)
 {
     float2 sourcePosition = uv * float2(dimensions) - 0.5;
     int2 centerPixel = int2(floor(sourcePosition + 0.5));
     int2 anchorPixel = tapCount == 4u
         ? int2(floor(sourcePosition)) : centerPixel;
-    CloudTap center = LoadCloudTap(centerPixel, dimensions);
+    CloudScenePlaneGuide targetGuide = (CloudScenePlaneGuide)0;
+    targetGuide.targetPixel = targetPixel;
+    targetGuide.deviceDepth = targetDeviceDepth;
+    targetGuide.hasGeometry =
+        CloudSpatialGeometryDepth(targetDeviceDepth) ? 1u : 0u;
+    CloudTap candidates[9];
+    uint rejectionReasons[9];
+    float spatialWeights[9];
+    uint candidateCount = 0u;
+    acceptedTapCount = 0u;
+    float bestDistanceSquared = 1.0e30;
+    CloudTap center = TransparentCloud(targetSceneLimit);
     CloudTap accumulated = (CloudTap)0;
     float weightSum = 0.0;
     float diagnosticSpatialWeight = 0.0;
@@ -174,33 +197,65 @@ CloudTap JointCloud(float2 uv, uint2 dimensions, float targetSceneLimit,
         {
             if (tapCount == 4u && (x < 0 || y < 0))
                 continue;
-            int2 offset = int2(x, y);
-            CloudTap candidate = LoadCloudTap(anchorPixel + offset, dimensions);
-            bool sourceHasGeometry = candidate.sourceSceneLimit < farPlane * 0.999;
-            float classWeight = sourceHasGeometry == targetHasGeometry ? 1.0 : 0.0;
-            float sceneWeight = classWeight * RelativeDepthWeight(
-                targetSceneLimit, candidate.sourceSceneLimit,
-                sceneDepthRelativeSigma);
-            float cloudWeight = RelativeDepthWeight(
-                center.cloudDepth, candidate.cloudDepth,
-                cloudDepthRelativeSigma);
-            float tWeight = GaussianWeight(
-                abs(center.transmittance - candidate.transmittance),
-                transmittanceSigma);
-            float2 samplePosition = float2(anchorPixel + offset) + 0.5;
-            float2 delta = samplePosition - sourcePosition;
+            int2 tapPixel = clamp(anchorPixel + int2(x, y), int2(0, 0),
+                                  int2(dimensions) - 1);
+            CloudTap candidate = LoadCloudTap(tapPixel, dimensions);
+            uint reason = CloudSpatialSourceRejectionReason(
+                candidate, tapPixel, dimensions, targetSceneLimit, 0.0.xx,
+                targetGuide);
+            float2 delta = float2(tapPixel) - sourcePosition;
             float spatialWeight = exp(-0.5 * dot(delta, delta));
-            float weight = spatialWeight * sceneWeight * cloudWeight * tWeight;
-            accumulated.scattering += candidate.scattering * weight;
-            accumulated.transmittance += candidate.transmittance * weight;
-            accumulated.cloudDepth += candidate.cloudDepth * weight;
-            accumulated.sourceSceneLimit += candidate.sourceSceneLimit * weight;
-            weightSum += weight;
-            sceneAcceptance += spatialWeight * sceneWeight;
-            cloudDepthAcceptance += spatialWeight * cloudWeight;
-            transmittanceAcceptance += spatialWeight * tWeight;
+            candidates[candidateCount] = candidate;
+            rejectionReasons[candidateCount] = reason;
+            spatialWeights[candidateCount] = spatialWeight;
+            ++candidateCount;
             diagnosticSpatialWeight += spatialWeight;
+            if (reason != 0u)
+                continue;
+            ++acceptedTapCount;
+            sceneAcceptance += spatialWeight;
+            float distanceSquared = dot(delta, delta);
+            if (distanceSquared < bestDistanceSquared)
+            {
+                bestDistanceSquared = distanceSquared;
+                center = candidate;
+            }
         }
+    }
+
+    // Hard-valid tap이 하나도 없으면 Geometry/Sky 어느 쪽에서도 반대 class를
+    // 끌어오지 않는다. 투명 fallback은 Temporal resolve와 동일하다.
+    if (acceptedTapCount == 0u)
+    {
+        float inverseDiagnosticWeight = 1.0 /
+            max(diagnosticSpatialWeight, 1e-6);
+        sceneAcceptance *= inverseDiagnosticWeight;
+        return TransparentCloud(targetSceneLimit);
+    }
+
+    [loop] for (uint index = 0u; index < candidateCount; ++index)
+    {
+        if (rejectionReasons[index] != 0u)
+            continue;
+        CloudTap candidate = candidates[index];
+        float spatialWeight = spatialWeights[index];
+        float cloudWeight = RelativeDepthWeight(
+            center.cloudDepth, candidate.cloudDepth,
+            cloudDepthRelativeSigma);
+        float tWeight = GaussianWeight(
+            abs(center.transmittance - candidate.transmittance),
+            transmittanceSigma);
+        float weight = spatialWeight *
+            RelativeDepthWeight(targetSceneLimit, candidate.sceneLimit,
+                                sceneDepthRelativeSigma) *
+            cloudWeight * tWeight;
+        accumulated.scattering += candidate.scattering * weight;
+        accumulated.transmittance += candidate.transmittance * weight;
+        accumulated.cloudDepth += candidate.cloudDepth * weight;
+        accumulated.sceneLimit += candidate.sceneLimit * weight;
+        weightSum += weight;
+        cloudDepthAcceptance += spatialWeight * cloudWeight;
+        transmittanceAcceptance += spatialWeight * tWeight;
     }
 
     float inverseDiagnosticWeight = 1.0 /
@@ -214,20 +269,11 @@ CloudTap JointCloud(float2 uv, uint2 dimensions, float targetSceneLimit,
         accumulated.scattering /= weightSum;
         accumulated.transmittance /= weightSum;
         accumulated.cloudDepth /= weightSum;
-        accumulated.sourceSceneLimit /= weightSum;
+        accumulated.sceneLimit /= weightSum;
         return accumulated;
     }
 
-    // 모든 후보가 거부되면 물체에는 구름을 투명하게 해 번짐을 막고,
-    // 하늘에는 가장 가까운 유효 저해상도 표본을 사용한다.
-    if (targetHasGeometry)
-    {
-        CloudTap transparent = (CloudTap)0;
-        transparent.transmittance = 1.0;
-        transparent.cloudDepth = targetSceneLimit;
-        transparent.sourceSceneLimit = targetSceneLimit;
-        return transparent;
-    }
+    // Soft weight가 수치 임계값 아래여도 hard-valid 최근접 표본은 유지한다.
     return center;
 }
 
@@ -238,9 +284,9 @@ float4 main(VSOut input) : SV_TARGET
     uint cloudHeight = 1u;
     cloudScatteringTransmittance.GetDimensions(cloudWidth, cloudHeight);
     uint2 cloudDimensions = uint2(max(cloudWidth, 1u), max(cloudHeight, 1u));
-    float deviceDepth = sceneDepthTexture.Load(
-        int3(clamp(int2(input.position.xy), int2(0, 0),
-                   int2(renderSize) - 1), 0));
+    int2 pixel = clamp(int2(input.position.xy), int2(0, 0),
+                       int2(renderSize) - 1);
+    float deviceDepth = sceneDepthTexture.Load(int3(pixel, 0));
     float3 rayDirection = ReconstructWorldRay(uv);
     bool hasGeometry = false;
     float targetSceneLimit = SceneLimitForPixel(
@@ -249,16 +295,26 @@ float4 main(VSOut input) : SV_TARGET
     float sceneAcceptance = 1.0;
     float cloudAcceptance = 1.0;
     float transmittanceAcceptance = 1.0;
+    uint acceptedTapCount = 0u;
     CloudTap cloud;
     if (resolutionScale >= 0.9999 || upsampleFilterMode == 0u)
         cloud = NearestCloud(uv, cloudDimensions);
     else if (upsampleFilterMode == 1u)
         cloud = BilinearCloud(uv, cloudDimensions);
     else
-        cloud = JointCloud(uv, cloudDimensions, targetSceneLimit, hasGeometry,
+        cloud = JointCloud(uv, pixel, deviceDepth, cloudDimensions,
+                           targetSceneLimit,
                            upsampleFilterMode == 2u ? 4u : 9u,
                            sceneAcceptance, cloudAcceptance,
-                           transmittanceAcceptance);
+                           transmittanceAcceptance, acceptedTapCount);
+
+    // Stage 15 화질 readback은 장면/대기 합성 뒤 색이 아니라 실제로
+    // resolve된 cloud scattering과 T를 비교한다. Temporal resolve와 같은
+    // 숨김 79/기존 8 계약을 Spatial resolve에도 유지한다.
+    if (debugMode == 8)
+        return float4(saturate(cloud.transmittance).xxx, 1.0);
+    if (debugMode == 79)
+        return float4(max(cloud.scattering, 0.0.xxx), 1.0);
 
     if (debugMode == 64)
     {
@@ -274,6 +330,12 @@ float4 main(VSOut input) : SV_TARGET
         return float4(saturate(cloudAcceptance).xxx, 1.0);
     if (debugMode == 67)
         return float4(saturate(transmittanceAcceptance).xxx, 1.0);
+    if (debugMode == 80)
+    {
+        if (resolutionScale >= 0.9999)
+            return float4(0.18, 0.18, 0.18, 1.0); // Full RT: spatial N/A
+        return float4(saturate(float(acceptedTapCount) * 0.25).xxx, 1.0);
+    }
 
     float3 background = hasGeometry
         ? sceneColorTexture.Load(int3(int2(input.position.xy), 0)).rgb

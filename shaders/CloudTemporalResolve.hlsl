@@ -42,21 +42,17 @@ struct CloudTap
     float sceneLimit;
 };
 
+#include "CloudSpatialResolve.hlsli"
+
 struct SpatialReconstructionResult
 {
     CloudTap value;
     uint currentValid;
     uint rejectionReason;
-};
-
-struct ScenePlaneGuide
-{
-    int2 targetPixel;
-    float deviceDepth;
-    float2 slope;
-    uint slopeMask;
-    uint hasGeometry;
-    uint guideBuilt;
+    uint acceptedTapCount;
+    float sceneAcceptance;
+    float cloudDepthAcceptance;
+    float transmittanceAcceptance;
 };
 
 struct CurrentNeighborhood
@@ -73,6 +69,9 @@ struct TemporalOutput
     float4 historyCloud : SV_TARGET0;
     float2 historyAux : SV_TARGET1;
     float4 composite : SV_TARGET2;
+    // R=실제로 accepted된 history 비율, G=최종 적용 weight.
+    // CPU는 mip 평균 1x1을 비동기 readback해 overlay에 표시한다.
+    float2 historyStatistics : SV_TARGET3;
 };
 
 float2 UvToNdc(float2 uv)
@@ -144,146 +143,15 @@ float RelativeDepthWeight(float a, float b, float sigma)
         max(max(max(abs(a), abs(b)), 1.0) * sigma, 1e-6));
 }
 
-bool GeometryDepth(float deviceDepth)
+float2 CurrentSourceJitterLowResTexels()
 {
-    return isfinite(deviceDepth) && deviceDepth >= 0.0 &&
-        deviceDepth < 0.999999;
-}
-
-bool SelectStableSlope(float centerDepth, float negativeDepth,
-                       float positiveDepth, out float slope)
-{
-    bool negativeValid = GeometryDepth(negativeDepth);
-    bool positiveValid = GeometryDepth(positiveDepth);
-    float negativeSlope = centerDepth - negativeDepth;
-    float positiveSlope = positiveDepth - centerDepth;
-    if (negativeValid && positiveValid)
-    {
-        slope = abs(negativeSlope) <= abs(positiveSlope)
-            ? negativeSlope : positiveSlope;
-        return true;
-    }
-    if (negativeValid)
-    {
-        slope = negativeSlope;
-        return true;
-    }
-    if (positiveValid)
-    {
-        slope = positiveSlope;
-        return true;
-    }
-    slope = 0.0;
-    return false;
-}
-
-ScenePlaneGuide BuildScenePlaneGuide(int2 targetPixel, float deviceDepth)
-{
-    ScenePlaneGuide guide = (ScenePlaneGuide)0;
-    int2 fullDimensions = max(int2(renderSize), int2(1, 1));
-    guide.targetPixel = clamp(targetPixel, int2(0, 0), fullDimensions - 1);
-    guide.deviceDepth = deviceDepth;
-    guide.hasGeometry = GeometryDepth(deviceDepth) ? 1u : 0u;
-    guide.guideBuilt = 1u;
-    if (guide.hasGeometry == 0u)
-        return guide;
-
-    int2 left = max(guide.targetPixel - int2(1, 0), int2(0, 0));
-    int2 right = min(guide.targetPixel + int2(1, 0), fullDimensions - 1);
-    int2 up = max(guide.targetPixel - int2(0, 1), int2(0, 0));
-    int2 down = min(guide.targetPixel + int2(0, 1), fullDimensions - 1);
-    float leftDepth = left.x != guide.targetPixel.x
-        ? sceneDepthTexture.Load(int3(left, 0)) : 1.0;
-    float rightDepth = right.x != guide.targetPixel.x
-        ? sceneDepthTexture.Load(int3(right, 0)) : 1.0;
-    float upDepth = up.y != guide.targetPixel.y
-        ? sceneDepthTexture.Load(int3(up, 0)) : 1.0;
-    float downDepth = down.y != guide.targetPixel.y
-        ? sceneDepthTexture.Load(int3(down, 0)) : 1.0;
-    if (SelectStableSlope(deviceDepth, leftDepth, rightDepth, guide.slope.x))
-        guide.slopeMask |= 1u;
-    if (SelectStableSlope(deviceDepth, upDepth, downDepth, guide.slope.y))
-        guide.slopeMask |= 2u;
-    return guide;
-}
-
-int2 SourceGuidePixel(int2 tapPixel, uint2 dimensions)
-{
-    float2 jitter = temporalJitterEnabled != 0u
+    return temporalJitterEnabled != 0u
         ? jitterOffsetLowResTexels : 0.0.xx;
-    float2 sourceSampleUv = saturate(
-        (float2(tapPixel) + 0.5 + jitter) / max(float2(dimensions), 1.0.xx));
-    int2 fullDimensions = max(int2(renderSize), int2(1, 1));
-    return clamp(int2(sourceSampleUv * renderSize), int2(0, 0),
-                 fullDimensions - 1);
-}
-
-// 반환값: 0=valid, 1=Scene class mismatch, 2=Geometry surface/plane mismatch,
-// 3=non-finite/range 또는 plane guide 부족. D32의 screen-space 평면 기울기는
-// perspective에서 같은 삼각형 내부에 affine이므로 사선 지면의 큰 meter 차이를
-// 허용하면서 실제 depth discontinuity는 계속 거부한다.
-uint SourceRejectionReason(CloudTap source, int2 tapPixel, uint2 dimensions,
-                           float targetSceneLimit,
-                           inout ScenePlaneGuide targetGuide)
-{
-    if (!all(isfinite(float4(source.scattering, source.transmittance))) ||
-        !all(isfinite(float2(source.cloudDepth, source.sceneLimit))) ||
-        source.cloudDepth < 0.0 || source.cloudDepth > farPlane ||
-        source.sceneLimit < 0.0 || source.sceneLimit > farPlane)
-        return 3u;
-
-    // 대부분의 F5/근거리 픽셀은 기존의 보수적인 meter 범위 안이다. 이 경우
-    // Full Depth 이웃 4개를 읽지 않는 fast path를 사용한다. 10m를 넘는 F8
-    // 사선 평면만 아래 screen-space plane 판정으로 내려간다.
-    bool sourceHasGeometry = source.sceneLimit < farPlane * 0.999;
-    if (sourceHasGeometry != (targetGuide.hasGeometry != 0u))
-        return 1u;
-    if (targetGuide.hasGeometry == 0u)
-        return 0u;
-
-    float fastDifference = clamp(targetSceneLimit * 0.01, 1.0, 10.0);
-    if (abs(source.sceneLimit - targetSceneLimit) <= fastDifference)
-        return 0u;
-
-    if (targetGuide.guideBuilt == 0u)
-        targetGuide = BuildScenePlaneGuide(
-            targetGuide.targetPixel, targetGuide.deviceDepth);
-    int2 sourcePixel = SourceGuidePixel(tapPixel, dimensions);
-    float sourceDeviceDepth = sceneDepthTexture.Load(int3(sourcePixel, 0));
-    sourceHasGeometry = GeometryDepth(sourceDeviceDepth);
-    if (sourceHasGeometry != (targetGuide.hasGeometry != 0u))
-        return 1u;
-
-    int2 pixelDelta = sourcePixel - targetGuide.targetPixel;
-    if (all(pixelDelta == int2(0, 0)))
-        return 0u;
-    if ((pixelDelta.x != 0 && (targetGuide.slopeMask & 1u) == 0u) ||
-        (pixelDelta.y != 0 && (targetGuide.slopeMask & 2u) == 0u))
-        return 3u;
-    float predictedDepth = targetGuide.deviceDepth +
-        targetGuide.slope.x * float(pixelDelta.x) +
-        targetGuide.slope.y * float(pixelDelta.y);
-    float manhattanDistance = abs(float(pixelDelta.x)) +
-        abs(float(pixelDelta.y));
-    float tolerance = 8.0e-7 + 2.0e-7 * manhattanDistance;
-    return isfinite(sourceDeviceDepth) && isfinite(predictedDepth) &&
-        abs(sourceDeviceDepth - predictedDepth) <= tolerance ? 0u : 2u;
-}
-
-uint MergeSourceFailure(uint accumulated, uint candidate)
-{
-    // 같은 class를 찾았지만 깊이가 다른 경우를 class mismatch보다 우선해
-    // 경계 진단에서 가장 구체적인 실패 원인을 보인다.
-    if (candidate == 2u)
-        return 2u;
-    if (candidate == 1u && accumulated != 2u)
-        return 1u;
-    return accumulated;
 }
 
 void FindNearestValid(
     float2 sourcePosition, int2 centerPixel, uint2 dimensions,
-    float targetSceneLimit, inout ScenePlaneGuide targetGuide,
+    float targetSceneLimit, inout CloudScenePlaneGuide targetGuide,
     inout SpatialReconstructionResult result)
 {
     result = (SpatialReconstructionResult)0;
@@ -298,13 +166,18 @@ void FindNearestValid(
     int2 clampedCenter = clamp(centerPixel, int2(0, 0),
                                int2(dimensions) - 1);
     CloudTap center = LoadCurrent(clampedCenter, dimensions);
-    uint centerReason = SourceRejectionReason(
-        center, clampedCenter, dimensions, targetSceneLimit, targetGuide);
+    uint centerReason = CloudSpatialSourceRejectionReason(
+        center, clampedCenter, dimensions, targetSceneLimit,
+        CurrentSourceJitterLowResTexels(), targetGuide);
     if (centerReason == 0u)
     {
         result.value = center;
         result.currentValid = 1u;
         result.rejectionReason = 0u;
+        result.acceptedTapCount = 1u;
+        result.sceneAcceptance = 1.0;
+        result.cloudDepthAcceptance = 1.0;
+        result.transmittanceAcceptance = 1.0;
         return;
     }
     result.rejectionReason = centerReason;
@@ -322,12 +195,12 @@ void FindNearestValid(
         int2 candidatePixel = clamp(centerPixel + int2(x, y), int2(0, 0),
                                     int2(dimensions) - 1);
         CloudTap candidate = LoadCurrent(candidatePixel, dimensions);
-        uint reason = SourceRejectionReason(
+        uint reason = CloudSpatialSourceRejectionReason(
             candidate, candidatePixel, dimensions, targetSceneLimit,
-            targetGuide);
+            CurrentSourceJitterLowResTexels(), targetGuide);
         if (reason != 0u)
         {
-            result.rejectionReason = MergeSourceFailure(
+            result.rejectionReason = CloudSpatialMergeSourceFailure(
                 result.rejectionReason, reason);
             continue;
         }
@@ -340,6 +213,10 @@ void FindNearestValid(
             result.value = candidate;
             result.currentValid = 1u;
             result.rejectionReason = 0u;
+            result.acceptedTapCount = 1u;
+            result.sceneAcceptance = 1.0;
+            result.cloudDepthAcceptance = 1.0;
+            result.transmittanceAcceptance = 1.0;
         }
     }
 }
@@ -357,15 +234,42 @@ void SpatialReconstruct(
     // Cloud Data texel i는 (i + 0.5 + jitter) / dimensions의 위치를
     // raymarch했다. Full UV에서 그 texel index를 다시 찾을 때는 같은
     // low-res texel 단위 jitter를 빼야 phase마다 경계가 왕복하지 않는다.
-    float2 currentJitter = temporalJitterEnabled != 0u
-        ? jitterOffsetLowResTexels : 0.0.xx;
+    float2 currentJitter = resolutionScale >= 0.9999
+        ? 0.0.xx : CurrentSourceJitterLowResTexels();
     float2 sourcePosition = uv * float2(dimensions) - 0.5 - currentJitter;
-    ScenePlaneGuide targetGuide = (ScenePlaneGuide)0;
+    CloudScenePlaneGuide targetGuide = (CloudScenePlaneGuide)0;
     targetGuide.targetPixel = targetPixel;
     targetGuide.deviceDepth = targetDeviceDepth;
-    targetGuide.hasGeometry = GeometryDepth(targetDeviceDepth) ? 1u : 0u;
+    targetGuide.hasGeometry =
+        CloudSpatialGeometryDepth(targetDeviceDepth) ? 1u : 0u;
     int2 nearestPixel = int2(floor(sourcePosition + 0.5));
-    if (resolutionScale >= 0.9999 || upsampleFilterMode == 0u)
+    // Full RT는 공간 복원과 주변 탐색을 완전히 우회한다. source 한 점이
+    // invalid이면 투명 current를 유지하고 Temporal history 판정에 맡긴다.
+    if (resolutionScale >= 0.9999)
+    {
+        int2 directPixel = clamp(nearestPixel, int2(0, 0),
+                                 int2(dimensions) - 1);
+        CloudTap direct = LoadCurrent(directPixel, dimensions);
+        uint reason = CloudSpatialSourceRejectionReason(
+            direct, directPixel, dimensions, targetSceneLimit,
+            0.0.xx, targetGuide);
+        if (reason == 0u)
+        {
+            result.value = direct;
+            result.currentValid = 1u;
+            result.rejectionReason = 0u;
+            result.acceptedTapCount = 1u;
+            result.sceneAcceptance = 1.0;
+            result.cloudDepthAcceptance = 1.0;
+            result.transmittanceAcceptance = 1.0;
+        }
+        else
+        {
+            result.rejectionReason = reason;
+        }
+        return;
+    }
+    if (upsampleFilterMode == 0u)
     {
         FindNearestValid(sourcePosition, nearestPixel, dimensions,
                          targetSceneLimit, targetGuide, result);
@@ -388,11 +292,12 @@ void SpatialReconstruct(
             CloudTap tap = LoadCurrent(basePixel + int2(x, y), dimensions);
             int2 tapPixel = clamp(basePixel + int2(x, y), int2(0, 0),
                                   int2(dimensions) - 1);
-            uint reason = SourceRejectionReason(
-                tap, tapPixel, dimensions, targetSceneLimit, targetGuide);
+            uint reason = CloudSpatialSourceRejectionReason(
+                tap, tapPixel, dimensions, targetSceneLimit,
+                CurrentSourceJitterLowResTexels(), targetGuide);
             if (reason != 0u)
             {
-                result.rejectionReason = MergeSourceFailure(
+                result.rejectionReason = CloudSpatialMergeSourceFailure(
                     result.rejectionReason, reason);
                 continue;
             }
@@ -401,6 +306,8 @@ void SpatialReconstruct(
             result.value.cloudDepth += tap.cloudDepth * weight;
             result.value.sceneLimit += tap.sceneLimit * weight;
             weightSum += weight;
+            ++result.acceptedTapCount;
+            result.sceneAcceptance += weight;
         }
         if (weightSum > 1e-6)
         {
@@ -410,6 +317,9 @@ void SpatialReconstruct(
             result.value.sceneLimit /= weightSum;
             result.currentValid = 1u;
             result.rejectionReason = 0u;
+            result.sceneAcceptance = saturate(result.sceneAcceptance);
+            result.cloudDepthAcceptance = result.sceneAcceptance;
+            result.transmittanceAcceptance = result.sceneAcceptance;
             return;
         }
         FindNearestValid(sourcePosition, nearestPixel, dimensions,
@@ -419,50 +329,87 @@ void SpatialReconstruct(
 
     const bool nineTap = upsampleFilterMode == 3u;
     int2 anchor = nineTap ? nearestPixel : basePixel;
-    SpatialReconstructionResult nearest = (SpatialReconstructionResult)0;
-    FindNearestValid(sourcePosition, nearestPixel, dimensions,
-                     targetSceneLimit, targetGuide, nearest);
-    if (nearest.currentValid == 0u)
-    {
-        result = nearest;
-        return;
-    }
-    CloudTap center = nearest.value;
     result = (SpatialReconstructionResult)0;
+    result.value.transmittance = 1.0;
+    result.value.cloudDepth = targetSceneLimit;
+    result.value.sceneLimit = targetSceneLimit;
     result.currentValid = 0u;
     result.rejectionReason = 3u;
+    CloudTap candidates[9];
+    uint rejectionReasons[9];
+    float spatialWeights[9];
+    uint candidateCount = 0u;
+    float bestDistanceSquared = 1.0e30;
+    CloudTap center = result.value;
     float weightSum = 0.0;
+    float diagnosticSpatialWeight = 0.0;
     [loop] for (int y = nineTap ? -1 : 0; y <= 1; ++y)
     [loop] for (int x = nineTap ? -1 : 0; x <= 1; ++x)
     {
         int2 tapPixel = clamp(anchor + int2(x, y), int2(0, 0),
                               int2(dimensions) - 1);
         CloudTap tap = LoadCurrent(tapPixel, dimensions);
-        uint reason = SourceRejectionReason(
-            tap, tapPixel, dimensions, targetSceneLimit, targetGuide);
-        if (reason != 0u)
-        {
-            result.rejectionReason = MergeSourceFailure(
-                result.rejectionReason, reason);
-            continue;
-        }
+        uint reason = CloudSpatialSourceRejectionReason(
+            tap, tapPixel, dimensions, targetSceneLimit,
+            CurrentSourceJitterLowResTexels(), targetGuide);
         // sourcePosition은 texel 중심을 정수 i로 표현하므로 tap에도 +0.5를
         // 더하지 않는다. 기존 혼용은 Joint에 반 texel 편향을 만들었다.
         float2 spatialDelta = float2(tapPixel) - sourcePosition;
         float spatial = exp(-0.5 * dot(spatialDelta, spatialDelta));
+        candidates[candidateCount] = tap;
+        rejectionReasons[candidateCount] = reason;
+        spatialWeights[candidateCount] = spatial;
+        ++candidateCount;
+        diagnosticSpatialWeight += spatial;
+        if (reason != 0u)
+        {
+            result.rejectionReason = CloudSpatialMergeSourceFailure(
+                result.rejectionReason, reason);
+            continue;
+        }
+        ++result.acceptedTapCount;
+        result.sceneAcceptance += spatial;
+        float distanceSquared = dot(spatialDelta, spatialDelta);
+        if (distanceSquared < bestDistanceSquared)
+        {
+            bestDistanceSquared = distanceSquared;
+            center = tap;
+        }
+    }
+    float inverseDiagnosticWeight = 1.0 /
+        max(diagnosticSpatialWeight, 1e-6);
+    result.sceneAcceptance *= inverseDiagnosticWeight;
+    if (result.acceptedTapCount == 0u)
+        return;
+
+    // Hard-valid 후보 중 target에 가장 가까운 tap을 Cloud Depth/T guide로 쓴다.
+    // 두 soft weight는 Sky/Sky에서도 유지되어 작은 구름 외곽을 보존한다.
+    result.value = (CloudTap)0;
+    [loop] for (uint index = 0u; index < candidateCount; ++index)
+    {
+        if (rejectionReasons[index] != 0u)
+            continue;
+        CloudTap tap = candidates[index];
+        float spatial = spatialWeights[index];
+        float cloudDepthWeight = RelativeDepthWeight(
+            center.cloudDepth, tap.cloudDepth, cloudDepthRelativeSigma);
+        float transmittanceWeight = GaussianWeight(
+            abs(center.transmittance - tap.transmittance),
+            transmittanceSigma);
         float weight = spatial *
             RelativeDepthWeight(targetSceneLimit, tap.sceneLimit,
-                                 sceneDepthRelativeSigma) *
-            RelativeDepthWeight(center.cloudDepth, tap.cloudDepth,
-                                cloudDepthRelativeSigma) *
-            GaussianWeight(abs(center.transmittance - tap.transmittance),
-                           transmittanceSigma);
+                                sceneDepthRelativeSigma) *
+            cloudDepthWeight * transmittanceWeight;
         result.value.scattering += tap.scattering * weight;
         result.value.transmittance += tap.transmittance * weight;
         result.value.cloudDepth += tap.cloudDepth * weight;
         result.value.sceneLimit += tap.sceneLimit * weight;
         weightSum += weight;
+        result.cloudDepthAcceptance += spatial * cloudDepthWeight;
+        result.transmittanceAcceptance += spatial * transmittanceWeight;
     }
+    result.cloudDepthAcceptance *= inverseDiagnosticWeight;
+    result.transmittanceAcceptance *= inverseDiagnosticWeight;
     if (weightSum >= minimumUpsampleWeight)
     {
         result.value.scattering /= weightSum;
@@ -473,10 +420,15 @@ void SpatialReconstruct(
         result.rejectionReason = 0u;
         return;
     }
-    result = nearest;
+    // Soft weight만 수치 임계값 아래이면 hard-valid 최근접 tap으로 fallback한다.
+    result.value = center;
+    result.currentValid = 1u;
+    result.rejectionReason = 0u;
 }
 
-void GatherCurrentNeighborhood(int2 centerPixel, CloudTap current,
+void GatherCurrentNeighborhood(float2 uv, int2 targetPixel,
+                               float targetDeviceDepth,
+                               float targetSceneLimit, CloudTap current,
                                uint2 dimensions,
                                out CurrentNeighborhood neighborhood)
 {
@@ -487,29 +439,30 @@ void GatherCurrentNeighborhood(int2 centerPixel, CloudTap current,
     neighborhood.maximumCloudDepth = current.cloudDepth;
     neighborhood.cloudDepthValid = current.transmittance < 0.99 ? 1u : 0u;
 
-    int2 fullDimensions = max(int2(renderSize), int2(1, 1));
+    float2 currentJitter = resolutionScale >= 0.9999
+        ? 0.0.xx : CurrentSourceJitterLowResTexels();
+    float2 sourcePosition = uv * float2(dimensions) - 0.5 - currentJitter;
+    int2 sourceCenter = int2(floor(sourcePosition + 0.5));
+    CloudScenePlaneGuide targetGuide = (CloudScenePlaneGuide)0;
+    targetGuide.targetPixel = targetPixel;
+    targetGuide.deviceDepth = targetDeviceDepth;
+    targetGuide.hasGeometry =
+        CloudSpatialGeometryDepth(targetDeviceDepth) ? 1u : 0u;
+    // Full 3x3의 각 픽셀에서 Joint4를 다시 계산하면 최대 32개 low-res tap과
+    // 여덟 번의 world-position 복원이 필요하다. 같은 유효 source 영역을
+    // low-res 3x3에서 직접 모으면 9 tap으로 줄고 Scene 경계 검사는 유지된다.
     [loop] for (int y = -1; y <= 1; ++y)
     [loop] for (int x = -1; x <= 1; ++x)
     {
         if (x == 0 && y == 0)
             continue;
-        int2 neighborPixel = clamp(centerPixel + int2(x, y), int2(0, 0),
-                                   fullDimensions - 1);
-        float2 neighborUv = (float2(neighborPixel) + 0.5) / renderSize;
-        float neighborDeviceDepth = sceneDepthTexture.Load(
-            int3(neighborPixel, 0));
-        bool neighborHasGeometry = GeometryDepth(neighborDeviceDepth);
-        float neighborSceneLimit = neighborHasGeometry
-            ? length(ReconstructWorldPosition(
-                neighborUv, neighborDeviceDepth) - cameraPos)
-            : farPlane;
-        SpatialReconstructionResult neighborResult =
-            (SpatialReconstructionResult)0;
-        SpatialReconstruct(neighborUv, neighborPixel, neighborDeviceDepth,
-                           neighborSceneLimit, dimensions, neighborResult);
-        if (neighborResult.currentValid == 0u)
+        int2 sourcePixel = clamp(sourceCenter + int2(x, y), int2(0, 0),
+                                 int2(dimensions) - 1);
+        CloudTap neighbor = LoadCurrent(sourcePixel, dimensions);
+        if (CloudSpatialSourceRejectionReason(
+                neighbor, sourcePixel, dimensions, targetSceneLimit,
+                currentJitter, targetGuide) != 0u)
             continue;
-        CloudTap neighbor = neighborResult.value;
         float4 value = float4(neighbor.scattering,
                               neighbor.transmittance);
         neighborhood.minimumValue = min(neighborhood.minimumValue, value);
@@ -696,8 +649,9 @@ TemporalOutput main(VSOut input)
             }
             if (accepted && currentValid)
             {
-                GatherCurrentNeighborhood(pixel, current, dimensions,
-                                          neighborhood);
+                GatherCurrentNeighborhood(
+                    uv, pixel, deviceDepth, sceneLimit,
+                    current, dimensions, neighborhood);
                 neighborhoodReady = true;
             }
             if (accepted && currentValid && !NeighborhoodCloudDepthAccepted(
@@ -733,8 +687,9 @@ TemporalOutput main(VSOut input)
     if (currentValid && accepted && neighborhoodClampingEnabled != 0u)
     {
         if (!neighborhoodReady)
-            GatherCurrentNeighborhood(pixel, current, dimensions,
-                                      neighborhood);
+            GatherCurrentNeighborhood(
+                uv, pixel, deviceDepth, sceneLimit,
+                current, dimensions, neighborhood);
         float4 centerValue = 0.5 * (
             neighborhood.minimumValue + neighborhood.maximumValue);
         float4 halfRange = 0.5 * (
@@ -754,6 +709,61 @@ TemporalOutput main(VSOut input)
     output.historyCloud = resolved;
     output.historyAux = float2(heldHistory ? historyAux.x : current.cloudDepth,
                                sceneLimit);
+    output.historyStatistics = float2(accepted ? 1.0 : 0.0, finalWeight);
+
+    // Stage 15 자동 화질 검증은 최종 temporal resolve가 실제로 사용한 T를
+    // 읽는다. 숫자 8의 기존 Transmittance 디버그 의미도 그대로 유지한다.
+    if (debugMode == 8)
+    {
+        output.composite = float4(resolved.aaa, 1.0);
+        return output;
+    }
+    if (debugMode == 79)
+    {
+        output.composite = float4(resolved.rgb, 1.0);
+        return output;
+    }
+
+    // Stage 10의 64~67 진단은 Temporal 경로에서도 동일한 공간 복원 결과를
+    // 표시한다. 예전 Composite fallthrough는 Joint4 거부 원인을 숨겼다.
+    if (debugMode == 64)
+    {
+        float2 grid = abs(frac(uv * float2(dimensions)) - 0.5);
+        float gridLine = 1.0 - smoothstep(0.45, 0.49,
+                                         max(grid.x, grid.y));
+        output.composite = float4(lerp(
+            float3(0.03, 0.05, 0.08), float3(0.1, 0.9, 1.0), gridLine), 1.0);
+        return output;
+    }
+    if (debugMode == 65)
+    {
+        output.composite = float4(
+            saturate(currentResult.sceneAcceptance).xxx, 1.0);
+        return output;
+    }
+    if (debugMode == 66)
+    {
+        output.composite = float4(
+            saturate(currentResult.cloudDepthAcceptance).xxx, 1.0);
+        return output;
+    }
+    if (debugMode == 67)
+    {
+        output.composite = float4(
+            saturate(currentResult.transmittanceAcceptance).xxx, 1.0);
+        return output;
+    }
+    if (debugMode == 80)
+    {
+        if (resolutionScale >= 0.9999)
+        {
+            output.composite = float4(0.18, 0.18, 0.18, 1.0);
+            return output; // Full RT는 spatial resolve 자체가 N/A다.
+        }
+        output.composite = float4(
+            saturate(float(currentResult.acceptedTapCount) * 0.25).xxx, 1.0);
+        return output;
+    }
 
     if (debugMode == 68)
     {
@@ -761,7 +771,27 @@ TemporalOutput main(VSOut input)
             float3(1.0, 0.2, 0.2), float3(0.2, 1.0, 0.2),
             float3(0.2, 0.4, 1.0), float3(1.0, 0.8, 0.2)
         };
-        output.composite = float4(phaseColors[temporalFrameIndex & 3u], 1.0);
+        const float3 phaseColor = phaseColors[temporalFrameIndex & 3u];
+        if (resolutionScale >= 0.9999 || temporalJitterEnabled == 0u)
+        {
+            // High Full은 4-phase를 사용하지 않는다. 회색은 의도적인 N/A다.
+            output.composite = float4(0.18, 0.18, 0.18, 1.0);
+            return output;
+        }
+
+        // 한 low texel이 현재 phase에서 실제로 raymarch한 Full 2x2 위치만
+        // 밝게 칠한다. 네 프레임을 넘기면 빨강/초록/파랑/노랑이 같은 2x2의
+        // 네 픽셀을 정확히 한 번씩 방문하는지 화면에서 확인할 수 있다.
+        float2 sourcePosition = uv * float2(dimensions) - 0.5 -
+            CurrentSourceJitterLowResTexels();
+        int2 sourcePixel = clamp(
+            int2(floor(sourcePosition + 0.5)), int2(0, 0),
+            int2(dimensions) - 1);
+        int2 sourceGuidePixel = CloudSpatialSourceGuidePixel(
+            sourcePixel, dimensions, CurrentSourceJitterLowResTexels());
+        float visited = all(sourceGuidePixel == pixel) ? 1.0 : 0.0;
+        output.composite = float4(
+            lerp(phaseColor * 0.035, phaseColor, visited), 1.0);
         return output;
     }
     if (debugMode == 69)

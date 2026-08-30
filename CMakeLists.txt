@@ -4,7 +4,7 @@
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
-project(VolumetricCloud LANGUAGES CXX)
+project(VolumetricCloud LANGUAGES CXX RC)
 
 # C++17 사용 (DirectXMath, 표준 라이브러리)
 set(CMAKE_CXX_STANDARD 17)
@@ -19,6 +19,7 @@ set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT VolumetricCloud)
 add_executable(VolumetricCloud WIN32
     src/main.cpp
     src/Window.cpp
+    src/VolumetricCloud.rc
     src/Renderer.cpp
     src/CloudAppearance.cpp
     src/NoiseLab.cpp
@@ -51,6 +52,7 @@ target_link_libraries(VolumetricCloud PRIVATE
     windowscodecs
     setupapi
     advapi32
+    bcrypt
 )
 
 # 유니코드 윈도우 API 사용
@@ -65,6 +67,9 @@ target_compile_definitions(VolumetricCloud PRIVATE
 # 소스 파일이 UTF-8(한국어 주석 포함)임을 MSVC에 알림 (C4819 방지)
 if (MSVC)
     target_compile_options(VolumetricCloud PRIVATE /utf-8)
+    # PMv2 manifest는 VolumetricCloud.rc의 RT_MANIFEST가 소유한다. 링크 후 자동
+    # manifest가 같은 resource ID를 덮어쓰지 않게 한다.
+    target_link_options(VolumetricCloud PRIVATE /MANIFEST:NO)
 endif()
 
 # 카메라 역투영 수학은 GPU 렌더와 별도로 빠르게 회귀 검사한다.
@@ -111,6 +116,8 @@ add_test(NAME VolumetricCloud.NoiseLabSmoke
          COMMAND VolumetricCloud --noise-lab-smoke-test)
 add_test(NAME VolumetricCloud.ShaderHotReloadSmoke
          COMMAND VolumetricCloud --shader-hot-reload-smoke-test)
+add_test(NAME VolumetricCloud.ShaderCacheSmoke
+         COMMAND VolumetricCloud --shader-cache-smoke-test)
 
 # 단계 3의 정규화 높이, 상·하단 smoothstep과 최종 밀도 결합을 CPU에서 검사한다.
 add_executable(VolumetricCloud.Stage3HeightMathTests
@@ -411,6 +418,30 @@ add_test(NAME VolumetricCloud.Stage14AtmosphereSmoke
          COMMAND VolumetricCloud --stage14-atmosphere-smoke-test)
 set_tests_properties(VolumetricCloud.Stage14AtmosphereSmoke
                      PROPERTIES TIMEOUT 300)
+
+# 단계 15 품질/콘셉트 resolver, 소유권 분리, Cirrus 좌표와 b7 ABI를 검사한다.
+add_executable(VolumetricCloud.Stage15PresetMathTests
+    tests/Stage15PresetMathTests.cpp
+    src/CloudAppearance.cpp
+    src/WeatherMap.cpp
+)
+target_include_directories(VolumetricCloud.Stage15PresetMathTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.Stage15PresetMathTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.Stage15PresetMath
+         COMMAND VolumetricCloud.Stage15PresetMathTests)
+add_test(NAME VolumetricCloud.Stage15PresetSmoke
+         COMMAND VolumetricCloud --stage15-preset-smoke-test)
+add_test(NAME VolumetricCloud.Stage15OutputDpiSmoke
+         COMMAND VolumetricCloud --stage15-output-dpi-smoke-test)
+add_test(NAME VolumetricCloud.Stage15CaptureSmoke
+         COMMAND VolumetricCloud --stage15-capture-smoke-test)
+set_tests_properties(
+    VolumetricCloud.Stage15PresetSmoke
+    VolumetricCloud.Stage15OutputDpiSmoke
+    VolumetricCloud.Stage15CaptureSmoke
+    PROPERTIES TIMEOUT 300)
 
 # ----------------------------------------------------------------------------
 #  셰이더 폴더를 실행 파일 옆으로 복사 (런타임에 HLSL을 파일에서 읽어 컴파일)

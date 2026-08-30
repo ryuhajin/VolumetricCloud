@@ -80,6 +80,10 @@ enum class CloudDebugMode : std::int32_t
     Stage12CascadeSelection = 76,
     Stage12SurfaceTransmittance = 77,
     Stage12DirectCacheError = 78,
+    // 사용자 숫자 키에는 노출하지 않는 Stage 15 자동 품질 readback이다.
+    Stage15ResolvedCloud = 79,
+    // Joint4의 Geometry/Sky·Scene plane hard-valid tap 수(0~4) 진단이다.
+    UpsampleAcceptedTapCount = 80,
 };
 
 enum class Stage5WeatherPreset : std::int32_t

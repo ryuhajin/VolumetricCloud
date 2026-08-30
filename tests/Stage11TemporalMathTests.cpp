@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <string_view>
 
 namespace
 {
@@ -255,14 +256,39 @@ int main()
                           parameters.nearHistoryFadeStartMeters,
                       "b11 ABI and sanitization");
 
+    parameters.jitterOffsetLowResTexels = { 0.25f, -0.25f };
     ApplyMode(parameters, Stage11TemporalMode::Off);
     passed &= Require(parameters.temporalEnabled == 0u &&
-                      parameters.jitterEnabled == 0u,
-                      "runtime default off");
+                      parameters.jitterEnabled == 0u &&
+                      parameters.jitterOffsetLowResTexels.x == 0.0f &&
+                      parameters.jitterOffsetLowResTexels.y == 0.0f,
+                      "Off maps to flags 00 and clears jitter");
+    ApplyMode(parameters, Stage11TemporalMode::Stable4Phase);
+    passed &= Require(parameters.temporalEnabled == 1u &&
+                      parameters.jitterEnabled == 1u,
+                      "Stable4Phase maps to flags 11");
+    parameters.jitterOffsetLowResTexels = { 0.25f, -0.25f };
+    ApplyMode(parameters, Stage11TemporalMode::FullResolution);
+    passed &= Require(parameters.temporalEnabled == 1u &&
+                      parameters.jitterEnabled == 0u &&
+                      parameters.jitterOffsetLowResTexels.x == 0.0f &&
+                      parameters.jitterOffsetLowResTexels.y == 0.0f,
+                      "FullResolution maps to flags 10 and has zero jitter");
+    using namespace std::literals;
+    passed &= Require(ModeName(Stage11TemporalMode::Off) == "off"sv &&
+                      ModeName(Stage11TemporalMode::Stable4Phase) ==
+                          "stable4Phase"sv &&
+                      ModeName(Stage11TemporalMode::FullResolution) ==
+                          "fullResolution"sv,
+                      "temporal mode names preserve the snapshot contract");
     passed &= Require(ModeFromSnapshot(32u, 1u) == Stage11TemporalMode::Off &&
                       ModeFromSnapshot(33u, 1u) ==
-                          Stage11TemporalMode::Stable4Phase,
-                      "schema 32 restores temporal off and schema 33 decodes");
+                          Stage11TemporalMode::Stable4Phase &&
+                      ModeFromSnapshot(36u, 2u) == Stage11TemporalMode::Off &&
+                      ModeFromSnapshot(37u, 2u) ==
+                          Stage11TemporalMode::FullResolution &&
+                      ModeFromSnapshot(37u, 99u) == Stage11TemporalMode::Off,
+                      "legacy schemas and schema 37 temporal modes decode safely");
 
     HistoryState state{};
     CommitHistoryState(state, true);

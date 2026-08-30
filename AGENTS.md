@@ -10,7 +10,8 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
 단계 9 기본 최적화는 2026-08-19 Balanced 기본값으로, 단계 11 Jitter·Temporal Reprojection은
 2026-08-23 안정성 우선 기준으로 사용자 승인을 받았습니다. 단계 12 Cloud Shadow Map과
 Light Cache는 2026-08-25 Balanced512 기본값으로 사용자 승인됐으며, 현재는
-`feature/stage14-atmosphere-integration`에서 대기·지면·구름 HDR 조명을 구현·검증 중입니다.
+단계 14 대기·지면·구름 HDR 조명은 2026-08-28 사용자 승인을 받아 `stage14` 태그에
+고정했으며, 현재는 `feature/stage15-final-quality`에서 최종 품질·콘셉트 프리셋을 구현 중입니다.
 단계 9는 `stage9-approved`, 단계 11은 `stage11` 태그에
 고정했고 초기 단계 13 평면 구름층 실험은 별도 브랜치에 보관했습니다. 새 포트폴리오 계획은 사용자 승인을 받았고
 단계 13-0 공간 단위 계약과 단계 13-1 AABB/평면층 교차는 사용자 승인을 받았고,
@@ -41,7 +42,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 윈도우/입력 | `src/Window.*` | Win32 창, 마우스/WASD → Camera, 리사이즈 → Renderer |
 | 카메라 | `src/Camera.*` | position+yaw/pitch FPS 자유 시점과 프리셋 호환 → view/proj/invViewProj |
 | 렌더러 | `src/Renderer.*` | D3D11 초기화, 대기/Shadow compute, HDR 장면·구름·Aerial 합성과 Tone Map |
-| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 ImGui, 3축 단면, 대기/LUT UI와 schema 35 내보내기 |
+| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 ImGui, Stage 15 프리셋/진단 UI와 schema 37 내보내기 |
 | 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | 거리 LOD 설정 | `src/CloudLodParameters.h` | 16바이트 b8 Detail 거리 LOD와 측정 중립 평균 |
 | 최적화 설정 | `src/OptimizationParameters.h` | 64바이트 b9 View/Light 후보와 단계 9 preset |
@@ -52,7 +53,8 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 도메인 설정 | `src/CloudDomainParameters.h` | AABB/평면층 선택과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
 | 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 29 Custom 원자 저장/복원 |
-| 형상 설정 | `src/CloudShapeParameters.h` | 64바이트 b7 물리 두께·타입별 Vertical Profile 설정 |
+| 형상 설정 | `src/CloudShapeParameters.h` | 112바이트 b7 물리 두께·타입별 Vertical Profile·Cirrus 방향 설정 |
+| 최종 프리셋 | `src/Stage15Parameters.h` | CPU 전용 Low/Medium/High와 네 콘셉트 resolver |
 | 조명 설정 | `src/LightParameters.h` | 80바이트 LightCB와 태양·외곽 범위 Phase 프리셋·sanitize |
 | 환경광 설정 | `src/EnvironmentParameters.h` | 80바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
 | 성능 계측 | `src/FrameProfiler.*` | Atmosphere/Shadow/Opaque/Raymarch/Resolve/Tone/Frame GPU timestamp와 EMA |

@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -37,6 +38,7 @@
 #include "AtmosphereParameters.h"
 #include "GroundLightingParameters.h"
 #include "Stage14Parameters.h"
+#include "Stage15Parameters.h"
 #include "ToneMappingParameters.h"
 #include "WeatherMap.h"
 
@@ -155,8 +157,11 @@ public:
     void SetStage11TemporalMode(Stage11TemporalMode mode);
     Stage11TemporalMode TemporalMode() const
     {
-        return m_temporalParameters.temporalEnabled != 0u
-            ? Stage11TemporalMode::Stable4Phase : Stage11TemporalMode::Off;
+        if (m_temporalParameters.temporalEnabled == 0u)
+            return Stage11TemporalMode::Off;
+        return m_temporalParameters.jitterEnabled != 0u
+            ? Stage11TemporalMode::Stable4Phase
+            : Stage11TemporalMode::FullResolution;
     }
     const Stage11TemporalParameters& TemporalSettings() const
     {
@@ -318,13 +323,16 @@ public:
             stage13scene::SanitizeMoveSpeed(value);
     }
     bool ValidateNoiseLabPreviews();
-    bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
+    bool ExportNoiseLabSnapshot(const std::filesystem::path& root,
+                                bool includePng = true);
     void SetNoiseLabOutputMode(NoiseOutputMode mode) { m_noiseLab.SetOutputMode(mode); }
     std::uint64_t NoiseLabPreviewHash(std::size_t targetIndex);
     std::uint64_t ShaderGeneration() const { return m_shaderGeneration; }
     void EnableFrameHashCapture(bool enabled) { m_captureFrameHashes = enabled; }
     void EnableNoiseLabPreviews(bool enabled) { m_renderNoiseLabPreviews = enabled; }
     void SetNoiseLabVisible(bool visible) { m_noiseLab.SetVisible(visible); }
+    // 자동 성능 fixture는 ImGui/overlay/preview/export를 GPU frame에서 완전히 제외한다.
+    void SetAutomatedRenderMode(bool enabled) { m_automatedRenderMode = enabled; }
     void ToggleDeveloperUiPanel(DeveloperUiPanel panel)
     {
         m_noiseLab.TogglePanel(panel);
@@ -338,6 +346,126 @@ public:
     std::uint64_t LastCloudFrameHash() const { return m_lastCloudFrameHash; }
     const std::string& AdapterName() const { return m_adapterName; }
     const std::string& DriverVersion() const { return m_driverVersion; }
+    std::uint64_t Stage15StateFingerprint() const;
+    std::uint64_t Stage15GpuResourceIdentityFingerprint() const;
+    std::uint64_t NonCirrusRaymarchShaderHash() const
+    {
+        return m_nonCirrusRaymarchShaderHash;
+    }
+    std::uint64_t NonCirrusDeepShadowShaderHash() const
+    {
+        return m_nonCirrusDeepShadowShaderHash;
+    }
+    std::uint64_t CirrusDeepShadowShaderHash() const
+    {
+        return m_cirrusDeepShadowShaderHash;
+    }
+    std::uint64_t WeatherUploadCount() const { return m_weatherUploadCount; }
+    std::uint64_t Stage15TransitionCommitCount() const
+    {
+        return m_stage15TransitionCommitCount;
+    }
+    std::uint64_t ConstantBufferUploadCount() const
+    {
+        return m_constantBufferUploadCount;
+    }
+    std::uint64_t ShaderCompileCallCount() const
+    {
+        return m_shaderCompileCallCount;
+    }
+    std::uint64_t ShaderCacheHitCount() const
+    {
+        return m_shaderCacheHitCount;
+    }
+    bool ValidateWarmShaderCache();
+    bool ValidateNoiseSamplerContract() const;
+    void InjectStage15TransitionFailureForTest(
+        Stage15TransitionFailurePoint point);
+    bool Stage15TransitionFailed() const
+    {
+        return m_stage15TransitionStatus.find("failed") != std::string::npos;
+    }
+    bool ApplyStage15Defaults();
+    void RequestStage15QualityPreset(Stage15QualityPreset preset)
+    {
+        if (m_stage15DiagnosticMode != Stage15DiagnosticMode::None)
+            return;
+        m_pendingStage15Transition.qualityPreset = static_cast<int>(preset);
+    }
+    void RequestStage15ConceptPreset(Stage15ConceptPreset preset)
+    {
+        if (m_stage15DiagnosticMode == Stage15DiagnosticMode::CaptureStill)
+            return;
+        m_pendingStage15Transition.conceptPreset = static_cast<int>(preset);
+    }
+    void RequestStage15DiagnosticMode(Stage15DiagnosticMode mode)
+    {
+        m_pendingStage15Transition.diagnosticMode = static_cast<int>(mode);
+    }
+    void CycleStage15QualityPreset();
+    void ToggleStage15TemporalOverride();
+    Stage15QualityPreset Stage15Quality() const
+    {
+        return m_stage15QualityPreset;
+    }
+    Stage15ConceptPreset Stage15Concept() const
+    {
+        return m_stage15ConceptPreset;
+    }
+    Stage15DiagnosticMode Stage15Diagnostic() const
+    {
+        return m_stage15DiagnosticMode;
+    }
+    bool Stage15TemporalOverrideActive() const
+    {
+        return m_stage15TemporalOverrideActive;
+    }
+    bool Stage15StatusOverlayVisible() const
+    {
+        return m_stage15StatusOverlayVisible;
+    }
+    bool PerformanceOverlayVisible() const
+    {
+        return m_performanceOverlayVisible;
+    }
+    void UpdateWindowMetrics(int physicalWidth, int physicalHeight,
+                             unsigned int dpi, float dpiScale,
+                             bool perMonitorV2, bool native1080p);
+    Stage15OutputExtentSnapshot OutputExtentSnapshot() const;
+    bool SizeDependentResourcesValid() const
+    {
+        return m_sizeDependentResourcesValid;
+    }
+    bool ConsumeNative1080pRequest(bool& enable);
+    void NotifyNative1080pResult(bool requestedEnable, bool succeeded,
+                                 bool active, const std::string& status);
+    bool SceneInputLocked() const;
+    Stage15CaptureState CaptureState() const { return m_stage15CaptureState; }
+    std::uint32_t CaptureCompletedSamples() const
+    {
+        return m_stage15CaptureCompletedSamples;
+    }
+    const std::string& CaptureStatusText() const
+    {
+        return m_stage15CaptureStatus;
+    }
+    std::uint32_t TemporalResetCountLast60Frames() const;
+    Stage11HistoryResetReason LastTemporalResetReason() const
+    {
+        return m_lastTemporalResetReason;
+    }
+    bool TemporalStatisticsValid() const
+    {
+        return m_temporalStatisticsValid;
+    }
+    float TemporalHistoryValidPercent() const
+    {
+        return m_temporalHistoryValidPercent;
+    }
+    float TemporalAverageHistoryWeight() const
+    {
+        return m_temporalAverageHistoryWeight;
+    }
 
 private:
     template <typename T>
@@ -358,6 +486,20 @@ private:
     struct SceneCB
     {
         DirectX::XMFLOAT4X4 viewProj;
+    };
+
+    struct Stage15TransitionRequest
+    {
+        int qualityPreset = -1;
+        int conceptPreset = -1;
+        int diagnosticMode = -1;
+        bool toggleTemporalOverride = false;
+
+        bool Empty() const
+        {
+            return qualityPreset < 0 && conceptPreset < 0 &&
+                diagnosticMode < 0 && !toggleTemporalOverride;
+        }
     };
 
     static_assert(sizeof(CameraCB) == 224, "CameraCB must match cbCamera");
@@ -391,7 +533,8 @@ private:
                                const char* entryPoint,
                                const char* target,
                                ComPtr<ID3DBlob>& outBlob,
-                               bool showErrors);
+                               bool showErrors,
+                               const D3D_SHADER_MACRO* defines = nullptr);
     bool CreateShaders(bool showErrors);
     bool CreateBackBufferTarget();
     bool CreateSceneTargets();
@@ -408,7 +551,12 @@ private:
     stage14::GpuParameters BuildStage14GpuParameters(
         const Camera& camera) const;
     void BindAtmosphereResources();
-    void RenderToneMapPass();
+    void RenderToneMapPass(ID3D11ShaderResourceView* sourceOverride = nullptr);
+    bool CreateStage15CaptureTarget();
+    void ReleaseStage15CaptureTarget();
+    bool AccumulateStage15CaptureSample();
+    void BeginStage15CaptureIfReady(float effectiveTime);
+    void ResetStage15CaptureAccumulation(const char* reason);
     bool CreateWeatherMapTexture(Stage5WeatherPreset preset);
     bool GenerateNoiseVolumes(
         ID3D11ComputeShader* baseShader, ID3D11ComputeShader* detailShader,
@@ -424,26 +572,45 @@ private:
         ID3D11Texture3D* texture, std::vector<std::uint8_t>& bytes) const;
     bool UpdateWeatherMapTexture(
         Stage5WeatherPreset preset,
-        const WeatherMapGeneratorSettings& settings);
+        const WeatherMapGeneratorSettings& settings,
+        const WeatherMapData* prebuiltMap = nullptr);
+    bool InitializeStage15Presets();
+    Stage15QualityDescriptor CaptureCurrentStage15Quality() const;
+    bool ApplyStage15QualityDescriptor(
+        const Stage15QualityDescriptor& descriptor,
+        Stage15QualityPreset selection, bool updateSelection,
+        bool resetState = true);
+    bool ApplyStage15QualityPresetImmediate(
+        Stage15QualityPreset preset, bool resetState = true);
+    bool ApplyStage15ConceptPresetImmediate(
+        Stage15ConceptPreset preset, bool resetState = true);
+    bool ApplyStage15DiagnosticModeImmediate(
+        Stage15DiagnosticMode mode, bool resetState = true);
+    void ApplyPendingStage15Requests();
     bool ApplyCloudAppearanceSettings(
         const CloudAppearanceSettings& settings,
         CloudAppearancePreset preset);
     void MarkCloudAppearanceDirty();
     void ReleaseSizeDependentResources();
-    void RenderDiagnosticScene(const Camera& camera);
+    void RenderDiagnosticScene(const Camera& camera,
+                               DirectX::XMFLOAT2 jitterPixels = {});
     void UpdateStage12ShadowParameters(const Camera& camera);
     void RenderDeepShadowCaches(const Camera& camera, float timeSeconds);
     void RenderCloudPass(const Camera& camera, float timeSeconds,
                          ID3D11RenderTargetView* targetOverride = nullptr);
     void UpdateCloudConstantBuffers(const Camera& camera, float timeSeconds,
-                                    int renderWidth, int renderHeight);
+                                    int renderWidth, int renderHeight,
+                                    DirectX::XMFLOAT2 jitterPixels = {});
     void BindCloudRaymarchResources(ID3D11PixelShader* pixelShader);
     void UnbindCloudShaderResources(UINT count);
-    void RenderCloudDataPass(const Camera& camera, float timeSeconds);
+    void RenderCloudDataPass(const Camera& camera, float timeSeconds,
+                             DirectX::XMFLOAT2 jitterPixels = {});
     void RenderCloudUpsamplePass(const Camera& camera, float timeSeconds,
-                                 ID3D11RenderTargetView* targetOverride = nullptr);
+                                 ID3D11RenderTargetView* targetOverride = nullptr,
+                                 DirectX::XMFLOAT2 jitterPixels = {});
     bool RenderCloudTemporalPass(const Camera& camera, float timeSeconds,
                                  ID3D11RenderTargetView* targetOverride = nullptr);
+    void UpdateTemporalStatisticsReadback();
     void PrepareTemporalFrame(const Camera& camera, float timeSeconds);
     void CommitTemporalFrame(const Camera& camera, float timeSeconds);
     bool EnsureCloudTargets();
@@ -455,6 +622,14 @@ private:
 
     int m_width = 0;
     int m_height = 0;
+    bool m_sizeDependentResourcesValid = false;
+    HWND m_hwnd = nullptr;
+    Stage15OutputExtentSnapshot m_outputExtent = {};
+    std::uint64_t m_renderFrameSerial = 0;
+    std::array<std::uint64_t, 64> m_temporalResetFrames = {};
+    std::size_t m_temporalResetFrameCursor = 0;
+    Stage11HistoryResetReason m_lastTemporalResetReason =
+        Stage11HistoryResetReason::FirstFrame;
 
     ComPtr<ID3D11Device> m_device;
     ComPtr<ID3D11DeviceContext> m_context;
@@ -470,6 +645,9 @@ private:
     ComPtr<ID3D11Texture2D> m_hdrComposite;
     ComPtr<ID3D11RenderTargetView> m_hdrCompositeRtv;
     ComPtr<ID3D11ShaderResourceView> m_hdrCompositeSrv;
+    ComPtr<ID3D11Texture2D> m_stage15CaptureAccumulator;
+    ComPtr<ID3D11RenderTargetView> m_stage15CaptureAccumulatorRtv;
+    ComPtr<ID3D11ShaderResourceView> m_stage15CaptureAccumulatorSrv;
 
     ComPtr<ID3D11Texture2D> m_cloudScatteringTransmittance;
     ComPtr<ID3D11RenderTargetView> m_cloudScatteringTransmittanceRtv;
@@ -486,6 +664,16 @@ private:
     ComPtr<ID3D11Texture2D> m_temporalHistoryAux[2];
     ComPtr<ID3D11RenderTargetView> m_temporalHistoryAuxRtv[2];
     ComPtr<ID3D11ShaderResourceView> m_temporalHistoryAuxSrv[2];
+    ComPtr<ID3D11Texture2D> m_temporalStatistics;
+    ComPtr<ID3D11RenderTargetView> m_temporalStatisticsRtv;
+    ComPtr<ID3D11ShaderResourceView> m_temporalStatisticsSrv;
+    std::array<ComPtr<ID3D11Texture2D>, 3> m_temporalStatisticsStaging;
+    std::array<bool, 3> m_temporalStatisticsPending = {};
+    std::uint32_t m_temporalStatisticsMipLevels = 0;
+    std::uint32_t m_temporalStatisticsWriteIndex = 0;
+    bool m_temporalStatisticsValid = false;
+    float m_temporalHistoryValidPercent = 0.0f;
+    float m_temporalAverageHistoryWeight = 0.0f;
 
     ComPtr<ID3D11Texture2D> m_shadowNearTexture;
     ComPtr<ID3D11ShaderResourceView> m_shadowNearSrv;
@@ -499,15 +687,21 @@ private:
     ComPtr<ID3D11PixelShader> m_cloudOptimizedPs;
     ComPtr<ID3D11PixelShader> m_cloudReferenceDataPs;
     ComPtr<ID3D11PixelShader> m_cloudOptimizedDataPs;
+    ComPtr<ID3D11PixelShader> m_cirrusReferencePs;
+    ComPtr<ID3D11PixelShader> m_cirrusOptimizedPs;
+    ComPtr<ID3D11PixelShader> m_cirrusReferenceDataPs;
+    ComPtr<ID3D11PixelShader> m_cirrusOptimizedDataPs;
     ComPtr<ID3D11PixelShader> m_cloudUpsamplePs;
     ComPtr<ID3D11PixelShader> m_cloudTemporalResolvePs;
     ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
     ComPtr<ID3D11PixelShader> m_toneMapPs;
+    ComPtr<ID3D11PixelShader> m_stage15CaptureAccumulatePs;
     ComPtr<ID3D11ComputeShader> m_noiseBaseCs;
     ComPtr<ID3D11ComputeShader> m_noiseDetailCs;
-    ComPtr<ID3D11ComputeShader> m_deepShadowCs;
+    ComPtr<ID3D11ComputeShader> m_nonCirrusDeepShadowCs;
+    ComPtr<ID3D11ComputeShader> m_cirrusDeepShadowCs;
     ComPtr<ID3D11ComputeShader> m_atmosphereTransmittanceCs;
     ComPtr<ID3D11ComputeShader> m_atmosphereMultiScatteringCs;
     ComPtr<ID3D11ComputeShader> m_atmosphereSkyViewCs;
@@ -532,12 +726,16 @@ private:
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
     std::uint32_t m_sceneIndexCount = 0;
+    std::array<std::uint64_t, 12> m_constantBufferUploadHashes = {};
+    std::array<bool, 12> m_constantBufferUploadValid = {};
+    std::uint64_t m_constantBufferUploadCount = 0;
 
     ComPtr<ID3D11DepthStencilState> m_depthState;
     ComPtr<ID3D11RasterizerState> m_rasterizerState;
     ComPtr<ID3D11SamplerState> m_pointClampSampler;
     ComPtr<ID3D11SamplerState> m_linearClampSampler;
     ComPtr<ID3D11SamplerState> m_weatherLinearWrapSampler;
+    ComPtr<ID3D11BlendState> m_stage15CaptureBlendState;
     ComPtr<ID3D11Texture2D> m_weatherMapTexture;
     ComPtr<ID3D11ShaderResourceView> m_weatherMapSrv;
     ComPtr<ID3D11Texture3D> m_baseNoiseVolume;
@@ -599,8 +797,48 @@ private:
     std::uint64_t m_detailNoiseVolumeHash = 0;
     double m_noiseVolumeGenerationMilliseconds = 0.0;
     WeatherMapGeneratorSettings m_weatherGeneratorSettings;
+    WeatherMapData m_currentWeatherMapData;
     std::uint64_t m_weatherMapHash = 0;
+    std::uint64_t m_weatherUploadCount = 0;
     std::string m_weatherMapStatus = "Not generated";
+    Stage15QualityPreset m_stage15QualityPreset =
+        Stage15QualityPreset::Medium;
+    Stage15ConceptPreset m_stage15ConceptPreset =
+        Stage15ConceptPreset::UrbanFairWeather;
+    Stage15DiagnosticMode m_stage15DiagnosticMode =
+        Stage15DiagnosticMode::None;
+    bool m_stage15TemporalOverrideActive = false;
+    Stage11TemporalMode m_stage15TemporalOverrideMode =
+        Stage11TemporalMode::Stable4Phase;
+    Stage11TemporalMode m_stage15TemporalOverrideRestoreMode =
+        Stage11TemporalMode::Stable4Phase;
+    bool m_stage15StatusOverlayVisible = true;
+    bool m_performanceOverlayVisible = true;
+    Stage15QualityDescriptor m_stage15SavedRealtimeQuality = {};
+    Stage15QualityPreset m_stage15SavedRealtimeQualityPreset =
+        Stage15QualityPreset::Medium;
+    bool m_stage15SavedRealtimeQualityValid = false;
+    bool m_stage15ConceptApplied = false;
+    Stage15TransitionRequest m_pendingStage15Transition;
+    std::string m_stage15TransitionStatus = "Idle";
+    std::uint64_t m_stage15TransitionCommitCount = 0;
+    bool m_stage15FailCloudTargetPreflight = false;
+    bool m_stage15FailShadowResourcePreflight = false;
+    bool m_stage15FailWeatherPreflight = false;
+    std::array<WeatherMapData, 4> m_stage15WeatherMaps;
+    std::array<std::uint64_t, 4> m_stage15WeatherHashes = {};
+    int m_native1080pRequest = -1;
+    bool m_stage15CaptureOwnsNative1080p = false;
+    Stage15CaptureState m_stage15CaptureState =
+        Stage15CaptureState::Inactive;
+    std::uint32_t m_stage15CaptureCompletedSamples = 0;
+    float m_stage15CaptureFrozenTime = 0.0f;
+    bool m_stage15CaptureFreezeValid = false;
+    std::uint64_t m_stage15CaptureShaderGeneration = 0;
+    std::string m_stage15CaptureStatus = "Inactive";
+    CloudDebugMode m_stage15CaptureSavedDebugMode =
+        CloudDebugMode::Composite;
+    bool m_stage15CaptureSavedDebugModeValid = false;
 
     std::wstring m_shaderDir;
     std::wstring m_fullscreenShaderPath;
@@ -613,9 +851,17 @@ private:
     std::wstring m_deepShadowShaderPath;
     std::wstring m_atmosphereLutShaderPath;
     std::wstring m_toneMapShaderPath;
+    std::wstring m_stage15CaptureAccumulateShaderPath;
     bool m_noiseVolumesEnabled = true;
+    bool m_automatedRenderMode = false;
+    bool m_bypassShaderCache = false;
+    std::uint64_t m_shaderCompileCallCount = 0;
+    std::uint64_t m_shaderCacheHitCount = 0;
     std::map<std::wstring, std::filesystem::file_time_type> m_shaderWriteTimes;
     std::uint64_t m_shaderGeneration = 0;
+    std::uint64_t m_nonCirrusRaymarchShaderHash = 0;
+    std::uint64_t m_nonCirrusDeepShadowShaderHash = 0;
+    std::uint64_t m_cirrusDeepShadowShaderHash = 0;
     std::string m_shaderStatus = "Not compiled";
     std::string m_shaderError;
     bool m_captureFrameHashes = false;

@@ -24,6 +24,7 @@ struct FrameTimingSnapshot
     double gpuCloudRaymarchMs = 0.0;
     double gpuUpsampleCompositeMs = 0.0;
     double gpuToneMapMs = 0.0;
+    double rawCpuFrameMs = 0.0;
     double rawGpuFrameMs = 0.0;
     double rawGpuCloudMs = 0.0;
     double rawGpuShadowCacheMs = 0.0;

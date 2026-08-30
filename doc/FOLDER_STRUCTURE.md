@@ -10,17 +10,21 @@ VolumetricCloud/
 │  ├─ PERFORMANCE.md               # 동일 조건 성능 측정 절차와 지표 범위
 │  ├─ STAGE13_4B_DEBUGGING_GUIDE.md # F1~F4·단축키·카메라·형상 판독 초보자 가이드
 │  ├─ STAGE14_ATMOSPHERE_VALIDATION_GUIDE.md # 대기 LUT·지면·HDR 사용자 화면 승인 가이드
+│  ├─ STAGE15_PRESET_VALIDATION_GUIDE.md # 10분 승인·상세 판정·증상별 진단·사용자 캡처 가이드
 │  ├─ ROADMAP.md                   # 사용자 승인 기반 0~15단계
 │  ├─ VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md # 단계 13~15 포트폴리오 구현·승인 계획
 │  ├─ FOLDER_STRUCTURE.md
 │  ├─ CONTRIBUTING.md
 │  └─ changes/
-│     └─ feature-rebuild-foundation.md
+│     ├─ feature-rebuild-foundation.md
+│     ├─ feature-stage15-final-quality.md
+│     └─ STAGE15_PERFORMANCE_REGRESSION.md # Stage 15 회귀 원인·실험·전후 수치 회고
 ├─ src/
 │  ├─ main.cpp
-│  ├─ Window.* / Camera.*          # 입력, FPS 자유 시점과 고정 검증 카메라
-│  ├─ Renderer.*                   # 대기 LUT, Deep Shadow, HDR 장면·구름·Aerial 합성과 Tone Map
-│  ├─ NoiseLab.*                   # F1~F4 ImGui, 대기/LUT/Temporal/Shadow, PNG/schema 35 snapshot
+│  ├─ Window.* / Camera.*          # PMv2 물리 client·Native 1080p, 입력과 카메라
+│  ├─ VolumetricCloud.manifest / .rc # 프로세스 PerMonitorV2 DPI awareness 리소스
+│  ├─ Renderer.*                   # Stage 15 transaction/진단 입력 guard/bytecode cache, 대기 LUT, Deep Shadow, HDR 합성
+│  ├─ NoiseLab.*                   # F1~F4, 두 overlay, Cirrus 형상 상태와 PNG/schema 37 snapshot
 │  ├─ CloudAppearance.*            # 13-4E 외형 preset, density CPU 기준, Custom JSON 원자 저장
 │  ├─ WeatherMap.*                 # 256² CPU periodic Perlin/Channel Debug RGBA 생성과 해시
 │  ├─ CloudParameters.h            # CPU/HLSL 공유 구름 설정
@@ -37,7 +41,9 @@ VolumetricCloud/
 │  ├─ ToneMappingParameters.h      # ACES/Linear/Legacy, Exposure와 white balance
 │  ├─ Stage14Parameters.h          # 224바이트 Stage14CB(b13)와 LUT 크기 계약
 │  ├─ Stage14AtmosphereMath.h      # 구면 대기·밀도·위상·LUT UV·HDR CPU 기준
-│  ├─ CloudShapeParameters.h       # 64바이트 물리 두께·타입 Vertical Profile 설정(b7)
+│  ├─ CloudShapeParameters.h       # 112바이트 물리 두께·타입 Profile·Cirrus 설정(b7)
+│  ├─ Stage15Parameters.h          # CPU 전용 품질·콘셉트·진단 descriptor와 순수 resolver
+│  ├─ Stage15CirrusMath.h          # Cirrus 방향 UV·물리 두께·profile CPU 기준
 │  ├─ CloudDomainParameters.h      # AABB/최종 평면 도메인 선택과 추적 한계(b5)
 │  ├─ LightParameters.h            # CPU/HLSL 공유 태양광 설정과 프리셋
 │  ├─ EnvironmentParameters.h      # CPU/HLSL 공유 환경광·다중 산란 설정
@@ -67,6 +73,8 @@ VolumetricCloud/
 │  ├─ VolumetricClouds.hlsl        # 직접·환경·다중 산란 적분과 단계 10 MRT 출력
 │  ├─ CloudUpsample.hlsl           # Full-resolution Nearest/Bilinear/Joint 복원·합성
 │  ├─ CloudTemporalResolve.hlsl    # Full D32 평면 source 검증·공간 복원, 3×3 depth·history 합성
+│  ├─ CloudSpatialResolve.hlsli    # Spatial/Temporal 공용 class·plane hard rejection과 Sky soft weight
+│  ├─ Stage15CaptureAccumulate.hlsl # Native 1080p Tone Map 전 4-sample HDR running average 입력
 │  ├─ CloudDeepShadow.hlsl         # Near/Far Base-only 누적 광학 깊이 compute
 │  ├─ NoiseLab.hlsl                # XY/XZ/YZ 고정 단면 픽셀 셰이더
 │  ├─ NoiseVolume.hlsl             # Base/Detail periodic Texture3D compute 생성
@@ -81,7 +89,7 @@ VolumetricCloud/
 │  ├─ Stage14Atmosphere.hlsli      # b13/t8~t13/s3와 공통 태양·하늘·Aerial 조회/합성
 │  ├─ Stage14AtmosphereLut.hlsl    # 여섯 RGBA16F compute LUT 생성
 │  ├─ Stage14ToneMap.hlsl          # ACES/white balance/sRGB/dither와 LUT fullscreen debug
-│  ├─ CloudShapeParameters.hlsli   # CPU와 공유하는 64바이트 CloudShapeCB(b7)
+│  ├─ CloudShapeParameters.hlsli   # CPU와 공유하는 112바이트 CloudShapeCB(b7)
 │  ├─ CloudDomainParameters.hlsli  # CPU와 공유하는 32바이트 DomainCB(b5)와 교차 선택
 │  ├─ CloudAdvection.hlsli         # Physical Weather/Base/Detail 공통 수평 Bulk 이동
 │  ├─ Noise.hlsli                  # 구름과 Lab 공용 Base/Detail density 라이브러리
@@ -116,12 +124,13 @@ VolumetricCloud/
 │  ├─ Stage13SceneMathTests.cpp    # 단일 씬 크기·입력·이동·디버그 매핑 회귀
 │  ├─ Stage13OpticsLightingMathTests.cpp # km τ·Light 후보·Detail LOD 회귀
 │  ├─ CloudAppearanceTests.cpp     # 13-4E 점유율·preset·density·Custom JSON 회귀
+│  ├─ Stage15PresetMathTests.cpp   # resolver·sanitize·소유권·Weather·b7/Cirrus 수학 계약
 │  ├─ Stage13SimilarityCameraMathTests.cpp # double 기준과 float 역 VP 레이 정밀도 비교
 │  └─ Stage13CloudDomainMathTests.cpp # 평면층 교차·깊이 제한·거리 fade 회귀 테스트
 ├─ notes/                           # 로컬 단계 학습·사용자 검증 문서와 개인 메모, Git 제외
 ├─ third_party/imgui/              # Win32/DX11 개발 UI submodule
 ├─ captures/noise-lab/             # 로컬 PNG/JSON 출력, Git 제외
-└─ build/                          # CMake 산출물, Git 제외
+└─ build/                          # CMake 산출물과 config별 shader-cache/, Git 제외
 ```
 
 `doc/Volumetric Cloud 프로젝트 단계별 구현 계획서.pdf`는 AI 에이전트 로컬 참고 자료이며 `.gitignore`로 제외한다.

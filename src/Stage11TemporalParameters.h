@@ -13,6 +13,7 @@ enum class Stage11TemporalMode : std::uint32_t
 {
     Off = 0,
     Stable4Phase = 1,
+    FullResolution = 2,
 };
 
 enum class Stage11HistoryResetReason : std::uint32_t
@@ -64,6 +65,42 @@ static_assert(sizeof(Stage11TemporalParameters) == 144,
 
 namespace stage11temporal
 {
+inline constexpr std::uint32_t kFullResolutionSnapshotSchemaVersion = 37u;
+
+inline const char* ModeName(Stage11TemporalMode mode)
+{
+    switch (mode)
+    {
+    case Stage11TemporalMode::Off: return "off";
+    case Stage11TemporalMode::Stable4Phase: return "stable4Phase";
+    case Stage11TemporalMode::FullResolution: return "fullResolution";
+    }
+    return "off";
+}
+
+inline const char* ResetReasonName(Stage11HistoryResetReason reason)
+{
+    switch (reason)
+    {
+    case Stage11HistoryResetReason::None: return "None";
+    case Stage11HistoryResetReason::FirstFrame: return "FirstFrame";
+    case Stage11HistoryResetReason::Resize: return "Resize";
+    case Stage11HistoryResetReason::ResolutionOrFilter:
+        return "ResolutionOrFilter";
+    case Stage11HistoryResetReason::TemporalToggle: return "TemporalToggle";
+    case Stage11HistoryResetReason::CameraCut: return "CameraCut";
+    case Stage11HistoryResetReason::ParametersChanged:
+        return "ParametersChanged";
+    case Stage11HistoryResetReason::TimeDiscontinuity:
+        return "TimeDiscontinuity";
+    case Stage11HistoryResetReason::ShaderReload: return "ShaderReload";
+    case Stage11HistoryResetReason::ResourcesRecreated:
+        return "ResourcesRecreated";
+    case Stage11HistoryResetReason::Manual: return "Manual";
+    }
+    return "Unknown";
+}
+
 inline Stage11TemporalParameters Sanitize(Stage11TemporalParameters value)
 {
     value.temporalEnabled = value.temporalEnabled ? 1u : 0u;
@@ -106,9 +143,24 @@ inline Stage11TemporalParameters Sanitize(Stage11TemporalParameters value)
 inline void ApplyMode(Stage11TemporalParameters& value,
                       Stage11TemporalMode mode)
 {
-    const bool enabled = mode == Stage11TemporalMode::Stable4Phase;
-    value.temporalEnabled = enabled ? 1u : 0u;
-    value.jitterEnabled = enabled ? 1u : 0u;
+    switch (mode)
+    {
+    case Stage11TemporalMode::Stable4Phase:
+        value.temporalEnabled = 1u;
+        value.jitterEnabled = 1u;
+        break;
+    case Stage11TemporalMode::FullResolution:
+        value.temporalEnabled = 1u;
+        value.jitterEnabled = 0u;
+        value.jitterOffsetLowResTexels = {};
+        break;
+    case Stage11TemporalMode::Off:
+    default:
+        value.temporalEnabled = 0u;
+        value.jitterEnabled = 0u;
+        value.jitterOffsetLowResTexels = {};
+        break;
+    }
 }
 
 // 전체 snapshot loader가 schema 32 이하를 받을 때 temporal 필드가 없다는
@@ -116,8 +168,15 @@ inline void ApplyMode(Stage11TemporalParameters& value,
 inline Stage11TemporalMode ModeFromSnapshot(
     std::uint32_t schemaVersion, std::uint32_t serializedMode)
 {
-    return schemaVersion >= 33u && serializedMode ==
-        static_cast<std::uint32_t>(Stage11TemporalMode::Stable4Phase)
-        ? Stage11TemporalMode::Stable4Phase : Stage11TemporalMode::Off;
+    if (schemaVersion < 33u)
+        return Stage11TemporalMode::Off;
+    if (serializedMode == static_cast<std::uint32_t>(
+            Stage11TemporalMode::Stable4Phase))
+        return Stage11TemporalMode::Stable4Phase;
+    if (schemaVersion >= kFullResolutionSnapshotSchemaVersion &&
+        serializedMode == static_cast<std::uint32_t>(
+            Stage11TemporalMode::FullResolution))
+        return Stage11TemporalMode::FullResolution;
+    return Stage11TemporalMode::Off;
 }
 }

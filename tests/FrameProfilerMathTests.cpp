@@ -30,6 +30,8 @@ int main()
     accumulator.RecordCpuMilliseconds(10.0);
     Require(std::abs(accumulator.Snapshot().cpuFrameMs - 19.0) < 1e-9,
             "CPU time must use alpha 0.1 EMA");
+    Require(std::abs(accumulator.Snapshot().rawCpuFrameMs - 10.0) < 1e-9,
+            "CPU snapshot must expose the latest raw sample for percentile gates");
     accumulator.RecordGpuMilliseconds(8.0, 5.0, 3.0, 1.0);
     accumulator.RecordGpuMilliseconds(6.0, 3.0, 1.5, 0.5);
     Require(std::abs(accumulator.Snapshot().gpuFrameMs - 7.8) < 1e-9 &&

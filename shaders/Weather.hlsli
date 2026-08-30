@@ -42,18 +42,84 @@ float DecodeCanonicalWeatherChannel(float value)
     return result;
 }
 
+#ifndef VCLOUD_CIRRUS_VARIANT
+#define VCLOUD_CIRRUS_VARIANT -1
+#endif
+
+bool IsCirrusCloudShape()
+{
+#if VCLOUD_CIRRUS_VARIANT == 1
+    return true;
+#elif VCLOUD_CIRRUS_VARIANT == 0
+    return false;
+#else
+    return cloudShapeMode == kCloudShapeCirrusPhysicalLayer;
+#endif
+}
+
+bool UsesPhysicalCloudShape()
+{
+#if VCLOUD_CIRRUS_VARIANT == 1
+    return true;
+#elif VCLOUD_CIRRUS_VARIANT == 0
+    return cloudShapeMode == kCloudShapeWeatherPhysicalThickness;
+#else
+    return cloudShapeMode == kCloudShapeWeatherPhysicalThickness ||
+           IsCirrusCloudShape();
+#endif
+}
+
+void ComputeCirrusBasis(out float2 alongDirection, out float2 acrossDirection)
+{
+#if VCLOUD_CIRRUS_VARIANT == 0
+    alongDirection = float2(0.9396926, 0.3420201);
+#else
+    float flowLength = length(cirrusFlowDirectionXZ);
+    alongDirection = flowLength > 1e-6
+        ? cirrusFlowDirectionXZ / flowLength
+        : float2(0.9396926, 0.3420201);
+#endif
+    acrossDirection = float2(-alongDirection.y, alongDirection.x);
+}
+
+float ComputeCirrusWeatherAspect()
+{
+#if VCLOUD_CIRRUS_VARIANT == 0
+    return 1.0;
+#else
+    return max(cirrusBaseAcrossScaleMeters /
+               max(cirrusBaseAlongScaleMeters, 1.0), 1e-4);
+#endif
+}
+
 // 기존 3D noise와 같은 양의 바람 방향으로 지도가 이동하도록 현재 월드 위치에서
 // wind*time을 뺀다. XZ 바람이 0이면 나누지 않고 정지한다. world size가 0 또는
 // 음수여도 1e-4m로 보정해 NaN/Inf가 화면 전체로 번지는 것을 막는다.
 float2 ComputeWeatherUv(float3 worldPosition, float timeSeconds)
 {
     float2 result = float2(0.0, 0.0);
-    if (cloudShapeMode == kCloudShapeWeatherPhysicalThickness)
+    if (UsesPhysicalCloudShape())
     {
         float3 stationaryWorld = ComputePhysicalCloudSamplePosition(
             worldPosition, timeSeconds);
-        result = frac(stationaryWorld.xz / max(weatherMapWorldSize, 1e-4) +
-                      weatherMapOffset);
+        if (IsCirrusCloudShape())
+        {
+            float2 alongDirection;
+            float2 acrossDirection;
+            ComputeCirrusBasis(alongDirection, acrossDirection);
+            float along = dot(stationaryWorld.xz, alongDirection);
+            float across = dot(stationaryWorld.xz, acrossDirection);
+            float aspect = ComputeCirrusWeatherAspect();
+            result = frac(float2(
+                along / max(weatherMapWorldSize, 1e-4),
+                across / max(weatherMapWorldSize * aspect, 1e-4)) +
+                weatherMapOffset);
+        }
+        else
+        {
+            result = frac(stationaryWorld.xz /
+                max(weatherMapWorldSize, 1e-4) + weatherMapOffset);
+        }
     }
     else
     {
@@ -117,6 +183,43 @@ float EvaluatePhysicalLocalThickness(float thicknessPotential, float cloudType)
 float EvaluatePhysicalLocalHeight(float worldY, float localThicknessMeters)
 {
     return (worldY - cloudBoundsMin.y) / max(localThicknessMeters, 1.0);
+}
+
+float EvaluateCirrusLocalThickness(float thicknessPotential)
+{
+#if VCLOUD_CIRRUS_VARIANT == 0
+    return 1.0;
+#else
+    return lerp(cirrusMinimumThicknessMeters,
+                cirrusMaximumThicknessMeters,
+                saturate(thicknessPotential));
+#endif
+}
+
+float EvaluateCirrusLocalHeight(float worldY, float localThicknessMeters)
+{
+#if VCLOUD_CIRRUS_VARIANT == 0
+    return -1.0;
+#else
+    float layerThickness = max(cloudBoundsMax.y - cloudBoundsMin.y, 1.0);
+    float center = cloudBoundsMin.y +
+        layerThickness * saturate(cirrusVerticalProfileCenter);
+    float localBottom = center - localThicknessMeters * 0.5;
+    return (worldY - localBottom) / max(localThicknessMeters, 1.0);
+#endif
+}
+
+float EvaluateCirrusVerticalProfile(float localHeightFraction)
+{
+#if VCLOUD_CIRRUS_VARIANT == 0
+    return 0.0;
+#else
+    if (localHeightFraction < 0.0 || localHeightFraction > 1.0)
+        return 0.0;
+    float centeredDistance = abs(localHeightFraction * 2.0 - 1.0);
+    return 1.0 - smoothstep(
+        saturate(cirrusVerticalProfileHalfWidth), 1.0, centeredDistance);
+#endif
 }
 
 float EvaluateProfileEnvelope(float heightFraction, float bottomFadeEndValue,

@@ -1,0 +1,4 @@
+#include <winuser.h>
+
+// 링커의 진입점보다 먼저 읽혀 프로세스 전체가 첫 창 생성 전부터 PMv2가 된다.
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "VolumetricCloud.manifest"

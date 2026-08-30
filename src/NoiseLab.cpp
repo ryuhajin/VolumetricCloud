@@ -693,6 +693,21 @@ void NoiseLab::BeginFrame(float applicationTime,
                           AtmosphereParameters& atmosphereParameters,
                           GroundLightingParameters& groundLightingParameters,
                           ToneMappingParameters& toneMappingParameters,
+                          Stage15QualityPreset stage15QualityPreset,
+                          Stage15ConceptPreset stage15ConceptPreset,
+                          Stage15DiagnosticMode stage15DiagnosticMode,
+                          bool stage15TemporalOverrideActive,
+                          const Stage15OutputExtentSnapshot& outputExtent,
+                          Stage15CaptureState stage15CaptureState,
+                          std::uint32_t stage15CaptureCompletedSamples,
+                          const std::string& stage15CaptureStatus,
+                          std::uint32_t temporalResetCountLast60Frames,
+                          Stage11HistoryResetReason lastTemporalResetReason,
+                          bool temporalStatisticsValid,
+                          float temporalHistoryValidPercent,
+                          float temporalAverageHistoryWeight,
+                          bool& stage15StatusOverlayVisible,
+                          bool& performanceOverlayVisible,
                           const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
                           const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
                           const std::array<std::uint64_t, 6>& atmosphereLutHashes,
@@ -722,6 +737,9 @@ void NoiseLab::BeginFrame(float applicationTime,
     m_atmosphereSnapshot = atmosphereParameters;
     m_groundLightingSnapshot = groundLightingParameters;
     m_toneMappingSnapshot = toneMappingParameters;
+    SynchronizeStage15Snapshot(
+        stage15QualityPreset, stage15ConceptPreset,
+        stage15DiagnosticMode, stage15TemporalOverrideActive);
     m_atmosphereLutGenerations = atmosphereLutGenerations;
     m_atmosphereLutHashes = atmosphereLutHashes;
     m_currentApplicationTime = applicationTime;
@@ -754,7 +772,19 @@ void NoiseLab::BeginFrame(float applicationTime,
                           lightParameters, sunPreset, phasePreset,
                           environmentParameters, environmentPreset,
                           atmosphereParameters, groundLightingParameters,
-                          toneMappingParameters, atmosphereLutSrvs,
+                          toneMappingParameters,
+                          stage15QualityPreset, stage15ConceptPreset,
+                          stage15DiagnosticMode, stage15TemporalOverrideActive,
+                          outputExtent, stage15CaptureState,
+                          stage15CaptureCompletedSamples,
+                          stage15CaptureStatus,
+                          temporalResetCountLast60Frames,
+                          lastTemporalResetReason,
+                          temporalStatisticsValid,
+                          temporalHistoryValidPercent,
+                          temporalAverageHistoryWeight,
+                          stage15StatusOverlayVisible,
+                          performanceOverlayVisible, atmosphereLutSrvs,
                           atmosphereLutGenerations, atmosphereLutHashes,
                           atmosphereStatus,
                           weatherPreset, weatherGeneratorSettings,
@@ -769,8 +799,83 @@ void NoiseLab::BeginFrame(float applicationTime,
                           shaderGeneration, shaderStatus, shaderError);
     }
     m_currentCamera = CaptureCamera(camera);
-    DrawPerformanceOverlay(timing, cloudParameters, lightParameters,
-                           vsyncEnabled);
+    if (stage15StatusOverlayVisible)
+    {
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+            ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoNav;
+        ImGui::SetNextWindowBgAlpha(0.72f);
+        ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
+        if (ImGui::Begin("Stage 15 Status", nullptr, flags))
+        {
+            ImGui::Text("Concept: %s", stage15::ConceptName(stage15ConceptPreset));
+            ImGui::Text("Quality: %s", stage15::QualityName(stage15QualityPreset));
+            const Stage11TemporalMode temporalMode =
+                temporalParameters.temporalEnabled == 0u
+                    ? Stage11TemporalMode::Off
+                    : (temporalParameters.jitterEnabled != 0u
+                        ? Stage11TemporalMode::Stable4Phase
+                        : Stage11TemporalMode::FullResolution);
+            ImGui::Text("Temporal: %s%s",
+                stage11temporal::ModeName(temporalMode),
+                stage15TemporalOverrideActive ? " (override)" : "");
+            ImGui::Text("Physical Client: %d x %d | DPI %u (%.0f%%)",
+                outputExtent.physicalClientWidth,
+                outputExtent.physicalClientHeight, outputExtent.dpi,
+                outputExtent.dpiScale * 100.0f);
+            ImGui::Text("SwapChain / Viewport: %d x %d / %d x %d",
+                outputExtent.swapChainWidth, outputExtent.swapChainHeight,
+                outputExtent.viewportWidth, outputExtent.viewportHeight);
+            ImGui::Text("Scene Color / Depth: %d x %d / %d x %d",
+                outputExtent.sceneColorWidth, outputExtent.sceneColorHeight,
+                outputExtent.sceneDepthWidth, outputExtent.sceneDepthHeight);
+            ImGui::Text("Cloud RT / History: %d x %d / %d x %d",
+                outputExtent.cloudWidth, outputExtent.cloudHeight,
+                outputExtent.historyWidth, outputExtent.historyHeight);
+            ImGui::Text("PMv2: %s | Native 1080p: %s",
+                outputExtent.perMonitorV2 ? "yes" : "NO",
+                outputExtent.native1080p ? "yes" : "no");
+            if (temporalMode == Stage11TemporalMode::Stable4Phase)
+                ImGui::Text("Phase: %u / 4 | History age: %u (%s)",
+                    temporalParameters.frameIndex & 3u,
+                    temporalAccumulatedFrames,
+                    temporalHistoryValid ? "valid" : "invalid");
+            else
+                ImGui::Text("Phase: N/A | History age: %u (%s)",
+                    temporalAccumulatedFrames,
+                    temporalHistoryValid ? "valid" : "invalid");
+            ImGui::Text("Temporal resets/60f: %u | last: %s",
+                temporalResetCountLast60Frames,
+                stage11temporal::ResetReasonName(lastTemporalResetReason));
+            if (temporalStatisticsValid)
+                ImGui::Text("History accepted: %.1f%% | avg weight: %.3f",
+                    temporalHistoryValidPercent,
+                    temporalAverageHistoryWeight);
+            else
+                ImGui::Text("History accepted / avg weight: N/A");
+            ImGui::Text("View: %.1f m / %u | Cone %u",
+                cloudParameters.stepSize, cloudParameters.maxViewSteps,
+                optimizationParameters.coneSampleCount);
+            ImGui::Text("Shadow: %s | Diagnostic: %s",
+                stage12shadow::PresetName(static_cast<Stage12ShadowPreset>(
+                    shadowParameters.shadowPreset)),
+                stage15::DiagnosticName(stage15DiagnosticMode));
+            if (stage15DiagnosticMode == Stage15DiagnosticMode::CaptureStill)
+            {
+                ImGui::Text("Capture: %s %u/%u",
+                    stage15::CaptureStateName(stage15CaptureState),
+                    stage15CaptureCompletedSamples,
+                    stage15::kCaptureSampleCount);
+                ImGui::TextWrapped("%s", stage15CaptureStatus.c_str());
+            }
+        }
+        ImGui::End();
+    }
+    if (performanceOverlayVisible)
+        DrawPerformanceOverlay(timing, cloudParameters, lightParameters,
+                               vsyncEnabled);
 }
 
 void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
@@ -795,6 +900,21 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                                  AtmosphereParameters& atmosphereParameters,
                                  GroundLightingParameters& groundLightingParameters,
                                  ToneMappingParameters& toneMappingParameters,
+                                 Stage15QualityPreset stage15QualityPreset,
+                                 Stage15ConceptPreset stage15ConceptPreset,
+                                 Stage15DiagnosticMode stage15DiagnosticMode,
+                                 bool stage15TemporalOverrideActive,
+                                 const Stage15OutputExtentSnapshot& outputExtent,
+                                 Stage15CaptureState stage15CaptureState,
+                                 std::uint32_t stage15CaptureCompletedSamples,
+                                 const std::string& stage15CaptureStatus,
+                                 std::uint32_t temporalResetCountLast60Frames,
+                                 Stage11HistoryResetReason lastTemporalResetReason,
+                                 bool temporalStatisticsValid,
+                                 float temporalHistoryValidPercent,
+                                 float temporalAverageHistoryWeight,
+                                 bool& stage15StatusOverlayVisible,
+                                 bool& performanceOverlayVisible,
                                  const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
                                  const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
                                  const std::array<std::uint64_t, 6>& atmosphereLutHashes,
@@ -839,6 +959,107 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::End();
         return;
     }
+
+    if (cameraPanel)
+    {
+        ImGui::SeparatorText("Stage 15 Presets");
+        ImGui::Text("Concept: %s", stage15::ConceptName(stage15ConceptPreset));
+        const bool diagnosticActive =
+            stage15DiagnosticMode != Stage15DiagnosticMode::None;
+        const Stage15ConceptPreset concepts[] = {
+            Stage15ConceptPreset::UrbanFairWeather,
+            Stage15ConceptPreset::MeadowBrokenClouds,
+            Stage15ConceptPreset::DesertCirrus,
+            Stage15ConceptPreset::SnowOvercast,
+        };
+        ImGui::BeginDisabled(diagnosticActive);
+        for (std::size_t index = 0; index < std::size(concepts); ++index)
+        {
+            if (ImGui::Button(stage15::ConceptName(concepts[index])))
+                m_stage15ConceptRequest = static_cast<int>(concepts[index]);
+            if (index + 1u != std::size(concepts))
+                ImGui::SameLine();
+        }
+        ImGui::Text("Quality: %s | Q cycles Low / Medium / High",
+                    stage15::QualityName(stage15QualityPreset));
+        const Stage15QualityPreset qualities[] = {
+            Stage15QualityPreset::Low,
+            Stage15QualityPreset::Medium,
+            Stage15QualityPreset::High,
+        };
+        for (std::size_t index = 0; index < std::size(qualities); ++index)
+        {
+            if (ImGui::Button(stage15::QualityName(qualities[index])))
+                m_stage15QualityRequest = static_cast<int>(qualities[index]);
+            if (index + 1u != std::size(qualities))
+                ImGui::SameLine();
+        }
+        ImGui::EndDisabled();
+        if (diagnosticActive)
+            ImGui::TextDisabled(
+                "Concept, Quality and Q/T are locked until Restore Realtime.");
+        const Stage11TemporalMode currentTemporalMode =
+            temporalParameters.temporalEnabled == 0u
+                ? Stage11TemporalMode::Off
+                : (temporalParameters.jitterEnabled != 0u
+                    ? Stage11TemporalMode::Stable4Phase
+                    : Stage11TemporalMode::FullResolution);
+        ImGui::Text("Temporal: %s%s | T toggles without changing RT size",
+            stage11temporal::ModeName(currentTemporalMode),
+            stage15TemporalOverrideActive ? " (override)" : "");
+        ImGui::Text("Output %d x %d | Cloud %d x %d | History %d x %d",
+            outputExtent.physicalClientWidth,
+            outputExtent.physicalClientHeight,
+            outputExtent.cloudWidth, outputExtent.cloudHeight,
+            outputExtent.historyWidth, outputExtent.historyHeight);
+        ImGui::Text("DPI %u (%.0f%%) | PMv2 %s | Native 1080p %s",
+            outputExtent.dpi, outputExtent.dpiScale * 100.0f,
+            outputExtent.perMonitorV2 ? "yes" : "NO",
+            outputExtent.native1080p ? "yes" : "no");
+        ImGui::Checkbox("Compact Stage 15 Overlay",
+                        &stage15StatusOverlayVisible);
+        ImGui::Checkbox("Performance Overlay", &performanceOverlayVisible);
+        ImGui::TextDisabled(
+            "Turn both overlays off, then close F4, for a clean manual capture.");
+        if (ImGui::TreeNode("Advanced Capture / Reference"))
+        {
+            ImGui::BeginDisabled(
+                stage15DiagnosticMode == Stage15DiagnosticMode::CaptureStill);
+            if (ImGui::Button("Capture Still"))
+                m_stage15DiagnosticRequest = static_cast<int>(
+                    Stage15DiagnosticMode::CaptureStill);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Reference"))
+                m_stage15DiagnosticRequest = static_cast<int>(
+                    Stage15DiagnosticMode::Reference);
+            ImGui::SameLine();
+            if (ImGui::Button("Restore Realtime"))
+                m_stage15DiagnosticRequest = static_cast<int>(
+                    Stage15DiagnosticMode::None);
+            ImGui::Text("Current: %s",
+                        stage15::DiagnosticName(stage15DiagnosticMode));
+            if (stage15DiagnosticMode == Stage15DiagnosticMode::CaptureStill)
+            {
+                ImGui::Text("Capture: %s | %u/%u HDR samples",
+                    stage15::CaptureStateName(stage15CaptureState),
+                    stage15CaptureCompletedSamples,
+                    stage15::kCaptureSampleCount);
+                ImGui::TextWrapped("%s", stage15CaptureStatus.c_str());
+            }
+            ImGui::TextDisabled(
+                "Capture requests physical Native 1920x1080, freezes the scene, and averages 4 HDR samples.");
+            ImGui::TreePop();
+        }
+        ImGui::Separator();
+    }
+
+    const bool captureControlsLocked =
+        stage15DiagnosticMode == Stage15DiagnosticMode::CaptureStill &&
+        stage15CaptureState != Stage15CaptureState::Inactive &&
+        stage15CaptureState != Stage15CaptureState::Failed;
+    if (captureControlsLocked)
+        ImGui::BeginDisabled();
 
     if (noisePanel)
     {
@@ -934,16 +1155,26 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     const Stage12ShadowParameters shadowBefore = shadowParameters;
     const NoiseVolumeParameters noiseVolumeBefore = noiseVolumeParameters;
     const LightParameters lightBefore = lightParameters;
+    const EnvironmentParameters environmentBefore = environmentParameters;
     const AtmosphereParameters atmosphereBefore = atmosphereParameters;
     const GroundLightingParameters groundBefore = groundLightingParameters;
     const CloudAppearanceSettings appearanceBefore = CaptureCloudAppearance(
         cloudParameters, cloudShapeParameters, m_weatherGeneratorDraft);
-    const bool physicalShape = cloudShapeParameters.shapeMode ==
-        static_cast<std::uint32_t>(CloudShapeMode::WeatherPhysicalThickness);
+    const CloudShapeMode shapeMode = cloudshape::Mode(
+        cloudShapeParameters.shapeMode);
+    const bool weatherPhysicalShape =
+        shapeMode == CloudShapeMode::WeatherPhysicalThickness;
+    const bool cirrusPhysicalShape =
+        shapeMode == CloudShapeMode::CirrusPhysicalLayer;
+    const bool bulkAdvectedShape = cloudshape::UsesPhysicalBulkAdvection(
+        cloudShapeParameters.shapeMode);
+    const bool stage15QualityControlsLocked =
+        stage15DiagnosticMode != Stage15DiagnosticMode::None;
 
     if (noisePanel && ImGui::CollapsingHeader(
             "Open World Render Pipeline Compare"))
     {
+        ImGui::BeginDisabled(stage15QualityControlsLocked);
         ImGui::TextDisabled(
             "Keeps the unified scene geometry and camera. Each step is deterministic and cumulative.");
         const char* labels[] = {
@@ -959,11 +1190,16 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::Text("Current pipeline: %s",
             stage13openworld::PipelinePresetName(
                 m_openWorldPipelinePreset));
+        ImGui::EndDisabled();
+        if (stage15QualityControlsLocked)
+            ImGui::TextDisabled(
+                "Pipeline compare is locked until Restore Realtime.");
     }
 
     if (noisePanel && ImGui::CollapsingHeader(
             "Optimization", ImGuiTreeNodeFlags_DefaultOpen))
     {
+        ImGui::BeginDisabled(stage15QualityControlsLocked);
         ImGui::TextDisabled(
             "Every row is ordered left to right: lower GPU cost -> higher GPU cost.");
         auto applyMaster = [&](Stage9OptimizationPreset preset)
@@ -1047,11 +1283,16 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             if (ImGui::Button(label.c_str())) { optimizationParameters.lightFarSampleFraction = fraction; markCustom(); }
             if (fraction != 0.95f) ImGui::SameLine();
         }
+        ImGui::EndDisabled();
+        if (stage15QualityControlsLocked)
+            ImGui::TextDisabled(
+                "Optimization controls are locked until Restore Realtime.");
     }
 
     if (noisePanel && ImGui::CollapsingHeader(
             "Low Resolution / Upsampling", ImGuiTreeNodeFlags_DefaultOpen))
     {
+        ImGui::BeginDisabled(stage15QualityControlsLocked);
         ImGui::TextDisabled(
             "Every row is ordered left to right: lower GPU cost -> higher GPU cost.");
         ImGui::Text("Resolution: %s",
@@ -1120,16 +1361,23 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                     upsamplingParameters.minimumWeight);
         ImGui::TextDisabled(
             "Stage 10 starts at Full until automatic and user quality gates approve a lower resolution.");
+        ImGui::EndDisabled();
+        if (stage15QualityControlsLocked)
+            ImGui::TextDisabled(
+                "Resolution and filter controls are locked until Restore Realtime.");
     }
 
     if (noisePanel && ImGui::CollapsingHeader(
             "Temporal", ImGuiTreeNodeFlags_DefaultOpen))
     {
+        ImGui::BeginDisabled(stage15QualityControlsLocked);
         const Stage11TemporalMode temporalMode =
-            temporalParameters.temporalEnabled != 0u
-            ? Stage11TemporalMode::Stable4Phase : Stage11TemporalMode::Off;
-        ImGui::Text("Mode: %s", temporalMode == Stage11TemporalMode::Off
-            ? "Off" : "Stable 4-Phase");
+            temporalParameters.temporalEnabled == 0u
+                ? Stage11TemporalMode::Off
+                : (temporalParameters.jitterEnabled != 0u
+                    ? Stage11TemporalMode::Stable4Phase
+                    : Stage11TemporalMode::FullResolution);
+        ImGui::Text("Mode: %s", stage11temporal::ModeName(temporalMode));
         if (ImGui::Button("Off##Temporal"))
             stage11temporal::ApplyMode(
                 temporalParameters, Stage11TemporalMode::Off);
@@ -1138,14 +1386,34 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             stage11temporal::ApplyMode(
                 temporalParameters, Stage11TemporalMode::Stable4Phase);
         ImGui::SameLine();
+        if (ImGui::Button("Full Resolution##Temporal"))
+            stage11temporal::ApplyMode(
+                temporalParameters, Stage11TemporalMode::FullResolution);
+        ImGui::SameLine();
         if (ImGui::Button("Reset History"))
             m_temporalResetRequested = true;
 
-        ImGui::Text("Phase %u | history %s | accumulated %u",
-                    temporalParameters.frameIndex & 3u,
-                    temporalHistoryValid ? "valid" : "invalid",
-                    temporalAccumulatedFrames);
-        ImGui::Text("Last reset reason: %u", temporalParameters.resetReason);
+        if (temporalMode == Stage11TemporalMode::Stable4Phase)
+            ImGui::Text("Phase %u | history %s | age %u",
+                        temporalParameters.frameIndex & 3u,
+                        temporalHistoryValid ? "valid" : "invalid",
+                        temporalAccumulatedFrames);
+        else
+            ImGui::Text("Phase N/A | history %s | age %u",
+                        temporalHistoryValid ? "valid" : "invalid",
+                        temporalAccumulatedFrames);
+        ImGui::Text("Resets last 60 frames: %u | Last: %s",
+                    temporalResetCountLast60Frames,
+                    stage11temporal::ResetReasonName(
+                        lastTemporalResetReason));
+        if (temporalStatisticsValid)
+            ImGui::Text("Accepted history: %.1f%% | Mip-mean weight: %.3f",
+                        temporalHistoryValidPercent,
+                        temporalAverageHistoryWeight);
+        else
+            ImGui::Text("Accepted history / Mip-mean weight: N/A");
+        ImGui::TextDisabled(
+            "GPU mip reduction is a low-cost whole-screen estimate; reset discards pending older samples.");
 
         ImGui::TextUnformatted("History Weight:"); ImGui::SameLine();
         for (float value : { 0.80f, 0.90f, 0.95f })
@@ -1178,8 +1446,12 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         if (ImGui::Checkbox("Neighborhood Clamp", &neighborhoodClamp))
             temporalParameters.neighborhoodClampingEnabled =
                 neighborhoodClamp ? 1u : 0u;
+        ImGui::EndDisabled();
+        if (stage15QualityControlsLocked)
+            ImGui::TextDisabled(
+                "Temporal controls are locked until Restore Realtime.");
         ImGui::TextDisabled(
-            "Approval default remains Off. Stable mode jitters only the Cloud Data pass.");
+            "Low/Medium use Stable 4-Phase; High Full uses Full Resolution without 4-phase jitter.");
     }
 
     if (noisePanel && ImGui::CollapsingHeader(
@@ -1230,6 +1502,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             { "Scene Rejection", CloudDebugMode::UpsampleSceneRejection },
             { "Cloud Depth Weight", CloudDebugMode::UpsampleCloudDepthWeight },
             { "Transmittance Weight", CloudDebugMode::UpsampleTransmittanceWeight },
+            { "Accepted Joint Tap Count", CloudDebugMode::UpsampleAcceptedTapCount },
             { "Temporal Jitter Phase", CloudDebugMode::TemporalJitterPhase },
             { "Temporal Reprojection Motion", CloudDebugMode::TemporalReprojectionMotion },
             { "Temporal History Validity", CloudDebugMode::TemporalHistoryValidity },
@@ -1255,7 +1528,17 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             }
             ImGui::EndCombo();
         }
-        if (current == CloudDebugMode::TemporalReprojectionMotion)
+        if (current == CloudDebugMode::UpsampleAcceptedTapCount)
+        {
+            ImGui::TextWrapped(
+                "Accepted Joint taps: black=0, 25/50/75/100%% gray=1/2/3/4 hard-valid taps. Pure sky should average at least 2; geometry/sky boundaries may reject more. Flat dark gray means Full RT (spatial resolve not applicable).");
+        }
+        else if (current == CloudDebugMode::TemporalJitterPhase)
+        {
+            ImGui::TextWrapped(
+                "4-phase source lattice: the bright phase color marks the one Full pixel sampled by each low texel; four frames must visit every pixel of its 2x2 once. Gray means Full RT (not applicable).");
+        }
+        else if (current == CloudDebugMode::TemporalReprojectionMotion)
         {
             ImGui::TextWrapped(
                 "Motion: neutral gray = 0 px, RG = signed +/-16 px, blue = behind/outside, dark gray = no cloud/history.");
@@ -1381,13 +1664,13 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         }
         ImGui::SliderFloat("Weather World Size", &cloudParameters.weatherMapWorldSize,
                            0.1f, 100000.0f, "%.3f m", ImGuiSliderFlags_Logarithmic);
-        ImGui::BeginDisabled(physicalShape);
+        ImGui::BeginDisabled(bulkAdvectedShape);
         ImGui::SliderFloat("Weather Wind Speed", &cloudParameters.weatherMapWindSpeed,
                            0.0f, 1000.0f, "%.2f m/s");
         ImGui::EndDisabled();
-        if (physicalShape)
+        if (bulkAdvectedShape)
             ImGui::TextDisabled(
-                "Legacy Shape only; Physical Weather uses Bulk Wind.");
+                "Legacy Shape only; physical shapes use Bulk Wind.");
         ImGui::DragFloat2("Weather Offset", &cloudParameters.weatherMapOffset.x,
                           0.01f, -10.0f, 10.0f, "%.2f cycle");
         if (ImGui::Button("Reset Weather Transform"))
@@ -1516,7 +1799,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                          0.01f, -20.0f, 20.0f);
         ImGui::DragFloat3("Wind Direction", &cloudParameters.windDirection.x,
                           0.01f, -1.0f, 1.0f);
-        ImGui::SliderFloat(physicalShape
+        ImGui::SliderFloat(bulkAdvectedShape
                                ? "Cloud Wind Speed (Bulk)"
                                : "Wind Speed",
                            &cloudParameters.windSpeed,
@@ -1526,6 +1809,8 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     if (noisePanel && ImGui::CollapsingHeader(
             "Height profile", ImGuiTreeNodeFlags_DefaultOpen))
     {
+        if (!cirrusPhysicalShape)
+        {
         ImGui::SliderFloat("Bottom Fade End", &cloudParameters.bottomFadeEnd,
                            0.01f, 0.99f, "%.2f normalized height");
         ImGui::SliderFloat("Top Fade Start", &cloudParameters.topFadeStart,
@@ -1561,9 +1846,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::SameLine();
         if (ImGui::Button("Reset Top Fade"))
             cloudParameters.topFadeStart = 0.80f;
-        ImGui::Text("Shape mode: %s", physicalShape
-            ? "Weather physical thickness" : "Legacy normalized layer");
-        if (physicalShape)
+        }
+        ImGui::Text("Shape mode: %s", cloudshape::ModeDisplayName(
+            cloudShapeParameters.shapeMode));
+        if (weatherPhysicalShape)
         {
             const float minimumThickness = 1.0f;
             const float maximumThickness = 6000.0f;
@@ -1610,6 +1896,28 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                     CloudShapeMode::WeatherPhysicalThickness);
             }
         }
+        else if (cirrusPhysicalShape)
+        {
+            ImGui::Text("Flow XZ: %.6f, %.6f",
+                cloudShapeParameters.cirrusFlowDirectionXZ.x,
+                cloudShapeParameters.cirrusFlowDirectionXZ.y);
+            ImGui::Text("Base scale: along %.0f m | across %.0f m | vertical %.0f m",
+                cloudShapeParameters.cirrusBaseAlongScaleMeters,
+                cloudShapeParameters.cirrusBaseAcrossScaleMeters,
+                cloudShapeParameters.cirrusBaseVerticalScaleMeters);
+            ImGui::Text("Detail scale: along %.0f m | across %.0f m | vertical %.0f m",
+                cloudShapeParameters.cirrusDetailAlongScaleMeters,
+                cloudShapeParameters.cirrusDetailAcrossScaleMeters,
+                cloudShapeParameters.cirrusDetailVerticalScaleMeters);
+            ImGui::Text("Local thickness: %.0f - %.0f m",
+                cloudShapeParameters.cirrusMinimumThicknessMeters,
+                cloudShapeParameters.cirrusMaximumThicknessMeters);
+            ImGui::Text("Vertical profile: center %.3f | half-width %.3f",
+                cloudShapeParameters.cirrusVerticalProfileCenter,
+                cloudShapeParameters.cirrusVerticalProfileHalfWidth);
+            ImGui::TextDisabled(
+                "Stage 15 Cirrus values are read-only here; edit the concept descriptor in code.");
+        }
         else
         {
             ImGui::SliderFloat("Minimum Local Thickness",
@@ -1622,9 +1930,17 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                                &cloudParameters.cumulusTopBoost,
                                0.0f, 1.0f, "%.2f");
         }
-        ImGui::TextDisabled("Weather Thickness Potential: white selects a thicker typed column.");
-        ImGui::TextDisabled("Local Thickness: black=0 km, white=6 km.");
-        ImGui::TextDisabled("Local Height: local bottom 0, local top 1; outside is black.");
+        ImGui::TextDisabled(
+            "Weather Thickness Potential: white selects a thicker typed column.");
+        if (cirrusPhysicalShape)
+            ImGui::TextDisabled(
+                "Cirrus Local Thickness maps Weather A to 0.5-1.5 km; Local Height is 0-1 inside that layer.");
+        else
+        {
+            ImGui::TextDisabled("Local Thickness: black=0 km, white=6 km.");
+            ImGui::TextDisabled(
+                "Local Height: local bottom 0, local top 1; outside is black.");
+        }
     }
     cloudParameters.bottomFadeEnd = std::clamp(cloudParameters.bottomFadeEnd, 0.01f, 0.99f);
     cloudParameters.topFadeStart = std::clamp(cloudParameters.topFadeStart, 0.01f, 0.99f);
@@ -1642,13 +1958,13 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                            0.0001f, 16.0f, "%.6f cycle/m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Erosion Strength", &cloudParameters.detailErosionStrength,
                            0.0f, 1.0f, "%.3f");
-        ImGui::BeginDisabled(physicalShape);
+        ImGui::BeginDisabled(bulkAdvectedShape);
         ImGui::SliderFloat("Detail Wind Speed", &cloudParameters.detailWindSpeed,
                            0.0f, 1000.0f, "%.2f m/s");
         ImGui::EndDisabled();
-        if (physicalShape)
+        if (bulkAdvectedShape)
             ImGui::TextDisabled(
-                "Legacy Shape only; Physical Detail uses Bulk Wind.");
+                "Legacy Shape only; physical shapes use Bulk Wind.");
         ImGui::DragFloat("Detail Offset", &cloudParameters.detailNoiseOffset,
                          0.01f, -50.0f, 50.0f, "%.2f cycle");
         if (ImGui::Button("Reset Detail"))
@@ -1882,6 +2198,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             }
             ImGui::TextDisabled(
                 "Extinguished light converted to scattering (sigma_s / sigma_t).");
+            ImGui::BeginDisabled(stage15QualityControlsLocked);
             int lightSteps = static_cast<int>(lightParameters.maxLightSteps);
             if (ImGui::SliderInt("Max Light Steps", &lightSteps, 1, 512))
             {
@@ -1904,6 +2221,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                 lightParameters.lightStepSize = 250.0f;
                 lightChanged = true;
             }
+            ImGui::EndDisabled();
+            if (stage15QualityControlsLocked)
+                ImGui::TextDisabled(
+                    "Light step budget is locked until Restore Realtime.");
             lightChanged |= ImGui::SliderFloat(
                 "Light Ray Bias", &lightParameters.lightRayBias,
                 0.001f, 100.0f, "%.3f m", ImGuiSliderFlags_Logarithmic);
@@ -1975,6 +2296,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             "Stage 12 Cloud Shadow / Deep Cache",
             ImGuiTreeNodeFlags_DefaultOpen))
     {
+        ImGui::BeginDisabled(stage15QualityControlsLocked);
         int mode = static_cast<int>(shadowParameters.shadowMode);
         const char* modes[] = { "Direct Reference", "Deep Cache" };
         if (ImGui::Combo("Shadow Mode", &mode, modes,
@@ -1986,6 +2308,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         if (ImGui::Combo("Cache Preset", &preset, presets,
                          static_cast<int>(std::size(presets))))
             shadowParameters.shadowPreset = static_cast<std::uint32_t>(preset);
+        ImGui::EndDisabled();
+        if (stage15QualityControlsLocked)
+            ImGui::TextDisabled(
+                "Shadow mode and cache preset are locked until Restore Realtime.");
 
         bool surfaceEnabled = shadowParameters.surfaceShadowEnabled != 0u;
         if (ImGui::Checkbox("Surface Cloud Shadow", &surfaceEnabled))
@@ -2107,6 +2433,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             "Stage 13-5 km Optics & Detail LOD",
             ImGuiTreeNodeFlags_DefaultOpen))
     {
+        ImGui::BeginDisabled(stage15QualityControlsLocked);
         ImGui::TextDisabled(
             "Unified 50km scene: reference 62.5m, previous 125m, default 250m.");
         if (ImGui::Button("Reference 62.5m / 320"))
@@ -2151,6 +2478,10 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::Text("Measured Detail neutral mean: %.6f",
                     cloudLodParameters.detailNeutralValue);
         cloudLodParameters = stage13lod::Sanitize(cloudLodParameters);
+        ImGui::EndDisabled();
+        if (stage15QualityControlsLocked)
+            ImGui::TextDisabled(
+                "Light sampling and Detail LOD are locked until Restore Realtime.");
 
         ImGui::SeparatorText("Lighting validation setup");
         if (ImGui::Button("Shadow Isolation (Phase + Environment Off)"))
@@ -2481,7 +2812,7 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
         ImGui::Checkbox("Pause Time", &m_timePaused);
         ImGui::SliderFloat("Time Scale", &m_timeScale, 0.0f, 4.0f);
         ImGui::Text("Effective Time: %.3f s", m_effectiveTime);
-        if (physicalShape)
+        if (bulkAdvectedShape)
         {
             const stage13shape::HorizontalOffset offset =
                 stage13shape::EvaluatePhysicalCloudAdvectionOffset(
@@ -2531,6 +2862,9 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
             ImGui::TextWrapped("%s", m_exportStatus.c_str());
     }
 
+    if (captureControlsLocked)
+        ImGui::EndDisabled();
+
     optimizationParameters = stage9optimization::Sanitize(
         optimizationParameters);
     upsamplingParameters = stage10upsampling::Sanitize(
@@ -2558,6 +2892,13 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
     historyShadowAfter.cacheDebugExposure = 0.0f;
     historyShadowAfter.debugNearSlice = 0u;
     historyShadowAfter.debugFarSlice = 0u;
+    LightParameters uiLightBefore = lightBefore;
+    LightParameters uiLightAfter = lightParameters;
+    // directionToSun은 Atmosphere 각도에서 매 UI 프레임 파생된다. 실제
+    // Sun/Time 입력은 Atmosphere 비교가 잡으므로 여기서는 파생 차이를 제외한다.
+    uiLightBefore.directionToSun = uiLightAfter.directionToSun;
+    uiLightBefore.lightPadding = 0.0f;
+    uiLightAfter.lightPadding = 0.0f;
     m_parametersChanged = m_parametersChanged ||
         std::memcmp(&before, &cloudParameters, sizeof(CloudParameters)) != 0 ||
         std::memcmp(&shapeBefore, &cloudShapeParameters,
@@ -2576,22 +2917,18 @@ void NoiseLab::DrawControlWindow(DeveloperUiPanel panel,
                     sizeof(Stage11TemporalParameters)) != 0 ||
         std::memcmp(&historyShadowBefore, &historyShadowAfter,
                     sizeof(Stage12ShadowParameters)) != 0 ||
+        std::memcmp(&uiLightBefore, &uiLightAfter,
+                    sizeof(LightParameters)) != 0 ||
+        std::memcmp(&environmentBefore, &environmentParameters,
+                    sizeof(EnvironmentParameters)) != 0 ||
         groundBefore.preset != groundLightingParameters.preset ||
         groundBefore.albedo.x != groundLightingParameters.albedo.x ||
         groundBefore.albedo.y != groundLightingParameters.albedo.y ||
         groundBefore.albedo.z != groundLightingParameters.albedo.z ||
         groundBefore.bounceMultiplier !=
             groundLightingParameters.bounceMultiplier ||
-        atmosphereBefore.bottomRadiusKm != atmosphereParameters.bottomRadiusKm ||
-        atmosphereBefore.topRadiusKm != atmosphereParameters.topRadiusKm ||
-        atmosphereBefore.rayleighScaleHeightKm !=
-            atmosphereParameters.rayleighScaleHeightKm ||
-        atmosphereBefore.mieScaleHeightKm != atmosphereParameters.mieScaleHeightKm ||
-        atmosphereBefore.rayleighScale != atmosphereParameters.rayleighScale ||
-        atmosphereBefore.mieAbsorptionScale != atmosphereParameters.mieAbsorptionScale ||
-        atmosphereBefore.mieG != atmosphereParameters.mieG ||
-        atmosphereBefore.ozoneScale != atmosphereParameters.ozoneScale ||
-        atmosphereBefore.turbidity != atmosphereParameters.turbidity;
+        !stage15::ConceptAtmosphereEqual(
+            atmosphereBefore, atmosphereParameters);
     const bool sunSettingsChanged =
         lightBefore.directionToSun.x != lightParameters.directionToSun.x ||
         lightBefore.directionToSun.y != lightParameters.directionToSun.y ||
@@ -2856,6 +3193,33 @@ bool NoiseLab::ConsumeParametersChanged()
     const bool result = m_parametersChanged;
     m_parametersChanged = false;
     return result;
+}
+
+bool NoiseLab::ConsumeStage15QualityRequest(Stage15QualityPreset& preset)
+{
+    if (m_stage15QualityRequest < 0)
+        return false;
+    preset = static_cast<Stage15QualityPreset>(m_stage15QualityRequest);
+    m_stage15QualityRequest = -1;
+    return true;
+}
+
+bool NoiseLab::ConsumeStage15ConceptRequest(Stage15ConceptPreset& preset)
+{
+    if (m_stage15ConceptRequest < 0)
+        return false;
+    preset = static_cast<Stage15ConceptPreset>(m_stage15ConceptRequest);
+    m_stage15ConceptRequest = -1;
+    return true;
+}
+
+bool NoiseLab::ConsumeStage15DiagnosticRequest(Stage15DiagnosticMode& mode)
+{
+    if (m_stage15DiagnosticRequest < 0)
+        return false;
+    mode = static_cast<Stage15DiagnosticMode>(m_stage15DiagnosticRequest);
+    m_stage15DiagnosticRequest = -1;
+    return true;
 }
 
 bool NoiseLab::ConsumeWeatherPresetRequest(Stage5WeatherPreset& preset)
@@ -3248,24 +3612,33 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
     const std::uint32_t outputIndex = std::min(m_parameters.outputMode, 29u);
     const WeatherMapGeneratorSettings generator =
         SanitizeWeatherMapGeneratorSettings(weatherGeneratorSettings);
-    const bool physicalShape = cloudShape.shapeMode ==
-        static_cast<std::uint32_t>(CloudShapeMode::WeatherPhysicalThickness);
+    const bool bulkAdvectedShape = cloudshape::UsesPhysicalBulkAdvection(
+        cloudShape.shapeMode);
     const stage13shape::HorizontalOffset physicalOffset =
         stage13shape::EvaluatePhysicalCloudAdvectionOffset(
             cloud.windDirection.x, cloud.windDirection.z,
             cloud.windSpeed, m_effectiveTime);
     const double physicalDistanceMeters = std::hypot(
         physicalOffset.x, physicalOffset.z);
-    const double configuredBulkSpeed = physicalShape
+    const double configuredBulkSpeed = bulkAdvectedShape
         ? std::max(static_cast<double>(cloud.windSpeed), 0.0) : 0.0;
-    const double effectiveBulkSpeed = physicalShape && !m_timePaused
+    const double effectiveBulkSpeed = bulkAdvectedShape && !m_timePaused
         ? configuredBulkSpeed * std::max(static_cast<double>(m_timeScale), 0.0)
         : 0.0;
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"schemaVersion\": 35,\n"
-           << "  \"implementationStage\": \"14\",\n"
-           << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3LightingAtmosphere_F4Camera\",\n"
+           << "  \"schemaVersion\": 37,\n"
+           << "  \"implementationStage\": \"15\",\n"
+           << "  \"developerUiLayout\": \"F1Noise_F2Weather_F3LightingAtmosphere_F4Stage15Camera\",\n"
+           << "  \"stage15\": {\"quality\": \""
+           << stage15::QualityName(m_stage15QualitySnapshot)
+           << "\", \"concept\": \""
+           << stage15::ConceptName(m_stage15ConceptSnapshot)
+           << "\", \"diagnosticMode\": \""
+           << stage15::DiagnosticName(m_stage15DiagnosticSnapshot)
+           << "\", \"temporalOverrideActive\": "
+           << (m_stage15TemporalOverrideSnapshot ? "true" : "false")
+           << "},\n"
            << "  \"legacyRestorePolicy\": \"schema34OrOlder_ManualReference_LegacyShoulder\",\n"
            << "  \"atmosphere\": {\"mode\": \""
            << (m_atmosphereSnapshot.mode == AtmosphereMode::Physical
@@ -3325,37 +3698,42 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << m_atmosphereLutHashes[4] << "\", \""
            << m_atmosphereLutHashes[5] << "\"]}" << std::dec << ",\n"
            << "  \"physicalAdvectionMode\": \""
-           << (physicalShape ? "rigidSharedWindSpeed"
-                             : "legacyIndependentSpeeds") << "\",\n"
+           << (bulkAdvectedShape ? "rigidSharedWindSpeed"
+                                 : "legacyIndependentSpeeds") << "\",\n"
            << "  \"effectiveBulkWindSpeedMetersPerSecond\": ";
-    if (physicalShape)
+    if (bulkAdvectedShape)
         output << effectiveBulkSpeed;
     else
         output << "null";
     output << ",\n"
            << "  \"bulkWindSpeedMetersPerEffectiveSecond\": ";
-    if (physicalShape)
+    if (bulkAdvectedShape)
         output << configuredBulkSpeed;
     else
         output << "null";
     output << ",\n"
            << "  \"bulkAdvectionDistanceMeters\": ";
-    if (physicalShape)
+    if (bulkAdvectedShape)
         output << physicalDistanceMeters;
     else
         output << "null";
     output << ",\n"
            << "  \"weatherMapWindSpeedUsage\": \""
-           << (physicalShape ? "legacyOnlyIgnored" : "absolute") << "\",\n"
+           << (bulkAdvectedShape ? "legacyOnlyIgnored" : "absolute") << "\",\n"
            << "  \"detailWindSpeedUsage\": \""
-           << (physicalShape ? "legacyOnlyIgnored" : "absolute") << "\",\n"
+           << (bulkAdvectedShape ? "legacyOnlyIgnored" : "absolute") << "\",\n"
            << "  \"timePaused\": " << (m_timePaused ? "true" : "false") << ",\n"
            << "  \"timeScale\": " << m_timeScale << ",\n"
            << "  \"openWorldPipelinePreset\": \""
            << stage13openworld::PipelinePresetName(
                   m_openWorldPipelinePreset) << "\",\n"
            << "  \"temporal\": {\"mode\": \""
-           << (temporal.temporalEnabled != 0u ? "stable4Phase" : "off")
+           << stage11temporal::ModeName(
+                  temporal.temporalEnabled == 0u
+                      ? Stage11TemporalMode::Off
+                      : (temporal.jitterEnabled != 0u
+                          ? Stage11TemporalMode::Stable4Phase
+                          : Stage11TemporalMode::FullResolution))
            << "\", \"historyWeight\": " << temporal.historyWeight
            << ", \"sceneDepthRelativeThreshold\": "
            << temporal.sceneDepthRelativeThreshold
@@ -3556,9 +3934,7 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << "  \"cloudLayerThicknessMeters\": "
            << domain.cloudLayerThickness << ",\n"
            << "  \"cloudShape\": {\"mode\": \""
-           << (cloudShape.shapeMode == static_cast<std::uint32_t>(
-                   CloudShapeMode::WeatherPhysicalThickness)
-                   ? "weatherPhysicalThickness" : "legacyNormalizedLayer")
+           << cloudshape::ModeName(cloudShape.shapeMode)
            << "\", \"stratusThicknessMeters\": ["
            << cloudShape.stratusMinimumThicknessMeters << ", "
            << cloudShape.stratusMaximumThicknessMeters
@@ -3576,7 +3952,24 @@ bool NoiseLab::WriteMetadata(const std::filesystem::path& path,
            << cloudShape.cumulusTopFadeStart << ", "
            << cloudShape.cumulusUpperMassBottom << ", "
            << cloudShape.cumulusUpperMassStart << ", "
-           << cloudShape.cumulusUpperMassEnd << "]},\n"
+           << cloudShape.cumulusUpperMassEnd
+           << "], \"cirrus\": {\"flowDirectionXZ\": ["
+           << cloudShape.cirrusFlowDirectionXZ.x << ", "
+           << cloudShape.cirrusFlowDirectionXZ.y
+           << "], \"baseScaleMeters\": ["
+           << cloudShape.cirrusBaseAlongScaleMeters << ", "
+           << cloudShape.cirrusBaseAcrossScaleMeters << ", "
+           << cloudShape.cirrusBaseVerticalScaleMeters
+           << "], \"detailScaleMeters\": ["
+           << cloudShape.cirrusDetailAlongScaleMeters << ", "
+           << cloudShape.cirrusDetailAcrossScaleMeters << ", "
+           << cloudShape.cirrusDetailVerticalScaleMeters
+           << "], \"thicknessMeters\": ["
+           << cloudShape.cirrusMinimumThicknessMeters << ", "
+           << cloudShape.cirrusMaximumThicknessMeters
+           << "], \"verticalProfile\": ["
+           << cloudShape.cirrusVerticalProfileCenter << ", "
+           << cloudShape.cirrusVerticalProfileHalfWidth << "]}},\n"
            << "  \"maxViewTraceDistanceMeters\": "
            << domain.maxViewTraceDistance << ",\n"
            << "  \"viewTraceFadeStartDistanceMeters\": "
@@ -3753,7 +4146,8 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                               const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                               std::uint64_t weatherMapHash,
                               ID3D11Texture2D* weatherMapTexture,
-                              const std::filesystem::path& noiseSourcePath)
+                              const std::filesystem::path& noiseSourcePath,
+                              bool includePng)
 {
     std::error_code error;
     const std::filesystem::path directory = TimestampDirectory(root);
@@ -3764,10 +4158,14 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
         return false;
     }
 
-    const bool success = SaveTargetPng(directory / L"xy.png", m_targets[0]) &&
-                         SaveTargetPng(directory / L"xz.png", m_targets[1]) &&
-                         SaveTargetPng(directory / L"yz.png", m_targets[2]) &&
-                         SaveTexturePng(directory / L"weather-map.png", weatherMapTexture) &&
+    const bool pngSuccess = !includePng ||
+                            (SaveTargetPng(directory / L"xy.png", m_targets[0]) &&
+                             SaveTargetPng(directory / L"xz.png", m_targets[1]) &&
+                             SaveTargetPng(directory / L"yz.png", m_targets[2]) &&
+                             SaveTexturePng(
+                                 directory / L"weather-map.png",
+                                 weatherMapTexture));
+    const bool success = pngSuccess &&
                          WriteMetadata(directory / L"noise-settings.json",
                                        cloudParameters, cloudShapeParameters,
                                        cloudDomainParameters,
@@ -3793,8 +4191,16 @@ bool NoiseLab::ExportSnapshot(const std::filesystem::path& root,
                                        detailNoiseVolumeHash,
                                        weatherGeneratorSettings, weatherMapHash,
                                        noiseSourcePath);
-    m_exportStatus = success
-        ? "Exported: " + NarrowUtf8(directory)
-        : "Export failed while writing PNG or JSON";
+    if (success)
+    {
+        m_exportStatus = std::string(includePng
+            ? "Exported: " : "Metadata exported: ") + NarrowUtf8(directory);
+    }
+    else
+    {
+        m_exportStatus = includePng
+            ? "Export failed while writing PNG or JSON"
+            : "Export failed while writing JSON";
+    }
     return success;
 }

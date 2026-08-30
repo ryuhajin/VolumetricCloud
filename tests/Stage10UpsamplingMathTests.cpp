@@ -1,5 +1,6 @@
 #include "Stage10UpsamplingMath.h"
 
+#include <array>
 #include <cmath>
 #include <iostream>
 
@@ -68,6 +69,45 @@ int main()
                       1.0e-6f && !rejected.second &&
                       std::isfinite(rejected.first),
                       "normalization and finite fallback");
+
+    using HardReason = JointHardRejectionReason;
+    passed &= Require(
+        ClassifyJointHardTap(true, true, false, 0.5f, 0.5f, 1.0e-6f) ==
+            HardReason::SceneClassMismatch &&
+        ClassifyJointHardTap(true, false, true, 0.5f, 0.5f, 1.0e-6f) ==
+            HardReason::SceneClassMismatch,
+        "Joint4 must hard reject Geometry/Sky class crossings");
+    passed &= Require(
+        ClassifyJointHardTap(true, true, true, 0.5000004f, 0.5f,
+                             1.0e-6f) == HardReason::Accepted &&
+        ClassifyJointHardTap(true, true, true, 0.500004f, 0.5f,
+                             1.0e-6f) == HardReason::GeometryPlaneMismatch,
+        "Joint4 must preserve a matching geometry plane and reject a depth discontinuity");
+    passed &= Require(
+        ClassifyJointHardTap(true, false, false, NAN, NAN, -1.0f) ==
+            HardReason::Accepted,
+        "Sky/Sky must skip scene-plane rejection and use soft cloud guides");
+    const std::array<HardReason, 4> mixedReasons = {
+        HardReason::Accepted, HardReason::SceneClassMismatch,
+        HardReason::Accepted, HardReason::GeometryPlaneMismatch };
+    const std::array<HardReason, 4> rejectedReasons = {
+        HardReason::SceneClassMismatch, HardReason::GeometryPlaneMismatch,
+        HardReason::InvalidSource, HardReason::SceneClassMismatch };
+    const std::array<HardReason, 4> acceptedReasons = {
+        HardReason::Accepted, HardReason::Accepted,
+        HardReason::Accepted, HardReason::Accepted };
+    passed &= Require(CountJoint4HardAccepted(acceptedReasons) == 4u &&
+                      CountJoint4HardAccepted(mixedReasons) == 2u &&
+                      CountJoint4HardAccepted(rejectedReasons) == 0u,
+                      "accepted tap count must report the exact hard-valid Joint4 taps");
+    passed &= Require(
+        SelectJointFallback(2u, 0.5f, 1.0e-4f) ==
+            JointFallbackMode::WeightedResult &&
+        SelectJointFallback(2u, 1.0e-8f, 1.0e-4f) ==
+            JointFallbackMode::NearestHardValid &&
+        SelectJointFallback(0u, 1.0f, 1.0e-4f) ==
+            JointFallbackMode::Transparent,
+        "Joint fallback must never cross a hard-rejected scene boundary");
 
     Stage10UpsamplingParameters invalid{};
     invalid.resolutionScale = NAN;

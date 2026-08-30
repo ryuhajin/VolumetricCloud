@@ -146,21 +146,52 @@ float3 SafeWindDirection()
     return windLength > 1e-6 ? windDirection / windLength : 0.0.xxx;
 }
 
+float3 ComputeCirrusNoiseUvw(float3 stationaryWorld, bool detail)
+{
+#if VCLOUD_CIRRUS_VARIANT == 0
+    return 0.0.xxx;
+#else
+    float2 alongDirection;
+    float2 acrossDirection;
+    ComputeCirrusBasis(alongDirection, acrossDirection);
+    float along = dot(stationaryWorld.xz, alongDirection);
+    float across = dot(stationaryWorld.xz, acrossDirection);
+    float alongScale = detail ? cirrusDetailAlongScaleMeters
+                              : cirrusBaseAlongScaleMeters;
+    float acrossScale = detail ? cirrusDetailAcrossScaleMeters
+                               : cirrusBaseAcrossScaleMeters;
+    float verticalScale = detail ? cirrusDetailVerticalScaleMeters
+                                 : cirrusBaseVerticalScaleMeters;
+    return frac(float3(
+        along / max(alongScale, 1.0),
+        stationaryWorld.y / max(verticalScale, 1.0),
+        across / max(acrossScale, 1.0)));
+#endif
+}
+
 // 단계 13-4 Open World는 주기 Texture3D를, Similarity 회귀는 단계 2 value noise를 쓴다.
 NoiseFieldSample SampleBaseShapeNoise(float3 worldPosition, float timeSeconds)
 {
     NoiseFieldSample result = (NoiseFieldSample)0;
-    bool physicalShape = cloudShapeMode == kCloudShapeWeatherPhysicalThickness;
+    bool physicalShape = UsesPhysicalCloudShape();
     float3 stationaryWorld = physicalShape
         ? ComputePhysicalCloudSamplePosition(worldPosition, timeSeconds)
         : worldPosition - SafeWindDirection() *
             max(windSpeed, 0.0) * max(timeSeconds, 0.0);
     if (noiseSource == kNoiseSourceTexture3D)
     {
-        result.uvw.xz = frac(stationaryWorld.xz /
-            max(baseVolumeWorldSizeMeters, 1.0) + noiseOffset.xx);
-        result.uvw.y = frac((stationaryWorld.y - cloudBoundsMin.y) /
-            max(baseVolumeVerticalWorldSizeMeters, 1.0) + noiseOffset);
+        if (IsCirrusCloudShape())
+        {
+            result.uvw = frac(ComputeCirrusNoiseUvw(
+                stationaryWorld, false) + noiseOffset.xxx);
+        }
+        else
+        {
+            result.uvw.xz = frac(stationaryWorld.xz /
+                max(baseVolumeWorldSizeMeters, 1.0) + noiseOffset.xx);
+            result.uvw.y = frac((stationaryWorld.y - cloudBoundsMin.y) /
+                max(baseVolumeVerticalWorldSizeMeters, 1.0) + noiseOffset);
+        }
         result.channels = baseNoiseVolumeTexture.SampleLevel(
             weatherMapSampler, result.uvw, 0);
         float worleyFbm = dot(result.channels.gba, baseVolumeWeights.xyz);
@@ -170,8 +201,9 @@ NoiseFieldSample SampleBaseShapeNoise(float3 worldPosition, float timeSeconds)
     }
     else
     {
-        result.uvw = stationaryWorld * max(baseNoiseScale, 1e-4) +
-            noiseOffset.xxx;
+        result.uvw = IsCirrusCloudShape()
+            ? ComputeCirrusNoiseUvw(stationaryWorld, false) + noiseOffset.xxx
+            : stationaryWorld * max(baseNoiseScale, 1e-4) + noiseOffset.xxx;
         result.value = SampleValueNoise3D(result.uvw);
         result.channels = result.value.xxxx;
     }
@@ -183,23 +215,30 @@ NoiseFieldSample SampleBaseShapeNoise(float3 worldPosition, float timeSeconds)
 NoiseFieldSample SampleDetailErosionNoise(float3 worldPosition, float timeSeconds)
 {
     NoiseFieldSample result = (NoiseFieldSample)0;
-    bool physicalShape = cloudShapeMode == kCloudShapeWeatherPhysicalThickness;
+    bool physicalShape = UsesPhysicalCloudShape();
     float3 stationaryWorld = physicalShape
         ? ComputePhysicalCloudSamplePosition(worldPosition, timeSeconds)
         : worldPosition - SafeWindDirection() *
             max(detailWindSpeed, 0.0) * max(timeSeconds, 0.0);
     if (noiseSource == kNoiseSourceTexture3D)
     {
-        result.uvw = frac(stationaryWorld /
-            max(detailVolumeWorldSizeMeters, 1.0) + detailNoiseOffset.xxx);
+        result.uvw = IsCirrusCloudShape()
+            ? frac(ComputeCirrusNoiseUvw(stationaryWorld, true) +
+                   detailNoiseOffset.xxx)
+            : frac(stationaryWorld /
+                   max(detailVolumeWorldSizeMeters, 1.0) +
+                   detailNoiseOffset.xxx);
         result.channels = detailNoiseVolumeTexture.SampleLevel(
             weatherMapSampler, result.uvw, 0);
         result.value = saturate(dot(result.channels, detailVolumeWeights));
     }
     else
     {
-        result.uvw = stationaryWorld * max(detailNoiseScale, 1e-4) +
-            detailNoiseOffset.xxx;
+        result.uvw = IsCirrusCloudShape()
+            ? ComputeCirrusNoiseUvw(stationaryWorld, true) +
+                detailNoiseOffset.xxx
+            : stationaryWorld * max(detailNoiseScale, 1e-4) +
+                detailNoiseOffset.xxx;
         result.value = SampleValueNoise3D(result.uvw);
         result.channels = result.value.xxxx;
     }
@@ -223,23 +262,42 @@ CloudDensitySample ComposeBaseCloudDensity(
     sample.heightFraction = EvaluateHeightFraction(worldPosition.y);
     float localTopFraction = EvaluateLocalTopFraction(
         weather.localThicknessPotential, sample.cloudType);
-    bool physicalShape = cloudShapeMode == kCloudShapeWeatherPhysicalThickness;
-    sample.localThicknessMeters = physicalShape
+    bool physicalShape = UsesPhysicalCloudShape();
+    bool cirrusShape = IsCirrusCloudShape();
+    sample.localThicknessMeters = cirrusShape
+        ? EvaluateCirrusLocalThickness(weather.localThicknessPotential)
+        : physicalShape
         ? EvaluatePhysicalLocalThickness(
             weather.localThicknessPotential, sample.cloudType)
         : localTopFraction * max(cloudBoundsMax.y - cloudBoundsMin.y, 1.0);
-    sample.localHeightFraction = physicalShape
+    sample.localHeightFraction = cirrusShape
+        ? EvaluateCirrusLocalHeight(worldPosition.y, sample.localThicknessMeters)
+        : physicalShape
         ? EvaluatePhysicalLocalHeight(worldPosition.y, sample.localThicknessMeters)
         : EvaluateLocalHeightFraction(sample.heightFraction, localTopFraction);
     float insideLocalColumn = sample.localHeightFraction >= 0.0 &&
         sample.localHeightFraction <= 1.0 ? 1.0 : 0.0;
     // 높이 마스크가 없으면 AABB 바닥과 천장이 칼로 자른 듯 보인다. 단계 3은
     // X/Z 덩어리 위치를 바꾸지 않고 Y 경계에서만 밀도를 0으로 부드럽게 줄인다.
-    sample.heightProfile = physicalShape
+    sample.heightProfile = cirrusShape
+        ? EvaluateCirrusVerticalProfile(sample.localHeightFraction)
+        : physicalShape
         ? EvaluateProfileEnvelope(sample.localHeightFraction,
             mixedBottomFadeEnd, mixedTopFadeStart)
         : EvaluateHeightProfileFromFraction(sample.localHeightFraction);
-    if (physicalShape)
+    if (cirrusShape)
+    {
+        float weatherSupport = smoothstep(0.02, 0.20, sample.weatherCoverage);
+        float weatherFactor = lerp(0.65, 1.0, sample.weatherCoverage);
+        sample.typedShapeProfile = sample.heightProfile;
+        sample.effectiveShapeCoverage = saturate(coverage * weatherFactor);
+        sample.weatherThresholdDensity = RemapCoverage(
+            sample.rawNoise, sample.effectiveShapeCoverage);
+        sample.baseDensity = insideLocalColumn * weatherSupport *
+            sample.weatherThresholdDensity * sample.heightProfile *
+            max(densityMultiplier, 0.0) * sample.weatherDensityModifier;
+    }
+    else if (physicalShape)
     {
         float typedVerticalProfile = EvaluatePhysicalTypedVerticalProfile(
             sample.localHeightFraction, sample.cloudType);
@@ -299,8 +357,18 @@ CloudDensitySample EvaluateBaseCloudDensityOptimized(
     float3 worldPosition, float timeSeconds)
 {
     CloudDensitySample result = (CloudDensitySample)0;
+#if VCLOUD_CIRRUS_VARIANT == 0
+    // non-Cirrus renderer는 Legacy(0)/WeatherPhysical(1)만 선택한다.
+    // Stage 14와 같은 술어를 유지해야 FXC가 else를 Physical로 증명하고
+    // 불필요한 shape 경로를 완전히 제거한다.
     bool useReference = supportPrecheckEnabled == 0u ||
         cloudShapeMode != kCloudShapeWeatherPhysicalThickness;
+#elif VCLOUD_CIRRUS_VARIANT == 1
+    bool useReference = supportPrecheckEnabled == 0u;
+#else
+    bool useReference = supportPrecheckEnabled == 0u ||
+        cloudShapeMode == kCloudShapeLegacy;
+#endif
     if (useReference)
     {
         result = EvaluateBaseCloudDensity(worldPosition, timeSeconds);
@@ -308,12 +376,17 @@ CloudDensitySample EvaluateBaseCloudDensityOptimized(
     else
     {
         WeatherSample weather = SampleWeatherMap(worldPosition, timeSeconds);
-        float localThickness = EvaluatePhysicalLocalThickness(
-            weather.localThicknessPotential, weather.cloudType);
-        float localHeight = EvaluatePhysicalLocalHeight(
-            worldPosition.y, localThickness);
-        float verticalProfile = EvaluatePhysicalTypedVerticalProfile(
-            localHeight, weather.cloudType);
+        bool cirrusShape = IsCirrusCloudShape();
+        float localThickness = cirrusShape
+            ? EvaluateCirrusLocalThickness(weather.localThicknessPotential)
+            : EvaluatePhysicalLocalThickness(
+                weather.localThicknessPotential, weather.cloudType);
+        float localHeight = cirrusShape
+            ? EvaluateCirrusLocalHeight(worldPosition.y, localThickness)
+            : EvaluatePhysicalLocalHeight(worldPosition.y, localThickness);
+        float verticalProfile = cirrusShape
+            ? EvaluateCirrusVerticalProfile(localHeight)
+            : EvaluatePhysicalTypedVerticalProfile(localHeight, weather.cloudType);
         float weatherSupport = smoothstep(0.02, 0.20, weather.coverage);
         bool definitelyEmpty = localHeight < 0.0 || localHeight > 1.0 ||
             verticalProfile <= 0.0 || weatherSupport <= 0.0 ||
@@ -348,7 +421,14 @@ float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
 {
     float lightDensity = 0.0;
 
+#if VCLOUD_CIRRUS_VARIANT == 0
+    // 위 optimized View 경로와 같은 이유로 Stage 14의 분할 조건을 보존한다.
     if (cloudShapeMode != kCloudShapeWeatherPhysicalThickness)
+#elif VCLOUD_CIRRUS_VARIANT == 1
+    if (false)
+#else
+    if (cloudShapeMode == kCloudShapeLegacy)
+#endif
     {
         CloudDensitySample legacySample = (CloudDensitySample)0;
         legacySample = EvaluateBaseCloudDensity(worldPosition, timeSeconds);
@@ -358,21 +438,28 @@ float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
     {
         WeatherSample weather = (WeatherSample)0;
         weather = SampleWeatherMap(worldPosition, timeSeconds);
-        float localThicknessMeters = EvaluatePhysicalLocalThickness(
-            weather.localThicknessPotential, weather.cloudType);
-        float localHeightFraction = EvaluatePhysicalLocalHeight(
-            worldPosition.y, localThicknessMeters);
+        bool cirrusShape = IsCirrusCloudShape();
+        float localThicknessMeters = cirrusShape
+            ? EvaluateCirrusLocalThickness(weather.localThicknessPotential)
+            : EvaluatePhysicalLocalThickness(
+                weather.localThicknessPotential, weather.cloudType);
+        float localHeightFraction = cirrusShape
+            ? EvaluateCirrusLocalHeight(worldPosition.y, localThicknessMeters)
+            : EvaluatePhysicalLocalHeight(worldPosition.y, localThicknessMeters);
 
         if (localHeightFraction >= 0.0 && localHeightFraction <= 1.0)
         {
-            float typedVerticalProfile = EvaluatePhysicalTypedVerticalProfile(
-                localHeightFraction, weather.cloudType);
+            float typedVerticalProfile = cirrusShape
+                ? EvaluateCirrusVerticalProfile(localHeightFraction)
+                : EvaluatePhysicalTypedVerticalProfile(
+                    localHeightFraction, weather.cloudType);
             float weatherSupport = smoothstep(0.02, 0.20, weather.coverage);
 
             if (typedVerticalProfile > 0.0 && weatherSupport > 0.0)
             {
-                float typedFootprintScale = EvaluatePhysicalTypedFootprintScale(
-                    localHeightFraction, weather.cloudType);
+                float typedFootprintScale = cirrusShape ? 1.0
+                    : EvaluatePhysicalTypedFootprintScale(
+                        localHeightFraction, weather.cloudType);
                 float weatherFactor = lerp(0.70, 1.00, weather.coverage);
                 float footprintFactor = lerp(0.80, 1.00, typedFootprintScale);
                 float effectiveShapeCoverage = saturate(

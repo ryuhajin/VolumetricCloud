@@ -59,6 +59,15 @@ int main()
         Require(SanitizeDebugMode(static_cast<CloudDebugMode>(removed)) ==
                     CloudDebugMode::Composite,
                 "removed HLSL IDs 1-7 must sanitize to Composite");
+    Require(SanitizeDebugMode(CloudDebugMode::Stage15ResolvedCloud) ==
+                CloudDebugMode::Stage15ResolvedCloud,
+            "Stage 15 automatic quality readback mode must be preserved");
+    Require(SanitizeDebugMode(CloudDebugMode::UpsampleAcceptedTapCount) ==
+                CloudDebugMode::UpsampleAcceptedTapCount,
+            "Joint4 accepted tap count debug mode must be preserved");
+    Require(SanitizeDebugMode(static_cast<CloudDebugMode>(81)) ==
+                CloudDebugMode::Composite,
+            "undefined debug modes after hidden diagnostics must sanitize");
     std::cout << "[UNIFIED-SCENE][MATH] GROUND=10000 BUILDING=20x60x20 RADIUS=50000 PASS\n";
     return 0;
 }

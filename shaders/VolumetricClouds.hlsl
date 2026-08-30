@@ -327,7 +327,7 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
                                     debugMode == 32 || debugMode == 53 ||
                                     debugMode == 54 || debugMode == 55 ||
                                     debugMode == 57 || debugMode == 58 ||
-                                    debugMode == 59;
+                                    debugMode == 59 || debugMode == 79;
             if (sampledDensity > 0.0 && requiresLighting)
             {
                 LightMarchResult light = { 1.0, 0.0, 0.0 };
@@ -525,7 +525,7 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
         bool requiresLighting = debugMode == 0 || debugMode == 26 ||
             debugMode == 32 || debugMode == 53 || debugMode == 54 ||
             debugMode == 55 || debugMode == 57 || debugMode == 58 ||
-            debugMode == 59;
+            debugMode == 59 || debugMode == 79;
         if (sampledDensity > 0.0 && requiresLighting)
         {
             LightMarchResult light = ComputeLightTransmittance(
@@ -836,6 +836,8 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
     if (debugMode == 78)
         return float4((saturate(marchDebug.stage12DirectCacheError * 10.0) *
                        marchDebug.hit).xxx, 1.0);
+    if (debugMode == 79)
+        return float4(max(cloud.scattering, 0.0.xxx), 1.0);
 
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry

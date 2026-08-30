@@ -33,6 +33,7 @@
 #include "AtmosphereParameters.h"
 #include "GroundLightingParameters.h"
 #include "ToneMappingParameters.h"
+#include "Stage15Parameters.h"
 
 class Camera;
 
@@ -135,6 +136,21 @@ public:
                     AtmosphereParameters& atmosphereParameters,
                     GroundLightingParameters& groundLightingParameters,
                     ToneMappingParameters& toneMappingParameters,
+                    Stage15QualityPreset stage15QualityPreset,
+                    Stage15ConceptPreset stage15ConceptPreset,
+                    Stage15DiagnosticMode stage15DiagnosticMode,
+                    bool stage15TemporalOverrideActive,
+                    const Stage15OutputExtentSnapshot& outputExtent,
+                    Stage15CaptureState stage15CaptureState,
+                    std::uint32_t stage15CaptureCompletedSamples,
+                    const std::string& stage15CaptureStatus,
+                    std::uint32_t temporalResetCountLast60Frames,
+                    Stage11HistoryResetReason lastTemporalResetReason,
+                    bool temporalStatisticsValid,
+                    float temporalHistoryValidPercent,
+                    float temporalAverageHistoryWeight,
+                    bool& stage15StatusOverlayVisible,
+                    bool& performanceOverlayVisible,
                     const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
                     const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
                     const std::array<std::uint64_t, 6>& atmosphereLutHashes,
@@ -178,6 +194,18 @@ public:
     bool ConsumeCloudAppearanceEdited();
     bool ConsumeNoiseVolumeRegenerateRequest();
     bool ConsumeTemporalResetRequest();
+    bool ConsumeStage15QualityRequest(Stage15QualityPreset& preset);
+    bool ConsumeStage15ConceptRequest(Stage15ConceptPreset& preset);
+    bool ConsumeStage15DiagnosticRequest(Stage15DiagnosticMode& mode);
+    void SynchronizeStage15Snapshot(
+        Stage15QualityPreset quality, Stage15ConceptPreset concept,
+        Stage15DiagnosticMode diagnostic, bool temporalOverrideActive)
+    {
+        m_stage15QualitySnapshot = quality;
+        m_stage15ConceptSnapshot = concept;
+        m_stage15DiagnosticSnapshot = diagnostic;
+        m_stage15TemporalOverrideSnapshot = temporalOverrideActive;
+    }
     bool ConsumeNoiseSourceRequest(NoiseSource& source);
     bool ConsumeWeatherGeneratorRequest(WeatherMapGeneratorSettings& settings);
     void SynchronizeWeatherGeneratorSettings(
@@ -223,7 +251,8 @@ public:
                         const WeatherMapGeneratorSettings& weatherGeneratorSettings,
                         std::uint64_t weatherMapHash,
                         ID3D11Texture2D* weatherMapTexture,
-                        const std::filesystem::path& noiseSourcePath);
+                        const std::filesystem::path& noiseSourcePath,
+                        bool includePng = true);
     bool ConsumeExportRequest();
     const std::string& LastExportStatus() const { return m_exportStatus; }
 
@@ -275,6 +304,21 @@ private:
                            AtmosphereParameters& atmosphereParameters,
                            GroundLightingParameters& groundLightingParameters,
                            ToneMappingParameters& toneMappingParameters,
+                           Stage15QualityPreset stage15QualityPreset,
+                           Stage15ConceptPreset stage15ConceptPreset,
+                           Stage15DiagnosticMode stage15DiagnosticMode,
+                           bool stage15TemporalOverrideActive,
+                           const Stage15OutputExtentSnapshot& outputExtent,
+                           Stage15CaptureState stage15CaptureState,
+                           std::uint32_t stage15CaptureCompletedSamples,
+                           const std::string& stage15CaptureStatus,
+                           std::uint32_t temporalResetCountLast60Frames,
+                           Stage11HistoryResetReason lastTemporalResetReason,
+                           bool temporalStatisticsValid,
+                           float temporalHistoryValidPercent,
+                           float temporalAverageHistoryWeight,
+                           bool& stage15StatusOverlayVisible,
+                           bool& performanceOverlayVisible,
                            const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
                            const std::array<std::uint64_t, 6>& atmosphereLutGenerations,
                            const std::array<std::uint64_t, 6>& atmosphereLutHashes,
@@ -361,6 +405,9 @@ private:
     bool m_cloudAppearanceSaveRequest = false;
     bool m_cloudAppearanceEdited = false;
     bool m_temporalResetRequested = false;
+    int m_stage15QualityRequest = -1;
+    int m_stage15ConceptRequest = -1;
+    int m_stage15DiagnosticRequest = -1;
     bool m_noiseVolumeRegenerateRequest = false;
     int m_noiseSourceRequest = -1;
     bool m_weatherGeneratorRequestPending = false;
@@ -395,4 +442,11 @@ private:
     ToneMappingParameters m_toneMappingSnapshot;
     std::array<std::uint64_t, 6> m_atmosphereLutGenerations = {};
     std::array<std::uint64_t, 6> m_atmosphereLutHashes = {};
+    Stage15QualityPreset m_stage15QualitySnapshot =
+        Stage15QualityPreset::Medium;
+    Stage15ConceptPreset m_stage15ConceptSnapshot =
+        Stage15ConceptPreset::UrbanFairWeather;
+    Stage15DiagnosticMode m_stage15DiagnosticSnapshot =
+        Stage15DiagnosticMode::None;
+    bool m_stage15TemporalOverrideSnapshot = false;
 };

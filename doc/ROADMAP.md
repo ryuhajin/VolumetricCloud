@@ -39,7 +39,7 @@
 - [x] Stage 12부터 `feature/stage<번호>-<설명>` → PR merge commit →
   `stage<번호>-approved` → 원격 검증 → 완료 브랜치 삭제 순서로 고정
 
-## 현재 목표: 단계 12 Cloud Shadow Map과 Light Cache
+## 현재 목표: 단계 15 최종 품질·콘셉트 프리셋
 
 - [x] 단계 9: View Weather/Base precheck, empty-space skip, View early exit, 거리별 step과
   deterministic Light cone — Balanced 기본값, 2026-08-19 사용자 승인
@@ -79,7 +79,7 @@
     가장 높은 합격 후보 Balanced512 기본값 승격
   - [x] F5~F8·Full/50%·wind/이동 사용자 렌더 승인 — 2026-08-25, Surface T 정렬과
     Direct/Cache 내부 명암, 상단 black slice, magenta/blue cascade 확인
-- [ ] 단계 14: 하늘·태양·지면과 구름 조명 통합 — 구현·자동 검증 진행 중
+- [x] 단계 14: 하늘·태양·지면과 구름 조명 통합 — 2026-08-28 사용자 승인, `stage14`
   - [x] 224바이트 b13과 Trans/Multi/Sky View/Sky Irradiance/Aerial R/T 여섯 compute LUT
   - [x] 계수·지면·태양·카메라별 hash 무효화, 마지막 정상 LUT 원자 보존과 Manual 폴백
   - [x] face normal/material ID 진단 장면, 지면 preset/건물 콘크리트 Lambert HDR 조명
@@ -90,7 +90,21 @@
   - [x] GPU Transmittance 전체 RGB readback `MAE=0.000189`, `P99=0.000485`, 여섯 LUT finite/non-negative
   - [x] Debug/Release 빌드, 전체 49 CTest, hot reload, D3D11 debug layer 검증
   - [x] 1080p 일곱 장면 성능 gate — GPU Cloud p95 평균 `7.37616ms`, Stage 12 호환 대비 `+4.325%`
-  - [ ] 사용자 화면 체크리스트 승인
-- [ ] 단계 15: Low/Medium/High, 1080p 성능, 최종 캡처와 포트폴리오 설명
+  - [x] 사용자 화면 체크리스트 승인
+- [ ] 단계 15: Low/Medium/High, 네 콘셉트와 최종 정량 검증
+  - [x] CPU 전용 품질·콘셉트·진단 descriptor와 소유권 분리
+  - [x] 112바이트 b7 및 방향성 Cirrus 공통 밀도 경로
+  - [x] F4 프리셋/Advanced 진단, Q/T 입력과 compact 상태 overlay
+  - [x] schema 37 상태 기록과 48조합 GPU preset smoke — 최신 Debug/Release 48/48·rollback/D3D 통과
+  - [x] 15A 물리 출력/DPI smoke — 1280×720→Native 1920×1080, Medium 960×540,
+    High Full 1920×1080 및 Capture 4-sample/복원 통과
+  - [x] 1080p Full Reference 대비 96개 산란/T 화질 gate — Release 96/96, High 16개 Full,
+    Medium→High edge RGB/T와 Temporal edge 4→16 개선, history age/reset·readback self-check/D3D 통과
+  - [x] Release Stage10/11/15 targeted `8/8`, Stage 12 focused Debug/Release `2/2` — 최초 캡처 전
+    `96×54` 명시 뒤 `MAE=0.001635`, `P99=0.029349`
+  - [x] Debug/Release 전체 CTest 각각 `54/54` — Stage 12 explicit 96×54 fixture 수정 포함
+  - [x] 48조합 120 warmup+600 timestamp 성능 gate — clean 48/48, High Cloud 최악
+    `9.95738ms`, Resolve 최악 `1.12026ms`, Stage 14 독립 3-block median `6.21363ms`/`0.818341×`
+  - [ ] 사용자 콘셉트·Temporal 화면 비교와 포트폴리오 캡처 승인
 
 세부 결정과 수치는 [VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md](VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md)를 따른다.

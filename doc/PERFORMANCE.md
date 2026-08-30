@@ -3,6 +3,13 @@
 이 문서는 이후 단계에서 최적화 전후 결과를 같은 조건으로 비교하기 위한 공통 기준이다.
 화면 우측 상단 성능 오버레이는 `FrameProfiler`가 모은 CPU/GPU 시간을 보여 준다.
 
+Stage 15 구현 중 발견한 Stage 14 호환 경로 회귀의 원인, 실패한 실험과 수정별
+전후 수치는 [Stage 15 성능 회귀 조사와 해결 기록](changes/STAGE15_PERFORMANCE_REGRESSION.md)에
+시간순으로 보존한다.
+자동 수치와 사용자가 화면에서 확인할 정상·실패 징후를 함께 대조할 때는
+[Stage 15 프리셋 사용자 검증 가이드](STAGE15_PRESET_VALIDATION_GUIDE.md)의 10분 승인과 상세
+진단 카드를 사용한다.
+
 ## 오버레이 항목
 
 | 항목 | 시간 범위와 의미 |
@@ -23,11 +30,26 @@ CPU Frame과 GPU Frame은 측정 범위가 다르므로 서로 같은 값일 필
 CPU Frame이 모니터 주사율 대기 시간을 포함한다. View/Light Ray 비용을 비교할 때는 FPS보다
 `GPU Cloud Total ms`를 우선 사용한다.
 
+성능 오버레이는 F4 `Performance Overlay`로 표시만 끌 수 있으며 계측 자체는 계속된다. 좌측
+`Compact Stage 15 Overlay`와 독립된 상태이고 일반 실행은 둘 다 On이다. 포트폴리오 화면은 두
+overlay와 F1~F4를 모두 숨겨 찍는다. 자동 성능 명령은 표시 체크 상태와 무관하게 Automated Render
+Mode에서 ImGui frame, panel, overlay, preview와 수동 네 PNG export를 렌더 프레임에서 생략한다.
+자동 quality/performance는 Temporal 통계 관찰용 네 번째 MRT를 바인딩하지 않고 mip 생성과
+readback도 생략한다. 이 통계는 화면·history 출력이 아니라 디버그 관찰 자료다. 단, preset smoke는
+schema 37 계약만 확인하려고 프레임 밖에서 metadata-only JSON export를 한 번 호출하며 PNG는
+만들지 않는다.
+
+Stage 15A의 F4 출력 진단은 성능 수치와 별도로 Physical Client, SwapChain,
+Viewport, Scene Color, Full Scene Depth, Cloud RT, Temporal History width/height와 DPI/scale,
+PMv2/Native 상태를 표시한다. `1920×1080`이라는 성능 결과는 Physical/Swap/Scene/History가
+모두 1920×1080이고, Medium은 960×540, High는 1920×1080 Cloud RT임을 함께 증명해야 한다.
+
 ## 비동기 GPU 계측 방식
 
 `FrameProfiler`는 8개 슬롯의 D3D11 timestamp query ring을 사용한다. 각 슬롯은 timestamp
-disjoint와 GPU Frame 시작·종료, Cloud 시작·Shadow Cache 종료·Raymarch 종료·Cloud 종료 timestamp를 가진다. 현재 프레임을
-기다리지 않고 `D3D11_ASYNC_GETDATA_DONOTFLUSH`로 완료된 과거 슬롯만 읽는다. 8개 슬롯이
+disjoint와 GPU Frame 시작·종료, Atmosphere LUT 종료, Cloud 시작, Shadow Cache 종료, Opaque 종료,
+Raymarch 종료, Resolve(Cloud) 종료와 Tone Map 종료 timestamp를 가진다. 현재 프레임을 기다리지 않고
+`D3D11_ASYNC_GETDATA_DONOTFLUSH`로 완료된 과거 슬롯만 읽는다. 8개 슬롯이
 모두 사용 중이면 해당 프레임의 GPU 측정을 생략하고 렌더링을 계속한다.
 
 query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up`을 표시한다. disjoint,
@@ -37,7 +59,8 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 ## 고정 비교 절차
 
 1. Release 빌드를 사용한다.
-2. 창 해상도, 카메라, Weather, Detail, 태양·Phase·Environment 설정을 동일하게 맞춘다.
+2. Physical Client/SwapChain/Scene/Cloud/History 크기, 카메라, Weather, Detail,
+   태양·Phase·Environment 설정을 동일하게 맞춘다.
 3. F1 Noise 창의 Animation에서 시간을 정지한다.
 4. 같은 F1 창의 Performance에서 VSync를 Off로 설정한다.
 5. 설정 변경 후 최소 2초 동안 워밍업한다.
@@ -66,6 +89,7 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 | 항목 | High 합격 기준 |
 |---|---:|
 | 해상도 | 1920×1080 |
+| High Cloud RT | 1920×1080 Full |
 | VSync | Off |
 | 워밍업 | 120 frames |
 | 기록 | 600 frames |
@@ -324,3 +348,115 @@ Full과 비슷하면서 67/75%보다 격자감이 적었다. 세 활성 필터�
 GPU Cloud Total p95가 단계 9 Balanced보다 20% 이상 개선되고 모든 장면 p95가 8ms 이하여야
 한다. 시작 Resolution은 자동 1080p 측정이 끝날 때까지 Full이며, 50%+Nearest는 아직 성능
 p95와 전체 장면 게이트 전이므로 시작 Resolution로 승격하지 않았다.
+
+## 단계 15 최종 프리셋 측정
+
+아래 수치는 자동 합격 계약이며 화면 모양의 최종 승인을 대신하지 않는다. 같은 상태를 화면에서
+재현하고 이상 증상을 분류하는 절차는 [Stage 15 프리셋 사용자 검증 가이드](STAGE15_PRESET_VALIDATION_GUIDE.md)를
+따른다.
+
+Release의 `--stage15-performance-test`는 1920×1080, VSync/UI off, 고정 시간에서 네
+Concept×Low/Medium/High×F5~F8의 48조합을 측정한다. 각 조합은 120 warmup 뒤 비동기 query의
+`gpuSampleIndex`가 서로 다른 600개 표본만 채택한다. Frame/Cloud/Temporal Resolve p95 한도는
+각각 `16.67/10/2ms`다. Low/Medium은 50% Joint4/Stable 4-Phase고 High는
+Full/Nearest 1:1/Full Resolution Temporal이다. 따라서 기존처럼 세 품질이 같은 RT/Resolve라는
+가정으로 High/Medium `Shadow+Raymarch` 180% 상대 gate를 적용하지 않는다. Low는 같은
+50% 구조의 Medium보다 최소 3% 낮은 소유 작업 평균을 유지하고, High는 절대
+`GPU Cloud p95 ≤ 10ms`, `GPU Frame p95 ≤ 16.67ms`를 통과해야 한다. High의 첫 descriptor는
+100m/512며 이 절대 gate를 통과한 뒤에만 80m/768을 다음 후보로 측정한다.
+
+Capture Still은 실시간 p95 품질이 아니다. exact Native 1920×1080, Full/T Off,
+50m/1024, Cone8, distance/Detail LOD Off, Balanced512의 projection-jitter HDR sample 4개를
+`R32G32B32A32_FLOAT`에 평균낸다. 자동 검증은 4/4 완료, finite 누적, 서로 다른
+sample hash, 입력/시간 고정, 소유권에 따른 Native 복원을 검사한다. Reference는
+FineReference/DirectReference를 쓰는 수치 비교용으로 Capture와 분리한다.
+
+Stage 14 승인 회귀는 `captures/stage14/performance.json`의 같은 adapter/driver
+`Stage14Physical/DenseHorizon` Cloud p95를 기준으로 Full/Balanced/Temporal Off/Balanced512를
+다시 측정한다. 비율은 1.03 이하여야 한다. 출력은 `captures/stage15/performance.csv`와
+`performance.json`이며 PNG를 만들지 않는다.
+
+`--stage15-quality-test`는 Full/FineReference/DirectReference/Temporal Off를 기준으로 구름
+산란 RGB의 luminance SSIM과 정규화 RMSE, resolved T의 MAE/P99를 계산한다. SSIM은 전체 readback의
+평균·분산·공분산을 쓰는 단일 global SSIM이며 11×11 같은 local window SSIM은 아니다. HDR 정규화 범위는
+`max(1.0, reference luminance P99)`다. Low gate는 `0.97/0.03/0.03/0.08`, Medium/High는
+`0.99/0.01/0.01/0.03`이다. High의 Medium 대비 “not worse”는 전체 화면 정규화 RMSE와 T MAE
+두 평균 오차에만 half-float/phase 수치 동등 범위 `1.1e-4`를 허용한다. SSIM과 T P99는 위 절대
+gate로 검사하지만 이 High 상대 판정에는 넣지 않으며 JSON의 `notWorseMetrics`에 이 범위를
+명시한다. Medium 4/8/16-frame의 Temporal 수렴은 아래 cloud-edge 집계 gate로 별도 판정한다.
+각 Concept/Diagnostic/Quality
+요청 뒤 실제 enum·Temporal·Shadow
+상태를 확인하며, 요청한 Cloud target을 준비하지 못하면 Full direct 경로로 대체하지 않고 fixture를
+즉시 실패시킨다. `resolvedScatteringAndTransmittanceReadbackPassed`는 scattering/T hash가 서로
+다르고 T가 finite grayscale 0~1이며 둘 다 화면 Composite와 다른지도 별도 확인한다.
+고정 거리 ring이나 국소 ghost처럼 작은 영역의 결함은 global SSIM만으로 놓칠 수 있으므로 사용자
+가이드의 Detail LOD/Temporal Debug View 판정을 별도로 유지한다.
+
+15A는 전체 화면 평균 외에 `cloudMask`와 `cloudEdgeMask`의 SSIM/RMSE/T MAE를 함께
+기록한다. `cloudMask`는 reference opacity가 `0.01` 이상인 픽셀이다. `cloudEdgeMask`는
+reference T 중앙차분 gradient가 `0.002` 이상이고 4-neighbor 중 하나의 opacity가 `0.01`
+이상인 픽셀이다. 후보 결과로 mask를 다시 만들지 않으므로 Low/Medium/High가 같은 기준 픽셀을
+비교한다. High의 Cloud RT가 Full이 아니면 즉시
+실패하고, 같은 Concept/Camera에서 High cloud-edge RMSE는 Medium보다 의미 있게 낮아야
+한다. 정지 Temporal fixture는 4/8/16 frame 결과와 history age/reset count를 함께 저장하며,
+reset이 없는데 age가 증가하지 않으면 실패다. 4→16 cloud-edge RGB RMSE와 T MAE에는 `2e-6`
+수치 동등 범위를 적용해 둘 다 악화되지 않고 적어도 하나가 그 범위보다 더 개선되어야 한다.
+
+Joint4 화질 gate는 Accepted Tap Count debug ID 80을 읽어 순수 sky 영역의 평균 hard-valid
+tap이 2 이상인지 검사한다. Geometry/Sky 경계의 hard rejection은 그대로 유지하며,
+sky 전체가 투명 fallback로 떨어지는 수정은 합격하지 않는다. 최신 Debug smoke는 경계에서
+2픽셀 이상 떨어진 sky 8,482픽셀의 평균 `4.000000` taps와 Base/Detail Texture3D sampler의
+linear/wrap 계약을 통과했다. Full RT는 spatial resolve를 우회하므로 ID 80을 짙은 회색 N/A로 표시한다.
+
+Release Stage10/11/15 targeted suite는 `8/8` 통과했다. Release 전체 CTest 첫 실행은 Stage 12
+smoke의 최초 캡처가 이전 출력 크기를 이어받아 `53/54`였으며, 캡처 전에 `96×54`를 명시하도록
+fixture를 고친 뒤 Stage 12 focused Debug/Release `2/2`가 `MAE=0.001635`, `P99=0.029349`로
+다시 통과했다. 최종 Debug/Release 전체 CTest도 각각 `54/54`로 통과했다.
+
+숨김 ID 79와 Temporal Off spatial 출력 의미를 바로잡은 첫 재측정은 전체 평균의 작은 Temporal
+bias로 실패했으며 회고 자료로 보존한다. reference T만으로 고정한 cloud-edge를 선명도 수렴 gate로
+추가한 최신 Release 1080p 재측정은 96개 결과를 모두 통과했다. 16개 High Cloud RT는 모두
+1920×1080이었다. 동일 edge 1,876,893픽셀에서 Medium→High RGB RMSE는
+`0.00304644→0.00033319`, T MAE는 `0.00327674→0.00006603`으로 감소했다. Medium Temporal
+4→16 frame edge RGB RMSE는 `0.00347051→0.00337033`, edge T MAE는
+`0.00347650→0.00345479`로 개선됐고, history age `4→16`, reset count `9→9`였다. 전체 화면
+T MAE `0.000603569→0.000615385`의 작은 bias도 숨기지 않고 JSON에 기록한다.
+
+`--stage15-stage14-regression-probe`는 DenseHorizon만 120 warmup+600 unique sample로 세 번
+측정하고 Cloud p95 중앙값을 승인값 `7.592960ms`의 103%인 `7.8207488ms`와 비교한다. GPU
+Frame/Atmosphere/Shadow/Opaque/Raymarch/Resolve/Tone/Cloud Total의 avg/p50/p95/p99와 raw CPU
+frame, adapter/driver, 해상도, 상태 fingerprint, shader variant/hash를 JSON/CSV에 보존한다.
+Cloud Total과 Shadow+Raymarch+Resolve의 합이 timestamp 오차 범위에서 다르면 fixture 자체를
+실패 처리한다. 이 회귀 probe의 렌더 프레임은 ImGui frame과 모든 panel/overlay/preview 및 수동
+네 PNG export를 생성하지 않는다. Temporal 통계용 네 번째 MRT와 mip/readback도 수집하지 않는다.
+위 preset smoke의 metadata-only JSON 예외는 회귀 probe에는 없다.
+
+데스크톱 에이전트에서 측정할 때는 앱 내부 UI뿐 아니라 host `ChatGPT.exe`도 같은 GPU의 3D
+엔진을 사용할 수 있다. Windows GPU Engine counter에서 다른 3D 프로세스를 확인하고, 측정 동안
+ChatGPT 창을 최소화한 뒤 종료 즉시 복원한다. 이 절차를 생략하면 동일 fingerprint와 bytecode에서도
+Cloud p95가 `6.36~8.30ms`로 흔들려 3% gate를 오판할 수 있다.
+
+2026-08-28 1차 구현 측정은 **High가 아직 50% Joint4/Stable 4-Phase였던 이전 descriptor**의
+48개 실시간 조합 Frame/Cloud/Resolve 절대 예산과 상대 평균
+순서를 모두 통과했다. Resolve의 최악 p95는 2ms 아래였다. 당시 Stage 14 승인 DenseHorizon
+대비 `8.109056ms`, `1.06797×` 회귀를 확인했다. 이후 non-Cirrus raymarch와 Deep Shadow를
+compile-time variant로 분리했으며 고정 FXC `/O1` bytecode가 `stage14` tag와 각각 완전히
+동일함을 정적으로 확인했다. 당시 오염 없는 probe 중앙값은 `5.659648ms`, 승인 기준 대비
+`0.745381×`다. 48-case도 절대 실패 0, 최악 Frame/Cloud/Resolve p95
+`5.787648/5.718016/1.182720ms`, Stage 14 회귀 `6.979584ms`/`0.919218×`로 통과했다.
+상대 품질의 최악 Low/Medium과 High/Medium ratio는 `0.699942/1.537978`이다.
+
+위 값은 숨김 화질 출력과 High Full 승격 전의 보존된 성능 기준이다. 이후 Temporal Off 화질 readback을 위해
+일반 `CloudUpsample`에 ID 8(T)/79(scattering) 분기를 추가해 shader bytecode가 바뀌었으므로, 최신
+실행 파일의 최종 성능 증거는 실제 extent와 High Full descriptor를 기록한 3-block
+regression probe와 48-case를 다시 실행한 결과로 교체한다.
+
+2026-08-31 High Full 1차 재실행은 외부 게임 PID가 Windows GPU 3D 엔진을 약 `37%` 사용하고
+별도 VolumetricCloud 회귀 인스턴스까지 겹친 상태였다. 이때 생성된
+`performance.json/csv`의 실패값은 외부 부하 탐지 기록일 뿐 성능 판정 자료가 아니다. 해당 프로세스와
+다른 GPU fixture를 제거한 뒤 clean 재측정했다. 48개 절대 실패는 0이며 품질별 최대
+Frame/Cloud/Resolve p95는 Low `2.64397/2.59891/1.12026ms`, Medium
+`3.86970/3.82566/0.956416ms`, High `10.0014/9.95738/0.892928ms`다. Low/Medium owned-average
+최악 ratio는 `0.811623`으로 3% 상대 gate를 통과했다. 성능 명령 내부 Stage 14 회귀는
+`6.37645ms`/`0.839784×`, 독립 3-block은 `6.57203/6.15219/6.21363ms`, 중앙값
+`6.21363ms`/`0.818341×`로 통과했다. 모든 state/component invariant와 D3D debug gate도 통과했다.
