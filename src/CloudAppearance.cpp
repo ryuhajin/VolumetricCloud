@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudAppearance.cpp - 단계 13-4E 외형 프리셋/밀도 기준/엄격한 JSON 29
+//  CloudAppearance.cpp - 단계 15B 외형 프리셋/밀도 기준/JSON 30
 // ============================================================================
 #include "CloudAppearance.h"
 
@@ -127,6 +127,8 @@ void WriteSettings(std::ostream& stream, const CloudAppearanceSettings& value)
            << "    \"stratusMaximumThicknessMeters\": " << value.stratusMaximumThicknessMeters << ",\n"
            << "    \"cumulusMinimumThicknessMeters\": " << value.cumulusMinimumThicknessMeters << ",\n"
            << "    \"cumulusMaximumThicknessMeters\": " << value.cumulusMaximumThicknessMeters << ",\n"
+           << "    \"localBaseLiftMaxMeters\": " << value.localBaseLiftMaxMeters << ",\n"
+           << "    \"footprintCoverageInfluence\": " << value.footprintCoverageInfluence << ",\n"
            << "    \"stratusBottomFadeEnd\": " << value.stratusBottomFadeEnd << ",\n"
            << "    \"stratusTopFadeStart\": " << value.stratusTopFadeStart << ",\n"
            << "    \"mixedBottomFadeEnd\": " << value.mixedBottomFadeEnd << ",\n"
@@ -138,7 +140,8 @@ void WriteSettings(std::ostream& stream, const CloudAppearanceSettings& value)
            << "    \"cumulusUpperMassEnd\": " << value.cumulusUpperMassEnd << "\n";
 }
 
-bool ParseSettings(const std::string& text, CloudAppearanceSettings& value)
+bool ParseSettings(const std::string& text, CloudAppearanceSettings& value,
+                   bool parseStage15BShapeFields)
 {
     std::uint32_t type = 0;
     return ParseUnsigned(text, "cloudTypeMode", type) &&
@@ -159,6 +162,9 @@ bool ParseSettings(const std::string& text, CloudAppearanceSettings& value)
         ParseFloat(text, "stratusMaximumThicknessMeters", value.stratusMaximumThicknessMeters) &&
         ParseFloat(text, "cumulusMinimumThicknessMeters", value.cumulusMinimumThicknessMeters) &&
         ParseFloat(text, "cumulusMaximumThicknessMeters", value.cumulusMaximumThicknessMeters) &&
+        (!parseStage15BShapeFields ||
+         (ParseFloat(text, "localBaseLiftMaxMeters", value.localBaseLiftMaxMeters) &&
+          ParseFloat(text, "footprintCoverageInfluence", value.footprintCoverageInfluence))) &&
         ParseFloat(text, "stratusBottomFadeEnd", value.stratusBottomFadeEnd) &&
         ParseFloat(text, "stratusTopFadeStart", value.stratusTopFadeStart) &&
         ParseFloat(text, "mixedBottomFadeEnd", value.mixedBottomFadeEnd) &&
@@ -265,6 +271,8 @@ CloudAppearanceSettings CaptureCloudAppearance(
     value.stratusMaximumThicknessMeters = shape.stratusMaximumThicknessMeters;
     value.cumulusMinimumThicknessMeters = shape.cumulusMinimumThicknessMeters;
     value.cumulusMaximumThicknessMeters = shape.cumulusMaximumThicknessMeters;
+    value.localBaseLiftMaxMeters = shape.localBaseLiftMaxMeters;
+    value.footprintCoverageInfluence = shape.footprintCoverageInfluence;
     value.stratusBottomFadeEnd = shape.stratusBottomFadeEnd;
     value.stratusTopFadeStart = shape.stratusTopFadeStart;
     value.mixedBottomFadeEnd = shape.mixedBottomFadeEnd;
@@ -275,6 +283,26 @@ CloudAppearanceSettings CaptureCloudAppearance(
     value.cumulusUpperMassStart = shape.cumulusUpperMassStart;
     value.cumulusUpperMassEnd = shape.cumulusUpperMassEnd;
     return value;
+}
+
+void ApplyCloudAppearanceShape(const CloudAppearanceSettings& value,
+                               CloudShapeParameters& shape)
+{
+    shape.stratusMinimumThicknessMeters = value.stratusMinimumThicknessMeters;
+    shape.stratusMaximumThicknessMeters = value.stratusMaximumThicknessMeters;
+    shape.cumulusMinimumThicknessMeters = value.cumulusMinimumThicknessMeters;
+    shape.cumulusMaximumThicknessMeters = value.cumulusMaximumThicknessMeters;
+    shape.localBaseLiftMaxMeters = value.localBaseLiftMaxMeters;
+    shape.footprintCoverageInfluence = value.footprintCoverageInfluence;
+    shape.stratusBottomFadeEnd = value.stratusBottomFadeEnd;
+    shape.stratusTopFadeStart = value.stratusTopFadeStart;
+    shape.mixedBottomFadeEnd = value.mixedBottomFadeEnd;
+    shape.mixedTopFadeStart = value.mixedTopFadeStart;
+    shape.cumulusBottomFadeEnd = value.cumulusBottomFadeEnd;
+    shape.cumulusTopFadeStart = value.cumulusTopFadeStart;
+    shape.cumulusUpperMassBottom = value.cumulusUpperMassBottom;
+    shape.cumulusUpperMassStart = value.cumulusUpperMassStart;
+    shape.cumulusUpperMassEnd = value.cumulusUpperMassEnd;
 }
 
 void ApplyCloudAppearance(const CloudAppearanceSettings& value,
@@ -294,19 +322,7 @@ void ApplyCloudAppearance(const CloudAppearanceSettings& value,
     weather.thicknessCoverageInfluence = value.thicknessCoverageLink;
     weather.cloudType.bias = value.cloudTypeBias;
     weather.cloudTypeMode = value.cloudTypeMode;
-    shape.stratusMinimumThicknessMeters = value.stratusMinimumThicknessMeters;
-    shape.stratusMaximumThicknessMeters = value.stratusMaximumThicknessMeters;
-    shape.cumulusMinimumThicknessMeters = value.cumulusMinimumThicknessMeters;
-    shape.cumulusMaximumThicknessMeters = value.cumulusMaximumThicknessMeters;
-    shape.stratusBottomFadeEnd = value.stratusBottomFadeEnd;
-    shape.stratusTopFadeStart = value.stratusTopFadeStart;
-    shape.mixedBottomFadeEnd = value.mixedBottomFadeEnd;
-    shape.mixedTopFadeStart = value.mixedTopFadeStart;
-    shape.cumulusBottomFadeEnd = value.cumulusBottomFadeEnd;
-    shape.cumulusTopFadeStart = value.cumulusTopFadeStart;
-    shape.cumulusUpperMassBottom = value.cumulusUpperMassBottom;
-    shape.cumulusUpperMassStart = value.cumulusUpperMassStart;
-    shape.cumulusUpperMassEnd = value.cumulusUpperMassEnd;
+    ApplyCloudAppearanceShape(value, shape);
 }
 
 bool CloudAppearanceSettingsEqual(const CloudAppearanceSettings& a,
@@ -315,26 +331,28 @@ bool CloudAppearanceSettingsEqual(const CloudAppearanceSettings& a,
 {
     if (a.cloudTypeMode != b.cloudTypeMode)
         return false;
-    const std::array<float, 24> av = {
+    const std::array<float, 26> av = {
         a.globalCoverage, a.densityMultiplier, a.extinctionPerMeter,
         a.detailErosion, a.weatherThreshold, a.weatherSoftness,
         a.coverageBias, a.coverageContrast, a.densityCoverageLink,
         a.thicknessCoverageLink, a.cloudTypeBias,
         a.stratusMinimumThicknessMeters, a.stratusMaximumThicknessMeters,
         a.cumulusMinimumThicknessMeters, a.cumulusMaximumThicknessMeters,
+        a.localBaseLiftMaxMeters, a.footprintCoverageInfluence,
         a.stratusBottomFadeEnd, a.stratusTopFadeStart,
         a.mixedBottomFadeEnd, a.mixedTopFadeStart,
         a.cumulusBottomFadeEnd, a.cumulusTopFadeStart,
         a.cumulusUpperMassBottom, a.cumulusUpperMassStart,
         a.cumulusUpperMassEnd,
     };
-    const std::array<float, 24> bv = {
+    const std::array<float, 26> bv = {
         b.globalCoverage, b.densityMultiplier, b.extinctionPerMeter,
         b.detailErosion, b.weatherThreshold, b.weatherSoftness,
         b.coverageBias, b.coverageContrast, b.densityCoverageLink,
         b.thicknessCoverageLink, b.cloudTypeBias,
         b.stratusMinimumThicknessMeters, b.stratusMaximumThicknessMeters,
         b.cumulusMinimumThicknessMeters, b.cumulusMaximumThicknessMeters,
+        b.localBaseLiftMaxMeters, b.footprintCoverageInfluence,
         b.stratusBottomFadeEnd, b.stratusTopFadeStart,
         b.mixedBottomFadeEnd, b.mixedTopFadeStart,
         b.cumulusBottomFadeEnd, b.cumulusTopFadeStart,
@@ -367,6 +385,8 @@ bool IsValidCloudAppearanceSettings(const CloudAppearanceSettings& v)
         FiniteIn(v.stratusMaximumThicknessMeters, v.stratusMinimumThicknessMeters, 6000.0f) &&
         FiniteIn(v.cumulusMinimumThicknessMeters, 1.0f, 6000.0f) &&
         FiniteIn(v.cumulusMaximumThicknessMeters, v.cumulusMinimumThicknessMeters, 6000.0f) &&
+        FiniteIn(v.localBaseLiftMaxMeters, 0.0f, 2000.0f) &&
+        FiniteIn(v.footprintCoverageInfluence, 0.0f, 1.0f) &&
         FiniteIn(v.stratusBottomFadeEnd, 0.01f, 0.99f) &&
         FiniteIn(v.stratusTopFadeStart, v.stratusBottomFadeEnd, 0.99f) &&
         FiniteIn(v.mixedBottomFadeEnd, 0.01f, 0.99f) &&
@@ -385,10 +405,13 @@ float EvaluateAppearanceWeatherSupport(float weatherCoverage)
 
 float EvaluateAppearanceHorizontalCoverage(float globalCoverage,
                                            float weatherCoverage,
-                                           float typedFootprintScale)
+                                           float typedFootprintScale,
+                                           float footprintInfluence)
 {
     const float weatherFactor = 0.70f + 0.30f * Saturate(weatherCoverage);
-    const float footprintFactor = 0.80f + 0.20f * Saturate(typedFootprintScale);
+    const float influence = Saturate(footprintInfluence);
+    const float footprintFactor = (1.0f - influence) +
+        influence * Saturate(typedFootprintScale);
     return Saturate(globalCoverage * weatherFactor * footprintFactor);
 }
 
@@ -399,12 +422,14 @@ float EvaluateAppearanceBaseDensity(float globalCoverage,
                                     float typedVerticalProfile,
                                     float densityMultiplier,
                                     float weatherDensityModifier,
-                                    bool insideLocalColumn)
+                                    bool insideLocalColumn,
+                                    float footprintInfluence)
 {
     if (!insideLocalColumn)
         return 0.0f;
     const float horizontalCoverage = EvaluateAppearanceHorizontalCoverage(
-        globalCoverage, weatherCoverage, typedFootprintScale);
+        globalCoverage, weatherCoverage, typedFootprintScale,
+        footprintInfluence);
     return EvaluateAppearanceWeatherSupport(weatherCoverage) *
         RemapCoverage(rawNoise, horizontalCoverage) *
         Saturate(typedVerticalProfile) * std::max(densityMultiplier, 0.0f) *
@@ -417,7 +442,8 @@ float EvaluateAppearanceLightBaseDensity(float globalCoverage,
                                          float typedVerticalProfile,
                                          float densityMultiplier,
                                          float weatherDensityModifier,
-                                         bool insideLocalColumn)
+                                         bool insideLocalColumn,
+                                         float footprintInfluence)
 {
     if (!insideLocalColumn || typedVerticalProfile <= 0.0f ||
         EvaluateAppearanceWeatherSupport(weatherCoverage) <= 0.0f)
@@ -425,7 +451,7 @@ float EvaluateAppearanceLightBaseDensity(float globalCoverage,
     return EvaluateAppearanceBaseDensity(
         globalCoverage, weatherCoverage, rawNoise, typedFootprintScale,
         typedVerticalProfile, densityMultiplier, weatherDensityModifier,
-        insideLocalColumn);
+        insideLocalColumn, footprintInfluence);
 }
 
 float ResolvePipelineComparisonTime(bool comparisonActive,
@@ -460,8 +486,8 @@ bool SaveCustomCloudAppearanceAtomic(const std::filesystem::path& path,
             status = "Custom save failed: cannot open temporary file";
             return false;
         }
-        file << "{\n  \"schemaVersion\": 29,\n"
-             << "  \"implementationStage\": \"13-4E\",\n"
+        file << "{\n  \"schemaVersion\": 30,\n"
+             << "  \"implementationStage\": \"15B\",\n"
              << "  \"cloudAppearance\": {\n"
              << "    \"activePreset\": \"Custom\",\n";
         WriteSettings(file, settings);
@@ -503,12 +529,21 @@ bool LoadCustomCloudAppearance(const std::filesystem::path& path,
     std::string stage;
     std::string preset;
     CloudAppearanceSettings parsed;
-    if (!ParseUnsigned(text, "schemaVersion", schema) || schema != 29u ||
-        !ParseString(text, "implementationStage", stage) || stage != "13-4E" ||
-        !ParseString(text, "activePreset", preset) || preset != "Custom" ||
-        !ParseSettings(text, parsed) || !IsValidCloudAppearanceSettings(parsed))
+    if (!ParseUnsigned(text, "schemaVersion", schema))
     {
-        status = "Custom load rejected: schema 29 data is missing, corrupt, or out of range";
+        status = "Custom load rejected: schema 29/30 data is missing, corrupt, or out of range";
+        return false;
+    }
+    const bool schema29 = schema == 29u;
+    const bool schema30 = schema == 30u;
+    if ((!schema29 && !schema30) ||
+        !ParseString(text, "implementationStage", stage) ||
+        (schema29 ? stage != "13-4E" : stage != "15B") ||
+        !ParseString(text, "activePreset", preset) || preset != "Custom" ||
+        !ParseSettings(text, parsed, schema30) ||
+        !IsValidCloudAppearanceSettings(parsed))
+    {
+        status = "Custom load rejected: schema 29/30 data is missing, corrupt, or out of range";
         return false;
     }
     outSettings = parsed;

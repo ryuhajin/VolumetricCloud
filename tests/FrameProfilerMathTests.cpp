@@ -39,31 +39,46 @@ int main()
             "GPU times must use alpha 0.1 EMA");
     Require(std::abs(accumulator.Snapshot().gpuShadowCacheMs - 0.95) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuCloudRaymarchMs - 2.85) < 1e-9 &&
-            std::abs(accumulator.Snapshot().gpuUpsampleCompositeMs - 1.0) < 1e-9,
+            std::abs(accumulator.Snapshot().gpuUpsampleCompositeMs - 1.0) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuCloudCompositeMs) < 1e-9,
             "GPU cloud split must preserve cache, raymarch and resolve timings");
     Require(std::abs(accumulator.Snapshot().rawGpuFrameMs - 6.0) < 1e-9 &&
                 std::abs(accumulator.Snapshot().rawGpuCloudMs - 3.0) < 1e-9 &&
                 std::abs(accumulator.Snapshot().rawGpuShadowCacheMs - 0.5) < 1e-9 &&
                 std::abs(accumulator.Snapshot().rawGpuCloudRaymarchMs - 1.5) < 1e-9 &&
                 std::abs(accumulator.Snapshot().rawGpuUpsampleCompositeMs - 1.0) < 1e-9 &&
+                std::abs(accumulator.Snapshot().rawGpuCloudCompositeMs) < 1e-9 &&
                 accumulator.Snapshot().gpuSampleIndex == 2u,
             "GPU snapshot must expose unique raw samples for percentile gates");
 
     accumulator.Reset();
     accumulator.RecordStage14GpuMilliseconds(
-        12.0, 1.0, 0.5, 0.4, 6.0, 1.5, 0.6);
+        12.0, 1.0, 0.5, 0.4, 6.0, 1.5, 0.7, 0.6);
     accumulator.RecordStage14GpuMilliseconds(
-        10.0, 0.8, 0.4, 0.3, 5.0, 1.0, 0.5);
+        10.0, 0.8, 0.4, 0.3, 5.0, 1.0, 0.4, 0.5);
     Require(std::abs(accumulator.Snapshot().gpuAtmosphereLutMs - 0.98) < 1e-9 &&
-            std::abs(accumulator.Snapshot().gpuCloudMs - 7.84) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuCloudMs - 8.51) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuShadowCacheMs - 0.49) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuOpaqueSceneMs - 0.39) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuCloudRaymarchMs - 5.9) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuUpsampleCompositeMs - 1.45) < 1e-9 &&
+            std::abs(accumulator.Snapshot().gpuCloudCompositeMs - 0.67) < 1e-9 &&
             std::abs(accumulator.Snapshot().gpuToneMapMs - 0.59) < 1e-9,
             "Stage 14 GPU split must preserve every pass EMA");
-    Require(std::abs(accumulator.Snapshot().rawGpuCloudMs - 6.4) < 1e-9,
-            "Stage 14 GPU Cloud Total must include shadow, raymarch and resolve");
+    Require(std::abs(accumulator.Snapshot().rawGpuCloudMs - 6.8) < 1e-9 &&
+            std::abs(accumulator.Snapshot().rawGpuCloudCompositeMs - 0.4) < 1e-9,
+            "Stage 14 GPU Cloud Total must include shadow, raymarch, resolve and composite");
+
+    FrameTimingAccumulator directCompositeAccumulator;
+    directCompositeAccumulator.RecordStage14GpuMilliseconds(
+        5.0, 0.2, 0.1, 0.1, 2.0, 1.0, 0.0, 0.2);
+    Require(std::abs(directCompositeAccumulator.Snapshot().
+                         rawGpuCloudCompositeMs) < 1e-9 &&
+            std::abs(directCompositeAccumulator.Snapshot().
+                         gpuCloudCompositeMs) < 1e-9 &&
+            std::abs(directCompositeAccumulator.Snapshot().
+                         rawGpuCloudMs - 3.1) < 1e-9,
+            "a direct path must record resolve while keeping composite near zero");
 
     const FrameTimingSnapshot valid = accumulator.Snapshot();
     accumulator.RecordCpuMilliseconds(0.0);
@@ -72,6 +87,11 @@ int main()
     accumulator.RecordGpuMilliseconds(1.0, 2.0);
     accumulator.RecordGpuMilliseconds(
         std::numeric_limits<double>::infinity(), 0.0);
+    accumulator.RecordStage14GpuMilliseconds(
+        10.0, 0.8, 0.4, 0.3, 5.0, 1.0,
+        std::numeric_limits<double>::quiet_NaN(), 0.5);
+    accumulator.RecordStage14GpuMilliseconds(
+        1.0, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2);
     Require(accumulator.Snapshot().cpuFrameMs == valid.cpuFrameMs &&
             accumulator.Snapshot().gpuFrameMs == valid.gpuFrameMs,
             "invalid samples must not alter the last valid values");

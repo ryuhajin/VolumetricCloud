@@ -86,6 +86,7 @@ struct CloudMarchDebug
     float baseSupport;       // 밀도 배율·Detail 전 Base shape 존재 마스크.
     float weatherThicknessPotential; // Weather A: 로컬 두께 보간값.
     float localThicknessMeters;      // 해당 XZ 기둥의 물리 두께(m).
+    float localBaseLiftMeters;       // 전역 바닥에서 올라간 로컬 바닥(m).
     float localHeightFraction;    // 로컬 바닥 0, 로컬 상단 1.
     float3 noiseUvw;       // 대표 중간 위치의 연속 noise 좌표(cycle).
     float3 detailNoiseUvw; // 대표 Detail noise 좌표(cycle), 생략 시 0.
@@ -259,6 +260,7 @@ CloudResult RaymarchCloudReference(float3 rayOrigin, float3 rayDirection,
         debugData.baseSupport = representativeSample.baseSupport;
         debugData.weatherThicknessPotential = representativeSample.weatherThicknessPotential;
         debugData.localThicknessMeters = representativeSample.localThicknessMeters;
+        debugData.localBaseLiftMeters = representativeSample.localBaseLiftMeters;
         debugData.localHeightFraction = representativeSample.localHeightFraction;
         debugData.sampledDensity = representativeSample.finalDensity;
         debugData.noiseUvw = representativeSample.noiseUvw;
@@ -431,6 +433,7 @@ CloudResult RaymarchCloudOptimized(float3 rayOrigin, float3 rayDirection,
     debugData.baseSupport = representativeSample.baseSupport;
     debugData.weatherThicknessPotential = representativeSample.weatherThicknessPotential;
     debugData.localThicknessMeters = representativeSample.localThicknessMeters;
+    debugData.localBaseLiftMeters = representativeSample.localBaseLiftMeters;
     debugData.localHeightFraction = representativeSample.localHeightFraction;
     debugData.sampledDensity = representativeSample.finalDensity;
     debugData.noiseUvw = representativeSample.noiseUvw;
@@ -838,7 +841,12 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
                        marchDebug.hit).xxx, 1.0);
     if (debugMode == 79)
         return float4(max(cloud.scattering, 0.0.xxx), 1.0);
-
+    if (debugMode == 81)
+    {
+        float normalizedLift = marchDebug.localBaseLiftMeters /
+            max(localBaseLiftMaxMeters, 1.0);
+        return float4((saturate(normalizedLift) * marchDebug.hit).xxx, 1.0);
+    }
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
         ? sceneColorTexture.SampleLevel(pointClampSampler, uv, 0).rgb

@@ -31,7 +31,8 @@ cbuffer CloudShapeCB : register(b7)
 
     float cumulusUpperMassStart;
     float cumulusUpperMassEnd;
-    float2 cloudShapePadding;
+    float localBaseLiftMaxMeters;
+    float footprintCoverageInfluence;
 
 #if VCLOUD_CIRRUS_VARIANT != 0
     float2 cirrusFlowDirectionXZ;

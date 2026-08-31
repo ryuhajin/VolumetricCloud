@@ -94,5 +94,8 @@ float4 main(VSOut input) : SV_TARGET
         value = sample.effectiveShapeCoverage;
     else if (noiseOutputMode == 29u)
         value = sample.baseSupport;
+    else if (noiseOutputMode == 30u)
+        value = saturate(sample.localBaseLiftMeters /
+                         max(localBaseLiftMaxMeters, 1.0));
     return float4(value.xxx, 1.0);
 }

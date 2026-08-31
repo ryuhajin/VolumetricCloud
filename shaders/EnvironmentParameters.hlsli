@@ -21,11 +21,11 @@ cbuffer EnvironmentCB : register(b4)
     float multipleScatteringAttenuation;    // CPU 동일 필드. octave별 에너지 감소.
     float multipleScatteringExtinctionFactor;// CPU 동일 필드. 반복 광학 깊이 비율.
     float multipleScatteringPhaseFactor;    // CPU 동일 필드. 반복 Phase 방향성 비율.
-    float environmentPadding;               // 16바이트 정렬 예약. 사용하지 않는다.
+    float physicalSkyFillScale;             // Physical LUT 하늘 입사광 배율 [0,2].
     float ambientShadowCoupling;             // CPU 동일 필드. 태양 차폐를 환경광 AO에 섞는 비율.
     float ambientShadowExponent;             // CPU 동일 필드. Tsun 기반 환경광 차폐 곡선.
     float multipleScatteringInteriorBlend;   // CPU 동일 필드. 다중 산란을 차폐 영역으로 옮기는 비율.
-    float lightingPadding;                   // 16바이트 정렬 예약. 사용하지 않는다.
+    float physicalGroundFillScale;           // Physical LUT 지면 입사광 배율 [0,2].
 };
 
 #endif

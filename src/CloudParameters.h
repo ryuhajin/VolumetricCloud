@@ -84,6 +84,10 @@ enum class CloudDebugMode : std::int32_t
     Stage15ResolvedCloud = 79,
     // Joint4의 Geometry/Sky·Scene plane hard-valid tap 수(0~4) 진단이다.
     UpsampleAcceptedTapCount = 80,
+    // Weather A/G가 전역 바닥에서 올린 로컬 컬럼 바닥 높이다.
+    LocalBaseOffset = 81,
+    NteRimMask = 83,
+    NteRimContribution = 84,
 };
 
 enum class Stage5WeatherPreset : std::int32_t

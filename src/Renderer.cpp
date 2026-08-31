@@ -1,5 +1,6 @@
 #include "Renderer.h"
 #include "Camera.h"
+#include "CloudShapeDomainContract.h"
 #include "Stage13CameraPresets.h"
 #include "Stage13SceneMath.h"
 #include "Stage11TemporalMath.h"
@@ -16,7 +17,9 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <sstream>
+#include <string_view>
 #include <vector>
 
 using namespace DirectX;
@@ -24,6 +27,48 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
+bool TryMapStage15ConceptToFormation(
+    Stage15ConceptPreset preset, CloudFormationConcept& outConcept)
+{
+    switch (preset)
+    {
+    case Stage15ConceptPreset::UrbanFairWeather:
+        outConcept = CloudFormationConcept::UrbanFairWeather;
+        return true;
+    case Stage15ConceptPreset::MeadowBrokenClouds:
+        outConcept = CloudFormationConcept::MeadowBrokenClouds;
+        return true;
+    case Stage15ConceptPreset::DesertCirrus:
+        outConcept = CloudFormationConcept::DesertCirrus;
+        return true;
+    case Stage15ConceptPreset::SnowOvercast:
+        outConcept = CloudFormationConcept::SnowOvercast;
+        return true;
+    case Stage15ConceptPreset::Custom:
+    default:
+        return false;
+    }
+}
+
+CloudAppearancePreset LegacyAppearanceForFormation(
+    const CloudFormationSettings& formation)
+{
+    if (cloudshape::Mode(formation.shape.shapeMode) ==
+        CloudShapeMode::CirrusPhysicalLayer)
+    {
+        return CloudAppearancePreset::CustomUnsaved;
+    }
+    switch (formation.weather.cloudTypeMode)
+    {
+    case CloudTypeMode::Stratus: return CloudAppearancePreset::Stratus;
+    case CloudTypeMode::Cumulus: return CloudAppearancePreset::Cumulus;
+    case CloudTypeMode::Mixed:
+    case CloudTypeMode::WeatherMap:
+    default:
+        return CloudAppearancePreset::DenseMixedDefault;
+    }
+}
+
 std::string NarrowWide(const wchar_t* value)
 {
     if (!value || value[0] == L'\0')
@@ -155,6 +200,184 @@ void AppendCacheText(std::vector<std::uint8_t>& bytes,
     AppendCacheBytes(bytes, text.data(), text.size());
 }
 
+using ShaderDependencySources =
+    std::map<std::string, std::vector<char>>;
+
+bool IsShaderPathInsideRoot(
+    const std::filesystem::path& shaderRoot,
+    const std::filesystem::path& shaderPath,
+    std::string& relativePath)
+{
+    std::error_code error;
+    const std::filesystem::path relative =
+        std::filesystem::relative(shaderPath, shaderRoot, error);
+    if (error || relative.empty() || relative.is_absolute())
+        return false;
+    for (const std::filesystem::path& component : relative)
+    {
+        if (component == L"..")
+            return false;
+    }
+    relativePath = relative.generic_string();
+    return !relativePath.empty();
+}
+
+bool ParseLiteralShaderIncludes(
+    const std::vector<char>& contents,
+    std::vector<std::string>& includePaths)
+{
+    const std::string source(contents.begin(), contents.end());
+    std::size_t lineStart = 0;
+    while (lineStart < source.size())
+    {
+        std::size_t lineEnd = source.find('\n', lineStart);
+        if (lineEnd == std::string::npos)
+            lineEnd = source.size();
+
+        std::size_t cursor = lineStart;
+        if (lineStart == 0 && lineEnd >= 3 &&
+            static_cast<unsigned char>(source[0]) == 0xefu &&
+            static_cast<unsigned char>(source[1]) == 0xbbu &&
+            static_cast<unsigned char>(source[2]) == 0xbfu)
+            cursor = 3;
+        while (cursor < lineEnd &&
+               (source[cursor] == ' ' || source[cursor] == '\t' ||
+                source[cursor] == '\v' || source[cursor] == '\f' ||
+                source[cursor] == '\r'))
+            ++cursor;
+        if (cursor >= lineEnd || source[cursor] != '#')
+        {
+            lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+            continue;
+        }
+
+        ++cursor;
+        while (cursor < lineEnd &&
+               (source[cursor] == ' ' || source[cursor] == '\t'))
+            ++cursor;
+        constexpr std::string_view includeDirective = "include";
+        if (cursor + includeDirective.size() > lineEnd ||
+            source.compare(cursor, includeDirective.size(),
+                           includeDirective) != 0)
+        {
+            lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+            continue;
+        }
+        cursor += includeDirective.size();
+        if (cursor < lineEnd &&
+            ((source[cursor] >= 'a' && source[cursor] <= 'z') ||
+             (source[cursor] >= 'A' && source[cursor] <= 'Z') ||
+             (source[cursor] >= '0' && source[cursor] <= '9') ||
+             source[cursor] == '_'))
+        {
+            lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+            continue;
+        }
+        while (cursor < lineEnd &&
+               (source[cursor] == ' ' || source[cursor] == '\t'))
+            ++cursor;
+
+        // 현재 shader 계약은 literal local include만 사용한다. macro include나
+        // 잘못 닫힌 경로는 cache를 포기해 stale bytecode 재사용을 막는다.
+        if (cursor >= lineEnd ||
+            (source[cursor] != '"' && source[cursor] != '<'))
+            return false;
+        const char terminator = source[cursor] == '"' ? '"' : '>';
+        const std::size_t pathStart = ++cursor;
+        const std::size_t pathEnd = source.find(terminator, pathStart);
+        if (pathEnd == std::string::npos || pathEnd >= lineEnd ||
+            pathEnd == pathStart)
+            return false;
+        includePaths.emplace_back(source.substr(pathStart, pathEnd - pathStart));
+        lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+    }
+    return true;
+}
+
+bool ResolveShaderInclude(
+    const std::filesystem::path& shaderRoot,
+    const std::filesystem::path& includingFile,
+    const std::string& includeText,
+    std::filesystem::path& resolvedPath)
+{
+    const std::filesystem::path includePath =
+        std::filesystem::u8path(includeText);
+    const std::filesystem::path candidates[] = {
+        includingFile.parent_path() / includePath,
+        shaderRoot / includePath,
+    };
+
+    std::filesystem::path selected;
+    for (const std::filesystem::path& candidate : candidates)
+    {
+        std::error_code error;
+        const std::filesystem::path canonical =
+            std::filesystem::canonical(candidate, error);
+        if (error)
+            continue;
+        if (!std::filesystem::is_regular_file(canonical, error) || error)
+            return false;
+
+        std::string relative;
+        if (!IsShaderPathInsideRoot(shaderRoot, canonical, relative))
+            return false;
+        if (selected.empty())
+        {
+            selected = canonical;
+            continue;
+        }
+        if (!std::filesystem::equivalent(selected, canonical, error) || error)
+        {
+            // parent-relative와 root-relative가 서로 다른 파일을 가리키면
+            // 표준 include handler의 선택을 추측하지 않고 cache를 비활성화한다.
+            return false;
+        }
+    }
+    if (selected.empty())
+        return false;
+    resolvedPath = selected;
+    return true;
+}
+
+bool CollectShaderDependencies(
+    const std::filesystem::path& shaderRoot,
+    const std::filesystem::path& shaderPath,
+    ShaderDependencySources& sources)
+{
+    std::error_code error;
+    const std::filesystem::path canonicalPath =
+        std::filesystem::canonical(shaderPath, error);
+    if (error)
+        return false;
+
+    std::string relativePath;
+    if (!IsShaderPathInsideRoot(shaderRoot, canonicalPath, relativePath))
+        return false;
+    if (sources.find(relativePath) != sources.end())
+        return true;
+
+    std::ifstream source(canonicalPath, std::ios::binary);
+    if (!source)
+        return false;
+    std::vector<char> contents(
+        (std::istreambuf_iterator<char>(source)),
+        std::istreambuf_iterator<char>());
+    sources.emplace(relativePath, contents);
+
+    std::vector<std::string> includePaths;
+    if (!ParseLiteralShaderIncludes(contents, includePaths))
+        return false;
+    for (const std::string& includePath : includePaths)
+    {
+        std::filesystem::path dependency;
+        if (!ResolveShaderInclude(
+                shaderRoot, canonicalPath, includePath, dependency) ||
+            !CollectShaderDependencies(shaderRoot, dependency, sources))
+            return false;
+    }
+    return true;
+}
+
 std::string BuildShaderCacheKey(
     const std::filesystem::path& shaderRoot,
     const std::filesystem::path& shaderPath,
@@ -162,7 +385,7 @@ std::string BuildShaderCacheKey(
     const D3D_SHADER_MACRO* defines)
 {
     std::vector<std::uint8_t> input;
-    AppendCacheText(input, "VolumetricCloudShaderCache-v1");
+    AppendCacheText(input, "VolumetricCloudShaderCache-v2-dependency-closure");
     AppendCacheText(input, shaderPath.filename().string());
     AppendCacheText(input, entryPoint ? entryPoint : "");
     AppendCacheText(input, target ? target : "");
@@ -177,34 +400,17 @@ std::string BuildShaderCacheKey(
         }
     }
 
-    std::vector<std::filesystem::path> sources;
     std::error_code error;
-    for (std::filesystem::recursive_directory_iterator iterator(
-             shaderRoot, error), end;
-         !error && iterator != end; iterator.increment(error))
-    {
-        if (!iterator->is_regular_file(error) || error)
-            continue;
-        const std::filesystem::path extension = iterator->path().extension();
-        if (extension == L".hlsl" || extension == L".hlsli")
-            sources.push_back(iterator->path());
-    }
-    if (error || sources.empty())
+    const std::filesystem::path canonicalRoot =
+        std::filesystem::canonical(shaderRoot, error);
+    ShaderDependencySources sources;
+    if (error ||
+        !CollectShaderDependencies(canonicalRoot, shaderPath, sources) ||
+        sources.empty())
         return {};
-    std::sort(sources.begin(), sources.end());
-    for (const std::filesystem::path& sourcePath : sources)
+    for (const auto& [relativePath, contents] : sources)
     {
-        const std::filesystem::path relative =
-            std::filesystem::relative(sourcePath, shaderRoot, error);
-        if (error)
-            return {};
-        AppendCacheText(input, relative.generic_string());
-        std::ifstream source(sourcePath, std::ios::binary);
-        if (!source)
-            return {};
-        const std::vector<char> contents(
-            (std::istreambuf_iterator<char>(source)),
-            std::istreambuf_iterator<char>());
+        AppendCacheText(input, relativePath);
         AppendCacheBytes(input, contents.data(), contents.size());
     }
 
@@ -391,6 +597,7 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_cloudUpsampleShaderPath = m_shaderDir + L"CloudUpsample.hlsl";
     m_cloudTemporalResolveShaderPath =
         m_shaderDir + L"CloudTemporalResolve.hlsl";
+    m_cloudCompositeShaderPath = m_shaderDir + L"CloudComposite.hlsl";
     m_noiseLabShaderPath = m_shaderDir + L"NoiseLab.hlsl";
     m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
     m_noiseVolumeShaderPath = m_shaderDir + L"NoiseVolume.hlsl";
@@ -407,9 +614,15 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
         shaderDirectory = shaderDirectory.parent_path();
     m_customAppearancePath = shaderDirectory.parent_path() / L"captures" /
         L"noise-lab" / L"custom" / L"noise-settings.json";
+    m_cloudFormationPresetRoot = shaderDirectory.parent_path() / L"captures" /
+        L"noise-lab" / L"cloud-presets";
+    const std::filesystem::path developerUiSettingsPath =
+        shaderDirectory.parent_path() / L"captures" /
+        L"noise-lab" / L"developer-ui.json";
     m_hasSavedCustomAppearance = LoadCustomCloudAppearance(
         m_customAppearancePath, m_savedCustomAppearance,
         m_cloudAppearanceStatus);
+    RefreshSavedCustomFormationState();
 
     DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
     swapChainDesc.BufferCount = 2;
@@ -474,7 +687,8 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
         !CreateConstantBuffers() || !CreateShaders(true) ||
         !CreateDiagnosticScene() || !CreatePipelineStates() ||
         !CreateWeatherMapTexture(m_weatherPreset) ||
-        !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
+        !m_noiseLab.Init(
+            hwnd, m_device.Get(), m_context.Get(), developerUiSettingsPath))
     {
         MessageBoxW(hwnd, L"단계 8 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
         return false;
@@ -903,7 +1117,7 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     const std::filesystem::path cachePath = cacheKey.empty()
         ? std::filesystem::path{}
         : cacheDirectory / (std::filesystem::path(cacheKey).wstring() + L".cso");
-    if (!m_bypassShaderCache && !cachePath.empty() &&
+    if (!cachePath.empty() &&
         SUCCEEDED(D3DReadFileToBlob(cachePath.c_str(), &outBlob)) && outBlob)
     {
         ++m_shaderCacheHitCount;
@@ -960,6 +1174,8 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3DBlob> cirrusOptimizedDataPsBlob;
     ComPtr<ID3DBlob> cloudUpsamplePsBlob;
     ComPtr<ID3DBlob> cloudTemporalResolvePsBlob;
+    ComPtr<ID3DBlob> cloudCompositePsBlob;
+    ComPtr<ID3DBlob> cloudCompositeNoRimPsBlob;
     ComPtr<ID3DBlob> noiseLabPsBlob;
     ComPtr<ID3DBlob> sceneVsBlob;
     ComPtr<ID3DBlob> scenePsBlob;
@@ -983,6 +1199,9 @@ bool Renderer::CreateShaders(bool showErrors)
     const D3D_SHADER_MACRO diagnosticShapeDefines[] = {
         { "VCLOUD_CIRRUS_VARIANT", "-1" }, { nullptr, nullptr }
     };
+    const D3D_SHADER_MACRO compositeNoRimDefines[] = {
+        { "VCLOUD_DISABLE_RIM", "1" }, { nullptr, nullptr }
+    };
     if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainReference", "ps_5_0", cloudReferencePsBlob, showErrors, nonCirrusDefines) ||
         !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors, nonCirrusDefines) ||
@@ -994,6 +1213,8 @@ bool Renderer::CreateShaders(bool showErrors)
         !CompileShaderFromFile(m_cloudShaderPath, "mainOptimizedData", "ps_5_0", cirrusOptimizedDataPsBlob, showErrors, cirrusDefines) ||
         !CompileShaderFromFile(m_cloudUpsampleShaderPath, "main", "ps_5_0", cloudUpsamplePsBlob, showErrors) ||
         !CompileShaderFromFile(m_cloudTemporalResolveShaderPath, "main", "ps_5_0", cloudTemporalResolvePsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudCompositeShaderPath, "main", "ps_5_0", cloudCompositePsBlob, showErrors) ||
+        !CompileShaderFromFile(m_cloudCompositeShaderPath, "main", "ps_5_0", cloudCompositeNoRimPsBlob, showErrors, compositeNoRimDefines) ||
         !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors, diagnosticShapeDefines) ||
         !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
         !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors) ||
@@ -1020,7 +1241,9 @@ bool Renderer::CreateShaders(bool showErrors)
         !HasReflectedConstantBufferSize(
             cirrusOptimizedDataPsBlob.Get(), "CloudShapeCB", 112u) ||
         !HasReflectedConstantBufferSize(
-            cirrusDeepShadowCsBlob.Get(), "CloudShapeCB", 112u))
+            cirrusDeepShadowCsBlob.Get(), "CloudShapeCB", 112u) ||
+        !HasReflectedConstantBufferSize(
+            cloudCompositePsBlob.Get(), "CloudRimCB", 48u))
     {
         m_shaderError =
             "Stage 15 shader specialization reflection contract failed";
@@ -1039,6 +1262,8 @@ bool Renderer::CreateShaders(bool showErrors)
     ComPtr<ID3D11PixelShader> cirrusOptimizedDataPs;
     ComPtr<ID3D11PixelShader> cloudUpsamplePs;
     ComPtr<ID3D11PixelShader> cloudTemporalResolvePs;
+    ComPtr<ID3D11PixelShader> cloudCompositePs;
+    ComPtr<ID3D11PixelShader> cloudCompositeNoRimPs;
     ComPtr<ID3D11PixelShader> noiseLabPs;
     ComPtr<ID3D11VertexShader> sceneVs;
     ComPtr<ID3D11PixelShader> scenePs;
@@ -1089,6 +1314,14 @@ bool Renderer::CreateShaders(bool showErrors)
             cloudTemporalResolvePsBlob->GetBufferPointer(),
             cloudTemporalResolvePsBlob->GetBufferSize(), nullptr,
             &cloudTemporalResolvePs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudCompositePsBlob->GetBufferPointer(),
+            cloudCompositePsBlob->GetBufferSize(), nullptr,
+            &cloudCompositePs)) ||
+        FAILED(m_device->CreatePixelShader(
+            cloudCompositeNoRimPsBlob->GetBufferPointer(),
+            cloudCompositeNoRimPsBlob->GetBufferSize(), nullptr,
+            &cloudCompositeNoRimPs)) ||
         FAILED(m_device->CreatePixelShader(
             noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
             nullptr, &noiseLabPs)) ||
@@ -1196,6 +1429,8 @@ bool Renderer::CreateShaders(bool showErrors)
     m_cirrusOptimizedDataPs = cirrusOptimizedDataPs;
     m_cloudUpsamplePs = cloudUpsamplePs;
     m_cloudTemporalResolvePs = cloudTemporalResolvePs;
+    m_cloudCompositePs = cloudCompositePs;
+    m_cloudCompositeNoRimPs = cloudCompositeNoRimPs;
     m_noiseLabPs = noiseLabPs;
     m_sceneVs = sceneVs;
     m_scenePs = scenePs;
@@ -1216,6 +1451,13 @@ bool Renderer::CreateShaders(bool showErrors)
     HashBytes(m_cirrusDeepShadowShaderHash,
               cirrusDeepShadowCsBlob->GetBufferPointer(),
               cirrusDeepShadowCsBlob->GetBufferSize());
+    m_cloudCompositeShaderHash = 1469598103934665603ull;
+    HashBytes(m_cloudCompositeShaderHash,
+              cloudCompositePsBlob->GetBufferPointer(),
+              cloudCompositePsBlob->GetBufferSize());
+    HashBytes(m_cloudCompositeShaderHash,
+              cloudCompositeNoRimPsBlob->GetBufferPointer(),
+              cloudCompositeNoRimPsBlob->GetBufferSize());
     m_atmosphereTransmittanceCs = atmosphereTransmittanceCs;
     m_atmosphereMultiScatteringCs = atmosphereMultiScatteringCs;
     m_atmosphereSkyViewCs = atmosphereSkyViewCs;
@@ -1451,7 +1693,8 @@ bool Renderer::InitializeStage15Presets()
         const auto preset = static_cast<Stage15ConceptPreset>(index);
         const Stage15ConceptDescriptor descriptor = stage15::ResolveConcept(preset);
         WeatherMapData map = BuildWeatherMap(
-            descriptor.weatherPreset, descriptor.weather);
+            descriptor.formation.weatherPreset,
+            descriptor.formation.weather);
         if (!IsValidWeatherMapData(map))
         {
             m_weatherMapStatus = "Stage 15 Weather cache generation failed";
@@ -1678,6 +1921,8 @@ bool Renderer::CreateConstantBuffers()
                                &m_upsamplingCb) &&
            createDynamicBuffer(sizeof(Stage11TemporalParameters),
                                &m_temporalCb) &&
+           createDynamicBuffer(sizeof(CloudRimParameters),
+                               &m_cloudRimCb) &&
            createDynamicBuffer(sizeof(Stage12ShadowParameters),
                                &m_shadowCb) &&
            createDynamicBuffer(sizeof(stage14::GpuParameters),
@@ -2300,6 +2545,9 @@ void Renderer::UpdateWindowMetrics(int physicalWidth, int physicalHeight,
         ? std::max(dpiScale, 0.0f) : 0.0f;
     m_outputExtent.perMonitorV2 = perMonitorV2;
     m_outputExtent.native1080p = native1080p;
+    // 렌더 target 크기와 무관한 UI 상태다. 같은 DPI면 no-op이고 history/LUT/
+    // Stage 15 fingerprint에는 참여하지 않는다.
+    m_noiseLab.SetDpi(dpi);
 }
 
 Stage15OutputExtentSnapshot Renderer::OutputExtentSnapshot() const
@@ -2933,13 +3181,33 @@ void Renderer::RenderCloudUpsamplePass(const Camera& camera,
                                        ID3D11RenderTargetView* targetOverride,
                                        DirectX::XMFLOAT2 jitterPixels)
 {
+    const std::uint32_t resolvedIndex = 1u - m_temporalHistoryReadIndex;
+    if (!m_cloudUpsamplePs ||
+        !m_temporalHistoryCloudRtv[resolvedIndex] ||
+        !m_temporalHistoryAuxRtv[resolvedIndex] ||
+        !m_temporalHistoryCloudSrv[resolvedIndex] ||
+        !m_temporalHistoryAuxSrv[resolvedIndex])
+        return;
     UpdateCloudConstantBuffers(
         camera, timeSeconds, m_width, m_height, jitterPixels);
     ID3D11RenderTargetView* target = targetOverride
         ? targetOverride : m_hdrCompositeRtv.Get();
+    const CloudDebugMode mode = DebugMode();
+    const bool requiresComposite =
+        mode == CloudDebugMode::Composite ||
+        mode == CloudDebugMode::NteRimMask ||
+        mode == CloudDebugMode::NteRimContribution;
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
-    m_context->OMSetRenderTargets(1, &target, nullptr);
-    m_context->ClearRenderTargetView(target, clearColor);
+    ID3D11RenderTargetView* targets[3] = {
+        m_temporalHistoryCloudRtv[resolvedIndex].Get(),
+        m_temporalHistoryAuxRtv[resolvedIndex].Get(), target
+    };
+    // Composite가 최종 HDR을 다시 쓰는 모드에서는 resolve pair 두 장만
+    // 기록한다. 쓰지 않을 SV_TARGET2를 full-resolution으로 한 번 더 clear/write
+    // 하지 않아 Resolve와 Composite 비용을 명확히 분리한다.
+    m_context->OMSetRenderTargets(requiresComposite ? 2u : 3u, targets, nullptr);
+    if (!requiresComposite)
+        m_context->ClearRenderTargetView(target, clearColor);
     m_context->OMSetDepthStencilState(nullptr, 0);
     m_context->RSSetState(nullptr);
     D3D11_VIEWPORT viewport = {};
@@ -2972,6 +3240,111 @@ void Renderer::RenderCloudUpsamplePass(const Camera& camera,
     m_context->PSSetSamplers(2, 1, &shadowSampler);
     m_context->Draw(3, 0);
     UnbindCloudShaderResources(14);
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+
+    if (requiresComposite)
+    {
+        RenderCloudCompositePass(
+            camera, timeSeconds,
+            m_temporalHistoryCloudSrv[resolvedIndex].Get(),
+            m_temporalHistoryAuxSrv[resolvedIndex].Get(), target);
+    }
+}
+
+void Renderer::RenderCloudCompositePass(
+    const Camera& camera, float timeSeconds,
+    ID3D11ShaderResourceView* resolvedCloud,
+    ID3D11ShaderResourceView* resolvedAux,
+    ID3D11RenderTargetView* targetOverride)
+{
+    (void)camera;
+    (void)timeSeconds;
+    if (!m_cloudCompositePs || !m_cloudCompositeNoRimPs ||
+        !resolvedCloud || !resolvedAux)
+        return;
+
+    ID3D11RenderTargetView* target = targetOverride
+        ? targetOverride : m_hdrCompositeRtv.Get();
+    if (!target)
+        return;
+
+    CloudRimParameters effectiveRim = cloudrim::Sanitize(
+        m_cloudRimParameters);
+    const bool realtimeLow =
+        m_stage15DiagnosticMode == Stage15DiagnosticMode::None &&
+        m_stage15QualityPreset == Stage15QualityPreset::Low;
+    if (realtimeLow ||
+        m_stage15DiagnosticMode == Stage15DiagnosticMode::Reference)
+    {
+        // Off는 enabled 한 필드에만 의존하지 않고 비용/출력 계수도 0으로
+        // 만든다. pass-local b10을 다른 resolve pass의 b10과 교대 바인딩하는
+        // D3D11 경로에서도 stale enable 하나가 외곽을 되살릴 수 없다.
+        effectiveRim.enabled = 0u;
+        effectiveRim.widthPixels = 0.0f;
+        effectiveRim.intensity = 0.0f;
+        effectiveRim.radianceClamp = 0.0f;
+    }
+    m_lastEffectiveRimEnabled = effectiveRim.enabled != 0u;
+    const bool useNoRimShader = effectiveRim.enabled == 0u;
+
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    m_lastRimUploadSucceeded = false;
+    if (FAILED(m_context->Map(
+            m_cloudRimCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return;
+    std::memcpy(mapped.pData, &effectiveRim, sizeof(effectiveRim));
+    m_context->Unmap(m_cloudRimCb.Get(), 0);
+    m_lastRimUploadSucceeded = true;
+
+    // Resolve/history pair가 완전히 확정된 직후부터 target clear와 full-screen
+    // composite draw 전체를 Composite 비용으로 잰다. 이 timestamp보다 앞선
+    // 명령만 Spatial/Temporal Resolve 구간에 속한다.
+    m_frameProfiler.MarkCloudCompositeBegin(m_context.Get());
+    const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
+    m_context->OMSetRenderTargets(1, &target, nullptr);
+    m_context->ClearRenderTargetView(target, clearColor);
+    m_context->OMSetDepthStencilState(nullptr, 0);
+    m_context->RSSetState(nullptr);
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+    m_context->IASetInputLayout(nullptr);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
+    m_context->PSSetShader(
+        useNoRimShader ? m_cloudCompositeNoRimPs.Get()
+                       : m_cloudCompositePs.Get(),
+        nullptr, 0);
+
+    ID3D11Buffer* cameraAndCloud[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
+    m_context->PSSetConstantBuffers(0, 2, cameraAndCloud);
+    ID3D11Buffer* lightBuffer = m_lightCb.Get();
+    m_context->PSSetConstantBuffers(3, 1, &lightBuffer);
+    ID3D11Buffer* rimBuffer = m_cloudRimCb.Get();
+    m_context->PSSetConstantBuffers(
+        cloudrim::kConstantBufferSlot, 1, &rimBuffer);
+    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    BindAtmosphereResources();
+
+    ID3D11ShaderResourceView* resources[4] = {
+        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
+        resolvedCloud, resolvedAux
+    };
+    m_context->PSSetShaderResources(0, 4, resources);
+    ID3D11ShaderResourceView* shadowResources[2] = {
+        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
+    };
+    m_context->PSSetShaderResources(6, 2, shadowResources);
+    ID3D11SamplerState* linearSampler = m_linearClampSampler.Get();
+    m_context->PSSetSamplers(0, 1, &linearSampler);
+    m_context->PSSetSamplers(2, 1, &linearSampler);
+    m_context->Draw(3, 0);
+    UnbindCloudShaderResources(14);
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    m_frameProfiler.EndCloudPass(m_context.Get());
 }
 
 void Renderer::PrepareTemporalFrame(const Camera& camera, float timeSeconds)
@@ -3065,10 +3438,15 @@ bool Renderer::RenderCloudTemporalPass(
     UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
     ID3D11RenderTargetView* outputTarget = targetOverride
         ? targetOverride : m_hdrCompositeRtv.Get();
+    const CloudDebugMode mode = DebugMode();
+    const bool requiresComposite =
+        mode == CloudDebugMode::Composite ||
+        mode == CloudDebugMode::NteRimMask ||
+        mode == CloudDebugMode::NteRimContribution;
     ID3D11RenderTargetView* targets[4] = {
         m_temporalHistoryCloudRtv[writeIndex].Get(),
         m_temporalHistoryAuxRtv[writeIndex].Get(),
-        outputTarget,
+        requiresComposite ? nullptr : outputTarget,
         m_temporalStatisticsRtv.Get()
     };
     // history valid/weight 통계는 사용자 overlay용 관측 리소스다. 자동 품질·
@@ -3077,9 +3455,11 @@ bool Renderer::RenderCloudTemporalPass(
     const bool collectTemporalStatistics =
         !m_automatedRenderMode && m_temporalStatisticsRtv.Get() != nullptr;
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
-    m_context->OMSetRenderTargets(
-        collectTemporalStatistics ? 4u : 3u, targets, nullptr);
-    m_context->ClearRenderTargetView(outputTarget, clearColor);
+    const UINT targetCount = collectTemporalStatistics
+        ? 4u : (requiresComposite ? 2u : 3u);
+    m_context->OMSetRenderTargets(targetCount, targets, nullptr);
+    if (!requiresComposite)
+        m_context->ClearRenderTargetView(outputTarget, clearColor);
     m_context->OMSetDepthStencilState(nullptr, 0);
     m_context->RSSetState(nullptr);
     D3D11_VIEWPORT viewport = {};
@@ -3118,6 +3498,13 @@ bool Renderer::RenderCloudTemporalPass(
     m_context->Draw(3, 0);
     UnbindCloudShaderResources(14);
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    if (requiresComposite)
+    {
+        RenderCloudCompositePass(
+            camera, timeSeconds,
+            m_temporalHistoryCloudSrv[writeIndex].Get(),
+            m_temporalHistoryAuxSrv[writeIndex].Get(), outputTarget);
+    }
     if (collectTemporalStatistics)
         UpdateTemporalStatisticsReadback();
     CommitTemporalFrame(camera, timeSeconds);
@@ -3218,6 +3605,8 @@ bool Renderer::CaptureCloudDiagnosticFrame(
         mode == CloudDebugMode::Transmittance ||
         mode == CloudDebugMode::Stage15ResolvedCloud ||
         mode == CloudDebugMode::UpsampleAcceptedTapCount ||
+        mode == CloudDebugMode::NteRimMask ||
+        mode == CloudDebugMode::NteRimContribution ||
         (static_cast<std::int32_t>(mode) >= 64 &&
          static_cast<std::int32_t>(mode) <= 73);
     if (!forceDirectComposite && requiresResolvedCloudPath)
@@ -3229,9 +3618,15 @@ bool Renderer::CaptureCloudDiagnosticFrame(
             SetDebugMode(previousMode);
             return false;
         }
-        PrepareTemporalFrame(camera, timeSeconds);
+        const std::int32_t diagnosticValue =
+            static_cast<std::int32_t>(mode);
+        const bool temporalDebug =
+            diagnosticValue >= 68 && diagnosticValue <= 73;
+        if (TemporalMode() != Stage11TemporalMode::Off || temporalDebug)
+            PrepareTemporalFrame(camera, timeSeconds);
         RenderCloudDataPass(camera, timeSeconds);
-        if (!RenderCloudTemporalPass(camera, timeSeconds, targetRtv.Get()))
+        if ((TemporalMode() == Stage11TemporalMode::Off && !temporalDebug) ||
+            !RenderCloudTemporalPass(camera, timeSeconds, targetRtv.Get()))
             RenderCloudUpsamplePass(camera, timeSeconds, targetRtv.Get());
     }
     else
@@ -3383,9 +3778,19 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         m_atmosphereParameters;
     const GroundLightingParameters groundBeforeNoiseLab =
         m_groundLightingParameters;
+    const ToneMappingParameters toneMappingBeforeNoiseLab =
+        m_toneMappingParameters;
+    const CloudRimParameters rimBeforeNoiseLab = m_cloudRimParameters;
     const Stage12ShadowParameters shadowBeforeNoiseLab = m_shadowParameters;
     const Stage12ShadowPreset shadowPresetBeforeNoiseLab = ShadowPreset();
     const Stage12ShadowMode shadowModeBeforeNoiseLab = ShadowMode();
+    const CloudFormationSettings formationBeforeNoiseLab =
+        CurrentCloudFormation();
+    const CloudFormationSettings rawFormationBeforeNoiseLab =
+        CaptureCloudFormationSettingsUnchecked(
+            m_cloudParameters, m_cloudShapeParameters,
+            m_cloudDomainParameters, m_weatherPreset,
+            m_weatherGeneratorSettings, m_noiseVolumeParameters);
     if (m_atmosphereParameters.timePlaybackEnabled && !SceneInputLocked())
     {
         float deltaSeconds = 0.0f;
@@ -3445,9 +3850,10 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_temporalParameters, m_temporalHistoryValid,
                           m_temporalAccumulatedFrames,
                           m_shadowParameters,
-                          m_lightParameters, m_sunPreset, m_phasePreset,
-                          m_environmentParameters, m_environmentPreset,
-                          m_atmosphereParameters, m_groundLightingParameters,
+                           m_lightParameters, m_sunPreset, m_phasePreset,
+                           m_environmentParameters, m_environmentPreset,
+                           m_cloudRimParameters,
+                           m_atmosphereParameters, m_groundLightingParameters,
                           m_toneMappingParameters,
                           m_stage15QualityPreset, m_stage15ConceptPreset,
                           m_stage15DiagnosticMode,
@@ -3469,6 +3875,13 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_cloudAppearanceDirty,
                           m_hasSavedCustomAppearance,
                           m_cloudAppearanceStatus,
+                          m_cloudFormationTarget,
+                          m_cloudFormationTargetValid,
+                          m_cloudFormationSource,
+                          m_cloudFormationCloudDirty,
+                          m_cloudFormationSceneDirty,
+                          m_hasSavedCustomFormation,
+                          m_cloudFormationStatus,
                           m_cameraMoveSpeedMetersPerSecond,
                            m_noiseVolumeParameters, m_baseNoiseVolumeHash,
                           m_detailNoiseVolumeHash,
@@ -3476,6 +3889,64 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                           m_weatherMapSrv.Get(), m_weatherMapStatus,
                           m_frameProfiler.Snapshot(), m_vsyncEnabled,
                           m_shaderGeneration, m_shaderStatus, m_shaderError);
+    // ImGui는 편의를 위해 현재 구조체를 직접 편집하지만, 그 결과를 곧바로
+    // runtime으로 인정하지 않는다. 후보 formation을 먼저 캡처하고 소유 필드를
+    // 전부 이전 값으로 복원한 뒤 F1/F4 preset과 같은 공통 transaction으로만
+    // 다시 적용한다. 따라서 coverage와 domain을 한 frame에 함께 바꿔도 fit
+    // 실패 시 둘 중 하나만 남는 부분 commit이 생기지 않는다.
+    const CloudFormationSettings rawFormationCandidateFromNoiseLab =
+        CaptureCloudFormationSettingsUnchecked(
+            m_cloudParameters, m_cloudShapeParameters,
+            m_cloudDomainParameters, m_weatherPreset,
+            m_weatherGeneratorSettings, m_noiseVolumeParameters);
+    const CloudFormationSettings formationCandidateFromNoiseLab =
+        SanitizeCloudFormationSettings(rawFormationCandidateFromNoiseLab);
+    // canonical 값만 비교하면 min/max 역전이나 wind Y/길이처럼 sanitize 뒤
+    // 이전 값과 같아지는 raw 편집이 runtime에 남는다. formation 소유 필드는
+    // raw snapshot으로 감지하고, 언제나 이전 상태 복구→공통 transaction 순서로
+    // 처리한다.
+    if (!CloudFormationSettingsEqual(
+            rawFormationBeforeNoiseLab,
+            rawFormationCandidateFromNoiseLab, 0.0f))
+    {
+        PreparedCloudFormation previousPrepared;
+        std::string previousStatus;
+        if (PrepareCloudFormationSettings(
+                formationBeforeNoiseLab, previousPrepared,
+                previousStatus, 200.0f))
+        {
+            WriteCloudFormationToRuntime(
+                previousPrepared, m_cloudParameters,
+                m_cloudShapeParameters, m_cloudDomainParameters,
+                m_weatherPreset, m_weatherGeneratorSettings,
+                m_noiseVolumeParameters);
+            m_cloudTypeMode = m_weatherGeneratorSettings.cloudTypeMode;
+            if (!CloudFormationSettingsEqual(
+                    formationBeforeNoiseLab,
+                    formationCandidateFromNoiseLab))
+            {
+                ApplyCloudFormationAtomic(
+                    formationCandidateFromNoiseLab, false);
+            }
+            else
+            {
+                m_cloudFormationStatus =
+                    "Formation edit canonicalized to the current value";
+            }
+        }
+        else
+        {
+            // 정상 Stage 15 formation은 이 경로에 오지 않는다. 그래도 이전 raw
+            // 구조체를 복구해 UI 후보가 검증 없이 남는 일은 막는다.
+            m_cloudParameters = parametersBeforeNoiseLab;
+            m_cloudShapeParameters = shapeBeforeNoiseLab;
+            m_cloudDomainParameters = domainBeforeNoiseLab;
+            m_noiseVolumeParameters = noiseVolumeBeforeNoiseLab;
+            m_cloudFormationStatus =
+                "Formation edit rollback failed to prepare prior state: " +
+                previousStatus;
+        }
+    }
     Stage15ConceptPreset requestedStage15Concept = m_stage15ConceptPreset;
     if (m_noiseLab.ConsumeStage15ConceptRequest(requestedStage15Concept))
         RequestStage15ConceptPreset(requestedStage15Concept);
@@ -3501,6 +3972,54 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     }
     if (m_noiseLab.ConsumeParametersChanged())
     {
+        // ImGui는 후보 값을 구조체에 먼저 쓴다. formation preflight가 거부되어
+        // 위에서 모든 render-owned 값을 복구한 경우 raw UI 플래그만 남을 수
+        // 있으므로, 실제 렌더 상태가 하나라도 달라졌을 때만 preset ownership과
+        // temporal history를 변경한다.
+        const bool effectiveDirectUiChange =
+            std::memcmp(&parametersBeforeNoiseLab, &m_cloudParameters,
+                        sizeof(CloudParameters)) != 0 ||
+            std::memcmp(&shapeBeforeNoiseLab, &m_cloudShapeParameters,
+                        sizeof(CloudShapeParameters)) != 0 ||
+            std::memcmp(&domainBeforeNoiseLab, &m_cloudDomainParameters,
+                        sizeof(CloudDomainParameters)) != 0 ||
+            std::memcmp(&lodBeforeNoiseLab, &m_cloudLodParameters,
+                        sizeof(CloudLodParameters)) != 0 ||
+            std::memcmp(&optimizationBeforeNoiseLab,
+                        &m_optimizationParameters,
+                        sizeof(OptimizationParameters)) != 0 ||
+            std::memcmp(&upsamplingBeforeNoiseLab, &m_upsamplingParameters,
+                        sizeof(Stage10UpsamplingParameters)) != 0 ||
+            std::memcmp(&temporalBeforeNoiseLab, &m_temporalParameters,
+                        sizeof(Stage11TemporalParameters)) != 0 ||
+            std::memcmp(&noiseVolumeBeforeNoiseLab,
+                        &m_noiseVolumeParameters,
+                        sizeof(NoiseVolumeParameters)) != 0 ||
+            std::memcmp(&lightBeforeNoiseLab, &m_lightParameters,
+                        sizeof(LightParameters)) != 0 ||
+            std::memcmp(&environmentBeforeNoiseLab,
+                        &m_environmentParameters,
+                        sizeof(EnvironmentParameters)) != 0 ||
+            !stage15::ConceptAtmosphereEqual(
+                atmosphereBeforeStage15Ownership,
+                m_atmosphereParameters) ||
+            std::memcmp(&groundBeforeNoiseLab,
+                        &m_groundLightingParameters,
+                        sizeof(GroundLightingParameters)) != 0 ||
+            std::memcmp(&shadowBeforeNoiseLab, &m_shadowParameters,
+                        sizeof(Stage12ShadowParameters)) != 0 ||
+            std::memcmp(&toneMappingBeforeNoiseLab,
+                        &m_toneMappingParameters,
+                        sizeof(ToneMappingParameters)) != 0 ||
+            std::memcmp(&rimBeforeNoiseLab, &m_cloudRimParameters,
+                        sizeof(CloudRimParameters)) != 0;
+        if (!effectiveDirectUiChange)
+        {
+            // 오류 상태 문구는 남기되 history/reset count와 현재 preset target은
+            // 그대로 둔다. 실패한 후보는 렌더 fingerprint에 포함되지 않는다.
+        }
+        else
+        {
         const bool temporalModeEdited =
             temporalBeforeNoiseLab.temporalEnabled !=
                 m_temporalParameters.temporalEnabled ||
@@ -3533,20 +4052,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                 m_lightParameters.maxLightSteps ||
             lightBeforeNoiseLab.lightStepSize !=
                 m_lightParameters.lightStepSize;
-        const bool conceptEdited =
-            parametersBeforeNoiseLab.coverage != m_cloudParameters.coverage ||
-            parametersBeforeNoiseLab.densityMultiplier !=
-                m_cloudParameters.densityMultiplier ||
-            parametersBeforeNoiseLab.extinctionCoefficient !=
-                m_cloudParameters.extinctionCoefficient ||
-            parametersBeforeNoiseLab.detailErosionStrength !=
-                m_cloudParameters.detailErosionStrength ||
-            parametersBeforeNoiseLab.weatherMapWorldSize !=
-                m_cloudParameters.weatherMapWorldSize ||
-            std::memcmp(&shapeBeforeNoiseLab, &m_cloudShapeParameters,
-                        sizeof(CloudShapeParameters)) != 0 ||
-            std::memcmp(&domainBeforeNoiseLab, &m_cloudDomainParameters,
-                        sizeof(CloudDomainParameters)) != 0 ||
+        const bool sceneEdited =
             !stage15::ConceptLightEqual(
                 lightBeforeNoiseLab, m_lightParameters) ||
             !stage15::ConceptShadowEqual(
@@ -3562,8 +4068,13 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                         sizeof(GroundLightingParameters)) != 0;
         if (qualityEdited)
             m_stage15QualityPreset = Stage15QualityPreset::Custom;
-        if (conceptEdited)
-            m_stage15ConceptPreset = Stage15ConceptPreset::Custom;
+        const CloudFormationSettings formationAfterNoiseLab =
+            CurrentCloudFormation();
+        if (!CloudFormationSettingsEqual(
+                formationBeforeNoiseLab, formationAfterNoiseLab))
+            MarkCloudFormationDirty();
+        if (sceneEdited)
+            MarkCloudFormationSceneDirty();
         if (temporalControlsEdited)
         {
             const Stage11TemporalMode temporalMode = TemporalMode();
@@ -3640,23 +4151,34 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         {
             m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
         }
+        }
+    }
+    if (m_noiseLab.ConsumeCompositeOnlyParametersChanged())
+    {
+        // Rim은 resolve된 full-resolution 결과에만 적용되므로 history를
+        // 무효화하지 않는다. 구름 저장 대상은 유지하고 씬 dirty만 표시한다.
+        MarkCloudFormationSceneDirty();
     }
     if (m_noiseLab.ConsumeTemporalResetRequest())
         ResetTemporalHistory(Stage11HistoryResetReason::Manual);
     Stage5WeatherPreset requestedWeatherPreset = m_weatherPreset;
     if (m_noiseLab.ConsumeWeatherPresetRequest(requestedWeatherPreset))
-        ApplyStage5WeatherPreset(requestedWeatherPreset);
+    {
+        if (ApplyStage5WeatherPreset(requestedWeatherPreset))
+            MarkCloudFormationDirty();
+    }
     WeatherMapGeneratorSettings requestedGeneratorSettings;
     const bool appearanceEdited = m_noiseLab.ConsumeCloudAppearanceEdited();
     if (m_noiseLab.ConsumeWeatherGeneratorRequest(requestedGeneratorSettings))
     {
-        if (ApplyWeatherGeneratorSettings(requestedGeneratorSettings) &&
-            appearanceEdited)
-            MarkCloudAppearanceDirty();
+        if (ApplyWeatherGeneratorSettings(requestedGeneratorSettings))
+            MarkCloudFormationDirty();
     }
-    else if (appearanceEdited)
+    else if (appearanceEdited &&
+             !CloudFormationSettingsEqual(
+                 formationBeforeNoiseLab, CurrentCloudFormation()))
     {
-        MarkCloudAppearanceDirty();
+        MarkCloudFormationDirty();
     }
     OpenWorldPipelinePreset requestedPipelinePreset =
         m_openWorldPipelinePreset;
@@ -3671,6 +4193,37 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         ApplyCloudAppearancePreset(requestedAppearance);
     if (m_noiseLab.ConsumeCloudAppearanceSaveRequest())
         SaveCurrentCloudAppearance();
+    CloudFormationPresetTarget requestedFormationTarget =
+        m_cloudFormationTarget;
+    if (m_noiseLab.ConsumeCloudFormationPresetRequest(
+            requestedFormationTarget))
+    {
+        ApplyCloudFormationPresetTarget(
+            requestedFormationTarget,
+            !m_ignoreCloudFormationPresetOverrides, true);
+    }
+    if (m_noiseLab.ConsumeCloudFormationSaveToPresetRequest())
+    {
+        if (m_cloudFormationTargetValid &&
+            m_cloudFormationTarget.group !=
+                CloudFormationPresetGroup::Custom)
+        {
+            SaveCurrentCloudFormationToTarget(
+                m_cloudFormationTarget, false);
+        }
+        else
+        {
+            m_cloudFormationStatus =
+                "Save to Preset requires an active F1 or F4 target";
+        }
+    }
+    if (m_noiseLab.ConsumeCloudFormationSaveAsCustomRequest())
+    {
+        SaveCurrentCloudFormationToTarget(
+            CustomFormationTarget(), true);
+    }
+    if (m_noiseLab.ConsumeCloudFormationRestoreBuiltInRequest())
+        RestoreCurrentCloudFormationBuiltIn();
     NoiseSource requestedNoiseSource = CurrentNoiseSource();
     if (m_noiseLab.ConsumeNoiseSourceRequest(requestedNoiseSource))
         SetNoiseSource(requestedNoiseSource);
@@ -3716,7 +4269,9 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             debugMode == CloudDebugMode::Composite ||
             (debugValue >= 64 && debugValue <= 73) ||
             debugMode == CloudDebugMode::Stage15ResolvedCloud ||
-            debugMode == CloudDebugMode::UpsampleAcceptedTapCount;
+            debugMode == CloudDebugMode::UpsampleAcceptedTapCount ||
+            debugMode == CloudDebugMode::NteRimMask ||
+            debugMode == CloudDebugMode::NteRimContribution;
         if (resolvedCloudPath && EnsureCloudTargets())
         {
             const bool temporalDebug = debugValue >= 68 && debugValue <= 73;
@@ -3796,7 +4351,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                                   m_sunPreset,
                                   m_phasePreset,
                                   m_environmentParameters,
-                                  m_environmentPreset, m_weatherPreset,
+                                  m_environmentPreset, m_cloudRimParameters,
+                                  m_weatherPreset,
                                   m_cloudTypeMode,
                                   m_cloudAppearancePreset,
                                   m_cloudAppearanceDirty,
@@ -4040,12 +4596,25 @@ void Renderer::ConfigureDetailForTest(float detailScale,
 bool Renderer::ApplyStage5WeatherPreset(Stage5WeatherPreset preset)
 {
     const bool changed = preset != m_weatherPreset;
+    CloudFormationSettings formation = CurrentCloudFormation();
+    // F1/F4 authoring target만 전체 formation transaction으로 갱신한다.
+    // Stage 5/13 CLI 회귀 preset은 200 m Stage 15 headroom 계약보다 오래된
+    // 도메인을 의도적으로 재현하므로 Weather texture만 바꾸는 legacy 경로를
+    // 계속 사용해야 한다.
+    if (changed && m_cloudFormationTargetValid &&
+        IsValidCloudFormationSettings(formation))
+    {
+        formation.weatherPreset = preset;
+        return ApplyCloudFormationAtomic(formation, true);
+    }
+    if (!changed)
+        return true;
     // 프리셋 전환도 초기 texture/SRV를 재생성하지 않고 픽셀만 교체한다.
     if (!UpdateWeatherMapTexture(preset, m_weatherGeneratorSettings))
         return false;
     if (changed)
     {
-        m_stage15ConceptPreset = Stage15ConceptPreset::Custom;
+        m_stage15ConceptApplied = false;
         m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
         ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     }
@@ -4154,6 +4723,32 @@ bool Renderer::ApplyStage15Defaults()
     m_stage15TemporalOverrideMode = Stage11TemporalMode::Stable4Phase;
     m_stage15TemporalOverrideRestoreMode =
         Stage11TemporalMode::Stable4Phase;
+    if (!m_ignoreCloudFormationPresetOverrides &&
+        !m_hasSavedCustomFormation)
+    {
+        CloudFormationSettings migrationBase;
+        if (ResolveBuiltInCloudFormation(
+                CloudFormationType::Cumulus, migrationBase))
+        {
+            std::string migrationStatus;
+            const LegacyCloudFormationMigrationResult migration =
+                MigrateLegacyCustomCloudFormation(
+                    m_customAppearancePath, m_cloudFormationPresetRoot,
+                    migrationBase, migrationStatus);
+            if (migration == LegacyCloudFormationMigrationResult::Migrated)
+            {
+                m_hasSavedCustomFormation = true;
+                m_cloudFormationStatus = migrationStatus;
+            }
+            else if (migration ==
+                     LegacyCloudFormationMigrationResult::Rejected ||
+                     migration ==
+                     LegacyCloudFormationMigrationResult::SaveFailed)
+            {
+                m_cloudFormationStatus = migrationStatus;
+            }
+        }
+    }
     if (!ApplyStage15QualityPresetImmediate(
             Stage15QualityPreset::Medium, false))
         return false;
@@ -4295,67 +4890,23 @@ bool Renderer::ApplyStage15ConceptPresetImmediate(
 {
     if (preset == Stage15ConceptPreset::Custom)
         return false;
-    if (m_stage15ConceptApplied && preset == m_stage15ConceptPreset)
-        return true;
     if (m_stage15FailWeatherPreflight)
     {
         m_stage15FailWeatherPreflight = false;
         return false;
     }
-    const std::size_t conceptIndex = static_cast<std::size_t>(preset);
-    if (conceptIndex >= m_stage15WeatherMaps.size() ||
-        !IsValidWeatherMapData(m_stage15WeatherMaps[conceptIndex]))
+    CloudFormationConcept formationConcept;
+    if (!TryMapStage15ConceptToFormation(preset, formationConcept))
         return false;
 
     const Stage15ConceptDescriptor descriptor = stage15::ResolveConcept(preset);
-    CloudParameters cloud = m_cloudParameters;
-    CloudShapeParameters shape = descriptor.shape;
-    WeatherMapGeneratorSettings appearanceWeather = descriptor.weather;
-    ApplyCloudAppearance(
-        descriptor.appearance, cloud, shape, appearanceWeather);
-    // 기존 appearance 적용은 단계 13의 WeatherPhysical 모드까지 소유한다.
-    // Cirrus는 그 뒤에 새 모드와 전용 48바이트 블록만 다시 덮어써야 한다.
-    if (static_cast<CloudShapeMode>(descriptor.shape.shapeMode) ==
-        CloudShapeMode::CirrusPhysicalLayer)
-    {
-        shape.shapeMode = descriptor.shape.shapeMode;
-        shape.cirrusFlowDirectionXZ =
-            descriptor.shape.cirrusFlowDirectionXZ;
-        shape.cirrusBaseAlongScaleMeters =
-            descriptor.shape.cirrusBaseAlongScaleMeters;
-        shape.cirrusBaseAcrossScaleMeters =
-            descriptor.shape.cirrusBaseAcrossScaleMeters;
-        shape.cirrusBaseVerticalScaleMeters =
-            descriptor.shape.cirrusBaseVerticalScaleMeters;
-        shape.cirrusDetailAlongScaleMeters =
-            descriptor.shape.cirrusDetailAlongScaleMeters;
-        shape.cirrusDetailAcrossScaleMeters =
-            descriptor.shape.cirrusDetailAcrossScaleMeters;
-        shape.cirrusDetailVerticalScaleMeters =
-            descriptor.shape.cirrusDetailVerticalScaleMeters;
-        shape.cirrusMinimumThicknessMeters =
-            descriptor.shape.cirrusMinimumThicknessMeters;
-        shape.cirrusMaximumThicknessMeters =
-            descriptor.shape.cirrusMaximumThicknessMeters;
-        shape.cirrusVerticalProfileCenter =
-            descriptor.shape.cirrusVerticalProfileCenter;
-        shape.cirrusVerticalProfileHalfWidth =
-            descriptor.shape.cirrusVerticalProfileHalfWidth;
-    }
-    const WeatherMapGeneratorSettings weather = descriptor.weather;
-
-    const float half = stage13scene::kGroundHalfSizeMeters;
-    cloud.cloudBoundsMin = {
-        -half, descriptor.domain.cloudBottomAltitude, -half
-    };
-    cloud.cloudBoundsMax = {
-        half,
-        descriptor.domain.cloudBottomAltitude +
-            descriptor.domain.cloudLayerThickness,
-        half
-    };
-    cloud.weatherMapWorldSize = descriptor.weatherWorldSizeMeters;
-    shape = SanitizeCloudShapeParameters(shape);
+    const CloudFormationPresetTarget formationTarget =
+        ConceptFormationTarget(formationConcept);
+    if (!ApplyCloudFormationPresetTarget(
+            formationTarget,
+            !m_ignoreCloudFormationPresetOverrides, false))
+        return false;
+    const std::string formationResolveStatus = m_cloudFormationStatus;
 
     LightParameters light = descriptor.light;
     light.maxLightSteps = m_lightParameters.maxLightSteps;
@@ -4372,39 +4923,32 @@ bool Renderer::ApplyStage15ConceptPresetImmediate(
     shadow.surfaceAmbientFloor = descriptor.surfaceAmbientFloor;
     shadow = stage12shadow::Sanitize(shadow);
 
-    if (!UpdateWeatherMapTexture(
-            descriptor.weatherPreset, weather,
-            &m_stage15WeatherMaps[conceptIndex]))
-        return false;
-
-    m_cloudParameters = cloud;
-    m_cloudDomainParameters = descriptor.domain;
-    m_cloudShapeParameters = shape;
+    const float half = stage13scene::kGroundHalfSizeMeters;
+    m_cloudParameters.cloudBoundsMin.x = -half;
+    m_cloudParameters.cloudBoundsMin.z = -half;
+    m_cloudParameters.cloudBoundsMax.x = half;
+    m_cloudParameters.cloudBoundsMax.z = half;
     m_lightParameters = light;
     m_environmentParameters = descriptor.environment;
+    m_cloudRimParameters = descriptor.rim;
     m_atmosphereParameters = descriptor.atmosphere;
     m_groundLightingParameters = descriptor.ground;
     m_shadowParameters = shadow;
-    m_noiseVolumeParameters.noiseSource = static_cast<std::uint32_t>(
-        NoiseSource::Texture3D);
-    m_cloudTypeMode = weather.cloudTypeMode;
-    m_weatherGeneratorSettings = weather;
-    m_noiseLab.SynchronizeWeatherGeneratorSettings(weather);
     m_sunPreset = descriptor.sunPreset;
     m_phasePreset = descriptor.phasePreset;
     m_environmentPreset = descriptor.environmentPreset;
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
     m_pipelineComparisonActive = false;
-    m_cloudAppearancePreset = preset == Stage15ConceptPreset::UrbanFairWeather
-        ? CloudAppearancePreset::Cumulus
-        : (preset == Stage15ConceptPreset::SnowOvercast
-            ? CloudAppearancePreset::Stratus
-            : (preset == Stage15ConceptPreset::MeadowBrokenClouds
-                ? CloudAppearancePreset::DenseMixedDefault
-                : CloudAppearancePreset::CustomUnsaved));
     m_cloudAppearanceDirty = false;
-    m_cloudAppearanceStatus = std::string(stage15::ConceptName(preset)) +
-        " concept applied atomically";
+    m_cloudFormationCloudDirty = false;
+    m_cloudFormationSceneDirty = false;
+    const char* sourceName =
+        m_cloudFormationSource == CloudFormationPresetSource::UserOverride
+            ? "user override" : "built-in";
+    m_cloudFormationStatus = std::string(stage15::ConceptName(preset)) +
+        " concept formation (" + sourceName +
+        ") and scene applied atomically; " + formationResolveStatus;
+    m_cloudAppearanceStatus = m_cloudFormationStatus;
     m_stage15ConceptPreset = preset;
     m_stage15ConceptApplied = true;
     if (resetState)
@@ -4614,6 +5158,7 @@ void Renderer::ApplyPendingStage15Requests()
         Stage12ShadowParameters shadow;
         LightParameters light;
         EnvironmentParameters environment;
+        CloudRimParameters rim;
         AtmosphereParameters atmosphere;
         GroundLightingParameters ground;
         NoiseVolumeParameters noiseVolume;
@@ -4634,6 +5179,13 @@ void Renderer::ApplyPendingStage15Requests()
         CloudAppearancePreset appearancePreset;
         bool appearanceDirty;
         std::string appearanceStatus;
+        CloudFormationPresetTarget formationTarget;
+        bool formationTargetValid;
+        CloudFormationPresetSource formationSource;
+        bool formationCloudDirty;
+        bool formationSceneDirty;
+        bool hasSavedCustomFormation;
+        std::string formationStatus;
         Stage15QualityPreset qualityPreset;
         Stage15ConceptPreset conceptPreset;
         Stage15DiagnosticMode diagnosticMode;
@@ -4684,6 +5236,7 @@ void Renderer::ApplyPendingStage15Requests()
     snapshot.shadow = m_shadowParameters;
     snapshot.light = m_lightParameters;
     snapshot.environment = m_environmentParameters;
+    snapshot.rim = m_cloudRimParameters;
     snapshot.atmosphere = m_atmosphereParameters;
     snapshot.ground = m_groundLightingParameters;
     snapshot.noiseVolume = m_noiseVolumeParameters;
@@ -4704,6 +5257,13 @@ void Renderer::ApplyPendingStage15Requests()
     snapshot.appearancePreset = m_cloudAppearancePreset;
     snapshot.appearanceDirty = m_cloudAppearanceDirty;
     snapshot.appearanceStatus = m_cloudAppearanceStatus;
+    snapshot.formationTarget = m_cloudFormationTarget;
+    snapshot.formationTargetValid = m_cloudFormationTargetValid;
+    snapshot.formationSource = m_cloudFormationSource;
+    snapshot.formationCloudDirty = m_cloudFormationCloudDirty;
+    snapshot.formationSceneDirty = m_cloudFormationSceneDirty;
+    snapshot.hasSavedCustomFormation = m_hasSavedCustomFormation;
+    snapshot.formationStatus = m_cloudFormationStatus;
     snapshot.qualityPreset = m_stage15QualityPreset;
     snapshot.conceptPreset = m_stage15ConceptPreset;
     snapshot.diagnosticMode = m_stage15DiagnosticMode;
@@ -4746,6 +5306,11 @@ void Renderer::ApplyPendingStage15Requests()
     snapshot.shadowFar = m_shadowFarTexture;
     snapshot.shadowFarSrv = m_shadowFarSrv;
     snapshot.shadowFarUav = m_shadowFarUav;
+    const CloudFormationSettings formationBeforeTransition =
+        CaptureCloudFormationSettings(
+            snapshot.cloud, snapshot.shape, snapshot.domain,
+            snapshot.weatherPreset, snapshot.weatherSettings,
+            snapshot.noiseVolume);
 
     bool weatherPixelsMayHaveChanged = false;
     const auto rollback = [&]()
@@ -4760,6 +5325,7 @@ void Renderer::ApplyPendingStage15Requests()
         m_shadowParameters = snapshot.shadow;
         m_lightParameters = snapshot.light;
         m_environmentParameters = snapshot.environment;
+        m_cloudRimParameters = snapshot.rim;
         m_atmosphereParameters = snapshot.atmosphere;
         m_groundLightingParameters = snapshot.ground;
         m_noiseVolumeParameters = snapshot.noiseVolume;
@@ -4780,6 +5346,13 @@ void Renderer::ApplyPendingStage15Requests()
         m_cloudAppearancePreset = snapshot.appearancePreset;
         m_cloudAppearanceDirty = snapshot.appearanceDirty;
         m_cloudAppearanceStatus = snapshot.appearanceStatus;
+        m_cloudFormationTarget = snapshot.formationTarget;
+        m_cloudFormationTargetValid = snapshot.formationTargetValid;
+        m_cloudFormationSource = snapshot.formationSource;
+        m_cloudFormationCloudDirty = snapshot.formationCloudDirty;
+        m_cloudFormationSceneDirty = snapshot.formationSceneDirty;
+        m_hasSavedCustomFormation = snapshot.hasSavedCustomFormation;
+        m_cloudFormationStatus = snapshot.formationStatus;
         m_stage15QualityPreset = snapshot.qualityPreset;
         m_stage15ConceptPreset = snapshot.conceptPreset;
         m_stage15DiagnosticMode = snapshot.diagnosticMode;
@@ -4855,12 +5428,22 @@ void Renderer::ApplyPendingStage15Requests()
     {
         const Stage15ConceptPreset requested =
             static_cast<Stage15ConceptPreset>(request.conceptPreset);
-        changed = changed || !m_stage15ConceptApplied ||
+        const bool selectionOrSceneChanged =
+            !m_stage15ConceptApplied ||
             requested != m_stage15ConceptPreset;
-        const std::size_t conceptIndex = static_cast<std::size_t>(requested);
-        weatherPixelsMayHaveChanged =
-            m_stage15WeatherHashes[conceptIndex] != snapshot.weatherHash;
         succeeded = ApplyStage15ConceptPresetImmediate(requested, false);
+        // 사용자 override는 built-in cache와 다른 hash를 가질 수 있다. 뒤의
+        // Diagnostic 단계가 실패하면 실제 업로드 여부와 무관하게 snapshot
+        // Weather RGBA를 되써야 완전한 transaction rollback이 된다.
+        weatherPixelsMayHaveChanged = succeeded;
+        if (succeeded)
+        {
+            changed = changed || selectionOrSceneChanged ||
+                !CloudFormationSettingsEqual(
+                    formationBeforeTransition,
+                    CurrentCloudFormation()) ||
+                snapshot.weatherHash != m_weatherMapHash;
+        }
     }
     if (succeeded && request.toggleTemporalOverride)
     {
@@ -5182,8 +5765,22 @@ bool Renderer::SetCloudTypeMode(CloudTypeMode type)
         ? type : CloudTypeMode::Mixed;
     WeatherMapGeneratorSettings settings = m_weatherGeneratorSettings;
     settings.cloudTypeMode = safe;
+    const cloudshapedomain::FitResult fit = cloudshapedomain::EvaluateFit(
+        m_cloudShapeParameters, safe, m_cloudDomainParameters);
+    if (!fit.valid)
+    {
+        m_cloudAppearanceStatus =
+            "Cloud type rejected: active local thickness does not fit domain";
+        return false;
+    }
+    CloudDomainParameters domain = m_cloudDomainParameters;
+    domain.cloudLightingReferenceAltitudeMeters =
+        cloudshapedomain::LightingReferenceAltitudeMeters(
+            m_cloudShapeParameters, safe, domain);
+    domain = SanitizeCloudDomainParameters(domain);
     if (!UpdateWeatherMapTexture(m_weatherPreset, settings))
         return false;
+    m_cloudDomainParameters = domain;
     m_cloudTypeMode = safe;
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
     ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
@@ -5276,12 +5873,29 @@ bool Renderer::ApplyStage13OpenWorldPreset()
         return false;
     m_noiseLab.SynchronizeWeatherGeneratorSettings(m_weatherGeneratorSettings);
     m_cloudTypeMode = CloudTypeMode::WeatherMap;
+    // Domain 수치만 먼저 초기화하면 이전 appearance가 남긴 LUT 대표 고도가
+    // Stage 13 preset 재적용 뒤에도 잔존한다. 최종 shape/type이 확정된 시점에
+    // 파생값을 다시 계산해 preset을 완전한 원자 상태로 만든다.
+    m_cloudDomainParameters.cloudLightingReferenceAltitudeMeters =
+        cloudshapedomain::LightingReferenceAltitudeMeters(
+            m_cloudShapeParameters, m_cloudTypeMode,
+            m_cloudDomainParameters);
+    m_cloudDomainParameters = SanitizeCloudDomainParameters(
+        m_cloudDomainParameters);
     m_cameraMoveSpeedMetersPerSecond =
         stage13scene::kMoveSpeedMetersPerSecond;
     m_cloudAppearancePreset = CloudAppearancePreset::DenseMixedDefault;
     m_cloudAppearanceDirty = false;
     m_cloudAppearanceStatus =
         "Deterministic Dense Mixed default applied (saved Custom not auto-applied)";
+    // 이 함수는 schema/CLI 회귀용 Stage 13 상태를 직접 구성한다. 이전 F1/F4
+    // 저장 target이 남으면 뒤의 Weather preset 전환이 Stage 15 formation으로
+    // 오인되므로 authoring provenance를 명시적으로 해제한다.
+    m_cloudFormationTargetValid = false;
+    m_cloudFormationCloudDirty = false;
+    m_cloudFormationSceneDirty = false;
+    m_cloudFormationSource = CloudFormationPresetSource::BuiltIn;
+    m_cloudFormationStatus = "Legacy Stage 13 open-world regression state";
     m_pipelineComparisonActive = false;
     m_openWorldPipelinePreset = OpenWorldPipelinePreset::FullOpenWorld;
     // 2026-08-19 승인한 단계 9의 가장 싼 화질·성능 합격 후보를 기본으로 쓴다.
@@ -5293,6 +5907,336 @@ CloudAppearanceSettings Renderer::CaptureCurrentCloudAppearance() const
 {
     return CaptureCloudAppearance(m_cloudParameters, m_cloudShapeParameters,
                                   m_weatherGeneratorSettings);
+}
+
+CloudFormationSettings Renderer::CurrentCloudFormation() const
+{
+    return CaptureCloudFormationSettings(
+        m_cloudParameters, m_cloudShapeParameters, m_cloudDomainParameters,
+        m_weatherPreset, m_weatherGeneratorSettings,
+        m_noiseVolumeParameters);
+}
+
+bool Renderer::ApplyCloudFormationAtomic(
+    const CloudFormationSettings& settings, bool resetState)
+{
+    PreparedCloudFormation prepared;
+    std::string status;
+    if (!PrepareCloudFormationSettings(settings, prepared, status, 200.0f))
+    {
+        m_cloudFormationStatus = status;
+        m_cloudAppearanceStatus = status;
+        return false;
+    }
+    if (m_failNextCloudFormationApplyForValidation)
+    {
+        m_failNextCloudFormationApplyForValidation = false;
+        m_cloudFormationStatus =
+            "Injected formation apply failure; runtime state retained";
+        return false;
+    }
+
+    CloudParameters cloud = m_cloudParameters;
+    CloudShapeParameters shape = m_cloudShapeParameters;
+    CloudDomainParameters domain = m_cloudDomainParameters;
+    Stage5WeatherPreset weatherPreset = m_weatherPreset;
+    WeatherMapGeneratorSettings weather = m_weatherGeneratorSettings;
+    NoiseVolumeParameters noise = m_noiseVolumeParameters;
+    WriteCloudFormationToRuntime(
+        prepared, cloud, shape, domain, weatherPreset, weather, noise);
+
+    // XZ의 오픈 월드 footprint는 formation 슬롯이 아니라 공통 Stage 13 장면이
+    // 소유한다. Y만 검증된 PlanarLayer domain과 함께 원자적으로 갱신한다.
+    cloud.cloudBoundsMin.y = domain.cloudBottomAltitude;
+    cloud.cloudBoundsMax.y =
+        domain.cloudBottomAltitude + domain.cloudLayerThickness;
+
+    if (!UpdateWeatherMapTexture(
+            weatherPreset, weather, &prepared.weatherMap))
+    {
+        m_cloudFormationStatus =
+            "Formation Weather upload failed; runtime state retained";
+        return false;
+    }
+
+    m_cloudParameters = cloud;
+    m_cloudShapeParameters = shape;
+    m_cloudDomainParameters = domain;
+    m_noiseVolumeParameters = noise;
+    m_weatherPreset = weatherPreset;
+    m_weatherGeneratorSettings = weather;
+    m_cloudTypeMode = weather.cloudTypeMode;
+    m_noiseLab.SynchronizeWeatherGeneratorSettings(weather);
+    m_cloudAppearancePreset = LegacyAppearanceForFormation(
+        prepared.settings);
+    m_cloudAppearanceDirty = false;
+    m_pipelineComparisonActive = false;
+    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
+    m_cloudFormationStatus = "Formation applied atomically";
+    if (resetState)
+        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
+    return true;
+}
+
+bool Renderer::ApplyCloudFormationPresetTarget(
+    const CloudFormationPresetTarget& target, bool allowUserOverrides,
+    bool resetState)
+{
+    CloudFormationSettings settings;
+    CloudFormationPresetSource source = CloudFormationPresetSource::BuiltIn;
+    std::string status;
+    if (!ResolveCloudFormationPreset(
+            m_cloudFormationPresetRoot, target, allowUserOverrides,
+            settings, source, status))
+    {
+        m_cloudFormationStatus = status;
+        return false;
+    }
+    if (!ApplyCloudFormationAtomic(settings, resetState))
+        return false;
+
+    m_cloudFormationTarget = target;
+    m_cloudFormationTargetValid = true;
+    m_cloudFormationSource = source;
+    m_cloudFormationCloudDirty = false;
+    m_cloudFormationSceneDirty = false;
+    m_cloudFormationStatus = status;
+    m_hasSavedCustomFormation = m_hasSavedCustomFormation ||
+        target.group == CloudFormationPresetGroup::Custom;
+    if (target.group != CloudFormationPresetGroup::Concept)
+    {
+        m_stage15ConceptPreset = Stage15ConceptPreset::Custom;
+        m_stage15ConceptApplied = false;
+    }
+    m_noiseVolumeParameters.noiseSource = static_cast<std::uint32_t>(
+        NoiseSource::Texture3D);
+    return true;
+}
+
+bool Renderer::ApplyCloudFormationPresetForValidation(
+    const CloudFormationPresetTarget& target, bool allowUserOverrides)
+{
+    return ApplyCloudFormationPresetTarget(
+        target, allowUserOverrides, true);
+}
+
+bool Renderer::ApplyCloudFormationSettingsForValidation(
+    const CloudFormationSettings& settings)
+{
+    if (!ApplyCloudFormationAtomic(settings, true))
+        return false;
+    MarkCloudFormationDirty();
+    return true;
+}
+
+bool Renderer::SaveCurrentCloudFormationPresetForValidation()
+{
+    return m_cloudFormationTargetValid &&
+        m_cloudFormationTarget.group != CloudFormationPresetGroup::Custom &&
+        SaveCurrentCloudFormationToTarget(m_cloudFormationTarget, false);
+}
+
+bool Renderer::SaveCurrentCloudFormationAsCustomForValidation()
+{
+    return SaveCurrentCloudFormationToTarget(
+        CustomFormationTarget(), true);
+}
+
+bool Renderer::RestoreCurrentCloudFormationBuiltInForValidation()
+{
+    return RestoreCurrentCloudFormationBuiltIn();
+}
+
+void Renderer::SetCloudFormationPresetRootForValidation(
+    const std::filesystem::path& root)
+{
+    m_cloudFormationPresetRoot = root;
+    RefreshSavedCustomFormationState();
+}
+
+void Renderer::SetIgnoreCloudFormationPresetOverrides(bool ignored)
+{
+    m_ignoreCloudFormationPresetOverrides = ignored;
+    RefreshSavedCustomFormationState();
+}
+
+void Renderer::RefreshSavedCustomFormationState()
+{
+    if (m_ignoreCloudFormationPresetOverrides)
+    {
+        m_hasSavedCustomFormation = false;
+        return;
+    }
+
+    CloudFormationSettings custom;
+    std::string status;
+    m_hasSavedCustomFormation = LoadCloudFormationPreset(
+        CloudFormationPresetPath(
+            m_cloudFormationPresetRoot, CustomFormationTarget()),
+        CustomFormationTarget(), custom, status);
+}
+
+bool Renderer::SaveCurrentCloudFormationToTarget(
+    const CloudFormationPresetTarget& target, bool switchTargetAfterSave)
+{
+    if (!IsValidCloudFormationPresetTarget(target))
+    {
+        m_cloudFormationStatus = "Formation save rejected: invalid target";
+        return false;
+    }
+    if (!switchTargetAfterSave &&
+        (target.group == CloudFormationPresetGroup::Custom ||
+         !m_cloudFormationTargetValid ||
+         !CloudFormationPresetTargetEqual(target, m_cloudFormationTarget)))
+    {
+        m_cloudFormationStatus =
+            "Formation save rejected: target changed before save";
+        return false;
+    }
+
+    const CloudFormationSettings current = CurrentCloudFormation();
+    PreparedCloudFormation prepared;
+    std::string validationStatus;
+    if (!PrepareCloudFormationSettings(
+            current, prepared, validationStatus, 200.0f))
+    {
+        m_cloudFormationStatus = validationStatus;
+        return false;
+    }
+
+    const std::filesystem::path path = CloudFormationPresetPath(
+        m_cloudFormationPresetRoot, target);
+    std::string status;
+    if (!SaveCloudFormationPresetAtomic(path, target, current, status))
+    {
+        m_cloudFormationStatus = status;
+        return false;
+    }
+
+    if (switchTargetAfterSave)
+    {
+        m_cloudFormationTarget = target;
+        m_cloudFormationTargetValid = true;
+        m_stage15ConceptPreset = Stage15ConceptPreset::Custom;
+        m_stage15ConceptApplied = false;
+        m_cloudFormationSceneDirty = false;
+    }
+    m_cloudFormationSource = CloudFormationPresetSource::UserOverride;
+    m_cloudFormationCloudDirty = false;
+    if (target.group == CloudFormationPresetGroup::Custom)
+        m_hasSavedCustomFormation = true;
+    m_cloudFormationStatus = status;
+    m_cloudAppearanceDirty = false;
+    return true;
+}
+
+bool Renderer::RestoreCurrentCloudFormationBuiltIn()
+{
+    if (!m_cloudFormationTargetValid ||
+        m_cloudFormationTarget.group == CloudFormationPresetGroup::Custom)
+    {
+        m_cloudFormationStatus =
+            "Restore Built-in is available only for F1/F4 presets";
+        return false;
+    }
+    CloudFormationSettings builtIn;
+    PreparedCloudFormation prepared;
+    std::string preflightStatus;
+    if (!ResolveBuiltInCloudFormation(m_cloudFormationTarget, builtIn) ||
+        !PrepareCloudFormationSettings(
+            builtIn, prepared, preflightStatus, 200.0f))
+    {
+        m_cloudFormationStatus = preflightStatus.empty()
+            ? "Restore failed: built-in formation is unavailable"
+            : preflightStatus;
+        return false;
+    }
+
+    // override는 즉시 삭제하지 않고 같은 디렉터리의 고유 backup으로 먼저
+    // 원자 이동한다. GPU Weather 적용이 실패하면 원래 이름으로 되돌려 파일과
+    // runtime 중 한쪽만 Restore되는 부분 성공을 막는다.
+    const std::filesystem::path overridePath = CloudFormationPresetPath(
+        m_cloudFormationPresetRoot, m_cloudFormationTarget);
+    std::error_code fileError;
+    const bool overrideExists =
+        std::filesystem::exists(overridePath, fileError);
+    if (fileError)
+    {
+        m_cloudFormationStatus =
+            "Restore failed: cannot inspect preset override";
+        return false;
+    }
+    std::filesystem::path stagedBackup;
+    if (overrideExists)
+    {
+        stagedBackup = overridePath.wstring() + L".restore-" +
+            std::to_wstring(GetCurrentProcessId()) + L"-" +
+            std::to_wstring(GetTickCount64()) + L".bak";
+        if (!MoveFileExW(
+                overridePath.c_str(), stagedBackup.c_str(),
+                MOVEFILE_WRITE_THROUGH))
+        {
+            m_cloudFormationStatus =
+                "Restore failed: cannot stage preset override";
+            return false;
+        }
+    }
+    if (!ApplyCloudFormationAtomic(prepared.settings, true))
+    {
+        if (!stagedBackup.empty() &&
+            !MoveFileExW(
+                stagedBackup.c_str(), overridePath.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            m_cloudFormationStatus +=
+                "; override recovery failed, backup preserved at " +
+                stagedBackup.string();
+        }
+        return false;
+    }
+    std::string removeStatus = std::string(
+        CloudFormationPresetTargetName(m_cloudFormationTarget));
+    if (!stagedBackup.empty())
+    {
+        std::filesystem::remove(stagedBackup, fileError);
+        removeStatus += fileError
+            ? " override staged backup could not be deleted"
+            : " override removed";
+    }
+    else
+    {
+        removeStatus += " already uses built-in values";
+    }
+    m_cloudFormationSource = CloudFormationPresetSource::BuiltIn;
+    m_cloudFormationCloudDirty = false;
+    m_cloudFormationStatus = removeStatus + "; built-in applied";
+    return true;
+}
+
+void Renderer::MarkCloudFormationDirty()
+{
+    m_cloudFormationCloudDirty = true;
+    m_cloudFormationSource = CloudFormationPresetSource::Unsaved;
+    m_stage15ConceptApplied = false;
+    if (!m_cloudFormationTargetValid ||
+        m_cloudFormationTarget.group != CloudFormationPresetGroup::Concept)
+    {
+        m_stage15ConceptPreset = Stage15ConceptPreset::Custom;
+    }
+    m_cloudAppearancePreset = CloudAppearancePreset::CustomUnsaved;
+    m_cloudAppearanceDirty = true;
+    m_pipelineComparisonActive = false;
+    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
+    m_cloudFormationStatus = m_cloudFormationTargetValid
+        ? std::string("Unsaved formation changes for ") +
+            CloudFormationPresetTargetName(m_cloudFormationTarget)
+        : "Unsaved formation changes (no preset target)";
+}
+
+void Renderer::MarkCloudFormationSceneDirty()
+{
+    m_cloudFormationSceneDirty = true;
+    m_stage15ConceptApplied = false;
 }
 
 bool Renderer::ApplyCloudAppearanceSettings(
@@ -5312,6 +6256,23 @@ bool Renderer::ApplyCloudAppearanceSettings(
         CloudShapeMode::WeatherPhysicalThickness);
     shape = SanitizeCloudShapeParameters(shape);
     weather = SanitizeWeatherMapGeneratorSettings(weather);
+    CloudDomainParameters domain = m_cloudDomainParameters;
+    const cloudshapedomain::FitResult fit = cloudshapedomain::EvaluateFit(
+        shape, weather.cloudTypeMode, domain);
+    if (!fit.valid)
+    {
+        std::ostringstream status;
+        status << "Appearance rejected: local shape requires "
+               << fit.requiredLayerThicknessMeters
+               << " m, current domain provides "
+               << fit.availableLayerThicknessMeters << " m";
+        m_cloudAppearanceStatus = status.str();
+        return false;
+    }
+    domain.cloudLightingReferenceAltitudeMeters =
+        cloudshapedomain::LightingReferenceAltitudeMeters(
+            shape, weather.cloudTypeMode, domain);
+    domain = SanitizeCloudDomainParameters(domain);
     if (!UpdateWeatherMapTexture(Stage5WeatherPreset::PeriodicPerlin, weather))
     {
         m_cloudAppearanceStatus =
@@ -5320,6 +6281,7 @@ bool Renderer::ApplyCloudAppearanceSettings(
     }
     m_cloudParameters = cloud;
     m_cloudShapeParameters = shape;
+    m_cloudDomainParameters = domain;
     m_cloudTypeMode = weather.cloudTypeMode;
     m_noiseLab.SynchronizeWeatherGeneratorSettings(weather);
     m_cloudAppearancePreset = preset;
@@ -5370,13 +6332,8 @@ bool Renderer::ApplyCloudAppearancePreset(CloudAppearancePreset preset)
 
 void Renderer::MarkCloudAppearanceDirty()
 {
-    m_stage15ConceptPreset = Stage15ConceptPreset::Custom;
-    m_cloudAppearancePreset = CloudAppearancePreset::CustomUnsaved;
-    m_cloudAppearanceDirty = true;
-    m_pipelineComparisonActive = false;
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    m_cloudAppearanceStatus =
-        "Unsaved changes: Save Current as Custom to persist them";
+    MarkCloudFormationDirty();
+    m_cloudAppearanceStatus = m_cloudFormationStatus;
 }
 
 bool Renderer::SaveCurrentCloudAppearance()
@@ -5478,11 +6435,39 @@ bool Renderer::ApplyWeatherGeneratorSettings(
         SanitizeWeatherMapGeneratorSettings(settings);
     const bool changed = !WeatherMapGeneratorSettingsEqual(
         safeSettings, m_weatherGeneratorSettings);
+    if (!changed)
+        return true;
+
+    CloudFormationSettings formation = CurrentCloudFormation();
+    if (m_cloudFormationTargetValid &&
+        IsValidCloudFormationSettings(formation))
+    {
+        formation.weather = safeSettings;
+        return ApplyCloudFormationAtomic(formation, true);
+    }
+
+    // 구형 schema/CLI 회귀 경로는 CloudFormationSettings가 소유하지 않는
+    // Legacy shape도 다루므로 기존 제한된 transaction을 보존한다.
+    const cloudshapedomain::FitResult fit = cloudshapedomain::EvaluateFit(
+        m_cloudShapeParameters, safeSettings.cloudTypeMode,
+        m_cloudDomainParameters, 200.0f);
+    if (!fit.valid)
+    {
+        m_weatherMapStatus =
+            "Weather edit rejected: active local thickness does not fit domain";
+        return false;
+    }
+    CloudDomainParameters domain = m_cloudDomainParameters;
+    domain.cloudLightingReferenceAltitudeMeters =
+        cloudshapedomain::LightingReferenceAltitudeMeters(
+            m_cloudShapeParameters, safeSettings.cloudTypeMode, domain);
+    domain = SanitizeCloudDomainParameters(domain);
     if (!UpdateWeatherMapTexture(m_weatherPreset, safeSettings))
         return false;
+    m_cloudDomainParameters = domain;
     if (changed)
     {
-        m_stage15ConceptPreset = Stage15ConceptPreset::Custom;
+        m_stage15ConceptApplied = false;
         m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
         ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     }
@@ -5515,6 +6500,7 @@ std::uint64_t Renderer::Stage15StateFingerprint() const
     HashBytes(hash, &m_shadowParameters, sizeof(m_shadowParameters));
     HashBytes(hash, &m_lightParameters, sizeof(m_lightParameters));
     HashBytes(hash, &m_environmentParameters, sizeof(m_environmentParameters));
+    HashBytes(hash, &m_cloudRimParameters, sizeof(m_cloudRimParameters));
     HashBytes(hash, &m_atmosphereParameters, sizeof(m_atmosphereParameters));
     HashBytes(hash, &m_groundLightingParameters,
               sizeof(m_groundLightingParameters));
@@ -5533,6 +6519,7 @@ std::uint64_t Renderer::Stage15StateFingerprint() const
     HashValue(hash, m_nonCirrusRaymarchShaderHash);
     HashValue(hash, m_nonCirrusDeepShadowShaderHash);
     HashValue(hash, m_cirrusDeepShadowShaderHash);
+    HashValue(hash, m_cloudCompositeShaderHash);
     return hash;
 }
 
@@ -5579,10 +6566,27 @@ bool Renderer::HasDebugLayerErrors() const
             continue;
         std::vector<unsigned char> storage(messageSize);
         D3D11_MESSAGE* message = reinterpret_cast<D3D11_MESSAGE*>(storage.data());
-        if (SUCCEEDED(infoQueue->GetMessage(i, message, &messageSize)) &&
-            (message->Severity == D3D11_MESSAGE_SEVERITY_ERROR ||
-             message->Severity == D3D11_MESSAGE_SEVERITY_CORRUPTION))
-            return true;
+        if (SUCCEEDED(infoQueue->GetMessage(i, message, &messageSize)))
+        {
+            const bool resourceHazard =
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_PSSETSHADERRESOURCES_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_CSSETSHADERRESOURCES_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_CSSETUNORDEREDACCESSVIEWS_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_OMSETRENDERTARGETS_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_OMSETRENDERTARGETSANDUNORDEREDACCESSVIEWS_HAZARD;
+            // SRV/RTV/UAV 중복 바인딩은 debug layer에서 WARNING으로 보고한 뒤
+            // 해당 input을 자동 NULL 처리한다. ERROR만 검사하면 화면 손상을
+            // 일으키는 이 경고를 모든 GPU smoke가 놓치므로 hazard ID도 실패다.
+            if (resourceHazard ||
+                message->Severity == D3D11_MESSAGE_SEVERITY_ERROR ||
+                message->Severity == D3D11_MESSAGE_SEVERITY_CORRUPTION)
+                return true;
+        }
     }
 #endif
     return false;
@@ -5593,6 +6597,7 @@ bool Renderer::ValidateWarmShaderCache()
     const std::uint64_t raymarchHash = m_nonCirrusRaymarchShaderHash;
     const std::uint64_t shadowHash = m_nonCirrusDeepShadowShaderHash;
     const std::uint64_t cirrusShadowHash = m_cirrusDeepShadowShaderHash;
+    const std::uint64_t compositeHash = m_cloudCompositeShaderHash;
     m_shaderCompileCallCount = 0;
     m_shaderCacheHitCount = 0;
     if (!CreateShaders(false))
@@ -5600,7 +6605,8 @@ bool Renderer::ValidateWarmShaderCache()
     return m_shaderCompileCallCount == 0u && m_shaderCacheHitCount > 0u &&
         raymarchHash == m_nonCirrusRaymarchShaderHash &&
         shadowHash == m_nonCirrusDeepShadowShaderHash &&
-        cirrusShadowHash == m_cirrusDeepShadowShaderHash;
+        cirrusShadowHash == m_cirrusDeepShadowShaderHash &&
+        compositeHash == m_cloudCompositeShaderHash;
 }
 
 bool Renderer::ValidateNoiseSamplerContract() const
@@ -5693,9 +6699,7 @@ void Renderer::CheckShaderHotReload()
             first = false;
         }
     }
-    m_bypassShaderCache = true;
     const bool succeeded = CreateShaders(false);
-    m_bypassShaderCache = false;
     if (succeeded)
     {
         ResetTemporalHistory(Stage11HistoryResetReason::ShaderReload);
@@ -5737,7 +6741,8 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root,
         m_shadowParameters,
         m_cloudRenderWidth, m_cloudRenderHeight,
         m_lightParameters, m_sunPreset, m_phasePreset,
-        m_environmentParameters, m_environmentPreset, m_weatherPreset,
+        m_environmentParameters, m_environmentPreset, m_cloudRimParameters,
+        m_weatherPreset,
         m_cloudTypeMode,
         m_cloudAppearancePreset, m_cloudAppearanceDirty,
         m_hasSavedCustomAppearance, m_savedCustomAppearance,

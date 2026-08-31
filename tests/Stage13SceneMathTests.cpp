@@ -65,7 +65,17 @@ int main()
     Require(SanitizeDebugMode(CloudDebugMode::UpsampleAcceptedTapCount) ==
                 CloudDebugMode::UpsampleAcceptedTapCount,
             "Joint4 accepted tap count debug mode must be preserved");
-    Require(SanitizeDebugMode(static_cast<CloudDebugMode>(81)) ==
+    Require(SanitizeDebugMode(CloudDebugMode::LocalBaseOffset) ==
+                CloudDebugMode::LocalBaseOffset &&
+            SanitizeDebugMode(CloudDebugMode::NteRimMask) ==
+                CloudDebugMode::NteRimMask &&
+            SanitizeDebugMode(CloudDebugMode::NteRimContribution) ==
+                CloudDebugMode::NteRimContribution,
+            "Stage 15B appended diagnostics must be preserved");
+    Require(SanitizeDebugMode(static_cast<CloudDebugMode>(82)) ==
+                CloudDebugMode::Composite,
+            "withdrawn boundary diagnostic ID 82 must stay reserved");
+    Require(SanitizeDebugMode(static_cast<CloudDebugMode>(85)) ==
                 CloudDebugMode::Composite,
             "undefined debug modes after hidden diagnostics must sanitize");
     std::cout << "[UNIFIED-SCENE][MATH] GROUND=10000 BUILDING=20x60x20 RADIUS=50000 PASS\n";

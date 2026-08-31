@@ -83,9 +83,10 @@ inline CloudDebugMode DebugModeFromDigit(int digit)
 inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
 {
     const std::int32_t value = static_cast<std::int32_t>(mode);
-    // 79~80은 숫자 키/UI에 노출하지 않는 자동 검증용 내부 출력이다.
-    // 제거된 과거 ID 1~7과 이후 미정의 값은 계속 막는다.
-    return value == 0 || (value >= 8 && value <= 80)
+    // 79~81, 83~84는 숫자 키에는 노출하지 않는 Stage 15 자동 검증/고급
+    // 진단이다. 철회한 boundary experiment의 ID 82와 미정의 값은 막는다.
+    return value == 0 || (value >= 8 && value <= 81) ||
+        (value >= 83 && value <= 84)
         ? mode : CloudDebugMode::Composite;
 }
 
@@ -136,6 +137,9 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::WeatherThicknessPotential: return L"Thickness Potential";
     case CloudDebugMode::LocalThickness: return L"Local Thickness";
     case CloudDebugMode::LocalHeightFraction: return L"Local Height";
+    case CloudDebugMode::LocalBaseOffset: return L"Local Base Offset";
+    case CloudDebugMode::NteRimMask: return L"NTE Rim Mask";
+    case CloudDebugMode::NteRimContribution: return L"NTE Rim Contribution";
     case CloudDebugMode::EffectiveShapeCoverage: return L"Shape Coverage";
     case CloudDebugMode::BaseSupportBeforeDensity: return L"Base Support";
     case CloudDebugMode::ViewOpticalDepth: return L"View Optical Depth";

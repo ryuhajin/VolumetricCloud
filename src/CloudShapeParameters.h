@@ -6,6 +6,7 @@
 #include <DirectXMath.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 
@@ -82,8 +83,8 @@ struct alignas(16) CloudShapeParameters
 
     float cumulusUpperMassStart = 0.10f;
     float cumulusUpperMassEnd = 0.65f;
-    float padding0 = 0.0f;
-    float padding1 = 0.0f;
+    float localBaseLiftMaxMeters = 0.0f;
+    float footprintCoverageInfluence = 0.20f;
 
     DirectX::XMFLOAT2 cirrusFlowDirectionXZ = { 0.9396926f, 0.3420201f };
     float cirrusBaseAlongScaleMeters = 20000.0f;
@@ -102,6 +103,10 @@ struct alignas(16) CloudShapeParameters
 
 static_assert(sizeof(CloudShapeParameters) == 112,
               "CloudShapeParameters must match CloudShapeCB");
+static_assert(offsetof(CloudShapeParameters, localBaseLiftMaxMeters) == 56,
+              "CloudShapeParameters local base lift ABI changed");
+static_assert(offsetof(CloudShapeParameters, footprintCoverageInfluence) == 60,
+              "CloudShapeParameters footprint influence ABI changed");
 
 inline CloudShapeParameters SanitizeCloudShapeParameters(
     const CloudShapeParameters& value)
@@ -151,6 +156,10 @@ inline CloudShapeParameters SanitizeCloudShapeParameters(
     result.cumulusUpperMassEnd = std::clamp(
         finiteOr(result.cumulusUpperMassEnd, 0.65f),
         result.cumulusUpperMassStart + 0.01f, 1.0f);
+    result.localBaseLiftMaxMeters = std::clamp(
+        finiteOr(result.localBaseLiftMaxMeters, 0.0f), 0.0f, 2000.0f);
+    result.footprintCoverageInfluence = std::clamp(
+        finiteOr(result.footprintCoverageInfluence, 0.20f), 0.0f, 1.0f);
     float flowX = finiteOr(result.cirrusFlowDirectionXZ.x, 0.9396926f);
     float flowZ = finiteOr(result.cirrusFlowDirectionXZ.y, 0.3420201f);
     const float flowLength = std::sqrt(flowX * flowX + flowZ * flowZ);
@@ -186,7 +195,5 @@ inline CloudShapeParameters SanitizeCloudShapeParameters(
         finiteOr(result.cirrusVerticalProfileCenter, 0.48f), 0.0f, 1.0f);
     result.cirrusVerticalProfileHalfWidth = std::clamp(
         finiteOr(result.cirrusVerticalProfileHalfWidth, 0.45f), 0.01f, 1.0f);
-    result.padding0 = 0.0f;
-    result.padding1 = 0.0f;
     return result;
 }

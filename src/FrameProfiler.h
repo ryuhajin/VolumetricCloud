@@ -22,7 +22,10 @@ struct FrameTimingSnapshot
     double gpuAtmosphereLutMs = 0.0;
     double gpuOpaqueSceneMs = 0.0;
     double gpuCloudRaymarchMs = 0.0;
+    // 이름은 Stage 10 호환을 위해 유지한다. Stage 15B부터 이 값은
+    // raymarch 종료~CloudComposite 시작 사이의 spatial/temporal resolve다.
     double gpuUpsampleCompositeMs = 0.0;
+    double gpuCloudCompositeMs = 0.0;
     double gpuToneMapMs = 0.0;
     double rawCpuFrameMs = 0.0;
     double rawGpuFrameMs = 0.0;
@@ -32,6 +35,7 @@ struct FrameTimingSnapshot
     double rawGpuOpaqueSceneMs = 0.0;
     double rawGpuCloudRaymarchMs = 0.0;
     double rawGpuUpsampleCompositeMs = 0.0;
+    double rawGpuCloudCompositeMs = 0.0;
     double rawGpuToneMapMs = 0.0;
     std::uint64_t gpuSampleIndex = 0;
     bool cpuValid = false;
@@ -55,7 +59,7 @@ public:
         double frameMilliseconds, double atmosphereMilliseconds,
         double shadowCacheMilliseconds, double opaqueSceneMilliseconds,
         double cloudRaymarchMilliseconds, double resolveMilliseconds,
-        double toneMapMilliseconds);
+        double cloudCompositeMilliseconds, double toneMapMilliseconds);
     const FrameTimingSnapshot& Snapshot() const { return m_snapshot; }
 
 private:
@@ -86,6 +90,10 @@ public:
     void MarkShadowCacheEnd(ID3D11DeviceContext* context);
     void MarkOpaqueSceneEnd(ID3D11DeviceContext* context);
     void MarkCloudRaymarchEnd(ID3D11DeviceContext* context);
+    // Resolve가 끝나고 별도 CloudComposite draw를 시작하기 직전에 호출한다.
+    // 별도 composite가 없는 direct 경로도 EndCloudPass 직전에 호출해야 하며,
+    // 그러면 composite 구간은 연속 timestamp 사이의 거의 0인 값이 된다.
+    void MarkCloudCompositeBegin(ID3D11DeviceContext* context);
     void EndCloudPass(ID3D11DeviceContext* context);
     void MarkToneMapEnd(ID3D11DeviceContext* context);
     void EndGpuFrame(ID3D11DeviceContext* context);
@@ -109,10 +117,13 @@ private:
         ComPtr<ID3D11Query> shadowCacheEnd;
         ComPtr<ID3D11Query> opaqueSceneEnd;
         ComPtr<ID3D11Query> cloudRaymarchEnd;
+        ComPtr<ID3D11Query> cloudCompositeBegin;
         ComPtr<ID3D11Query> cloudEnd;
         ComPtr<ID3D11Query> toneMapEnd;
         ComPtr<ID3D11Query> frameEnd;
         bool inFlight = false;
+        bool cloudCompositeMarked = false;
+        bool cloudPassEnded = false;
         std::uint64_t generation = 0;
     };
 

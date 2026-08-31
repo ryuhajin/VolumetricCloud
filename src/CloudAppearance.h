@@ -41,6 +41,8 @@ struct CloudAppearanceSettings
     float stratusMaximumThicknessMeters = 2500.0f;
     float cumulusMinimumThicknessMeters = 3000.0f;
     float cumulusMaximumThicknessMeters = 6000.0f;
+    float localBaseLiftMaxMeters = 0.0f;
+    float footprintCoverageInfluence = 0.20f;
 
     float stratusBottomFadeEnd = 0.06f;
     float stratusTopFadeStart = 0.65f;
@@ -65,6 +67,8 @@ CloudAppearanceSettings CaptureCloudAppearance(
     const CloudParameters& cloud,
     const CloudShapeParameters& shape,
     const WeatherMapGeneratorSettings& weather);
+void ApplyCloudAppearanceShape(const CloudAppearanceSettings& appearance,
+                               CloudShapeParameters& shape);
 void ApplyCloudAppearance(const CloudAppearanceSettings& appearance,
                           CloudParameters& cloud,
                           CloudShapeParameters& shape,
@@ -78,7 +82,8 @@ bool IsValidCloudAppearanceSettings(const CloudAppearanceSettings& value);
 float EvaluateAppearanceWeatherSupport(float weatherCoverage);
 float EvaluateAppearanceHorizontalCoverage(float globalCoverage,
                                            float weatherCoverage,
-                                           float typedFootprintScale);
+                                           float typedFootprintScale,
+                                           float footprintInfluence = 0.20f);
 float EvaluateAppearanceBaseDensity(float globalCoverage,
                                     float weatherCoverage,
                                     float rawNoise,
@@ -86,7 +91,8 @@ float EvaluateAppearanceBaseDensity(float globalCoverage,
                                     float typedVerticalProfile,
                                     float densityMultiplier,
                                     float weatherDensityModifier,
-                                    bool insideLocalColumn);
+                                    bool insideLocalColumn,
+                                    float footprintInfluence = 0.20f);
 float EvaluateAppearanceLightBaseDensity(float globalCoverage,
                                          float weatherCoverage,
                                          float rawNoise,
@@ -94,11 +100,13 @@ float EvaluateAppearanceLightBaseDensity(float globalCoverage,
                                          float typedVerticalProfile,
                                          float densityMultiplier,
                                          float weatherDensityModifier,
-                                         bool insideLocalColumn);
+                                         bool insideLocalColumn,
+                                         float footprintInfluence = 0.20f);
 float ResolvePipelineComparisonTime(bool comparisonActive,
                                     float normalEffectiveTime);
 
-// schema 29 Custom 전용 파일. load 실패 시 outSettings를 변경하지 않는다.
+// schema 30 Custom 전용 파일. schema 29는 새 형상값을 보수적 기본값으로
+// 마이그레이션하며, load 실패 시 outSettings를 변경하지 않는다.
 bool SaveCustomCloudAppearanceAtomic(
     const std::filesystem::path& path,
     const CloudAppearanceSettings& settings,

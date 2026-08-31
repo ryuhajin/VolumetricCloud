@@ -42,7 +42,7 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 윈도우/입력 | `src/Window.*` | Win32 창, 마우스/WASD → Camera, 리사이즈 → Renderer |
 | 카메라 | `src/Camera.*` | position+yaw/pitch FPS 자유 시점과 프리셋 호환 → view/proj/invViewProj |
 | 렌더러 | `src/Renderer.*` | D3D11 초기화, 대기/Shadow compute, HDR 장면·구름·Aerial 합성과 Tone Map |
-| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 ImGui, Stage 15 프리셋/진단 UI와 schema 37 내보내기 |
+| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 단일 ImGui 패널, Stage 15 프리셋/진단 UI와 schema 38 내보내기 |
 | 구름 설정 | `src/CloudParameters.h` | 128바이트 CPU/HLSL 공유 파라미터와 디버그 모드 |
 | 거리 LOD 설정 | `src/CloudLodParameters.h` | 16바이트 b8 Detail 거리 LOD와 측정 중립 평균 |
 | 최적화 설정 | `src/OptimizationParameters.h` | 64바이트 b9 View/Light 후보와 단계 9 preset |
@@ -52,18 +52,20 @@ Local Inspector를 대체합니다. **단계 13-4D 단일 씬, 13-4E Dense Broke
 | 대기 통합 설정 | `src/AtmosphereParameters.h`, `src/GroundLightingParameters.h`, `src/ToneMappingParameters.h`, `src/Stage14Parameters.h` | CPU 분리 설정과 224바이트 b13/LUT 규격 |
 | 도메인 설정 | `src/CloudDomainParameters.h` | AABB/평면층 선택과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
-| 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 29 Custom 원자 저장/복원 |
+| 구형 외형 프리셋 | `src/CloudAppearance.*` | Dense Mixed·층운·적운과 schema 30 Custom(+29 migration) 호환 |
+| 공통 구름 형성/저장 | `src/CloudFormationSettings.*`, `src/CloudFormationPresetStore.*` | F1/F4 공통 formation 원자 적용과 schema 1 독립 8슬롯 |
 | 형상 설정 | `src/CloudShapeParameters.h` | 112바이트 b7 물리 두께·타입별 Vertical Profile·Cirrus 방향 설정 |
 | 최종 프리셋 | `src/Stage15Parameters.h` | CPU 전용 Low/Medium/High와 네 콘셉트 resolver |
 | 조명 설정 | `src/LightParameters.h` | 80바이트 LightCB와 태양·외곽 범위 Phase 프리셋·sanitize |
 | 환경광 설정 | `src/EnvironmentParameters.h` | 80바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
-| 성능 계측 | `src/FrameProfiler.*` | Atmosphere/Shadow/Opaque/Raymarch/Resolve/Tone/Frame GPU timestamp와 EMA |
+| 성능 계측 | `src/FrameProfiler.*` | Atmosphere/Shadow/Opaque/Raymarch/Resolve/Composite/Tone/Frame GPU timestamp와 EMA |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
 | Ray | `shaders/Ray.hlsli` | 평행축을 안전하게 처리하는 slab AABB 교차 |
 | Cloud PS | `shaders/VolumetricClouds.hlsl` | noise 밀도 적분과 scattering/T/depth MRT 출력 |
-| Resolve PS | `shaders/CloudUpsample.hlsl` | Nearest/Bilinear/Joint 공간 복원과 장면 합성 |
+| Resolve PS | `shaders/CloudUpsample.hlsl` | Nearest/Bilinear/Joint 공간 복원과 full-resolution cloud pair 출력 |
 | Temporal PS | `shaders/CloudTemporalResolve.hlsl` | wind-aware 재투영·history 거부/clip과 Full 합성 |
+| Composite PS | `shaders/CloudComposite.hlsl` | resolve 이후 scene/atmosphere 합성과 full-resolution NTE rim |
 | Noise | `shaders/Noise.hlsli` | 교체 가능한 Base/Detail noise, 높이와 erosion 밀도 함수 |
 | Lighting | `shaders/CloudLighting.hlsli` | Base-only 태양 Light Ray와 직접 단일 산란 |
 | Phase | `shaders/PhaseFunction.hlsli` | 방향 부호가 고정된 Dual-lobe HG와 안전한 Phase Factor |

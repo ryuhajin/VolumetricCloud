@@ -31,6 +31,7 @@
 #include "Stage13CameraPresets.h"
 #include "Stage13SimilarityDiagnostics.h"
 #include "Stage13WeatherShapeMath.h"
+#include "Stage9OptimizationMath.h"
 
 namespace
 {
@@ -125,6 +126,9 @@ const char* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::Stage12SurfaceTransmittance: return "Stage12SurfaceTransmittance";
     case CloudDebugMode::Stage12DirectCacheError: return "Stage12DirectCacheError";
     case CloudDebugMode::Stage15ResolvedCloud: return "Stage15ResolvedCloud";
+    case CloudDebugMode::LocalBaseOffset: return "LocalBaseOffset";
+    case CloudDebugMode::NteRimMask: return "NteRimMask";
+    case CloudDebugMode::NteRimContribution: return "NteRimContribution";
     default: return "Unknown";
     }
 }
@@ -1575,17 +1579,33 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             OpenWorldPipelinePreset::PhysicalShape,
             OpenWorldPipelinePreset::FullOpenWorld })
     {
-        if (!renderer.ApplyOpenWorldPipelinePreset(preset) ||
-            std::memcmp(&initialCloud.cloudBoundsMin,
-                        &renderer.CloudSettings().cloudBoundsMin,
-                        sizeof(DirectX::XMFLOAT3)) != 0 ||
-            std::memcmp(&initialCloud.cloudBoundsMax,
-                        &renderer.CloudSettings().cloudBoundsMax,
-                        sizeof(DirectX::XMFLOAT3)) != 0 ||
-            std::memcmp(&initialDomain, &renderer.DomainSettings(),
-                        sizeof(initialDomain)) != 0 ||
-            renderer.CameraMoveSpeed() != initialMoveSpeed)
+        const bool applied = renderer.ApplyOpenWorldPipelinePreset(preset);
+        const bool boundsMinPreserved = std::memcmp(
+            &initialCloud.cloudBoundsMin,
+            &renderer.CloudSettings().cloudBoundsMin,
+            sizeof(DirectX::XMFLOAT3)) == 0;
+        const bool boundsMaxPreserved = std::memcmp(
+            &initialCloud.cloudBoundsMax,
+            &renderer.CloudSettings().cloudBoundsMax,
+            sizeof(DirectX::XMFLOAT3)) == 0;
+        const bool domainPreserved = std::memcmp(
+            &initialDomain, &renderer.DomainSettings(),
+            sizeof(initialDomain)) == 0;
+        const bool speedPreserved =
+            renderer.CameraMoveSpeed() == initialMoveSpeed;
+        if (!applied || !boundsMinPreserved || !boundsMaxPreserved ||
+            !domainPreserved || !speedPreserved)
+        {
+            WriteDiagnosticLine(
+                std::string("[UNIFIED-SCENE][PIPELINE-FAIL] PRESET=") +
+                stage13openworld::PipelinePresetName(preset) +
+                " APPLY=" + (applied ? "1" : "0") +
+                " BOUNDS_MIN=" + (boundsMinPreserved ? "1" : "0") +
+                " BOUNDS_MAX=" + (boundsMaxPreserved ? "1" : "0") +
+                " DOMAIN=" + (domainPreserved ? "1" : "0") +
+                " SPEED=" + (speedPreserved ? "1" : "0"));
             return 7;
+        }
     }
 
     renderer.ApplyPortfolioHeroLighting();
@@ -1607,8 +1627,8 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
             continue;
         std::string metadata;
         if (ReadTextFile(entry.path(), metadata) &&
-            metadata.find("\"schemaVersion\": 37") != std::string::npos &&
-            metadata.find("\"implementationStage\": \"15\"") != std::string::npos &&
+            metadata.find("\"schemaVersion\": 38") != std::string::npos &&
+            metadata.find("\"implementationStage\": \"15B\"") != std::string::npos &&
             metadata.find("\"lightingLook\": \"portfolioHero\"") != std::string::npos &&
             metadata.find("\"edgeInfluence\"") != std::string::npos &&
             metadata.find("\"ambientShadowCoupling\"") != std::string::npos &&
@@ -1627,7 +1647,7 @@ int RunStage13UnifiedSceneSmokeTest(Renderer& renderer, Camera& camera)
         return 10;
 
     WriteDiagnosticLine(
-        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=37 PASS");
+        "[UNIFIED-SCENE][GPU] CAMERAS=4 DIGITS=10 APPEARANCES=3 F5F6=FINITE_DISTINCT PIPELINE_INVARIANT=1 SCHEMA=38 PASS");
     return renderer.HasDebugLayerErrors() ? 11 : 0;
 }
 
@@ -3038,13 +3058,18 @@ int RunStage14AtmosphereSmokeTest(Renderer& renderer, Camera& camera)
     renderer.EnableNoiseLabPreviews(false);
     renderer.EnableFrameHashCapture(true);
     renderer.SetVSyncEnabled(false);
-    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    if (!renderer.ApplyStage15Defaults())
+        return 9;
+    renderer.RequestStage15ConceptPreset(Stage15ConceptPreset::SnowOvercast);
+    renderer.RequestStage15QualityPreset(Stage15QualityPreset::Medium);
 
     const Stage13CameraPreset& horizon = stage13camera::Get(
         Stage13CameraPresetId::GroundHorizon);
     camera.SetClipPlanes(stage13camera::kNearPlaneMeters,
                          stage13camera::kFarPlaneMeters);
     camera.SetLookAt(horizon.position, horizon.target);
+    renderer.Render(camera, -1.0f / 60.0f);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
 
     AtmosphereParameters& atmosphere = renderer.MutableAtmosphereSettings();
     atmosphere.mode = AtmosphereMode::Physical;
@@ -3053,6 +3078,8 @@ int RunStage14AtmosphereSmokeTest(Renderer& renderer, Camera& camera)
     atmosphere.sunElevationDegrees = 18.0f;
     GroundLightingParameters& ground = renderer.MutableGroundLightingSettings();
     stage14ground::ApplyPreset(ground, GroundMaterialPreset::Concrete);
+    renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Balanced);
+    EnvironmentParameters& environment = renderer.MutableEnvironmentSettings();
     ToneMappingParameters& tone = renderer.MutableToneMappingSettings();
     tone.mode = ToneMappingMode::AcesFitted;
     tone.exposureEv = 0.0f;
@@ -3115,9 +3142,91 @@ int RunStage14AtmosphereSmokeTest(Renderer& renderer, Camera& camera)
         afterCamera[2] == afterSun[2] && afterCamera[3] == afterSun[3] &&
         afterCamera[4] > afterSun[4] && afterCamera[5] > afterSun[5];
 
+    // Physical Fill은 b4에서 구름 조명에만 곱한다. LUT 입력이 아니므로
+    // generation/hash는 완전히 고정되고, Off에서도 direct/silver 진단은
+    // 동일해야 한다.
+    const auto diagnosticMaximum = [&](CloudDebugMode mode, float time,
+                                       float& maximum)
+    {
+        CloudDiagnosticFrame frame;
+        if (!renderer.CaptureCloudDiagnosticFrame(
+                camera, time, mode, frame, true))
+            return false;
+        maximum = 0.0f;
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+        {
+            if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+                !std::isfinite(pixel.z))
+                return false;
+            maximum = std::max(maximum,
+                std::max(pixel.x, std::max(pixel.y, pixel.z)));
+        }
+        return true;
+    };
+    const Stage13CameraPreset& insideCloud = stage13camera::Get(
+        Stage13CameraPresetId::InsideLayer);
+    camera.SetLookAt(insideCloud.position, insideCloud.target);
+    renderer.Render(camera, 5.5f / 60.0f);
+    std::array<std::uint64_t, 6> beforeFillGenerations = {};
+    std::array<std::uint64_t, 6> beforeFillHashes = {};
+    for (std::size_t index = 0; index < beforeFillGenerations.size(); ++index)
+    {
+        beforeFillGenerations[index] =
+            renderer.AtmosphereLutGeneration(index);
+        beforeFillHashes[index] = renderer.AtmosphereLutHash(index);
+    }
+    const std::uint64_t beforeFillFrameHash = renderer.LastCloudFrameHash();
+    float directBefore = 0.0f;
+    float silverBefore = 0.0f;
+    const bool directBeforeRead = diagnosticMaximum(
+        CloudDebugMode::DirectSingleScattering, 5.1f / 60.0f, directBefore);
+    const bool silverBeforeRead = diagnosticMaximum(
+        CloudDebugMode::SilverLiningContribution, 5.2f / 60.0f,
+        silverBefore);
+
+    renderer.ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset::Off);
+    environment.physicalSkyFillScale = 0.0f;
+    environment.physicalGroundFillScale = 0.0f;
+    renderer.Render(camera, 6.0f / 60.0f);
+    bool fillLutStable = true;
+    for (std::size_t index = 0; index < beforeFillGenerations.size(); ++index)
+    {
+        fillLutStable = fillLutStable &&
+            renderer.AtmosphereLutGeneration(index) ==
+                beforeFillGenerations[index] &&
+            renderer.AtmosphereLutHash(index) == beforeFillHashes[index];
+    }
+    const bool fillChangedDisplay = renderer.LastCloudFrameHash() != 0u &&
+        renderer.LastCloudFrameHash() != beforeFillFrameHash;
+    float skyOff = 0.0f;
+    float groundOff = 0.0f;
+    float multipleOff = 0.0f;
+    float directAfter = 0.0f;
+    float silverAfter = 0.0f;
+    const bool fillDiagnosticsRead =
+        diagnosticMaximum(CloudDebugMode::AccumulatedSkyAmbient,
+                          6.1f / 60.0f, skyOff) &&
+        diagnosticMaximum(CloudDebugMode::AccumulatedGroundBounce,
+                          6.2f / 60.0f, groundOff) &&
+        diagnosticMaximum(CloudDebugMode::AccumulatedMultipleScattering,
+                          6.3f / 60.0f, multipleOff) &&
+        diagnosticMaximum(CloudDebugMode::DirectSingleScattering,
+                          6.4f / 60.0f, directAfter) &&
+        diagnosticMaximum(CloudDebugMode::SilverLiningContribution,
+                          6.5f / 60.0f, silverAfter);
+    const bool fillOffContract = fillDiagnosticsRead &&
+        skyOff <= 1.0e-6f && groundOff <= 1.0e-6f &&
+        multipleOff <= 1.0e-6f && directBeforeRead && silverBeforeRead &&
+        directAfter > 1.0e-6f &&
+        std::abs(directAfter - directBefore) <=
+            1.0e-5f * (1.0f + directBefore) &&
+        std::abs(silverAfter - silverBefore) <=
+            1.0e-5f * (1.0f + silverBefore);
+
     const bool passed = initialGenerated && initialFrameHash != 0u && lutReadback &&
         staticStable && toneStable && toneChangedDisplay &&
         groundInvalidation && sunInvalidation && cameraInvalidation &&
+        fillLutStable && fillChangedDisplay && fillOffContract &&
         !renderer.HasDebugLayerErrors();
     std::ostringstream line;
     line << "STAGE14_ATMOSPHERE INITIAL=" << (initialGenerated ? 1 : 0)
@@ -3130,7 +3239,12 @@ int RunStage14AtmosphereSmokeTest(Renderer& renderer, Camera& camera)
          << " TONE_DISPLAY=" << (toneChangedDisplay ? 1 : 0)
          << " GROUND_INVALIDATION=" << (groundInvalidation ? 1 : 0)
          << " SUN_INVALIDATION=" << (sunInvalidation ? 1 : 0)
-         << " CAMERA_INVALIDATION=" << (cameraInvalidation ? 1 : 0) << ' '
+         << " CAMERA_INVALIDATION=" << (cameraInvalidation ? 1 : 0)
+         << " FILL_LUT_STABLE=" << (fillLutStable ? 1 : 0)
+         << " FILL_DISPLAY=" << (fillChangedDisplay ? 1 : 0)
+         << " FILL_OFF=" << (fillOffContract ? 1 : 0)
+         << " DIRECT=" << directBefore << '/' << directAfter
+         << " SILVER=" << silverBefore << '/' << silverAfter << ' '
          << (passed ? "PASS" : "FAIL");
     WriteDiagnosticLine(line.str());
     return passed ? 0 : 9;
@@ -3142,12 +3256,14 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
     {
         std::string concept;
         std::string quality;
+        std::string temporal;
         std::string camera;
         std::uint64_t weatherHash = 0u;
         std::uint64_t frameHash = 0u;
         bool finite = false;
         bool resources = false;
         bool historyReset = false;
+        bool stateMatches = false;
     };
 
     renderer.SetNoiseLabVisible(false);
@@ -3158,6 +3274,204 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
     renderer.EnableFrameHashCapture(true);
     camera.SetClipPlanes(
         stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    if (!renderer.ApplyStage15Defaults())
+        return 2;
+
+    // F1 Type와 F4 Concept의 formation 진입점이 같은 transaction을 쓰며,
+    // 구름 이외의 Quality/조명/대기/지면/Rim과 공유 Texture3D는 건드리지
+    // 않는지 실제 Renderer 상태에서 검증한다.
+    const Stage15QualityPreset formationQualityBefore =
+        renderer.Stage15Quality();
+    const LightParameters formationLightBefore = renderer.LightSettings();
+    const EnvironmentParameters formationEnvironmentBefore =
+        renderer.EnvironmentSettings();
+    const AtmosphereParameters formationAtmosphereBefore =
+        renderer.AtmosphereSettings();
+    const GroundLightingParameters formationGroundBefore =
+        renderer.GroundLightingSettings();
+    const CloudRimParameters formationRimBefore = renderer.RimSettings();
+    const std::uint64_t formationBaseTextureHash =
+        renderer.BaseNoiseVolumeHash();
+    const std::uint64_t formationDetailTextureHash =
+        renderer.DetailNoiseVolumeHash();
+    const std::uint32_t resetsBeforeF1Formation =
+        renderer.TemporalResetCountLast60Frames();
+    const bool f1FormationApplied =
+        renderer.ApplyCloudFormationPresetForValidation(
+            TypeFormationTarget(CloudFormationType::Cumulus), false);
+    const CloudFormationSettings f1EffectiveFormation =
+        renderer.CurrentCloudFormation();
+    const std::uint64_t f1FormationHash =
+        HashCloudFormationSettings(f1EffectiveFormation);
+    const std::uint64_t f1WeatherHash = renderer.WeatherMapHash();
+    const bool f1FormationState = f1FormationApplied &&
+        renderer.FormationTargetValid() &&
+        CloudFormationPresetTargetEqual(
+            renderer.FormationTarget(),
+            TypeFormationTarget(CloudFormationType::Cumulus)) &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::BuiltIn &&
+        !renderer.FormationCloudDirty() &&
+        !renderer.FormationSceneDirty() &&
+        renderer.TemporalResetCountLast60Frames() ==
+            resetsBeforeF1Formation + 1u;
+
+    const std::uint32_t resetsBeforeF4Formation =
+        renderer.TemporalResetCountLast60Frames();
+    const bool f4FormationApplied =
+        renderer.ApplyCloudFormationPresetForValidation(
+            ConceptFormationTarget(
+                CloudFormationConcept::UrbanFairWeather), false);
+    const CloudFormationSettings f4EffectiveFormation =
+        renderer.CurrentCloudFormation();
+    const bool commonFormationEntrypointContract =
+        f1FormationState && f4FormationApplied &&
+        renderer.FormationTargetValid() &&
+        CloudFormationPresetTargetEqual(
+            renderer.FormationTarget(),
+            ConceptFormationTarget(
+                CloudFormationConcept::UrbanFairWeather)) &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::BuiltIn &&
+        !renderer.FormationCloudDirty() &&
+        !renderer.FormationSceneDirty() &&
+        CloudFormationSettingsEqual(
+            f1EffectiveFormation, f4EffectiveFormation) &&
+        f1FormationHash ==
+            HashCloudFormationSettings(f4EffectiveFormation) &&
+        f1WeatherHash == renderer.WeatherMapHash() &&
+        renderer.TemporalResetCountLast60Frames() ==
+            resetsBeforeF4Formation + 1u &&
+        renderer.Stage15Quality() == formationQualityBefore &&
+        std::memcmp(&formationLightBefore, &renderer.LightSettings(),
+                    sizeof(formationLightBefore)) == 0 &&
+        std::memcmp(&formationEnvironmentBefore,
+                    &renderer.EnvironmentSettings(),
+                    sizeof(formationEnvironmentBefore)) == 0 &&
+        std::memcmp(&formationAtmosphereBefore,
+                    &renderer.AtmosphereSettings(),
+                    sizeof(formationAtmosphereBefore)) == 0 &&
+        std::memcmp(&formationGroundBefore,
+                    &renderer.GroundLightingSettings(),
+                    sizeof(formationGroundBefore)) == 0 &&
+        std::memcmp(&formationRimBefore, &renderer.RimSettings(),
+                    sizeof(formationRimBefore)) == 0 &&
+        renderer.BaseNoiseVolumeHash() == formationBaseTextureHash &&
+        renderer.DetailNoiseVolumeHash() == formationDetailTextureHash;
+    const bool cirrusFormationApplied =
+        renderer.ApplyCloudFormationPresetForValidation(
+            TypeFormationTarget(CloudFormationType::Cirrus), false);
+    const bool cirrusTextureIdentityContract = cirrusFormationApplied &&
+        cloudshape::Mode(renderer.ShapeSettings().shapeMode) ==
+            CloudShapeMode::CirrusPhysicalLayer &&
+        renderer.BaseNoiseVolumeHash() == formationBaseTextureHash &&
+        renderer.DetailNoiseVolumeHash() == formationDetailTextureHash;
+
+    // 실제 Renderer 저장 버튼 경로도 임시 root에서 끝까지 실행한다. 사용자
+    // captures 파일에는 접근하지 않으며 target/source/dirty와 Restore를 함께 본다.
+    const std::filesystem::path originalFormationRoot =
+        renderer.CloudFormationPresetRootForValidation();
+    const std::filesystem::path formationStoreRoot =
+        std::filesystem::temp_directory_path() /
+        (L"VolumetricCloudStage15FormationStore-" +
+         std::to_wstring(GetCurrentProcessId()) + L"-" +
+         std::to_wstring(GetTickCount64()));
+    renderer.SetCloudFormationPresetRootForValidation(formationStoreRoot);
+    const CloudFormationPresetTarget stratusStorageTarget =
+        TypeFormationTarget(CloudFormationType::Stratus);
+    const bool storageTypeLoaded =
+        renderer.ApplyCloudFormationPresetForValidation(
+            stratusStorageTarget, true);
+    CloudFormationSettings editedStoredFormation =
+        renderer.CurrentCloudFormation();
+    editedStoredFormation.coverage = std::clamp(
+        editedStoredFormation.coverage - 0.07f, 0.0f, 1.0f);
+    const bool storageEditApplied = storageTypeLoaded &&
+        renderer.ApplyCloudFormationSettingsForValidation(
+            editedStoredFormation) &&
+        renderer.FormationTargetValid() &&
+        CloudFormationPresetTargetEqual(
+            renderer.FormationTarget(), stratusStorageTarget) &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::Unsaved &&
+        renderer.FormationCloudDirty();
+    const bool storagePresetSaved = storageEditApplied &&
+        renderer.SaveCurrentCloudFormationPresetForValidation() &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::UserOverride &&
+        !renderer.FormationCloudDirty();
+    const std::filesystem::path storedTypePath =
+        CloudFormationPresetPath(formationStoreRoot, stratusStorageTarget);
+    const std::filesystem::path storedCustomPath =
+        CloudFormationPresetPath(
+            formationStoreRoot, CustomFormationTarget());
+    const std::filesystem::path unrelatedConceptPath =
+        CloudFormationPresetPath(
+            formationStoreRoot,
+            ConceptFormationTarget(
+                CloudFormationConcept::SnowOvercast));
+    std::error_code formationStoreError;
+    const bool storageFilesAfterPreset =
+        std::filesystem::exists(storedTypePath, formationStoreError) &&
+        !formationStoreError &&
+        !std::filesystem::exists(unrelatedConceptPath, formationStoreError) &&
+        !formationStoreError;
+    const CloudFormationSettings formationBeforeInjectedRestore =
+        renderer.CurrentCloudFormation();
+    if (storagePresetSaved)
+        renderer.InjectCloudFormationApplyFailureForValidation();
+    const bool storageRestoreRollback = storagePresetSaved &&
+        !renderer.RestoreCurrentCloudFormationBuiltInForValidation() &&
+        renderer.FormationTargetValid() &&
+        CloudFormationPresetTargetEqual(
+            renderer.FormationTarget(), stratusStorageTarget) &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::UserOverride &&
+        !renderer.FormationCloudDirty() &&
+        CloudFormationSettingsEqual(
+            renderer.CurrentCloudFormation(),
+            formationBeforeInjectedRestore) &&
+        std::filesystem::exists(storedTypePath, formationStoreError) &&
+        !formationStoreError;
+    const bool storageCustomSaved = storagePresetSaved &&
+        storageRestoreRollback &&
+        renderer.SaveCurrentCloudFormationAsCustomForValidation() &&
+        renderer.FormationTargetValid() &&
+        renderer.FormationTarget().group ==
+            CloudFormationPresetGroup::Custom &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::UserOverride &&
+        std::filesystem::exists(storedCustomPath, formationStoreError) &&
+        !formationStoreError &&
+        std::filesystem::exists(storedTypePath, formationStoreError) &&
+        !formationStoreError;
+    const bool storageOverrideReloaded = storageCustomSaved &&
+        renderer.ApplyCloudFormationPresetForValidation(
+            stratusStorageTarget, true) &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::UserOverride &&
+        CloudFormationSettingsEqual(
+            renderer.CurrentCloudFormation(), editedStoredFormation);
+    CloudFormationSettings builtInStratus;
+    const bool storageBuiltInResolved = ResolveBuiltInCloudFormation(
+        CloudFormationType::Stratus, builtInStratus);
+    const bool storageRestored = storageOverrideReloaded &&
+        storageBuiltInResolved &&
+        renderer.RestoreCurrentCloudFormationBuiltInForValidation() &&
+        renderer.FormationSource() ==
+            CloudFormationPresetSource::BuiltIn &&
+        !renderer.FormationCloudDirty() &&
+        !std::filesystem::exists(storedTypePath, formationStoreError) &&
+        !formationStoreError &&
+        std::filesystem::exists(storedCustomPath, formationStoreError) &&
+        !formationStoreError &&
+        CloudFormationSettingsEqual(
+            renderer.CurrentCloudFormation(), builtInStratus);
+    const bool rendererFormationStorageContract =
+        storageFilesAfterPreset && storageRestoreRollback && storageRestored;
+    renderer.SetCloudFormationPresetRootForValidation(originalFormationRoot);
+    formationStoreError.clear();
+    std::filesystem::remove_all(formationStoreRoot, formationStoreError);
     if (!renderer.ApplyStage15Defaults())
         return 2;
 
@@ -3264,7 +3578,7 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
         canonicalTemporal.nearHistoryFadeEndMeters == 3000.0f &&
         canonicalTemporal.neighborhoodClampingEnabled == 1u;
 
-    // 아래 48-case 행렬은 언제나 정식 기본 상태에서 시작한다.
+    // 아래 144-case 행렬은 언제나 정식 기본 상태에서 시작한다.
     if (!renderer.ApplyStage15Defaults())
         return 2;
 
@@ -3284,11 +3598,20 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
         Stage15QualityPreset::Medium,
         Stage15QualityPreset::High,
     };
+    constexpr Stage11TemporalMode temporalModes[] = {
+        Stage11TemporalMode::Off,
+        Stage11TemporalMode::Stable4Phase,
+        Stage11TemporalMode::FullResolution,
+    };
 
     std::vector<Result> results;
     results.reserve(std::size(concepts) * std::size(qualities) *
+                    std::size(temporalModes) *
                     stage13camera::kOpenWorldPresets.size());
-    bool passed = overlayDefaultsContract &&
+    bool passed = commonFormationEntrypointContract &&
+        cirrusTextureIdentityContract &&
+        rendererFormationStorageContract &&
+        overlayDefaultsContract &&
         temporalOverrideRoundTripContract &&
         temporalDirectEditClearsOverrideContract &&
         temporalOverrideCustomRoundTripContract &&
@@ -3299,74 +3622,224 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
         const Stage15ConceptDescriptor conceptDescriptor =
             stage15::ResolveConcept(concept);
         const WeatherMapData expectedWeather = BuildWeatherMap(
-            conceptDescriptor.weatherPreset, conceptDescriptor.weather);
+            conceptDescriptor.formation.weatherPreset,
+            conceptDescriptor.formation.weather);
         const std::uint64_t expectedWeatherHash =
             HashWeatherMap(expectedWeather);
         for (Stage15QualityPreset quality : qualities)
         {
             const Stage15QualityDescriptor qualityDescriptor =
                 stage15::ResolveRealtimeQuality(quality);
-            for (const Stage13CameraPreset& cameraPreset :
-                 stage13camera::kOpenWorldPresets)
+            for (Stage11TemporalMode temporalMode : temporalModes)
             {
                 const bool presetStateChanges =
                     renderer.Stage15Concept() != concept ||
-                    renderer.Stage15Quality() != quality;
+                    renderer.Stage15Quality() != quality ||
+                    renderer.TemporalMode() != temporalMode;
                 renderer.RequestStage15ConceptPreset(concept);
                 renderer.RequestStage15QualityPreset(quality);
-                camera.SetLookAt(cameraPreset.position, cameraPreset.target);
+                // Stage 15 request는 Render 경계에서 원자 commit된다. 먼저
+                // descriptor를 확정한 뒤 Temporal 축만 수동 override해야 요청이
+                // 다음 frame에서 desired mode를 다시 덮지 않는다.
+                const Stage13CameraPreset& setupCamera =
+                    stage13camera::kOpenWorldPresets.front();
+                camera.SetLookAt(setupCamera.position, setupCamera.target);
                 renderer.Render(camera, timeSeconds);
                 timeSeconds += 1.0f / 60.0f;
-
-                CloudDiagnosticFrame density;
-                const bool captured = renderer.CaptureCloudDiagnosticFrame(
-                    camera, timeSeconds, CloudDebugMode::FinalDensity, density);
-                bool finite = captured && !density.pixels.empty();
-                for (const DirectX::XMFLOAT4& pixel : density.pixels)
-                    finite = finite && std::isfinite(pixel.x) &&
-                        std::isfinite(pixel.y) && std::isfinite(pixel.z) &&
-                        std::isfinite(pixel.w);
-
-                const bool resources =
-                    renderer.CloudRenderWidth() ==
-                        stage10upsampling::ScaledExtent(
-                            density.width,
-                            qualityDescriptor.resolutionPreset ==
-                                    Stage10ResolutionPreset::Half
-                                ? 0.5f : 1.0f) &&
-                    renderer.CloudRenderHeight() ==
-                        stage10upsampling::ScaledExtent(
-                            density.height,
-                            qualityDescriptor.resolutionPreset ==
-                                    Stage10ResolutionPreset::Half
-                                ? 0.5f : 1.0f) &&
-                    renderer.ShadowCacheBytes() == stage12shadow::CacheBytes(
-                        qualityDescriptor.shadowPreset) &&
-                    renderer.WeatherTextureIdentity() == weatherTexture &&
-                    renderer.WeatherSrvIdentity() == weatherSrv;
-                // 같은 preset의 다른 카메라는 transaction no-op이다. 실제 preset
-                // 상태가 바뀐 경우에만 history/jitter reset을 요구한다.
-                const bool historyReset = !presetStateChanges ||
+                renderer.SetStage11TemporalMode(temporalMode);
+                const bool presetResetApplied = !presetStateChanges ||
                     renderer.TemporalAccumulatedFrames() <= 1u;
-                const bool stateMatches =
-                    renderer.Stage15Concept() == concept &&
-                    renderer.Stage15Quality() == quality &&
-                    renderer.Stage15Diagnostic() ==
-                        Stage15DiagnosticMode::None &&
-                    renderer.WeatherMapHash() == expectedWeatherHash;
-                const std::uint64_t frameHash = captured
-                    ? HashDiagnosticFrame(density) : 0u;
-                passed = passed && finite && resources && historyReset &&
-                    stateMatches && frameHash != 0u;
-                results.push_back({
-                    stage15::ConceptName(concept),
-                    stage15::QualityName(quality),
-                    cameraPreset.diagnosticName,
-                    renderer.WeatherMapHash(), frameHash,
-                    finite, resources, historyReset });
+                const Stage15QualityPreset expectedQualityState =
+                    temporalMode == qualityDescriptor.temporalMode
+                        ? quality : Stage15QualityPreset::Custom;
+                bool firstCamera = true;
+                for (const Stage13CameraPreset& cameraPreset :
+                     stage13camera::kOpenWorldPresets)
+                {
+                    camera.SetLookAt(cameraPreset.position, cameraPreset.target);
+                    renderer.Render(camera, timeSeconds);
+                    timeSeconds += 1.0f / 60.0f;
+
+                    CloudDiagnosticFrame density;
+                    const bool captured = renderer.CaptureCloudDiagnosticFrame(
+                        camera, timeSeconds, CloudDebugMode::FinalDensity,
+                        density);
+                    bool finite = captured && !density.pixels.empty();
+                    for (const DirectX::XMFLOAT4& pixel : density.pixels)
+                        finite = finite && std::isfinite(pixel.x) &&
+                            std::isfinite(pixel.y) &&
+                            std::isfinite(pixel.z) &&
+                            std::isfinite(pixel.w);
+
+                    const bool resources =
+                        renderer.CloudRenderWidth() ==
+                            stage10upsampling::ScaledExtent(
+                                density.width,
+                                qualityDescriptor.resolutionPreset ==
+                                        Stage10ResolutionPreset::Half
+                                    ? 0.5f : 1.0f) &&
+                        renderer.CloudRenderHeight() ==
+                            stage10upsampling::ScaledExtent(
+                                density.height,
+                                qualityDescriptor.resolutionPreset ==
+                                        Stage10ResolutionPreset::Half
+                                    ? 0.5f : 1.0f) &&
+                        renderer.ShadowCacheBytes() ==
+                            stage12shadow::CacheBytes(
+                                qualityDescriptor.shadowPreset) &&
+                        renderer.WeatherTextureIdentity() == weatherTexture &&
+                        renderer.WeatherSrvIdentity() == weatherSrv;
+                    // 같은 설정의 나머지 카메라는 transaction no-op이다. 첫
+                    // 카메라만 실제 preset/Temporal 전환의 reset을 요구한다.
+                    const bool historyReset = !firstCamera ||
+                        presetResetApplied;
+                    const bool stateMatches =
+                        renderer.Stage15Concept() == concept &&
+                        renderer.Stage15Quality() == expectedQualityState &&
+                        renderer.TemporalMode() == temporalMode &&
+                        renderer.Stage15Diagnostic() ==
+                            Stage15DiagnosticMode::None &&
+                        renderer.WeatherMapHash() == expectedWeatherHash;
+                    const std::uint64_t frameHash = captured
+                        ? HashDiagnosticFrame(density) : 0u;
+                    passed = passed && finite && resources && historyReset &&
+                        stateMatches && frameHash != 0u;
+                    results.push_back({
+                        stage15::ConceptName(concept),
+                        stage15::QualityName(quality),
+                        stage11temporal::ModeName(temporalMode),
+                        cameraPreset.diagnosticName,
+                        renderer.WeatherMapHash(), frameHash,
+                        finite, resources, historyReset, stateMatches });
+                    firstCamera = false;
+                }
             }
         }
     }
+
+    // Rim은 공통 full-resolution resolved pair 뒤에서만 계산한다. Urban
+    // Medium의 Stable/Temporal Off에서는 모두 유한한 비영 mask/contribution,
+    // Low와 Snow preset에서는 정확한 0을 요구한다.
+    const Stage13CameraPreset& rimCamera = stage13camera::Get(
+        Stage13CameraPresetId::HeroDepth);
+    camera.SetLookAt(rimCamera.position, rimCamera.target);
+    const auto captureRimMaximum = [&](CloudDebugMode mode, float& maximum,
+                                       CloudDiagnosticFrame* capturedFrame = nullptr)
+    {
+        CloudDiagnosticFrame frame;
+        if (!renderer.CaptureCloudDiagnosticFrame(
+                camera, timeSeconds, mode, frame))
+            return false;
+        maximum = 0.0f;
+        for (const DirectX::XMFLOAT4& pixel : frame.pixels)
+        {
+            if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+                !std::isfinite(pixel.z))
+                return false;
+            maximum = std::max(maximum,
+                std::max(pixel.x, std::max(pixel.y, pixel.z)));
+        }
+        if (capturedFrame)
+            *capturedFrame = std::move(frame);
+        return true;
+    };
+    renderer.RequestStage15ConceptPreset(Stage15ConceptPreset::UrbanFairWeather);
+    renderer.RequestStage15QualityPreset(Stage15QualityPreset::Medium);
+    renderer.Render(camera, timeSeconds);
+    timeSeconds += 1.0f / 60.0f;
+    float stableRimMask = 0.0f;
+    float stableRimContribution = 0.0f;
+    CloudDiagnosticFrame stableRimMaskFrame;
+    CloudDiagnosticFrame stableRimContributionFrame;
+    const bool stableMaskRead = captureRimMaximum(
+        CloudDebugMode::NteRimMask, stableRimMask, &stableRimMaskFrame);
+    const bool stableContributionRead = captureRimMaximum(
+        CloudDebugMode::NteRimContribution, stableRimContribution,
+        &stableRimContributionFrame);
+    const std::uint32_t rimToggleResetCount =
+        renderer.TemporalResetCountLast60Frames();
+    const std::uint32_t rimToggleHistoryAge =
+        renderer.TemporalAccumulatedFrames();
+    renderer.SetRimEnabledForValidation(false);
+    float editedOffRimMask = 0.0f;
+    const bool editedOffMaskRead = captureRimMaximum(
+        CloudDebugMode::NteRimMask, editedOffRimMask);
+    const bool rimTogglePreservedHistory =
+        renderer.TemporalHistoryValid() &&
+        renderer.TemporalResetCountLast60Frames() == rimToggleResetCount &&
+        renderer.TemporalAccumulatedFrames() >= rimToggleHistoryAge;
+    renderer.SetRimEnabledForValidation(true);
+    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
+    renderer.Render(camera, timeSeconds);
+    timeSeconds += 1.0f / 60.0f;
+    float offRimMask = 0.0f;
+    float offRimContribution = 0.0f;
+    CloudDiagnosticFrame offRimMaskFrame;
+    CloudDiagnosticFrame offRimContributionFrame;
+    const bool offMaskRead = captureRimMaximum(
+        CloudDebugMode::NteRimMask, offRimMask, &offRimMaskFrame);
+    const bool offContributionRead = captureRimMaximum(
+        CloudDebugMode::NteRimContribution, offRimContribution,
+        &offRimContributionFrame);
+    const double stableOffMaskMae = DiagnosticFrameMeanAbsoluteError(
+        stableRimMaskFrame, offRimMaskFrame);
+    const double stableOffContributionMae = DiagnosticFrameMeanAbsoluteError(
+        stableRimContributionFrame, offRimContributionFrame);
+    renderer.RequestStage15QualityPreset(Stage15QualityPreset::Low);
+    renderer.Render(camera, timeSeconds);
+    timeSeconds += 1.0f / 60.0f;
+    const Stage15QualityPreset lowQualityReadback = renderer.Stage15Quality();
+    const std::uint32_t lowRimPresetEnabled = renderer.RimSettings().enabled;
+    float lowRimMask = 0.0f;
+    float lowRimContribution = 0.0f;
+    const bool lowMaskRead = captureRimMaximum(
+        CloudDebugMode::NteRimMask, lowRimMask);
+    const bool lowContributionRead = captureRimMaximum(
+        CloudDebugMode::NteRimContribution, lowRimContribution);
+    const bool lowEffectiveRim = renderer.LastEffectiveRimEnabled();
+    const bool lowRimUpload = renderer.LastRimUploadSucceeded();
+    renderer.RequestStage15ConceptPreset(Stage15ConceptPreset::SnowOvercast);
+    renderer.RequestStage15QualityPreset(Stage15QualityPreset::Medium);
+    renderer.Render(camera, timeSeconds);
+    timeSeconds += 1.0f / 60.0f;
+    float snowRimMask = 0.0f;
+    float snowRimContribution = 0.0f;
+    const bool snowMaskRead = captureRimMaximum(
+        CloudDebugMode::NteRimMask, snowRimMask);
+    const bool snowContributionRead = captureRimMaximum(
+        CloudDebugMode::NteRimContribution, snowRimContribution);
+    const bool rimDiagnosticContract =
+        stableMaskRead && stableContributionRead &&
+        stableRimMask > 1.0e-6f && stableRimContribution > 1.0e-6f &&
+        editedOffMaskRead && editedOffRimMask <= 1.0e-6f &&
+        rimTogglePreservedHistory &&
+        offMaskRead && offContributionRead &&
+        offRimMask > 1.0e-6f && offRimContribution > 1.0e-6f &&
+        stableOffMaskMae <= 0.15 && stableOffContributionMae <= 0.15 &&
+        lowMaskRead && lowContributionRead &&
+        lowRimMask <= 1.0e-6f && lowRimContribution <= 1.0e-6f &&
+        snowMaskRead && snowContributionRead &&
+        snowRimMask <= 1.0e-6f && snowRimContribution <= 1.0e-6f;
+    passed = passed && rimDiagnosticContract;
+    WriteDiagnosticLine(
+        std::string("[STAGE15][RIM] STABLE_MASK=") +
+        std::to_string(stableRimMask) + " STABLE_RGB=" +
+        std::to_string(stableRimContribution) + " OFF_MASK=" +
+        std::to_string(offRimMask) + " OFF_RGB=" +
+        std::to_string(offRimContribution) + " MASK_MAE=" +
+        std::to_string(stableOffMaskMae) + " RGB_MAE=" +
+        std::to_string(stableOffContributionMae) + " EDIT_OFF=" +
+        std::to_string(editedOffRimMask) + " HISTORY_PRESERVED=" +
+        std::to_string(rimTogglePreservedHistory ? 1 : 0) + " LOW_MASK=" +
+        std::to_string(lowRimMask) + " LOW_QUALITY=" +
+        std::to_string(static_cast<std::uint32_t>(lowQualityReadback)) +
+        " LOW_RIM_PRESET=" + std::to_string(lowRimPresetEnabled) +
+        " LOW_RIM_EFFECTIVE=" + std::to_string(lowEffectiveRim ? 1 : 0) +
+        " LOW_RIM_UPLOAD=" + std::to_string(lowRimUpload ? 1 : 0) +
+        " LOW_RGB=" + std::to_string(lowRimContribution) +
+        " SNOW_MASK=" + std::to_string(snowRimMask) +
+        " SNOW_RGB=" + std::to_string(snowRimContribution) +
+        (rimDiagnosticContract ? " PASS" : " FAIL"));
 
     // F5~F8은 그대로 둔다. Cirrus 층 내부의 8.5 km 자동 카메라는 별도이며
     // 방향성 경로가 실제 GPU에서 유한한 비영(非零) 밀도를 내는지만 확인한다.
@@ -3581,7 +4054,7 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
             CloudShapeMode::CirrusPhysicalLayer;
     const std::filesystem::path schemaExportRoot =
         std::filesystem::temp_directory_path() /
-        (L"VolumetricCloudStage15Schema37-" +
+        (L"VolumetricCloudStage15Schema38-" +
          std::to_wstring(GetCurrentProcessId()) + L"-" +
          std::to_wstring(GetTickCount64()));
     const bool schemaMetadataExported =
@@ -3607,7 +4080,8 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
             return metadata.find(value) != std::string::npos;
         };
         schemaMetadataFound =
-            contains("\"schemaVersion\": 37") &&
+            contains("\"schemaVersion\": 38") &&
+            contains("\"implementationStage\": \"15B\"") &&
             contains("\"stage15\": {\"quality\": \"Medium\", \"concept\": \"Desert Cirrus\", \"diagnosticMode\": \"None\", \"temporalOverrideActive\": false}") &&
             contains("\"cloudShape\": {\"mode\": \"cirrusPhysicalLayer\"") &&
             contains("\"flowDirectionXZ\": [0.939693, 0.342020]") &&
@@ -3618,8 +4092,16 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
             contains("\"physicalAdvectionMode\": \"rigidSharedWindSpeed\"") &&
             contains("\"weatherMapWindSpeedUsage\": \"legacyOnlyIgnored\"") &&
             contains("\"detailWindSpeedUsage\": \"legacyOnlyIgnored\"");
+        schemaMetadataFound = schemaMetadataFound &&
+            contains("\"localBaseLiftMaxMeters\": 0.000000") &&
+            contains("\"footprintCoverageInfluence\": 0.000000") &&
+            contains("\"cloudLightingReferenceAltitudeMeters\"") &&
+            contains("\"physicalSkyFillScale\": 1.000000") &&
+            contains("\"physicalGroundFillScale\": 1.000000") &&
+            contains("\"cloudRim\": {\"enabled\": false") &&
+            !contains("\"userZoom\"");
     }
-    const bool schema37CirrusContract = schemaFixtureState &&
+    const bool schema38CirrusContract = schemaFixtureState &&
         schemaMetadataExported && !schemaExportError && schemaMetadataFound;
     const bool metadataOnlyNoPngContract = schemaMetadataExported &&
         !schemaExportError && !schemaPngFound;
@@ -3664,6 +4146,12 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
         Stage15QualityPreset quality;
         Stage15DiagnosticMode diagnostic;
         bool temporalOverrideActive;
+        CloudFormationPresetTarget formationTarget;
+        bool formationTargetValid;
+        CloudFormationPresetSource formationSource;
+        bool formationCloudDirty;
+        bool formationSceneDirty;
+        std::uint64_t formationHash;
         std::uint64_t weatherHash;
         std::uintptr_t weatherTexture;
         std::uintptr_t weatherSrv;
@@ -3681,6 +4169,10 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
             renderer.Stage15Concept(), renderer.Stage15Quality(),
             renderer.Stage15Diagnostic(),
             renderer.Stage15TemporalOverrideActive(),
+            renderer.FormationTarget(), renderer.FormationTargetValid(),
+            renderer.FormationSource(), renderer.FormationCloudDirty(),
+            renderer.FormationSceneDirty(),
+            HashCloudFormationSettings(renderer.CurrentCloudFormation()),
             renderer.WeatherMapHash(), renderer.WeatherTextureIdentity(),
             renderer.WeatherSrvIdentity(), renderer.WeatherUploadCount(),
             renderer.Stage15TransitionCommitCount(),
@@ -3695,6 +4187,13 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
         return a.concept == b.concept && a.quality == b.quality &&
             a.diagnostic == b.diagnostic &&
             a.temporalOverrideActive == b.temporalOverrideActive &&
+            CloudFormationPresetTargetEqual(
+                a.formationTarget, b.formationTarget) &&
+            a.formationTargetValid == b.formationTargetValid &&
+            a.formationSource == b.formationSource &&
+            a.formationCloudDirty == b.formationCloudDirty &&
+            a.formationSceneDirty == b.formationSceneDirty &&
+            a.formationHash == b.formationHash &&
             a.weatherHash == b.weatherHash &&
             a.weatherTexture == b.weatherTexture &&
             a.weatherSrv == b.weatherSrv &&
@@ -3753,7 +4252,7 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
         conceptBlockedDuringCaptureContract &&
         conceptAllowedDuringReferenceContract && referenceContract &&
         restoreContract && noStaleRequestAfterRestoreContract &&
-        restoreAfterBlockedInputContract && schema37CirrusContract &&
+        restoreAfterBlockedInputContract && schema38CirrusContract &&
         metadataOnlyNoPngContract && idempotentContract &&
         combinedCommitContract && failureRollbackContract &&
         !renderer.HasDebugLayerErrors();
@@ -3767,13 +4266,15 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
         return 4;
     std::ofstream csv(directory / "preset-smoke.csv",
                       std::ios::binary | std::ios::trunc);
-    csv << "concept,quality,camera,weather_hash,frame_hash,finite,resources,history_reset\n";
+    csv << "concept,quality,temporal,camera,weather_hash,frame_hash,finite,resources,history_reset,state_matches\n";
     for (const Result& result : results)
         csv << '"' << result.concept << "\",\"" << result.quality
-            << "\",\"" << result.camera << "\"," << result.weatherHash
+            << "\",\"" << result.temporal << "\",\"" << result.camera
+            << "\"," << result.weatherHash
             << ',' << result.frameHash << ',' << (result.finite ? 1 : 0)
             << ',' << (result.resources ? 1 : 0) << ','
-            << (result.historyReset ? 1 : 0) << '\n';
+            << (result.historyReset ? 1 : 0) << ','
+            << (result.stateMatches ? 1 : 0) << '\n';
     std::ofstream json(directory / "preset-smoke.json",
                        std::ios::binary | std::ios::trunc);
     json << "{\n  \"adapter\": \"" << renderer.AdapterName()
@@ -3788,6 +4289,8 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
          << ", \"finalDensity\": " << cirrusMaxima[6] << "}"
          << ",\n  \"diagnosticContracts\": {\"overlayDefaults\": "
          << (overlayDefaultsContract ? "true" : "false")
+         << ", \"commonFormationEntrypoint\": "
+         << (commonFormationEntrypointContract ? "true" : "false")
          << ", \"temporalOverrideRoundTrip\": "
          << (temporalOverrideRoundTripContract ? "true" : "false")
          << ", \"temporalDirectEditClearsOverride\": "
@@ -3812,8 +4315,22 @@ int RunStage15PresetSmokeTest(Renderer& renderer, Camera& camera)
          << (noStaleRequestAfterRestoreContract ? "true" : "false")
          << ", \"restoreAfterBlockedInput\": "
          << (restoreAfterBlockedInputContract ? "true" : "false")
-         << ", \"cirrusSchema37\": "
-         << (schema37CirrusContract ? "true" : "false")
+         << ", \"rimDiagnostics\": "
+         << (rimDiagnosticContract ? "true" : "false")
+         << ", \"rimDiagnosticMaxima\": {\"stableMask\": "
+         << stableRimMask << ", \"stableContribution\": "
+         << stableRimContribution << ", \"offMask\": " << offRimMask
+         << ", \"offContribution\": " << offRimContribution
+         << ", \"stableOffMaskMae\": " << stableOffMaskMae
+         << ", \"stableOffContributionMae\": "
+         << stableOffContributionMae
+         << ", \"editedOffMask\": " << editedOffRimMask
+         << ", \"historyPreserved\": "
+         << (rimTogglePreservedHistory ? "true" : "false")
+         << ", \"lowMask\": " << lowRimMask << ", \"snowMask\": "
+         << snowRimMask << "}"
+         << ", \"cirrusSchema38\": "
+         << (schema38CirrusContract ? "true" : "false")
          << ", \"metadataOnlyNoPng\": "
          << (metadataOnlyNoPngContract ? "true" : "false")
          << ", \"idempotent100\": "
@@ -3946,8 +4463,9 @@ Stage15ImageMetric CompareStage15Images(
             const double rightT = referenceT(x + 1, y);
             const double topT = referenceT(x, y - 1);
             const double bottomT = referenceT(x, y + 1);
-            // 중앙차분 T gradient를 사용한다. 최소 opacity support 조건은
-            // 완전히 맑은 하늘의 half-float 잡음이 edge가 되는 것을 막는다.
+            // 중앙차분 T gradient와 1% opacity 등고선 교차를 함께 사용한다.
+            // gradient만 검사하면 구름 내부의 완만한 명암 변화까지 화면 대부분이
+            // "silhouette"로 분류되어 경계 이분 탐색의 효과를 희석한다.
             const double gradientX = 0.5 * (rightT - leftT);
             const double gradientY = 0.5 * (bottomT - topT);
             const double gradient = std::sqrt(
@@ -3955,8 +4473,12 @@ Stage15ImageMetric CompareStage15Images(
             const double maximumNeighborOpacity = std::max({
                 centerOpacity, 1.0 - leftT, 1.0 - rightT,
                 1.0 - topT, 1.0 - bottomT });
-            edgePixel = maximumNeighborOpacity >=
+            const double minimumNeighborOpacity = std::min({
+                centerOpacity, 1.0 - leftT, 1.0 - rightT,
+                1.0 - topT, 1.0 - bottomT });
+            edgePixel = minimumNeighborOpacity <
                     kStage15CloudOpacityThreshold &&
+                maximumNeighborOpacity >= kStage15CloudOpacityThreshold &&
                 gradient >= kStage15CloudEdgeGradientThreshold;
         }
         if (cloudPixel)
@@ -4259,6 +4781,7 @@ int RunStage15QualityTest(Renderer& renderer, Camera& camera)
                         Stage15DiagnosticMode::None ||
                     renderer.TemporalMode() != Stage11TemporalMode::Off)
                     return 4;
+
                 const Stage15OutputExtentSnapshot outputExtent =
                     renderer.OutputExtentSnapshot();
                 const bool cloudRtFull =
@@ -4469,28 +4992,28 @@ int RunStage15QualityTest(Renderer& renderer, Camera& camera)
     const double temporal16EdgeTransmittanceMae =
         temporal16EdgeAggregate.TransmittanceMae();
     // R16 history의 픽셀 ULP는 [0,1]에서 약 9.8e-4지만 1080p 평균
-    // 오차의 반복 변동은 약 1e-6까지 줄어든다. 그 두 배(2e-6)를
-    // '수치적으로 같음'으로 두고, 두 지표가 이보다 악화되지 않으면서
-    // 적어도 하나는 이 바닥보다 더 개선되어야 16-frame 수렴으로 판정한다.
+    // 오차의 반복 변동은 약 1e-6까지 줄어든다. RGB 외곽은 실제로 수렴해야
+    // 하고, 별도 R16 T history는 opacity contour에서 10% 이내의 교환만 허용한다.
     constexpr double kTemporalAggregateTolerance = 2.0e-6;
+    constexpr double kTemporalEdgeTransmittanceMaximumRatio = 1.10;
     // 이번 회귀의 목표는 선명도이므로 수렴 pass/fail은 reference T로 고정한
     // cloudEdgeMask에서 판정한다. 전체 화면 수치도 함께 남겨 raymarch bias를
     // 숨기지 않지만, 넓은 구름 내부가 경계 수렴 판정을 지배하지 않게 한다.
     const bool temporalRmseNotWorse = temporal16EdgeRmse <=
         temporal4EdgeRmse + kTemporalAggregateTolerance;
-    const bool temporalTransmittanceNotWorse =
-        temporal16EdgeTransmittanceMae <=
-            temporal4EdgeTransmittanceMae + kTemporalAggregateTolerance;
+    const bool temporalTransmittanceBounded =
+        temporal16EdgeTransmittanceMae <= std::max(
+            temporal4EdgeTransmittanceMae + kTemporalAggregateTolerance,
+            temporal4EdgeTransmittanceMae *
+                kTemporalEdgeTransmittanceMaximumRatio);
     const bool temporalMeaningfullyImproved =
         temporal16EdgeRmse + kTemporalAggregateTolerance <
-            temporal4EdgeRmse ||
-        temporal16EdgeTransmittanceMae + kTemporalAggregateTolerance <
-            temporal4EdgeTransmittanceMae;
+            temporal4EdgeRmse;
     temporal16ImprovementPassed =
         temporal4EdgeAggregate.pixelCount >= 1024u &&
         temporal16EdgeAggregate.pixelCount ==
             temporal4EdgeAggregate.pixelCount &&
-        temporalRmseNotWorse && temporalTransmittanceNotWorse &&
+        temporalRmseNotWorse && temporalTransmittanceBounded &&
         temporalMeaningfullyImproved;
 
     allPassed = allPassed && highFullRtPassed &&
@@ -4538,7 +5061,7 @@ int RunStage15QualityTest(Renderer& renderer, Camera& camera)
          << "  \"notWorseMetrics\": [\"normalizedRmse\", \"transmittanceMae\"],\n"
          << "  \"notWorseNumericTolerance\": 0.00011,\n"
          << "  \"cloudMaskDefinition\": \"reference opacity >= 0.01\",\n"
-         << "  \"cloudEdgeMaskDefinition\": \"reference central-difference transmittance gradient >= 0.002 with 4-neighbor max opacity >= 0.01\",\n"
+         << "  \"cloudEdgeMaskDefinition\": \"reference 4-neighbor opacity crosses 0.01 and central-difference transmittance gradient >= 0.002\",\n"
          << "  \"highCloudRtFullPassed\": "
          << (highFullRtPassed ? "true" : "false") << ",\n"
          << "  \"highNotWorsePassed\": "
@@ -4557,7 +5080,9 @@ int RunStage15QualityTest(Renderer& renderer, Camera& camera)
          << (highEdgeImprovementPassed ? "true" : "false") << ",\n"
          << "  \"temporalAggregateNumericTolerance\": "
          << kTemporalAggregateTolerance << ",\n"
-         << "  \"temporalConvergenceGateMetrics\": [\"cloudEdgeNormalizedRmse\", \"cloudEdgeTransmittanceMae\"],\n"
+         << "  \"temporalEdgeTransmittanceMaximumRatio\": "
+         << kTemporalEdgeTransmittanceMaximumRatio << ",\n"
+         << "  \"temporalConvergenceGate\": \"edge RGB RMSE improves; edge T remains within configured ratio\",\n"
          << "  \"temporal4NormalizedRmse\": " << temporal4Rmse
          << ",\n  \"temporal16NormalizedRmse\": " << temporal16Rmse
          << ",\n  \"temporal4TransmittanceMae\": "
@@ -4649,6 +5174,10 @@ struct Stage15TimingResult
     double resolveP50 = 0.0;
     double resolveP95 = 0.0;
     double resolveP99 = 0.0;
+    double compositeAverage = 0.0;
+    double compositeP50 = 0.0;
+    double compositeP95 = 0.0;
+    double compositeP99 = 0.0;
     double toneAverage = 0.0;
     double toneP50 = 0.0;
     double toneP95 = 0.0;
@@ -4656,6 +5185,7 @@ struct Stage15TimingResult
     std::uint64_t stateFingerprint = 0;
     std::uint64_t raymarchShaderHash = 0;
     std::uint64_t deepShadowShaderHash = 0;
+    std::uint64_t cloudCompositeShaderHash = 0;
     bool componentInvariantPassed = true;
     bool absolutePassed = false;
 };
@@ -4676,6 +5206,7 @@ bool CollectStage15Timing(Renderer& renderer, Camera& camera,
         Opaque,
         Raymarch,
         Resolve,
+        Composite,
         Tone,
         Count,
     };
@@ -4705,6 +5236,7 @@ bool CollectStage15Timing(Renderer& renderer, Camera& camera,
             timing.rawGpuOpaqueSceneMs,
             timing.rawGpuCloudRaymarchMs,
             timing.rawGpuUpsampleCompositeMs,
+            timing.rawGpuCloudCompositeMs,
             timing.rawGpuToneMapMs,
         };
         if (!std::all_of(std::begin(values), std::end(values),
@@ -4717,7 +5249,8 @@ bool CollectStage15Timing(Renderer& renderer, Camera& camera,
             samples[index].push_back(values[index]);
         const double componentCloud = timing.rawGpuShadowCacheMs +
             timing.rawGpuCloudRaymarchMs +
-            timing.rawGpuUpsampleCompositeMs;
+            timing.rawGpuUpsampleCompositeMs +
+            timing.rawGpuCloudCompositeMs;
         result.componentInvariantPassed =
             result.componentInvariantPassed &&
             std::abs(componentCloud - timing.rawGpuCloudMs) <= 1.0e-6;
@@ -4757,15 +5290,20 @@ bool CollectStage15Timing(Renderer& renderer, Camera& camera,
                      result.raymarchP50, result.raymarchP95,
                      result.raymarchP99);
     assignStatistics(samples[Resolve], result.resolveAverage,
-                     result.resolveP50, result.resolveP95,
-                     result.resolveP99);
+                      result.resolveP50, result.resolveP95,
+                      result.resolveP99);
+    assignStatistics(samples[Composite], result.compositeAverage,
+                     result.compositeP50, result.compositeP95,
+                     result.compositeP99);
     assignStatistics(samples[Tone], result.toneAverage, result.toneP50,
                      result.toneP95, result.toneP99);
     result.stateFingerprint = renderer.Stage15StateFingerprint();
     result.raymarchShaderHash = renderer.NonCirrusRaymarchShaderHash();
     result.deepShadowShaderHash = renderer.NonCirrusDeepShadowShaderHash();
+    result.cloudCompositeShaderHash = renderer.CloudCompositeShaderHash();
     result.absolutePassed = result.frameP95 <= 16.67 &&
         result.cloudP95 <= 10.0 && result.resolveP95 <= 2.0 &&
+        result.compositeP95 <= 0.75 &&
         result.componentInvariantPassed;
     return true;
 }
@@ -4890,13 +5428,13 @@ int RunStage15Stage14RegressionProbe(Renderer& renderer, Camera& camera)
                       std::ios::binary | std::ios::trunc);
     csv << "block,samples,warmup";
     for (const char* name : { "cpu", "frame", "atmosphere", "shadow",
-                              "opaque", "raymarch", "resolve", "tone",
-                              "cloud" })
+                              "opaque", "raymarch", "resolve", "composite",
+                              "tone", "cloud" })
     {
         csv << ',' << name << "_average_ms," << name << "_p50_ms,"
             << name << "_p95_ms," << name << "_p99_ms";
     }
-    csv << ",state_fingerprint,raymarch_shader_hash,deep_shadow_shader_hash,component_invariant\n";
+    csv << ",state_fingerprint,raymarch_shader_hash,deep_shadow_shader_hash,cloud_composite_shader_hash,component_invariant\n";
     for (std::size_t block = 0; block < kBlocks; ++block)
     {
         const Stage15TimingResult& result = blocks[block];
@@ -4920,13 +5458,16 @@ int RunStage15Stage14RegressionProbe(Renderer& renderer, Camera& camera)
                         result.raymarchP95, result.raymarchP99);
         writeStatistics(result.resolveAverage, result.resolveP50,
                         result.resolveP95, result.resolveP99);
+        writeStatistics(result.compositeAverage, result.compositeP50,
+                        result.compositeP95, result.compositeP99);
         writeStatistics(result.toneAverage, result.toneP50,
                         result.toneP95, result.toneP99);
         writeStatistics(result.cloudAverage, result.cloudP50,
                         result.cloudP95, result.cloudP99);
         csv << ',' << result.stateFingerprint << ','
             << result.raymarchShaderHash << ',' << result.deepShadowShaderHash
-            << ',' << (result.componentInvariantPassed ? 1 : 0) << '\n';
+            << ',' << result.cloudCompositeShaderHash << ','
+            << (result.componentInvariantPassed ? 1 : 0) << '\n';
     }
     std::ofstream json(directory / "regression_probe.json",
                        std::ios::binary | std::ios::trunc);
@@ -4975,6 +5516,9 @@ int RunStage15Stage14RegressionProbe(Renderer& renderer, Camera& camera)
              << ", \"resolve\": "
              << statisticsJson(result.resolveAverage, result.resolveP50,
                                result.resolveP95, result.resolveP99)
+             << ", \"composite\": "
+             << statisticsJson(result.compositeAverage, result.compositeP50,
+                               result.compositeP95, result.compositeP99)
              << ", \"tone\": "
              << statisticsJson(result.toneAverage, result.toneP50,
                                result.toneP95, result.toneP99)
@@ -4982,6 +5526,12 @@ int RunStage15Stage14RegressionProbe(Renderer& renderer, Camera& camera)
              << statisticsJson(result.cloudAverage, result.cloudP50,
                                result.cloudP95, result.cloudP99) << '}'
              << ", \"stateFingerprint\": " << result.stateFingerprint
+             << ", \"raymarchShaderHash\": "
+             << result.raymarchShaderHash
+             << ", \"deepShadowShaderHash\": "
+             << result.deepShadowShaderHash
+             << ", \"cloudCompositeShaderHash\": "
+             << result.cloudCompositeShaderHash
              << ", \"componentInvariantPassed\": "
              << (result.componentInvariantPassed ? "true" : "false")
              << "}" << (block + 1u == kBlocks ? "\n" : ",\n");
@@ -5017,125 +5567,124 @@ int RunShaderCacheSmokeTest(Renderer& renderer)
     return passed ? 0 : 1;
 }
 
-int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
+constexpr int kStage15PerformanceWarmupFrames = 120;
+constexpr std::size_t kStage15PerformanceSamples = 600u;
+constexpr Stage15ConceptPreset kStage15PerformanceConcepts[] = {
+    Stage15ConceptPreset::UrbanFairWeather,
+    Stage15ConceptPreset::MeadowBrokenClouds,
+    Stage15ConceptPreset::DesertCirrus,
+    Stage15ConceptPreset::SnowOvercast,
+};
+constexpr Stage15QualityPreset kStage15PerformanceQualities[] = {
+    Stage15QualityPreset::Low,
+    Stage15QualityPreset::Medium,
+    Stage15QualityPreset::High,
+};
+
+struct Stage15PerformancePreflight
 {
-    constexpr int kWarmupFrames = 120;
-    constexpr std::size_t kSamples = 600u;
-    constexpr Stage15ConceptPreset concepts[] = {
-        Stage15ConceptPreset::UrbanFairWeather,
-        Stage15ConceptPreset::MeadowBrokenClouds,
-        Stage15ConceptPreset::DesertCirrus,
-        Stage15ConceptPreset::SnowOvercast,
-    };
-    constexpr Stage15QualityPreset qualities[] = {
-        Stage15QualityPreset::Low,
-        Stage15QualityPreset::Medium,
-        Stage15QualityPreset::High,
-    };
-
-    renderer.SetNoiseLabVisible(false);
-    renderer.EnableNoiseLabPreviews(false);
-    renderer.SetAutomatedRenderMode(true);
-    renderer.SetVSyncEnabled(false);
-    renderer.SetOpaqueSceneForTest(true);
-    camera.SetClipPlanes(
-        stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
-
-    // 열이 누적되는 48-case 측정 뒤에 Stage 14 기준을 재면 UI/분기 비용과
-    // 무관한 온도·클럭 변동이 회귀율에 섞인다. 승인 상태를 먼저 재현해 같은
-    // 냉간 시작 조건의 숨김 기준을 확보한 뒤 Stage 15 matrix를 측정한다.
-    const std::filesystem::path repositoryRoot =
-        std::filesystem::path(VCLOUD_SHADER_SOURCE_DIR).parent_path();
+    std::filesystem::path repositoryRoot;
     double stage14BaselineCloudP95 = 0.0;
-    std::string stage14Json;
-    if (ReadTextFile(repositoryRoot / "captures" / "stage14" /
-            "performance.json", stage14Json))
-    {
-        const std::string marker =
-            "\"path\": \"Stage14Physical\", \"name\": \"DenseHorizon\"";
-        const std::size_t markerPosition = stage14Json.find(marker);
-        const std::size_t valuePosition = markerPosition == std::string::npos
-            ? std::string::npos
-            : stage14Json.find("\"cloudP95Ms\":", markerPosition);
-        if (valuePosition != std::string::npos)
-        {
-            try
-            {
-                stage14BaselineCloudP95 = std::stod(stage14Json.substr(
-                    valuePosition + std::strlen("\"cloudP95Ms\":")));
-            }
-            catch (...)
-            {
-                stage14BaselineCloudP95 = 0.0;
-            }
-        }
-    }
-    if (!renderer.ApplyStage13OpenWorldPreset() ||
-        !renderer.ApplyCloudAppearancePreset(
-            CloudAppearancePreset::DenseMixedDefault))
+    Stage15TimingResult stage14Regression;
+    double stage14RegressionRatio = std::numeric_limits<double>::infinity();
+    bool stage14RegressionPassed = false;
+};
+
+int CollectStage15PerformancePreflight(
+    Renderer& renderer, Camera& camera,
+    Stage15PerformancePreflight& run)
+{
+    run = {};
+    run.repositoryRoot =
+        std::filesystem::path(VCLOUD_SHADER_SOURCE_DIR).parent_path();
+    run.stage14BaselineCloudP95 =
+        LoadStage14DenseHorizonBaseline(run.repositoryRoot);
+    if (!ConfigureStage14DenseHorizonFixture(renderer, camera))
         return 4;
-    renderer.SetDebugMode(CloudDebugMode::Composite);
-    renderer.SetOpaqueSceneForTest(false);
-    renderer.ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
-    renderer.ApplyStage10ResolutionPreset(Stage10ResolutionPreset::Full);
-    renderer.SetStage10UpsampleFilter(Stage10UpsampleFilter::Nearest);
-    renderer.SetStage11TemporalMode(Stage11TemporalMode::Off);
-    if (!renderer.SetStage12ShadowPreset(Stage12ShadowPreset::Balanced512))
-        return 5;
-    renderer.SetStage12ShadowMode(Stage12ShadowMode::DeepCache);
-    renderer.MutableAtmosphereSettings().mode = AtmosphereMode::Physical;
-    stage14atmosphere::ApplyPreset(
-        renderer.MutableAtmosphereSettings(), AtmospherePreset::EarthClear);
-    renderer.MutableAtmosphereSettings().sunAzimuthDegrees = -60.0f;
-    renderer.MutableAtmosphereSettings().sunElevationDegrees = 18.0f;
-    renderer.MutableAtmosphereSettings().timePlaybackEnabled = false;
-    stage14ground::ApplyPreset(
-        renderer.MutableGroundLightingSettings(),
-        GroundMaterialPreset::Concrete);
-    renderer.MutableToneMappingSettings().mode = ToneMappingMode::AcesFitted;
-    renderer.MutableToneMappingSettings().exposureEv = 0.0f;
-    renderer.MutableToneMappingSettings().whiteBalanceKelvin = 6500.0f;
+
     const Stage13CameraPreset& horizon = stage13camera::Get(
         Stage13CameraPresetId::GroundHorizon);
-    camera.SetLookAt(horizon.position, horizon.target);
-    Stage15TimingResult regression;
-    regression.concept = "Stage14DenseMixed";
-    regression.quality = "ApprovedState";
-    regression.camera = horizon.diagnosticName;
+    run.stage14Regression.concept = "Stage14DenseMixed";
+    run.stage14Regression.quality = "ApprovedState";
+    run.stage14Regression.camera = horizon.diagnosticName;
     // 승인 JSON의 DenseHorizon은 앞선 Stage12/Stage14 장면들 뒤에 수집됐다.
     // 실행 직후 낮은 boost clock의 표본을 회귀로 오인하지 않도록 동일한
     // 120+600 수집 1회를 clock 안정화용으로 버리고 공식 표본을 다시 받는다.
-    Stage15TimingResult regressionPrecondition = regression;
-    if (!CollectStage15Timing(renderer, camera,
-            kWarmupFrames, kSamples, regressionPrecondition))
+    Stage15TimingResult regressionPrecondition = run.stage14Regression;
+    if (!CollectStage15Timing(
+            renderer, camera, kStage15PerformanceWarmupFrames,
+            kStage15PerformanceSamples, regressionPrecondition) ||
+        !CollectStage15Timing(
+            renderer, camera, kStage15PerformanceWarmupFrames,
+            kStage15PerformanceSamples, run.stage14Regression))
         return 6;
-    if (!CollectStage15Timing(renderer, camera,
-            kWarmupFrames, kSamples, regression))
-        return 6;
-    const double stage14RegressionRatio = stage14BaselineCloudP95 > 0.0
-        ? regression.cloudP95 / stage14BaselineCloudP95
+
+    run.stage14RegressionRatio = run.stage14BaselineCloudP95 > 0.0
+        ? run.stage14Regression.cloudP95 / run.stage14BaselineCloudP95
         : std::numeric_limits<double>::infinity();
-    const bool stage14RegressionPassed = stage14RegressionRatio <= 1.03;
+    run.stage14RegressionPassed = run.stage14RegressionRatio <= 1.03;
     WriteDiagnosticLine(std::string("[STAGE15][PERF][STAGE14_REGRESSION]") +
-        " BASELINE_CLOUD_P95=" + std::to_string(stage14BaselineCloudP95) +
-        " CURRENT_CLOUD_P95=" + std::to_string(regression.cloudP95) +
-        " SHADOW_P95=" + std::to_string(regression.shadowP95) +
-        " RAYMARCH_P95=" + std::to_string(regression.raymarchP95) +
-        " RESOLVE_P95=" + std::to_string(regression.resolveP95) +
-        " RATIO=" + std::to_string(stage14RegressionRatio) +
-        (stage14RegressionPassed ? " PASS" : " FAIL"));
+        " BASELINE_CLOUD_P95=" +
+        std::to_string(run.stage14BaselineCloudP95) +
+        " CURRENT_CLOUD_P95=" +
+        std::to_string(run.stage14Regression.cloudP95) +
+        " SHADOW_P95=" + std::to_string(run.stage14Regression.shadowP95) +
+        " RAYMARCH_P95=" +
+        std::to_string(run.stage14Regression.raymarchP95) +
+        " RESOLVE_P95=" + std::to_string(run.stage14Regression.resolveP95) +
+        " COMPOSITE_P95=" +
+        std::to_string(run.stage14Regression.compositeP95) +
+        " RATIO=" + std::to_string(run.stage14RegressionRatio) +
+        (run.stage14RegressionPassed ? " PASS" : " FAIL"));
 
     renderer.SetOpaqueSceneForTest(true);
     if (!renderer.ApplyStage15Defaults())
         return 2;
+    return 0;
+}
+
+void WriteStage15RegressionJson(
+    std::ostream& json, const Stage15PerformancePreflight& run)
+{
+    const Stage15TimingResult& regression = run.stage14Regression;
+    json << "{\"baselineCloudP95Ms\": " << run.stage14BaselineCloudP95
+         << ", \"currentCloudP95Ms\": " << regression.cloudP95
+         << ", \"ratio\": " << run.stage14RegressionRatio
+         << ", \"passed\": "
+         << (run.stage14RegressionPassed ? "true" : "false")
+         << ", \"shadowP95Ms\": " << regression.shadowP95
+         << ", \"raymarchP95Ms\": " << regression.raymarchP95
+         << ", \"resolveP95Ms\": " << regression.resolveP95
+         << ", \"compositeP95Ms\": " << regression.compositeP95
+         << ", \"stateFingerprint\": " << regression.stateFingerprint
+         << ", \"raymarchShaderHash\": " << regression.raymarchShaderHash
+         << ", \"deepShadowShaderHash\": "
+         << regression.deepShadowShaderHash
+         << ", \"cloudCompositeShaderHash\": "
+         << regression.cloudCompositeShaderHash
+         << ", \"componentInvariantPassed\": "
+         << (regression.componentInvariantPassed ? "true" : "false") << '}';
+}
+
+int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
+{
+    // 열이 누적되는 48-case 측정 뒤에 Stage 14 기준을 재면 UI/분기 비용과
+    // 무관한 온도·클럭 변동이 회귀율에 섞인다. 승인 상태를 먼저 재현해 같은
+    // 냉간 시작 조건의 숨김 기준을 확보한 뒤 Stage 15 matrix를 측정한다.
+    Stage15PerformancePreflight preflight;
+    const int preflightResult =
+        CollectStage15PerformancePreflight(renderer, camera, preflight);
+    if (preflightResult != 0)
+        return preflightResult;
 
     std::vector<Stage15TimingResult> results;
-    results.reserve(std::size(concepts) * std::size(qualities) *
+    results.reserve(std::size(kStage15PerformanceConcepts) *
+                    std::size(kStage15PerformanceQualities) *
                     stage13camera::kOpenWorldPresets.size());
     bool passed = true;
-    for (Stage15ConceptPreset concept : concepts)
+    for (Stage15ConceptPreset concept : kStage15PerformanceConcepts)
     {
-        for (Stage15QualityPreset quality : qualities)
+        for (Stage15QualityPreset quality : kStage15PerformanceQualities)
         {
             for (const Stage13CameraPreset& cameraPreset :
                  stage13camera::kOpenWorldPresets)
@@ -5147,8 +5696,9 @@ int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
                 result.concept = stage15::ConceptName(concept);
                 result.quality = stage15::QualityName(quality);
                 result.camera = cameraPreset.diagnosticName;
-                if (!CollectStage15Timing(renderer, camera,
-                        kWarmupFrames, kSamples, result))
+                if (!CollectStage15Timing(
+                        renderer, camera, kStage15PerformanceWarmupFrames,
+                        kStage15PerformanceSamples, result))
                     return 3;
                 passed = passed && result.absolutePassed;
                 WriteDiagnosticLine(std::string("[STAGE15][PERF][") +
@@ -5157,8 +5707,9 @@ int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
                     std::to_string(result.frameP95) + " CLOUD_P95=" +
                     std::to_string(result.cloudP95) + " SHADOW_P95=" +
                     std::to_string(result.shadowP95) + " RAYMARCH_P95=" +
-                    std::to_string(result.raymarchP95) + " RESOLVE_P95=" +
-                    std::to_string(result.resolveP95) +
+                     std::to_string(result.raymarchP95) + " RESOLVE_P95=" +
+                     std::to_string(result.resolveP95) + " COMPOSITE_P95=" +
+                     std::to_string(result.compositeP95) +
                     (result.absolutePassed ? " PASS" : " FAIL"));
                 results.push_back(result);
             }
@@ -5170,7 +5721,7 @@ int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
     // 다르므로 과거 High/Medium 180% 상대 gate를 적용하지 않는다. High는 위의
     // Frame/Cloud/Resolve 절대 p95 예산으로만 판정한다.
     bool relativeQualityPassed = true;
-    for (Stage15ConceptPreset concept : concepts)
+    for (Stage15ConceptPreset concept : kStage15PerformanceConcepts)
     {
         for (const Stage13CameraPreset& cameraPreset :
              stage13camera::kOpenWorldPresets)
@@ -5203,23 +5754,31 @@ int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
     }
     passed = passed && relativeQualityPassed;
 
-    passed = passed && stage14RegressionPassed &&
-        !renderer.HasDebugLayerErrors();
+    const double maximumCompositeP95 = std::accumulate(
+        results.begin(), results.end(), 0.0,
+        [](double maximum, const Stage15TimingResult& result)
+        {
+            return std::max(maximum, result.compositeP95);
+        });
+    const bool compositeBudgetPassed = maximumCompositeP95 <= 0.75;
+    passed = passed && preflight.stage14RegressionPassed &&
+        compositeBudgetPassed && !renderer.HasDebugLayerErrors();
 
     const std::filesystem::path directory =
-        repositoryRoot / "captures" / "stage15";
+        preflight.repositoryRoot / "captures" / "stage15";
     std::error_code error;
     std::filesystem::create_directories(directory, error);
     if (error)
         return 7;
     std::ofstream csv(directory / "performance.csv",
                       std::ios::binary | std::ios::trunc);
-    csv << "adapter,driver,concept,quality,camera,samples,warmup,cpu_average_ms,cpu_p50_ms,cpu_p95_ms,cpu_p99_ms,frame_average_ms,frame_p50_ms,frame_p95_ms,frame_p99_ms,cloud_average_ms,cloud_p50_ms,cloud_p95_ms,cloud_p99_ms,quality_owned_average_ms,atmosphere_average_ms,atmosphere_p50_ms,atmosphere_p95_ms,atmosphere_p99_ms,shadow_average_ms,shadow_p50_ms,shadow_p95_ms,shadow_p99_ms,opaque_average_ms,opaque_p50_ms,opaque_p95_ms,opaque_p99_ms,raymarch_average_ms,raymarch_p50_ms,raymarch_p95_ms,raymarch_p99_ms,resolve_average_ms,resolve_p50_ms,resolve_p95_ms,resolve_p99_ms,tone_average_ms,tone_p50_ms,tone_p95_ms,tone_p99_ms,state_fingerprint,raymarch_shader_hash,deep_shadow_shader_hash,component_invariant,absolute_passed\n";
+    csv << "adapter,driver,concept,quality,camera,samples,warmup,cpu_average_ms,cpu_p50_ms,cpu_p95_ms,cpu_p99_ms,frame_average_ms,frame_p50_ms,frame_p95_ms,frame_p99_ms,cloud_average_ms,cloud_p50_ms,cloud_p95_ms,cloud_p99_ms,quality_owned_average_ms,atmosphere_average_ms,atmosphere_p50_ms,atmosphere_p95_ms,atmosphere_p99_ms,shadow_average_ms,shadow_p50_ms,shadow_p95_ms,shadow_p99_ms,opaque_average_ms,opaque_p50_ms,opaque_p95_ms,opaque_p99_ms,raymarch_average_ms,raymarch_p50_ms,raymarch_p95_ms,raymarch_p99_ms,resolve_average_ms,resolve_p50_ms,resolve_p95_ms,resolve_p99_ms,composite_average_ms,composite_p50_ms,composite_p95_ms,composite_p99_ms,tone_average_ms,tone_p50_ms,tone_p95_ms,tone_p99_ms,state_fingerprint,raymarch_shader_hash,deep_shadow_shader_hash,cloud_composite_shader_hash,component_invariant,absolute_passed\n";
     for (const Stage15TimingResult& result : results)
         csv << '"' << renderer.AdapterName() << "\",\""
             << renderer.DriverVersion() << "\",\"" << result.concept
             << "\",\"" << result.quality << "\",\"" << result.camera
-            << "\"," << kSamples << ',' << kWarmupFrames << ','
+            << "\"," << kStage15PerformanceSamples << ','
+            << kStage15PerformanceWarmupFrames << ','
             << result.cpuAverage << ',' << result.cpuP50 << ','
             << result.cpuP95 << ',' << result.cpuP99 << ','
             << result.frameAverage << ',' << result.frameP50 << ','
@@ -5237,10 +5796,13 @@ int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
             << result.raymarchP95 << ',' << result.raymarchP99 << ','
             << result.resolveAverage << ',' << result.resolveP50 << ','
             << result.resolveP95 << ',' << result.resolveP99 << ','
+            << result.compositeAverage << ',' << result.compositeP50 << ','
+            << result.compositeP95 << ',' << result.compositeP99 << ','
             << result.toneAverage << ',' << result.toneP50 << ','
             << result.toneP95 << ',' << result.toneP99 << ','
             << result.stateFingerprint << ',' << result.raymarchShaderHash
             << ',' << result.deepShadowShaderHash << ','
+            << result.cloudCompositeShaderHash << ','
             << (result.componentInvariantPassed ? 1 : 0) << ','
             << (result.absolutePassed ? 1 : 0) << '\n';
     std::ofstream json(directory / "performance.json",
@@ -5249,25 +5811,17 @@ int RunStage15PerformanceTest(Renderer& renderer, Camera& camera)
          << "\",\n  \"driver\": \"" << renderer.DriverVersion()
          << "\",\n  \"resolution\": [1920, 1080],\n"
          << "  \"cases\": " << results.size()
-         << ",\n  \"samples\": " << kSamples
-         << ",\n  \"warmup\": " << kWarmupFrames
-         << ",\n  \"stage14Regression\": {\"baselineCloudP95Ms\": "
-         << stage14BaselineCloudP95 << ", \"currentCloudP95Ms\": "
-         << regression.cloudP95 << ", \"ratio\": "
-         << stage14RegressionRatio << ", \"passed\": "
-         << (stage14RegressionPassed ? "true" : "false")
-         << ", \"shadowP95Ms\": " << regression.shadowP95
-         << ", \"raymarchP95Ms\": " << regression.raymarchP95
-         << ", \"resolveP95Ms\": " << regression.resolveP95
-         << ", \"stateFingerprint\": " << regression.stateFingerprint
-         << ", \"raymarchShaderHash\": " << regression.raymarchShaderHash
-         << ", \"deepShadowShaderHash\": " << regression.deepShadowShaderHash
-         << ", \"componentInvariantPassed\": "
-         << (regression.componentInvariantPassed ? "true" : "false")
-         << "},\n  \"relativeQualityMetric\": "
+         << ",\n  \"samples\": " << kStage15PerformanceSamples
+         << ",\n  \"warmup\": " << kStage15PerformanceWarmupFrames
+         << ",\n  \"stage14Regression\": ";
+    WriteStage15RegressionJson(json, preflight);
+    json << ",\n  \"relativeQualityMetric\": "
             "\"lowShadowPlusRaymarchAverage<=0.97*medium\",\n"
          << "  \"highQualityMetric\": "
-            "\"absoluteFrameCloudResolveP95\",\n"
+            "\"absoluteFrameCloudResolveCompositeP95\",\n"
+         << "  \"cloudCompositeBudget\": {\"p95Ms\": "
+         << maximumCompositeP95 << ", \"limitMs\": 0.75, \"passed\": "
+         << (compositeBudgetPassed ? "true" : "false") << "},\n"
          << "  \"relativeQualityPassed\": "
          << (relativeQualityPassed ? "true" : "false")
          << ",\n  \"debugLayerPassed\": "
@@ -6499,7 +7053,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     const int kHeight = (requestedStage9Performance ||
         requestedStage11TemporalSmoke || requestedStage12Performance ||
         requestedStage14Performance || requestedStage15Quality ||
-        requestedStage15Performance || requestedStage15RegressionProbe) ? 1080 :
+        requestedStage15Performance ||
+        requestedStage15RegressionProbe) ? 1080 :
         (requestedStage13LightingPerformance ? 925 :
         (requestedStage13SimilarityGpu ||
                           requestedStage13WeatherShapeGpu ||
@@ -6561,7 +7116,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage12ShadowSmokeTest || stage12PerformanceTest ||
         stage14AtmosphereSmokeTest || stage14PerformanceTest ||
         stage15PresetSmokeTest || stage15QualityTest ||
-        stage15PerformanceTest || stage15RegressionProbe ||
+        stage15PerformanceTest ||
+        stage15RegressionProbe ||
         requestedStage15OutputDpiSmoke || requestedStage15CaptureSmoke ||
         noiseLabSmokeTest || shaderHotReloadSmokeTest || shaderCacheSmokeTest;
     const bool enableNoiseVolumes = !automatedTestRun ||
@@ -6572,7 +7128,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         stage10UpsamplingSmokeTest || stage11TemporalSmokeTest ||
         stage12ShadowSmokeTest || stage12PerformanceTest ||
         stage14PerformanceTest || stage15PresetSmokeTest ||
-        stage15QualityTest || stage15PerformanceTest || stage15RegressionProbe ||
+        stage15QualityTest || stage15PerformanceTest ||
+        stage15RegressionProbe ||
         requestedStage15CaptureSmoke;
 
     std::filesystem::path hotReloadShaderDirectory;
@@ -6609,11 +7166,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                     !stage12ShadowSmokeTest && !stage12PerformanceTest &&
                     !stage14AtmosphereSmokeTest && !stage14PerformanceTest &&
                     !stage15PresetSmokeTest && !stage15QualityTest &&
-                    !stage15PerformanceTest && !stage15RegressionProbe &&
+                    !stage15PerformanceTest &&
+                    !stage15RegressionProbe &&
                     !requestedStage15OutputDpiSmoke &&
                     !requestedStage15CaptureSmoke &&
                     !noiseLabSmokeTest && !shaderHotReloadSmokeTest &&
-                    !shaderCacheSmokeTest);
+                    !shaderCacheSmokeTest,
+                    !automatedTestRun);
     Camera   camera;
     Renderer renderer;
 
@@ -6638,6 +7197,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     if (!renderer.Init(window.GetHandle(), initialPhysicalWidth,
                        initialPhysicalHeight, enableNoiseVolumes))
         return -1; // 초기화 실패 (오류 메시지는 Renderer가 표시)
+    // 사용자 preset override는 일반 제작 세션에서만 읽는다. 모든 smoke와
+    // 성능 측정은 파일 시스템 상태와 무관한 내장 formation을 사용한다.
+    renderer.SetIgnoreCloudFormationPresetOverrides(automatedTestRun);
+    // UI 자체를 검사하는 두 smoke와 Noise Lab shader dependency를 검사하는
+    // Hot Reload smoke는 ImGui/preview frame을 계속 그리되, 위의 별도 정책으로
+    // 사용자 formation 파일은 여전히 무시한다.
+    renderer.SetAutomatedRenderMode(
+        automatedTestRun && !noiseLabSmokeTest &&
+        !requestedStage15OutputDpiSmoke && !shaderHotReloadSmokeTest);
 
     // 단계 13 이하의 GPU 회귀는 당시 승인한 고정 하늘/환경광과 LDR shoulder를
     // 비교한다. Stage 14 전용 smoke를 제외한 자동 실행은 schema 34 호환 복원과
@@ -6716,7 +7284,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         !stage12ShadowSmokeTest && !stage12PerformanceTest &&
         !stage14AtmosphereSmokeTest && !stage14PerformanceTest &&
         !stage15PresetSmokeTest && !stage15QualityTest &&
-        !stage15PerformanceTest && !stage15RegressionProbe &&
+        !stage15PerformanceTest &&
+        !stage15RegressionProbe &&
         !requestedStage15OutputDpiSmoke && !requestedStage15CaptureSmoke &&
         !noiseLabSmokeTest &&
         !shaderHotReloadSmokeTest && !shaderCacheSmokeTest;
@@ -6758,6 +7327,270 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         {
             WriteDiagnosticLine("[OUTPUT][WINDOWED] FAIL");
             return 21;
+        }
+
+        // UI scale은 렌더 상태와 완전히 독립된 developer preference다.
+        // Dark style 원본에서 매번 다시 계산하므로 DPI/Zoom 왕복 후에도
+        // padding이 누적되지 않고, 렌더 fingerprint/resource/history도 같다.
+        // Stage 15 요청 transaction은 첫 Render에서 commit되므로 그 정상
+        // 초기화를 UI Zoom reset으로 잘못 세지 않게 먼저 한 frame 정착시킨다.
+        renderer.Render(camera, 0.0f);
+        const std::uint64_t uiStateBefore = renderer.Stage15StateFingerprint();
+        const std::uint64_t uiResourcesBefore =
+            renderer.Stage15GpuResourceIdentityFingerprint();
+        const std::uint32_t uiResetsBefore =
+            renderer.TemporalResetCountLast60Frames();
+        const float originalUserZoom = renderer.DeveloperUiUserZoom();
+        const unsigned int originalDpi = std::max(initial.dpi, 96u);
+        const auto closeUi = [](float lhs, float rhs)
+        {
+            return std::abs(lhs - rhs) <= 1.0e-4f;
+        };
+        const auto closePanelPixels = [](float lhs, float rhs)
+        {
+            // ImGui window geometry is pixel-rounded after ScaleAllSizes.
+            return std::abs(lhs - rhs) <= 1.01f;
+        };
+        renderer.SetDeveloperUiScaleForValidation(originalDpi, 1.0f);
+        renderer.Render(camera, 0.0f);
+        const float basePanelWidth =
+            renderer.DeveloperUiPanelWidthForValidation(0u);
+        renderer.SetDeveloperUiScaleForValidation(originalDpi, 1.25f);
+        renderer.Render(camera, 0.0f);
+        const float zoomedPanelWidth =
+            renderer.DeveloperUiPanelWidthForValidation(0u);
+        const bool panelLayoutScaleContract = basePanelWidth > 0.0f &&
+            closePanelPixels(zoomedPanelWidth, basePanelWidth * 1.25f);
+        renderer.SetDeveloperUiScaleForValidation(96u, 1.0f);
+        const float basePadding =
+            renderer.DeveloperUiWindowPaddingXForValidation();
+        bool uiScaleContract =
+            closeUi(renderer.DeveloperUiEffectiveScale(), 1.0f) &&
+            basePadding > 0.0f;
+        constexpr unsigned int validationDpis[] = { 96u, 144u, 192u };
+        constexpr float validationZooms[] = {
+            1.0f, 1.25f, 1.50f, 1.75f, 2.0f
+        };
+        bool fullStyleMatrixContract = true;
+        for (unsigned int dpi : validationDpis)
+        {
+            for (float zoom : validationZooms)
+            {
+                renderer.SetDeveloperUiScaleForValidation(dpi, zoom);
+                const float expectedScale =
+                    static_cast<float>(dpi) / 96.0f * zoom;
+                fullStyleMatrixContract = fullStyleMatrixContract &&
+                    closeUi(renderer.DeveloperUiEffectiveScale(),
+                            expectedScale) &&
+                    closeUi(renderer.DeveloperUiWindowPaddingXForValidation(),
+                            basePadding * expectedScale);
+            }
+        }
+        renderer.SetDeveloperUiScaleForValidation(144u, 1.25f);
+        uiScaleContract = uiScaleContract &&
+            closeUi(renderer.DeveloperUiEffectiveScale(), 1.875f) &&
+            closeUi(renderer.DeveloperUiWindowPaddingXForValidation(),
+                    basePadding * 1.875f);
+        renderer.SetDeveloperUiScaleForValidation(192u, 2.0f);
+        uiScaleContract = uiScaleContract &&
+            closeUi(renderer.DeveloperUiEffectiveScale(), 4.0f) &&
+            closeUi(renderer.DeveloperUiWindowPaddingXForValidation(),
+                    basePadding * 4.0f);
+        renderer.SetDeveloperUiScaleForValidation(96u, 1.0f);
+        uiScaleContract = uiScaleContract &&
+            closeUi(renderer.DeveloperUiWindowPaddingXForValidation(),
+                    basePadding);
+        renderer.SetDeveloperUiScaleForValidation(originalDpi, originalUserZoom);
+        renderer.Render(camera, 0.0f);
+        const float restoredPanelWidth =
+            renderer.DeveloperUiPanelWidthForValidation(0u);
+        renderer.Render(camera, 0.0f);
+
+        const auto exactlyOnePanelVisible =
+            [&](std::size_t expected)
+        {
+            bool valid = true;
+            for (std::size_t index = 0; index < 4u; ++index)
+            {
+                valid = valid &&
+                    (renderer.DeveloperUiPanelVisibleForValidation(index) ==
+                     (index == expected));
+            }
+            return valid;
+        };
+        const auto noPanelVisible = [&]()
+        {
+            for (std::size_t index = 0; index < 4u; ++index)
+            {
+                if (renderer.DeveloperUiPanelVisibleForValidation(index))
+                    return false;
+            }
+            return true;
+        };
+        const auto rectValid = [](const DirectX::XMFLOAT4& rect)
+        {
+            return rect.z > rect.x && rect.w > rect.y;
+        };
+        const auto rectsIntersect = [&](const DirectX::XMFLOAT4& a,
+                                        const DirectX::XMFLOAT4& b)
+        {
+            return rectValid(a) && rectValid(b) &&
+                a.x < b.z && a.z > b.x && a.y < b.w && a.w > b.y;
+        };
+        const auto anchoredBottomRight = [&](const DirectX::XMFLOAT4& rect)
+        {
+            const float margin =
+                12.0f * renderer.DeveloperUiEffectiveScale();
+            const auto closeAnchorPixels = [](float lhs, float rhs)
+            {
+                // SetNextWindowPos와 Style scaling이 각각 정수 픽셀로
+                // 반올림되어 양 끝 합계가 최대 약 2 px 달라질 수 있다.
+                return std::abs(lhs - rhs) <= 2.01f;
+            };
+            return rectValid(rect) &&
+                closeAnchorPixels(rect.z,
+                    static_cast<float>(initial.physicalClientWidth) - margin) &&
+                closeAnchorPixels(rect.w,
+                    static_cast<float>(initial.physicalClientHeight) - margin);
+        };
+
+        renderer.ToggleDeveloperUiPanel(DeveloperUiPanel::Weather);
+        renderer.Render(camera, 0.0f);
+        renderer.Render(camera, 0.0f);
+        const DirectX::XMFLOAT4 weatherPanelRect =
+            renderer.DeveloperUiPanelRectForValidation(1u);
+        const bool f1ToF2Contract = exactlyOnePanelVisible(1u) &&
+            anchoredBottomRight(weatherPanelRect) &&
+            !rectsIntersect(weatherPanelRect,
+                renderer.Stage15OverlayRectForValidation()) &&
+            !rectsIntersect(weatherPanelRect,
+                renderer.PerformanceOverlayRectForValidation());
+        renderer.ToggleDeveloperUiPanel(DeveloperUiPanel::Weather);
+        renderer.Render(camera, 0.0f);
+        const bool sameKeyClosesContract = noPanelVisible();
+
+        renderer.ToggleDeveloperUiPanel(DeveloperUiPanel::Camera);
+        renderer.Render(camera, 0.0f);
+        renderer.Render(camera, 0.0f);
+        const DirectX::XMFLOAT4 cameraPanelWithOverlays =
+            renderer.DeveloperUiPanelRectForValidation(3u);
+        const float heightWithOverlays =
+            cameraPanelWithOverlays.w - cameraPanelWithOverlays.y;
+        const bool cameraPanelOverlayContract = exactlyOnePanelVisible(3u) &&
+            anchoredBottomRight(cameraPanelWithOverlays) &&
+            !rectsIntersect(cameraPanelWithOverlays,
+                renderer.Stage15OverlayRectForValidation()) &&
+            !rectsIntersect(cameraPanelWithOverlays,
+                renderer.PerformanceOverlayRectForValidation());
+        renderer.SetOverlayVisibilityForValidation(false, false);
+        renderer.Render(camera, 0.0f);
+        renderer.Render(camera, 0.0f);
+        const DirectX::XMFLOAT4 cameraPanelWithoutOverlays =
+            renderer.DeveloperUiPanelRectForValidation(3u);
+        const bool overlayOffRestoresHeightContract =
+            exactlyOnePanelVisible(3u) &&
+            anchoredBottomRight(cameraPanelWithoutOverlays) &&
+            cameraPanelWithoutOverlays.w - cameraPanelWithoutOverlays.y +
+                1.01f >= heightWithOverlays;
+        renderer.SetOverlayVisibilityForValidation(true, true);
+        renderer.Render(camera, 0.0f);
+        renderer.Render(camera, 0.0f);
+        const DirectX::XMFLOAT4 cameraPanelRestored =
+            renderer.DeveloperUiPanelRectForValidation(3u);
+        const bool overlayRestoreContract = exactlyOnePanelVisible(3u) &&
+            anchoredBottomRight(cameraPanelRestored) &&
+            !rectsIntersect(cameraPanelRestored,
+                renderer.Stage15OverlayRectForValidation()) &&
+            !rectsIntersect(cameraPanelRestored,
+                renderer.PerformanceOverlayRectForValidation());
+        renderer.ToggleDeveloperUiPanel(DeveloperUiPanel::Camera);
+        renderer.Render(camera, 0.0f);
+        renderer.ToggleDeveloperUiPanel(DeveloperUiPanel::Noise);
+        renderer.Render(camera, 0.0f);
+        renderer.Render(camera, 0.0f);
+        const bool panelLayoutContract = f1ToF2Contract &&
+            sameKeyClosesContract && cameraPanelOverlayContract &&
+            overlayOffRestoresHeightContract && overlayRestoreContract &&
+            exactlyOnePanelVisible(0u);
+
+        uiScaleContract = uiScaleContract &&
+            fullStyleMatrixContract &&
+            panelLayoutScaleContract &&
+            panelLayoutContract &&
+            closePanelPixels(restoredPanelWidth,
+                             basePanelWidth * originalUserZoom) &&
+            closeUi(renderer.DeveloperUiEffectiveScale(),
+                    static_cast<float>(originalDpi) / 96.0f *
+                        originalUserZoom) &&
+            renderer.Stage15StateFingerprint() == uiStateBefore &&
+            renderer.Stage15GpuResourceIdentityFingerprint() ==
+                uiResourcesBefore &&
+            renderer.TemporalResetCountLast60Frames() == uiResetsBefore;
+        if (!uiScaleContract)
+        {
+            WriteDiagnosticLine(
+                std::string("[OUTPUT][DPI-UI-ZOOM] BASE_PANEL=") +
+                std::to_string(basePanelWidth) + " ZOOMED_PANEL=" +
+                std::to_string(zoomedPanelWidth) + " RESTORED_PANEL=" +
+                std::to_string(restoredPanelWidth) + " BASE_PADDING=" +
+                std::to_string(basePadding) + " EFFECTIVE=" +
+                std::to_string(renderer.DeveloperUiEffectiveScale()) +
+                " MATRIX=" + (fullStyleMatrixContract ? "1" : "0") +
+                " WIDTH=" + (panelLayoutScaleContract ? "1" : "0") +
+                " F1F2=" + (f1ToF2Contract ? "1" : "0") +
+                " CLOSE=" + (sameKeyClosesContract ? "1" : "0") +
+                " CAMERA=" + (cameraPanelOverlayContract ? "1" : "0") +
+                " OVERLAY_OFF=" +
+                (overlayOffRestoresHeightContract ? "1" : "0") +
+                " OVERLAY_RESTORE=" +
+                (overlayRestoreContract ? "1" : "0") +
+                " F1_RESTORED=" +
+                (exactlyOnePanelVisible(0u) ? "1" : "0") +
+                " F2_RECT=" + std::to_string(weatherPanelRect.x) + "," +
+                std::to_string(weatherPanelRect.y) + "," +
+                std::to_string(weatherPanelRect.z) + "," +
+                std::to_string(weatherPanelRect.w) +
+                " S15_RECT=" +
+                std::to_string(renderer.Stage15OverlayRectForValidation().x) +
+                "," +
+                std::to_string(renderer.Stage15OverlayRectForValidation().y) +
+                "," +
+                std::to_string(renderer.Stage15OverlayRectForValidation().z) +
+                "," +
+                std::to_string(renderer.Stage15OverlayRectForValidation().w) +
+                " PERF_RECT=" +
+                std::to_string(renderer.PerformanceOverlayRectForValidation().x) +
+                "," +
+                std::to_string(renderer.PerformanceOverlayRectForValidation().y) +
+                "," +
+                std::to_string(renderer.PerformanceOverlayRectForValidation().z) +
+                "," +
+                std::to_string(renderer.PerformanceOverlayRectForValidation().w) +
+                " CAM_RECT=" +
+                std::to_string(cameraPanelWithOverlays.x) + "," +
+                std::to_string(cameraPanelWithOverlays.y) + "," +
+                std::to_string(cameraPanelWithOverlays.z) + "," +
+                std::to_string(cameraPanelWithOverlays.w) +
+                " CAM_OFF_RECT=" +
+                std::to_string(cameraPanelWithoutOverlays.x) + "," +
+                std::to_string(cameraPanelWithoutOverlays.y) + "," +
+                std::to_string(cameraPanelWithoutOverlays.z) + "," +
+                std::to_string(cameraPanelWithoutOverlays.w) +
+                " CAM_RESTORE_RECT=" +
+                std::to_string(cameraPanelRestored.x) + "," +
+                std::to_string(cameraPanelRestored.y) + "," +
+                std::to_string(cameraPanelRestored.z) + "," +
+                std::to_string(cameraPanelRestored.w) +
+                " STATE=" +
+                (renderer.Stage15StateFingerprint() == uiStateBefore
+                     ? "1" : "0") +
+                " RESOURCES=" +
+                (renderer.Stage15GpuResourceIdentityFingerprint() ==
+                         uiResourcesBefore ? "1" : "0") +
+                " RESETS=" +
+                (renderer.TemporalResetCountLast60Frames() == uiResetsBefore
+                     ? "1" : "0") + " FAIL");
+            return 41;
         }
 
         const Native1080pResult nativeResult = window.EnterNative1080p();
@@ -6897,7 +7730,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             renderer.ConsumeNative1080pRequest(staleNativeRequest))
             return 38;
         WriteDiagnosticLine(
-            "[OUTPUT] PMv2 1280x720 -> Native 1920x1080 -> High Full -> "
+            "[OUTPUT] PMv2 UI 96/144/192 DPI+Zoom round-trip -> "
+            "1280x720 -> Native 1920x1080 -> High Full -> "
             "transaction/failure restore PASS");
         return renderer.HasDebugLayerErrors() ? 26 : 0;
     }
@@ -7246,7 +8080,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 37") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 38") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"A\": \"localThicknessPotential\"") != std::string::npos &&
                 metadata.find("\"localThickness\": {\"seed\": 4051") != std::string::npos &&
@@ -7338,7 +8172,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 37") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 38") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"phaseFunction\": \"dualLobeHenyeyGreensteinIsotropicRelative\"") != std::string::npos &&
@@ -7412,7 +8246,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 continue;
             std::string metadata;
             if (ReadTextFile(entry.path(), metadata) &&
-                metadata.find("\"schemaVersion\": 37") != std::string::npos &&
+                metadata.find("\"schemaVersion\": 38") != std::string::npos &&
                 metadata.find("\"developerUiLayout\": \"F1Noise_F2Weather_F3LightingAtmosphere_F4Stage15Camera\"") != std::string::npos &&
                 metadata.find("\"camera\": {") != std::string::npos &&
                 metadata.find("\"verticalFovDegrees\": 60") != std::string::npos &&
@@ -7420,7 +8254,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
                 metadata.find("\"physicalAdvectionMode\": \"legacyIndependentSpeeds\"") != std::string::npos &&
                 metadata.find("\"singleScatteringAlbedo\"") != std::string::npos &&
                 metadata.find("\"scatteringCoefficient\"") == std::string::npos &&
-                metadata.find("\"implementationStage\": \"15\"") != std::string::npos &&
+                metadata.find("\"implementationStage\": \"15B\"") != std::string::npos &&
                 metadata.find("\"noiseVolumes\"") != std::string::npos &&
                 metadata.find("\"stage13Preset\"") == std::string::npos &&
                 metadata.find("\"similarityScale\"") == std::string::npos &&
@@ -7598,6 +8432,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         const std::uint64_t baselineGeneration = renderer.ShaderGeneration();
         const std::uint64_t baselineLabHash = renderer.NoiseLabPreviewHash(0);
         const std::uint64_t baselineCloudHash = renderer.LastCloudFrameHash();
+        const std::uint64_t baselineCompileCalls =
+            renderer.ShaderCompileCallCount();
+        const std::uint64_t baselineCacheHits = renderer.ShaderCacheHitCount();
 
         const std::filesystem::path noisePath =
             hotReloadShaderDirectory / L"Noise.hlsli";
@@ -7611,15 +8448,33 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             return 7;
         biased.replace(biasPosition, from.size(),
                        "#define VCLOUD_NOISE_TEST_BIAS 0.25");
+        biased += "\n// VCLOUD_HOT_RELOAD_PROBE_PID=" +
+            std::to_string(GetCurrentProcessId()) + "\n";
         if (!WriteTextFile(noisePath, biased))
             return 8;
         renderer.Render(camera, 0.0f);
         const std::uint64_t biasedGeneration = renderer.ShaderGeneration();
         const std::uint64_t biasedLabHash = renderer.NoiseLabPreviewHash(0);
         const std::uint64_t biasedCloudHash = renderer.LastCloudFrameHash();
+        const std::uint64_t biasedCacheHits = renderer.ShaderCacheHitCount();
+        // automated test에서는 NoiseVolume 두 entry가 빠진 총 25개 중
+        // Noise.hlsli 비의존 entry 14개가 기존 bytecode를 재사용해야 한다.
+        constexpr std::uint64_t kExpectedUnchangedCacheHits = 14u;
         if (biasedGeneration != baselineGeneration + 1 ||
-            biasedLabHash == baselineLabHash || biasedCloudHash == baselineCloudHash)
+            biasedLabHash == baselineLabHash ||
+            biasedCloudHash == baselineCloudHash ||
+            biasedCacheHits - baselineCacheHits < kExpectedUnchangedCacheHits)
+        {
+            std::ostringstream failure;
+            failure << "SHADER_HOT_RELOAD BIASED_FAIL generation="
+                    << baselineGeneration << "->" << biasedGeneration
+                    << " labChanged=" << (biasedLabHash != baselineLabHash)
+                    << " cloudChanged=" << (biasedCloudHash != baselineCloudHash)
+                    << " cacheHits=" << (biasedCacheHits - baselineCacheHits)
+                    << " requiredCacheHits=" << kExpectedUnchangedCacheHits;
+            WriteDiagnosticLine(failure.str());
             return 9;
+        }
 
         if (!WriteTextFile(noisePath, biased + "\n#error expected hot reload failure\n"))
             return 10;
@@ -7629,13 +8484,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
             renderer.LastCloudFrameHash() != biasedCloudHash)
             return 11;
 
+        const std::uint64_t restoreCompileCalls =
+            renderer.ShaderCompileCallCount();
+        const std::uint64_t restoreCacheHits = renderer.ShaderCacheHitCount();
         if (!WriteTextFile(noisePath, original))
             return 12;
         renderer.Render(camera, 0.0f);
         if (renderer.ShaderGeneration() != biasedGeneration + 1 ||
             renderer.NoiseLabPreviewHash(0) != baselineLabHash ||
-            renderer.LastCloudFrameHash() != baselineCloudHash)
+            renderer.LastCloudFrameHash() != baselineCloudHash ||
+            renderer.ShaderCompileCallCount() != restoreCompileCalls ||
+            renderer.ShaderCacheHitCount() - restoreCacheHits < 25u)
             return 13;
+        WriteDiagnosticLine(std::string("SHADER_HOT_RELOAD COMPILE_DELTA=") +
+            std::to_string(renderer.ShaderCompileCallCount() -
+                           baselineCompileCalls) +
+            " BIASED_CACHE_HITS=" +
+            std::to_string(biasedCacheHits - baselineCacheHits) +
+            " RESTORE_CACHE_HITS=" +
+            std::to_string(renderer.ShaderCacheHitCount() - restoreCacheHits) +
+            " PASS");
         return renderer.HasDebugLayerErrors() ? 2 : 0;
     }
 

@@ -22,6 +22,9 @@ add_executable(VolumetricCloud WIN32
     src/VolumetricCloud.rc
     src/Renderer.cpp
     src/CloudAppearance.cpp
+    src/CloudFormationSettings.cpp
+    src/CloudFormationPresetStore.cpp
+    src/DeveloperUiSettings.cpp
     src/NoiseLab.cpp
     src/FrameProfiler.cpp
     src/WeatherMap.cpp
@@ -304,6 +307,21 @@ endif()
 add_test(NAME VolumetricCloud.CloudAppearance
          COMMAND VolumetricCloud.CloudAppearanceTests)
 
+# Stage 15B의 공통 cloud formation 계약과 F1/F4/Custom 독립 저장 슬롯을 검사한다.
+add_executable(VolumetricCloud.CloudFormationPresetStoreTests
+    tests/CloudFormationPresetStoreTests.cpp
+    src/CloudFormationSettings.cpp
+    src/CloudFormationPresetStore.cpp
+    src/CloudAppearance.cpp
+    src/WeatherMap.cpp
+)
+target_include_directories(VolumetricCloud.CloudFormationPresetStoreTests PRIVATE src)
+if(MSVC)
+    target_compile_options(VolumetricCloud.CloudFormationPresetStoreTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.CloudFormationPresetStore
+         COMMAND VolumetricCloud.CloudFormationPresetStoreTests)
+
 # 단계 13-4B 사용자 카메라 위치, 건물 분리와 일반/고속 휠 줌 수학을 검사한다.
 add_executable(VolumetricCloud.Stage13CameraControlMathTests
     tests/Stage13CameraControlMathTests.cpp
@@ -422,6 +440,8 @@ set_tests_properties(VolumetricCloud.Stage14AtmosphereSmoke
 # 단계 15 품질/콘셉트 resolver, 소유권 분리, Cirrus 좌표와 b7 ABI를 검사한다.
 add_executable(VolumetricCloud.Stage15PresetMathTests
     tests/Stage15PresetMathTests.cpp
+    src/CloudFormationSettings.cpp
+    src/CloudFormationPresetStore.cpp
     src/CloudAppearance.cpp
     src/WeatherMap.cpp
 )
@@ -431,6 +451,19 @@ if (MSVC)
 endif()
 add_test(NAME VolumetricCloud.Stage15PresetMath
          COMMAND VolumetricCloud.Stage15PresetMathTests)
+
+# 렌더 snapshot과 독립된 개발 UI Zoom schema, 5% 격자와 원자 저장을 검사한다.
+add_executable(VolumetricCloud.DeveloperUiSettingsTests
+    tests/DeveloperUiSettingsTests.cpp
+    src/DeveloperUiSettings.cpp
+)
+target_include_directories(VolumetricCloud.DeveloperUiSettingsTests PRIVATE src)
+if (MSVC)
+    target_compile_options(VolumetricCloud.DeveloperUiSettingsTests PRIVATE /utf-8)
+endif()
+add_test(NAME VolumetricCloud.DeveloperUiSettings
+         COMMAND VolumetricCloud.DeveloperUiSettingsTests)
+
 add_test(NAME VolumetricCloud.Stage15PresetSmoke
          COMMAND VolumetricCloud --stage15-preset-smoke-test)
 add_test(NAME VolumetricCloud.Stage15OutputDpiSmoke

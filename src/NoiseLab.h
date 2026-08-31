@@ -34,6 +34,9 @@
 #include "GroundLightingParameters.h"
 #include "ToneMappingParameters.h"
 #include "Stage15Parameters.h"
+#include "DeveloperUiSettings.h"
+#include "CloudRimParameters.h"
+#include "CloudFormationPresetStore.h"
 
 class Camera;
 
@@ -84,6 +87,7 @@ enum class NoiseOutputMode : std::uint32_t
     LocalHeightFraction = 27,
     EffectiveShapeCoverage = 28,
     BaseSupportBeforeDensity = 29,
+    LocalBaseOffset = 30,
 };
 
 struct alignas(16) NoiseLabParameters
@@ -104,9 +108,12 @@ public:
     NoiseLab() = default;
     ~NoiseLab();
 
-    bool Init(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context);
+    bool Init(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context,
+              const std::filesystem::path& developerUiSettingsPath);
     void Shutdown();
     bool HandleWindowMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    // 패널이 닫혀 있어도 PMv2 DPI 변경을 다음 NewFrame 전에 반영한다.
+    void SetDpi(unsigned int dpi);
     bool WantsKeyboardCapture() const;
     void ToggleVisible();
     void TogglePanel(DeveloperUiPanel panel);
@@ -133,6 +140,7 @@ public:
                     Stage7PhasePreset& phasePreset,
                     EnvironmentParameters& environmentParameters,
                     Stage8EnvironmentPreset& environmentPreset,
+                    CloudRimParameters& cloudRimParameters,
                     AtmosphereParameters& atmosphereParameters,
                     GroundLightingParameters& groundLightingParameters,
                     ToneMappingParameters& toneMappingParameters,
@@ -162,6 +170,13 @@ public:
                     bool cloudAppearanceDirty,
                     bool hasSavedCustomAppearance,
                     const std::string& cloudAppearanceStatus,
+                    const CloudFormationPresetTarget& formationTarget,
+                    bool formationTargetValid,
+                    CloudFormationPresetSource formationSource,
+                    bool formationCloudDirty,
+                    bool formationSceneDirty,
+                    bool hasSavedCustomFormation,
+                    const std::string& formationStatus,
                     float& cameraMoveSpeedMetersPerSecond,
                     NoiseVolumeParameters& noiseVolumeParameters,
                     std::uint64_t baseNoiseVolumeHash,
@@ -192,11 +207,19 @@ public:
     bool ConsumeCloudAppearancePresetRequest(CloudAppearancePreset& preset);
     bool ConsumeCloudAppearanceSaveRequest();
     bool ConsumeCloudAppearanceEdited();
+    bool ConsumeCloudFormationPresetRequest(
+        CloudFormationPresetTarget& target);
+    bool ConsumeCloudFormationSaveToPresetRequest();
+    bool ConsumeCloudFormationSaveAsCustomRequest();
+    bool ConsumeCloudFormationRestoreBuiltInRequest();
     bool ConsumeNoiseVolumeRegenerateRequest();
     bool ConsumeTemporalResetRequest();
     bool ConsumeStage15QualityRequest(Stage15QualityPreset& preset);
     bool ConsumeStage15ConceptRequest(Stage15ConceptPreset& preset);
     bool ConsumeStage15DiagnosticRequest(Stage15DiagnosticMode& mode);
+    // Resolve 이후에만 쓰는 rim 편집은 Concept 소유권만 바꾸고 history를
+    // 지우지 않는다.
+    bool ConsumeCompositeOnlyParametersChanged();
     void SynchronizeStage15Snapshot(
         Stage15QualityPreset quality, Stage15ConceptPreset concept,
         Stage15DiagnosticMode diagnostic, bool temporalOverrideActive)
@@ -239,6 +262,7 @@ public:
                         Stage7PhasePreset phasePreset,
                         const EnvironmentParameters& environmentParameters,
                         Stage8EnvironmentPreset environmentPreset,
+                        const CloudRimParameters& cloudRimParameters,
                         Stage5WeatherPreset weatherPreset,
                         CloudTypeMode cloudTypeMode,
                         CloudAppearancePreset cloudAppearancePreset,
@@ -255,6 +279,47 @@ public:
                         bool includePng = true);
     bool ConsumeExportRequest();
     const std::string& LastExportStatus() const { return m_exportStatus; }
+    float UserZoom() const { return m_developerUiSettings.userZoom; }
+    float EffectiveUiScale() const { return m_effectiveUiScale; }
+    float StyleWindowPaddingXForValidation() const;
+    float PanelWidthForValidation(std::size_t panelIndex) const
+    {
+        return panelIndex < m_panelSize.size()
+            ? m_panelSize[panelIndex].x : 0.0f;
+    }
+    bool PanelVisibleForValidation(std::size_t panelIndex) const
+    {
+        return panelIndex < m_panelVisible.size() &&
+            m_panelVisible[panelIndex];
+    }
+    DirectX::XMFLOAT4 PanelRectForValidation(std::size_t panelIndex) const
+    {
+        if (panelIndex >= m_panelSize.size())
+            return {};
+        return {
+            m_panelPosition[panelIndex].x,
+            m_panelPosition[panelIndex].y,
+            m_panelPosition[panelIndex].x + m_panelSize[panelIndex].x,
+            m_panelPosition[panelIndex].y + m_panelSize[panelIndex].y
+        };
+    }
+    DirectX::XMFLOAT4 Stage15OverlayRectForValidation() const
+    {
+        return { m_stage15OverlayMin.x, m_stage15OverlayMin.y,
+                 m_stage15OverlayMax.x, m_stage15OverlayMax.y };
+    }
+    DirectX::XMFLOAT4 PerformanceOverlayRectForValidation() const
+    {
+        return { m_performanceOverlayMin.x, m_performanceOverlayMin.y,
+                 m_performanceOverlayMax.x, m_performanceOverlayMax.y };
+    }
+    bool SetDeveloperUiScaleForValidation(unsigned int dpi, float userZoom)
+    {
+        SetDpi(dpi);
+        const bool changed = SetUserZoom(userZoom);
+        ApplyDeveloperUiScale();
+        return changed;
+    }
 
 private:
     template <typename T>
@@ -282,6 +347,12 @@ private:
 
     bool CreatePreviewTargets();
     bool CreateConstantBuffer();
+    void ApplyDeveloperUiScale();
+    bool SetUserZoom(float value);
+    float Ui(float logicalPixels) const
+    {
+        return logicalPixels * m_effectiveUiScale;
+    }
     void DrawControlWindow(DeveloperUiPanel panel,
                            Camera& camera,
                            CloudParameters& cloudParameters,
@@ -301,6 +372,7 @@ private:
                            Stage7PhasePreset& phasePreset,
                            EnvironmentParameters& environmentParameters,
                            Stage8EnvironmentPreset& environmentPreset,
+                           CloudRimParameters& cloudRimParameters,
                            AtmosphereParameters& atmosphereParameters,
                            GroundLightingParameters& groundLightingParameters,
                            ToneMappingParameters& toneMappingParameters,
@@ -330,6 +402,13 @@ private:
                            bool cloudAppearanceDirty,
                            bool hasSavedCustomAppearance,
                            const std::string& cloudAppearanceStatus,
+                           const CloudFormationPresetTarget& formationTarget,
+                           bool formationTargetValid,
+                           CloudFormationPresetSource formationSource,
+                           bool formationCloudDirty,
+                           bool formationSceneDirty,
+                           bool hasSavedCustomFormation,
+                           const std::string& formationStatus,
                            float& cameraMoveSpeedMetersPerSecond,
                            NoiseVolumeParameters& noiseVolumeParameters,
                            std::uint64_t baseNoiseVolumeHash,
@@ -376,6 +455,7 @@ private:
                        Stage7PhasePreset phasePreset,
                        const EnvironmentParameters& environmentParameters,
                        Stage8EnvironmentPreset environmentPreset,
+                       const CloudRimParameters& cloudRimParameters,
                        Stage5WeatherPreset weatherPreset,
                        CloudTypeMode cloudTypeMode,
                        CloudAppearancePreset cloudAppearancePreset,
@@ -396,14 +476,39 @@ private:
     ComPtr<ID3D11Buffer> m_noiseLabCb;
 
     bool m_initialized = false;
+    developerui::Settings m_developerUiSettings;
+    std::filesystem::path m_developerUiSettingsPath;
+    std::string m_developerUiSettingsStatus;
+    unsigned int m_developerUiDpi = 96u;
+    float m_effectiveUiScale = 1.0f;
+    bool m_developerUiScaleDirty = true;
+    std::array<float, 4> m_panelLayoutScale = {};
+    std::array<DirectX::XMFLOAT2, 4> m_panelPosition = {};
+    std::array<DirectX::XMFLOAT2, 4> m_panelSize = {};
     std::array<bool, 4> m_panelVisible = { true, false, false, false };
+    // 새 패널을 열거나 DPI/Zoom이 바뀔 때만 우측 하단 anchor를 다시 적용한다.
+    // 열린 동안에는 사용자가 옮긴 위치를 존중한다.
+    std::array<bool, 4> m_panelAnchorPending = { true, true, true, true };
+    DirectX::XMFLOAT2 m_stage15OverlayMin = {};
+    DirectX::XMFLOAT2 m_stage15OverlayMax = {};
+    DirectX::XMFLOAT2 m_performanceOverlayMin = {};
+    DirectX::XMFLOAT2 m_performanceOverlayMax = {};
+    bool m_previousStage15OverlayVisible = true;
+    bool m_previousPerformanceOverlayVisible = true;
     bool m_parametersChanged = false;
+    bool m_compositeOnlyParametersChanged = false;
     bool m_exportRequested = false;
     int m_weatherPresetRequest = -1;
     int m_openWorldPipelinePresetRequest = -1;
     int m_cloudAppearancePresetRequest = -1;
     bool m_cloudAppearanceSaveRequest = false;
     bool m_cloudAppearanceEdited = false;
+    CloudFormationPresetTarget m_cloudFormationPresetRequest =
+        CustomFormationTarget();
+    bool m_cloudFormationPresetRequestPending = false;
+    bool m_cloudFormationSaveToPresetRequest = false;
+    bool m_cloudFormationSaveAsCustomRequest = false;
+    bool m_cloudFormationRestoreBuiltInRequest = false;
     bool m_temporalResetRequested = false;
     int m_stage15QualityRequest = -1;
     int m_stage15ConceptRequest = -1;

@@ -20,8 +20,9 @@ Stage 15 구현 중 발견한 Stage 14 호환 경로 회귀의 원인, 실패한
 | `GPU Frame` | 진단 장면 시작부터 ImGui draw 종료까지. `Present` 제외 |
 | `GPU Shadow Cache` | 매 프레임 Near/Far `R32_FLOAT` 광학 깊이 배열을 생성하는 두 compute dispatch |
 | `Cloud Raymarch` | 선택 해상도에서 구름 scattering/T/depth를 MRT에 적분 |
-| `Spatial/Temporal Resolve` | Full-resolution 공간 복원, 선택적 history 재투영·clip과 장면 합성 |
-| `GPU Cloud Total` (`GPU Cloud`) | Shadow Cache+Raymarch+Resolve 세 구간의 합 |
+| `Spatial/Temporal Resolve` | Full-resolution 공간 복원, 선택적 history 재투영·clip과 cloud color/T+aux pair 생성 |
+| `Cloud Composite` | resolved pair, 장면/대기 합성과 history 후 NTE rim fullscreen pass |
+| `GPU Cloud Total` (`GPU Cloud`) | Shadow Cache+Raymarch+Resolve+Cloud Composite 네 구간의 합 |
 | `View` | `maxViewSteps @ stepSize(m)` |
 | `Light` | `maxLightSteps @ lightStepSize(m)` |
 | `VSync` | 현재 `Present(1, 0)` 또는 `Present(0, 0)` 경로 |
@@ -36,7 +37,7 @@ overlay와 F1~F4를 모두 숨겨 찍는다. 자동 성능 명령은 표시 체�
 Mode에서 ImGui frame, panel, overlay, preview와 수동 네 PNG export를 렌더 프레임에서 생략한다.
 자동 quality/performance는 Temporal 통계 관찰용 네 번째 MRT를 바인딩하지 않고 mip 생성과
 readback도 생략한다. 이 통계는 화면·history 출력이 아니라 디버그 관찰 자료다. 단, preset smoke는
-schema 37 계약만 확인하려고 프레임 밖에서 metadata-only JSON export를 한 번 호출하며 PNG는
+Stage 15B schema 38 계약만 확인하려고 프레임 밖에서 metadata-only JSON export를 한 번 호출하며 PNG는
 만들지 않는다.
 
 Stage 15A의 F4 출력 진단은 성능 수치와 별도로 Physical Client, SwapChain,
@@ -48,7 +49,9 @@ PMv2/Native 상태를 표시한다. `1920×1080`이라는 성능 결과는 Physi
 
 `FrameProfiler`는 8개 슬롯의 D3D11 timestamp query ring을 사용한다. 각 슬롯은 timestamp
 disjoint와 GPU Frame 시작·종료, Atmosphere LUT 종료, Cloud 시작, Shadow Cache 종료, Opaque 종료,
-Raymarch 종료, Resolve(Cloud) 종료와 Tone Map 종료 timestamp를 가진다. 현재 프레임을 기다리지 않고
+Raymarch 종료, Cloud Composite 시작, Cloud 종료와 Tone Map 종료 timestamp를 가진다.
+Raymarch 종료~Composite 시작은 Resolve, Composite 시작~Cloud 종료는 독립 합성 비용이다.
+현재 프레임을 기다리지 않고
 `D3D11_ASYNC_GETDATA_DONOTFLUSH`로 완료된 과거 슬롯만 읽는다. 8개 슬롯이
 모두 사용 중이면 해당 프레임의 GPU 측정을 생략하고 렌더링을 계속한다.
 
@@ -64,7 +67,8 @@ query가 아직 준비되지 않았으면 마지막 유효값 또는 `warming up
 3. F1 Noise 창의 Animation에서 시간을 정지한다.
 4. 같은 F1 창의 Performance에서 VSync를 Off로 설정한다.
 5. 설정 변경 후 최소 2초 동안 워밍업한다.
-6. `GPU Shadow Cache`, `Cloud Raymarch`, `Spatial/Temporal Resolve`, `GPU Cloud Total`을 기록하고 같은 조건에서 비교한다.
+6. `GPU Shadow Cache`, `Cloud Raymarch`, `Spatial/Temporal Resolve`, `Cloud Composite`,
+   `GPU Cloud Total`을 기록하고 같은 조건에서 비교한다.
 7. View/Light Step을 바꿀 때 한 번에 한 파라미터만 변경한다.
 
 예를 들어 Light Step 8/16/32의 비용을 비교할 때 카메라와 나머지 설정을 고정한다. FPS는
@@ -171,7 +175,8 @@ F5~F8 플레이어 시야 변경은 품질 관찰용이다. `Stage13CameraContro
 `CloudAppearanceTests`는 기본 seed에서 Dense/Stratus/Cumulus Weather R non-zero/core를
 각각 `79.62/49.11`, `87.31/56.60`, `73.82/42.07%`로 고정한다. Weather R=0,
 vertical profile=0, layer 밖 밀도 0과 profile의 단일 곱, 정확한 preset 조합, seed/wind
-불변, render-only Compare time 0을 검사한다. schema 29 Custom round-trip, 누락·구버전·
+불변, render-only Compare time 0을 검사한다. 현재 schema 30 Custom round-trip과 schema 29
+lift `0m`/footprint `0.20` migration, 누락·구버전·
 손상·범위 밖 거부와 원자 저장 실패도 CPU에서 검사한다.
 
 `Stage13UnifiedSceneSmoke`는 F5/F6에서 Dense/Stratus/Cumulus의 Composite, Weather,
@@ -424,9 +429,11 @@ T MAE `0.000603569→0.000615385`의 작은 bias도 숨기지 않고 JSON에 기
 
 `--stage15-stage14-regression-probe`는 DenseHorizon만 120 warmup+600 unique sample로 세 번
 측정하고 Cloud p95 중앙값을 승인값 `7.592960ms`의 103%인 `7.8207488ms`와 비교한다. GPU
-Frame/Atmosphere/Shadow/Opaque/Raymarch/Resolve/Tone/Cloud Total의 avg/p50/p95/p99와 raw CPU
-frame, adapter/driver, 해상도, 상태 fingerprint, shader variant/hash를 JSON/CSV에 보존한다.
-Cloud Total과 Shadow+Raymarch+Resolve의 합이 timestamp 오차 범위에서 다르면 fixture 자체를
+Frame/Atmosphere/Shadow/Opaque/Raymarch/Resolve/Cloud Composite/Tone/Cloud Total의 avg/p50/p95/p99와 raw CPU
+frame, adapter/driver, 해상도, 상태 fingerprint를 JSON/CSV에 보존한다. 각 block은
+`raymarchShaderHash`, `deepShadowShaderHash`, `cloudCompositeShaderHash`도 기록하며, 마지막 값은
+일반 rim/no-rim Composite bytecode pair의 결합 hash다.
+Cloud Total과 Shadow+Raymarch+Resolve+Cloud Composite의 합이 timestamp 오차 범위에서 다르면 fixture 자체를
 실패 처리한다. 이 회귀 probe의 렌더 프레임은 ImGui frame과 모든 panel/overlay/preview 및 수동
 네 PNG export를 생성하지 않는다. Temporal 통계용 네 번째 MRT와 mip/readback도 수집하지 않는다.
 위 preset smoke의 metadata-only JSON 예외는 회귀 probe에는 없다.
@@ -460,3 +467,50 @@ Frame/Cloud/Resolve p95는 Low `2.64397/2.59891/1.12026ms`, Medium
 최악 ratio는 `0.811623`으로 3% 상대 gate를 통과했다. 성능 명령 내부 Stage 14 회귀는
 `6.37645ms`/`0.839784×`, 독립 3-block은 `6.57203/6.15219/6.21363ms`, 중앙값
 `6.21363ms`/`0.818341×`로 통과했다. 모든 state/component invariant와 D3D debug gate도 통과했다.
+
+## Stage 15B 형상·Rim 성능 게이트
+
+Stage 15B는 기존 3.7km/5km 전역 도메인 예산, 50km View 상한, 품질별 Cloud RT와
+Balanced512 Shadow 배열 규격을 유지한다. Local base lift는 도메인을 늘리거나
+Shadow dispatch를 키우는 기능이 아니다. CPU/HLSL이 같은 열 geometry를 사용하고
+잘못된 descriptor를 적용 전에 거부하므로, 도메인을 맹목적으로 키워 손실된 두께를
+숨기지 않는다.
+
+기준선은 Stage 15B 직전의 같은 commit, adapter/driver, Release 1920×1080,
+VSync/UI off, 카메라/시간/품질/콘셉트 고정 측정이다. 2026-08-31 RTX 4080 SUPER에서
+120 warmup+600 timestamp, 48 case를 다시 측정했다.
+
+| 항목 | Stage 15B 게이트 | 현재 상태 |
+|---|---:|---|
+| Domain/Cloud RT/Shadow dispatch 규격 | 기준선과 동일 | 48/48 state/component invariant, D3D debug 통과 |
+| Stage 14 Cloud 회귀 | 승인 p95 대비 비악화 | `6.966272ms`, `0.917465×`, 통과 |
+| Shadow/Raymarch/Resolve | 48-case preset 예산 | 48/48 통과, 최악 Cloud p95 `9.224192ms` |
+| Full-resolution Cloud Composite/rim | Native 1080p `≤0.75ms` | 최악 p95 `0.167936ms`, 통과 |
+
+Rim은 모든 full-resolution 픽셀을 읽는 fullscreen pass므로 Resolve와 합치지
+않고 `Cloud Composite`로 따로 측정한다. Temporal history에 rim을 쓰지 않는 계약은
+Temporal Off/Stable/Full 간 진단 동일성과 이동 후 잔상 수동 검사로 재확인한다.
+Low·Reference와 실효 rim Off 상태는 compile-time no-rim Composite variant를 선택해 이웃
+표본 비용을 제거하지만 장면·대기 Composite timestamp는 계속 측정한다.
+Composite 모드에서는 Spatial/Temporal resolve가 cloud/aux pair만 MRT에 기록한다. 최종 HDR은
+Composite가 한 번만 clear/write해, 사용하지 않는 세 번째 full-resolution resolve 출력을
+성능 수치에 포함하지 않는다.
+
+### 철회한 boundary refinement 실험
+
+Stage 15B 개발 중 빈↔밀도 전환마다 이분 탐색하고 fine interval을 보류하는 boundary
+refinement를 평가했다. 결정적 synthetic fixture에서는 큰 개선처럼 보였지만 실제 GPU
+contour의 개선은 Medium 약 `0.003%`, High 약 `0.99%`에 그쳐 화면 승인 근거가 되지 못했다.
+반면 빠른 Raymarch 대체 측정에서는 기준선보다 약 `18~35%` 느렸고, FXC `/O1` 통계도
+약 `60→166` temps, `22,436→60,933` instruction slots, `589KB→1.58MB`로 커졌다.
+
+구름 density는 단조 경계 함수가 아니라 비단조 3D noise volume이다. 따라서 모든 내부
+전환에 이분 탐색을 적용하고 pending interval 상태를 오래 유지하는 구조는 비용과 register
+pressure를 크게 늘리면서도 실제 실루엣 위치를 의미 있게 개선하지 못했다. 이 실험과 전용
+CLI·품질 gate는 철회했다. 현재 런타임은 승인된 Stage 9의 coarse 후보 탐색 뒤 한 coarse
+interval을 되감아 fine march로 전환하는 계약을 사용하며, `OptimizationCB` offset 44는
+호환용 padding이다. Diagnostic ID 82는 enum 호환을 위해 예약하지만 출력은 무효다.
+
+향후 별도 연구 후보는 conservative occupancy/max-mip으로 빈 공간 경계를 먼저 제한하거나,
+최종 density에만 제한적인 quadrature를 적용하는 방법이다. 둘 다 이번 Stage 15B에는
+구현하지 않는다.

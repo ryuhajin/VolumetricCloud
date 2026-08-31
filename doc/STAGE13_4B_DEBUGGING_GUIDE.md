@@ -337,14 +337,17 @@ F1 `Noise / Weather / Shape / Sampling Debug View`의 `Main View Debug` 콤보�
 가장 싼 50%부터 무조건 채택하는 것이 목표가 아니다. **Full과 큰 차이가 없고 이동 중에도 안정적인
 후보 중 GPU Cloud Total이 가장 낮은 조합**을 사용자 승인 후보로 보고한다.
 
-## 8. Pipeline Compare
+## 8. Pipeline Compare (Stage 13 승인 당시 이력)
 
-F1 `Open World Render Pipeline Compare`의 1~5는 Procedural/Uniform → Texture3D →
+Stage 13 승인 당시 F1 `Open World Render Pipeline Compare`의 1~5는 Procedural/Uniform → Texture3D →
 Periodic Weather → Physical Shape → Full Open World를 누적한다. 버튼으로 Compare에 들어가면
 main pass의 샘플 time만 0으로 고정하므로 바람 때문에 위치가 바뀌지 않는다. 일반 Animation
 상태, 카메라, 도메인, 지면과 건물은 바뀌지 않는다. 외형 preset이나 slider를 조절해 Compare를
 벗어나면 정상 time으로 즉시 복귀한다. 5는 항상 Dense Mixed와 현재 13-5 sampling/lighting을
 복원한다.
+
+현재 Stage 15B 제작 UI에서는 이 버튼을 제거했다. 내부 enum·schema·CLI/GPU 회귀 경로만
+과거 화면 재현을 위해 유지하며, 현재 구름 제작에는 F1 Type/F4 Concept의 공통 formation 경로를 쓴다.
 
 ## 9. 사용자 최종 검증
 
@@ -356,7 +359,7 @@ main pass의 샘플 time만 0으로 고정하므로 바람 때문에 위치가 �
 - [ ] 전환 중 카메라와 Weather 공간 위치가 움직이지 않는다.
 - [ ] F7/F8: 내부와 상공에서 NaN, 검정 frame, 평평한 천장이 없다.
 - [ ] Custom: 수정→저장→다른 preset→복원→재실행 후 Custom 복원이 모두 된다.
-- [ ] Compare 1~5에서 건물/지면/카메라는 고정되고 구름 하위 계산만 누적 변경된다.
+- [x] Compare 1~5는 Stage 13 승인 이력으로 보존하고 Stage 15B F1~F4 제작 UI에서는 제거했다.
 - [ ] 제거된 F2 타입 버튼, 문자 키와 F9~F12는 동작하지 않는다.
 - [ ] F1 Optimization의 Balanced가 가장 왼쪽 Master이고 Empty Search가 `2×/Off`만 제공한다.
 - [ ] Fine Reference와 Straight 320 Fine은 오프라인 기준임을 이해하고 일반 플레이 후보로 사용하지 않는다.

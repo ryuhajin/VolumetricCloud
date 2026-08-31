@@ -144,9 +144,11 @@ ChatGPT 창을 최소화하고 종료 즉시 복원했으며, 그 결과를 `cap
   history generation을 보존해야 한다. 이 보강 뒤 Debug/Release preset smoke 48/48과
   rollback/idempotency/restore retry가 통과했다.
 - 상수버퍼는 canonical byte dirty hash로 같은 pass 공통 값을 중복 `Map`하지 않는다.
-- shader bytecode cache는 모든 HLSL/include, entry, target, macro, flag, compiler identity의
-  SHA-256 key를 사용한다. warm validation은 runtime compile 0회, cache hit 22개 이상이며 cold/warm
-  shader hash가 같다. hot reload는 cache를 우회하고 전체 variant 성공 뒤 갱신한다.
+- shader bytecode cache는 root HLSL과 재귀적 literal include closure, entry, target, macro, flag,
+  compiler identity의 SHA-256 key를 사용한다. include를 안전하게 해석하지 못하면 cache 없이
+  compile한다. warm validation은 runtime compile 0회, cache hit 22개 이상이며 cold/warm shader
+  hash가 같다. hot reload는 내용이 바뀌지 않은 variant의 cache를 재사용하고 전체 variant 성공 뒤
+  세대를 갱신한다.
 - exact `ShadowCacheKey` 기반 dispatch 생략은 도입하지 않았다. 계획상 강제 Shadow 재생성 상태의
   3% gate가 먼저 통과하고 48-case의 남은 병목이 Shadow일 때만 허용된다. 현재 유효하지 않은
   probe에서도 Shadow는 약 0.72ms이고 주요 변동은 Raymarch였으므로 캐시로 회귀를 숨길 근거가 없다.
@@ -197,6 +199,46 @@ Medium의 픽셀 수·Resolve 구조가 달라졌다. 따라서 최신 fixture�
 
 각 행에는 별도 부록으로 bytecode hash, slots, temps, div/rsq, adapter/driver,
 state/resource fingerprint와 결과 JSON/CSV 경로를 남긴다.
+
+## Stage 15B boundary refinement 실험 철회
+
+Stage 15B에서는 빈↔밀도 전환마다 이분 탐색하고 fine interval을 pending 상태로 유지하는
+boundary refinement를 별도로 구현·측정했다. 실험을 숨기지 않고 실패 근거를 다음과 같이
+남긴다.
+
+- 실제 GPU contour 개선은 Medium 약 `0.003%`, High 약 `0.99%`였다. 결정적 synthetic
+  fixture의 큰 개선율은 실제 비단조 구름 표면을 대표하지 못하므로 승인 gate에서 제거했다.
+- 빠른 Raymarch 대체 측정은 기준선보다 약 `18~35%` 느렸다.
+- FXC `/O1` 통계는 약 `60→166` temps, `22,436→60,933` instruction slots,
+  `589KB→1.58MB`로 증가했다.
+- 구름 density가 단조 signed-distance 경계가 아니라 비단조 3D noise volume이므로, 모든
+  내부 전환을 이분 탐색하면서 여러 sample과 pending 상태를 동시에 살려 두는 방식은 실제
+  실루엣 이득에 비해 texture fetch, register pressure와 shader 규모가 지나치게 컸다.
+
+따라서 전용 CLI와 boundary 화질·성능 gate를 제거하고, 런타임은 승인된 Stage 9의
+`coarse 후보 탐색 → 한 coarse interval rewind → fine march` 계약으로 복구했다.
+`OptimizationCB` offset 44는 다시 호환용 padding이며 diagnostic ID 82는 enum 호환을 위해
+예약하되 무효 출력으로 남긴다. Stage 15B P3에서 채택한 외곽 개선은 resolve 이후의
+full-resolution NTE rim뿐이다.
+
+향후에는 conservative occupancy/max-mip으로 빈 공간을 보수적으로 분류하거나 최종 density
+구간에만 제한적인 quadrature를 적용하는 방법을 별도 연구할 수 있다. 이번 단계에는 어느
+쪽도 구현하지 않는다.
+
+### Stage 15B 롤백 후 최종 측정
+
+2026-08-31 17:14~17:17에 RTX 4080 SUPER/driver `32.0.15.9186`, Release
+1920×1080에서 boundary 실험을 제거한 최종 후보를 다시 측정했다.
+
+- Stage 15 quality: `96/96 PASS`.
+- Stage 15 performance: 120 warmup+600 timestamp, `48/48 PASS`.
+- Stage 14 Cloud p95: `6.966272ms`, 승인 기준 대비 `0.917465×`.
+- 48-case 최악 Cloud p95: Meadow High AboveLayer `9.224192ms`.
+- Full-resolution Composite/rim 최악 p95: `0.167936ms`, `0.75ms` 예산 통과.
+- state/component invariant와 D3D11 debug gate 통과.
+
+근거 파일은 `captures/stage15/quality.json,csv`와
+`captures/stage15/performance.json,csv`다.
 
 ## 최종 회고
 

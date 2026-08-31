@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 
@@ -23,11 +24,18 @@ struct alignas(16) CloudDomainParameters
 
     float viewTraceFadeStartDistance = 40000.0f;
     float maxLightTraceDistance = 20000.0f;
-    float domainPadding[2] = {};
+    // Physical Atmosphere가 구름층 입사광을 한 번 조회할 대표 절대 고도다.
+    // 전역 교차 도메인 중앙과 분리해 local shape 범위 변경이 조명 기준을
+    // 우연히 바꾸지 않게 한다.
+    float cloudLightingReferenceAltitudeMeters = 3000.0f;
+    float domainPadding = 0.0f;
 };
 
 static_assert(sizeof(CloudDomainParameters) == 32,
               "CloudDomainParameters must match CloudDomainCB");
+static_assert(offsetof(CloudDomainParameters,
+                       cloudLightingReferenceAltitudeMeters) == 24,
+              "CloudDomainParameters lighting altitude ABI changed");
 
 inline CloudDomainParameters SanitizeCloudDomainParameters(
     const CloudDomainParameters& value)
@@ -54,7 +62,13 @@ inline CloudDomainParameters SanitizeCloudDomainParameters(
         0.0f, result.maxViewTraceDistance);
     result.maxLightTraceDistance = std::max(
         finiteOr(result.maxLightTraceDistance, 20000.0f), 1e-4f);
-    result.domainPadding[0] = 0.0f;
-    result.domainPadding[1] = 0.0f;
+    const float layerTop = result.cloudBottomAltitude +
+        result.cloudLayerThickness;
+    result.cloudLightingReferenceAltitudeMeters = std::clamp(
+        finiteOr(result.cloudLightingReferenceAltitudeMeters,
+                 result.cloudBottomAltitude +
+                     0.5f * result.cloudLayerThickness),
+        result.cloudBottomAltitude, layerTop);
+    result.domainPadding = 0.0f;
     return result;
 }

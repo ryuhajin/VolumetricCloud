@@ -36,6 +36,7 @@ struct CloudDensitySample
     float weatherThresholdDensity; // Weather R까지 적용한 threshold 밀도.
     float heightFraction;    // AABB 바닥=0, 천장=1인 정규화 월드 Y 높이.
     float localThicknessMeters;// Weather A/G가 정한 이 XZ 기둥의 물리 두께(m).
+    float localBaseLiftMeters;// Weather A가 전역 바닥에서 올린 로컬 바닥(m).
     float localHeightFraction;// 로컬 바닥=0, 로컬 상단=1인 정규화 높이.
     float heightProfile;     // 위·아래 경계를 부드럽게 지우는 마스크(0~1).
     float typedShapeProfile; // 높이/Type이 정한 shape threshold 마스크(0~1).
@@ -264,17 +265,22 @@ CloudDensitySample ComposeBaseCloudDensity(
         weather.localThicknessPotential, sample.cloudType);
     bool physicalShape = UsesPhysicalCloudShape();
     bool cirrusShape = IsCirrusCloudShape();
-    sample.localThicknessMeters = cirrusShape
-        ? EvaluateCirrusLocalThickness(weather.localThicknessPotential)
-        : physicalShape
-        ? EvaluatePhysicalLocalThickness(
-            weather.localThicknessPotential, sample.cloudType)
-        : localTopFraction * max(cloudBoundsMax.y - cloudBoundsMin.y, 1.0);
-    sample.localHeightFraction = cirrusShape
-        ? EvaluateCirrusLocalHeight(worldPosition.y, sample.localThicknessMeters)
-        : physicalShape
-        ? EvaluatePhysicalLocalHeight(worldPosition.y, sample.localThicknessMeters)
-        : EvaluateLocalHeightFraction(sample.heightFraction, localTopFraction);
+    if (physicalShape)
+    {
+        PhysicalColumnGeometry geometry = EvaluatePhysicalColumnGeometry(
+            worldPosition.y, weather);
+        sample.localThicknessMeters = geometry.localThicknessMeters;
+        sample.localBaseLiftMeters = geometry.localBaseLiftMeters;
+        sample.localHeightFraction = geometry.localHeightFraction;
+    }
+    else
+    {
+        sample.localThicknessMeters = localTopFraction *
+            max(cloudBoundsMax.y - cloudBoundsMin.y, 1.0);
+        sample.localBaseLiftMeters = 0.0;
+        sample.localHeightFraction = EvaluateLocalHeightFraction(
+            sample.heightFraction, localTopFraction);
+    }
     float insideLocalColumn = sample.localHeightFraction >= 0.0 &&
         sample.localHeightFraction <= 1.0 ? 1.0 : 0.0;
     // 높이 마스크가 없으면 AABB 바닥과 천장이 칼로 자른 듯 보인다. 단계 3은
@@ -312,8 +318,8 @@ CloudDensitySample ComposeBaseCloudDensity(
             0.02, 0.20, sample.weatherCoverage);
         float weatherFactor = lerp(
             0.70, 1.00, sample.weatherCoverage);
-        float footprintFactor = lerp(
-            0.80, 1.00, typedFootprintScale);
+        float footprintFactor = EvaluateFootprintCoverageFactor(
+            typedFootprintScale);
         sample.effectiveShapeCoverage = saturate(
             coverage * weatherFactor * footprintFactor);
         sample.weatherThresholdDensity = RemapCoverage(
@@ -377,13 +383,10 @@ CloudDensitySample EvaluateBaseCloudDensityOptimized(
     {
         WeatherSample weather = SampleWeatherMap(worldPosition, timeSeconds);
         bool cirrusShape = IsCirrusCloudShape();
-        float localThickness = cirrusShape
-            ? EvaluateCirrusLocalThickness(weather.localThicknessPotential)
-            : EvaluatePhysicalLocalThickness(
-                weather.localThicknessPotential, weather.cloudType);
-        float localHeight = cirrusShape
-            ? EvaluateCirrusLocalHeight(worldPosition.y, localThickness)
-            : EvaluatePhysicalLocalHeight(worldPosition.y, localThickness);
+        PhysicalColumnGeometry geometry = EvaluatePhysicalColumnGeometry(
+            worldPosition.y, weather);
+        float localThickness = geometry.localThicknessMeters;
+        float localHeight = geometry.localHeightFraction;
         float verticalProfile = cirrusShape
             ? EvaluateCirrusVerticalProfile(localHeight)
             : EvaluatePhysicalTypedVerticalProfile(localHeight, weather.cloudType);
@@ -405,6 +408,7 @@ CloudDensitySample EvaluateBaseCloudDensityOptimized(
             result.weatherDensityModifier = weather.densityModifier;
             result.weatherThicknessPotential = weather.localThicknessPotential;
             result.localThicknessMeters = localThickness;
+            result.localBaseLiftMeters = geometry.localBaseLiftMeters;
             result.localHeightFraction = localHeight;
             result.typedShapeProfile = max(verticalProfile, 0.0);
             result.supportPrecheckSkipped = 1.0;
@@ -439,13 +443,9 @@ float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
         WeatherSample weather = (WeatherSample)0;
         weather = SampleWeatherMap(worldPosition, timeSeconds);
         bool cirrusShape = IsCirrusCloudShape();
-        float localThicknessMeters = cirrusShape
-            ? EvaluateCirrusLocalThickness(weather.localThicknessPotential)
-            : EvaluatePhysicalLocalThickness(
-                weather.localThicknessPotential, weather.cloudType);
-        float localHeightFraction = cirrusShape
-            ? EvaluateCirrusLocalHeight(worldPosition.y, localThicknessMeters)
-            : EvaluatePhysicalLocalHeight(worldPosition.y, localThicknessMeters);
+        PhysicalColumnGeometry geometry = EvaluatePhysicalColumnGeometry(
+            worldPosition.y, weather);
+        float localHeightFraction = geometry.localHeightFraction;
 
         if (localHeightFraction >= 0.0 && localHeightFraction <= 1.0)
         {
@@ -460,10 +460,13 @@ float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
                 float typedFootprintScale = cirrusShape ? 1.0
                     : EvaluatePhysicalTypedFootprintScale(
                         localHeightFraction, weather.cloudType);
-                float weatherFactor = lerp(0.70, 1.00, weather.coverage);
-                float footprintFactor = lerp(0.80, 1.00, typedFootprintScale);
-                float effectiveShapeCoverage = saturate(
-                    coverage * weatherFactor * footprintFactor);
+                float weatherFactor = cirrusShape
+                    ? lerp(0.65, 1.00, weather.coverage)
+                    : lerp(0.70, 1.00, weather.coverage);
+                float footprintFactor = cirrusShape ? 1.0
+                    : EvaluateFootprintCoverageFactor(typedFootprintScale);
+                float effectiveShapeCoverage = saturate(coverage *
+                    weatherFactor * footprintFactor);
                 NoiseFieldSample baseNoise = (NoiseFieldSample)0;
                 baseNoise = SampleBaseShapeNoise(worldPosition, timeSeconds);
                 float thresholdDensity = RemapCoverage(

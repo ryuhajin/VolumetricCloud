@@ -140,9 +140,42 @@ Weather texel = 64000m / 256 = 250m
 요청한 100m에 가까운 정상값이다. max step 상한으로 실제 간격이 요청값을 초과하면
 노랑→빨강으로 바뀌므로 banding 위험을 화면에서 즉시 구분할 수 있다.
 
+### Stage 15B 스케일 계층을 맞추는 순서
+
+실무에서는 픽셀이나 noise scale 하나를 먼저 고르지 않고, 장면에서 보여야 할
+가장 큰 기상 덩어리와 카메라 거리를 먼저 정한다. 이 프로젝트의 기준 계층은
+다음과 같다.
+
+```text
+Domain thickness >= maximum local thickness + maximum base lift + headroom
+Weather wavelength >> Base macro wavelength > Detail wavelength > ray step
+maxTraceDistance / rayStep <= maxViewSteps
+```
+
+256² Weather 해상도를 올리지 않고 world size를 늘리면 texel 하나가 표현하는 거리가
+늘어나 더 큰 기상 덩어리를 만든다. 반대로 world size를 줄이면 50km 안에서
+같은 맵이 자주 반복되고 Weather 경계가 Base/Detail에 가까운 고주파 노이즈처럼
+보인다. 그러므로 Physical 제작 범위는 `17.6~160km` 로그 슬라이더로 제한하고,
+F2 Scale Budget에 `worldSize/256`, 2D macro/detail 파장, Base/Detail 3D world size,
+View step/최대 trace, `50km/worldSize` 반복 횟수를 같이 표시한다. Weather 128km인
+Cirrus를 위해 상한은 160km다.
+
 40~50km 거리 fade는 13-1과 같은 smoothstep을 사용한다. 이는 실제 대기 원근이 아니라
 유한 추적 끝의 절단만 숨기는 장치다. 대기 색·원근, 거리 LOD와 Early Exit는
 각각 단계 14, 13-5와 단계 9 범위다.
+
+### Stage 15B F1/F4 공통 formation 적용
+
+F1 Type과 F4 Concept는 서로 다른 내장값·저장 파일을 사용하지만, 레이마칭에 전달되는
+구름 값은 모두 `CloudFormationSettings`로 모은다. 적용 전에 coverage/density/extinction/
+erosion, Weather 네 채널 생성값과 type, world size, shape, domain/trace, Base/Detail 월드
+샘플링 크기와 wind를 한꺼번에 검증한다. 200m 여유를 포함한 domain fit과 임시 256²
+Weather Map 생성까지 성공해야 런타임 값을 한 번에 commit한다.
+
+따라서 같은 formation을 F1과 F4에 넣으면 `CloudCB/CloudShapeCB/CloudDomainCB`, Weather
+RGBA/hash와 아래 density 함수의 입력이 같다. F4의 태양·대기·지면·Rim은 formation 밖이므로
+최종 Composite 색만 달라질 수 있다. 잘못된 슬라이더 조합이나 손상된 파일은 현재 밀도장을
+부분적으로 바꾸지 않는다.
 
 ## 단계 13-4B: Weather 기반 물리 두께와 Base/Detail Texture3D
 
@@ -179,6 +212,43 @@ Base G/B/A와 Detail RGBA는 서로 다른 주파수의 periodic Worley distance
 Weather·coverage·높이 프로파일을 거친 다음, Detail은 경계 쪽에서만 subtractive erosion으로
 깎는다. Light Ray는 단계 4 계약대로 Detail을 생략하고 같은 Texture3D Base를 읽는다.
 
+### Cirrus는 새 noise 생성이 아니라 비등방 sampling이다
+
+`CloudShapeMode::CirrusPhysicalLayer`도 같은 128³ Base Perlin-Worley와 32³ Detail
+Worley texture를 읽는다. 다만 월드 XZ를 Flow Angle의 along 축과 그 수직 across 축으로
+회전하고, 두 축과 Y를 서로 다른 meter scale로 나눈다.
+
+```text
+along  = dot(stationaryWorld.xz, flowDirection)
+across = dot(stationaryWorld.xz, perpendicular(flowDirection))
+cirrusUVW = frac(along/alongScale,
+                 worldY/verticalScale,
+                 across/acrossScale)
+```
+
+Base 기본 `20/4/1km`, Detail 기본 `6/1.5/0.5km`처럼
+`Along > Across > Vertical`을 사용해 둥근 동일방향 noise를 긴 섬유로 읽는다. Weather UV도
+같은 flow basis를 사용하며 across의 world period는
+`WeatherWorldSize × BaseAcross/BaseAlong`이다. 그래서 큰 Weather 띠와 내부 Base 결의
+aspect가 일치한다. Flow/scale/profile 편집은 Texture3D resolution/seed/frequency와
+texture hash를 바꾸지 않는다.
+
+권운은 Weather G로 종류를 고르지 않는다. R은 support, B는 밀도 배율, A는
+`cirrusMinimumThicknessMeters~cirrusMaximumThicknessMeters`를 보간한다. 도메인 안의
+`cirrusVerticalProfileCenter`에 로컬 층을 가운데 정렬하고 중심형 profile을 적용한다.
+
+```text
+thickness = lerp(cirrusMin, cirrusMax, WeatherA)
+center = domainBottom + domainThickness * profileCenter
+localBottom = center - thickness * 0.5
+localHeight = (worldY - localBottom) / thickness
+```
+
+Cirrus에는 일반 구름의 base lift와 footprint influence를 적용하지 않는다. F1 Cirrus와
+F4 Desert Cirrus는 같은 compile-time Cirrus PS/Deep Shadow variant를 고르며, F1/F4 전용
+셰이더는 없다. 제작 순서와 문제별 진단은
+[CIRRUS_CLOUD_AUTHORING.md](CIRRUS_CLOUD_AUTHORING.md)를 따른다.
+
 Texture 주소 모드는 wrap이고 생성 함수 자체도 정수 cell을 주기 범위로 감싼다. 따라서
 `uvw`와 `uvw+(정수 축)`은 같은 위치다. `Tile Wrap Difference`는 이 차이를 육안 확인하기
 위해 255배 확대하며 정상 화면은 검정에 가깝다. 자동 검증은 확대 전 실제 최대 차이
@@ -208,11 +278,28 @@ type = saturate(weatherG)
 minimumThickness = lerp(1500m, 3000m, type)
 maximumThickness = lerp(2500m, 6000m, type)
 localThickness = lerp(minimumThickness, maximumThickness, weatherA)
-localHeight = (worldY - 1500m) / localThickness
+
+desiredBaseLift = localBaseLiftMax × typeScale × pow(1 - weatherA, 1.5)
+localBaseLift = min(desiredBaseLift, localThickness × 0.25)
+localBottom = domainBottom + localBaseLift
+localTop = localBottom + localThickness
+localHeight = (worldY - localBottom) / localThickness
 ```
 
-`localHeight`가 `[0,1]` 밖이면 밀도는 0이다. 따라서 모든 XZ 기둥의 밑면은 정확히
-1,500m이고, 상단은 타입과 Weather A에 따라 달라진다. Dense Mixed의 Stratus/Mixed/
+Stage 15B의 `PhysicalColumnGeometry`는 이 값을 한 번 만들어 View, optimized support
+precheck, Light Ray, Deep Shadow에 공통으로 넘긴다. `localHeight`가 `[0,1]` 밖이면
+밀도는 0이다. 낮고 약한 Weather A 컬럼은 바닥이 더 높고, 두껕고 높은 컬럼은
+전역 바닥에 가깝다. base lift는 Weather A/G만 쓰고 고주파 noise로 흔들지 않아
+하단이 지저분해지지 않는다. 런타임은 도메인 top에서 로컬 상단을 잘라
+숨기지 않는다. CPU preflight이 다음을 먼저 강제한다.
+
+```text
+activeMaximumThickness + localBaseLiftMax <= domainThickness
+Stage15 non-Cirrus: remainingTopHeadroom >= 200m
+```
+
+하나라도 어기면 프리셋·UI를 부분 적용하지 않고 이전 shape/domain/AABB Y 상태로
+복구한다. Dense Mixed의 Stratus/Mixed/
 Cumulus bottom/top은 `0.06/0.65`, `0.10/0.86`, `0.08/0.93`이다. Cumulus에는 로컬
 높이 `0.08→0.70`에서 `0.65→1.0`으로 증가하는 upper-mass를 곱한다.
 타입 `0→0.5→1` 구간에서는 이 세 envelope를 연속 보간한다. Physical mode는 여기에
@@ -223,7 +310,8 @@ Cumulus bottom/top은 `0.06/0.65`, `0.10/0.86`, `0.08/0.93`이다. Cumulus에는
 ```text
 weatherSupport    = smoothstep(0.02, 0.20, weatherR)
 weatherFactor     = lerp(0.70, 1.00, weatherR)
-footprintFactor   = lerp(0.80, 1.00, typedFootprint)
+footprintFactor   = lerp(1 - footprintCoverageInfluence,
+                         1, typedFootprint)
 horizontalCoverage = saturate(globalCoverage * weatherFactor * footprintFactor)
 noiseShape        = RemapCoverage(rawNoise, horizontalCoverage)
 baseDensity       = insideColumn * weatherSupport * noiseShape
@@ -231,19 +319,18 @@ baseDensity       = insideColumn * weatherSupport * noiseShape
 ```
 
 Weather R=0은 정확히 비지만 약한 Weather도 작은 support로 남는다. 세로 profile은 noise
-threshold를 다시 축소하지 않고 밀도에 한 번만 곱해 상단의 이중 절단을 막는다. footprint는
-threshold에 20%만 영향을 줘 둥근 상단을 만들되 질량 전체를 제거하지 않는다. Detail은
+threshold를 다시 축소하지 않고 밀도에 한 번만 곱해 상단의 이중 절단을 막는다. 기존
+20%는 절대 수식이 아니라 schema 29 Custom 호환 기본값이다. Stage 15는 Urban/Meadow/
+Snow/Cirrus에 `0.50/0.40/0.20/0.0`을 쓰며 둥근 상단과 수평 질량 보존을
+콘셉트별로 조절한다. Detail은
 이미 만들어진 Base 경계만 침식한다. 두 Texture3D 좌표는 로컬 상단에 맞춰 늘이거나
 압축하지 않으므로 카메라 이동 중 무늬가 월드에 고정된다. Dense Mixed의 기준 수직 광학
 스케일은 `6000m × 0.00035/m = τ 2.1`이며 실제 τ에는 density/noise/profile이 함께 들어간다.
 Similarity와 구형 회귀는 b7 Legacy shape mode의 기존 경로를 유지한다.
 
-F1 파이프라인 비교는 교차 구간을 바꾸지 않고 위 밀도 계산만 누적 교체하며 main pass의
-effective time을 `0`으로 고정한다. 일반 Animation 상태나 카메라는 바꾸지 않는다. 1단계는
-Procedural+Uniform+Legacy Shape, 2단계는 Texture3D, 3단계는 64km Periodic Weather,
-4단계는 물리 두께와 타입 Profile, 5단계는 최신 Open World extinction·View/Light budget과
-바람까지 적용한다. 따라서 단계 전환에서 처음 얇아지거나 사라지는 출력이 해당 밀도 하위
-경로의 회귀 지점이며 AABB/Planar 교차 문제와 분리해 판정할 수 있다.
+구형 Open World Pipeline Compare는 교차 구간을 바꾸지 않고 밀도 하위 경로만 누적
+교체하는 회귀 fixture로 코드에 보존한다. 현재 F1~F4 제작 UI에는 노출하지 않으며 schema/CLI/
+GPU 회귀에서만 Procedural→Texture3D→Weather→물리 두께→Open World 변화를 비교한다.
 
 Texture3D는 실행 초기 compute shader로 결정적으로 생성한다. 같은 seed·규격은 같은
 readback hash를 만들어야 한다. 디스크 cache 포맷은 현재 제품 실행 경로가 아니라 손상
@@ -756,6 +843,18 @@ Accumulated Direct/Composite MAE는 각각 `0.00036347`/`0.00070073`으로 목�
 각 실제 구간 길이 `Δs_i`를 사용하므로 균일 밀도에서는 가변 분할도
 `T = exp(-rho × sigma_t × sum(Δs_i))`와 같다.
 
+Stage 15B에서는 인접 empty↔dense 전환마다 이분 탐색하고 한 fine 구간을 pending으로
+보류하는 실험도 수행했다. 그러나 비단조 Texture3D noise에서는 한 레이 안의 내부 전환이
+많아 추가 Base 평가와 live state가 크게 늘었고, 실제 GPU 실루엣 개선은 Medium 약
+`0.003%`, High 약 `0.99%`에 그쳤다. 빠른 Raymarch 대체 측정은 약 `+18~35%` 느려졌으며
+FXC `/O1` bytecode도 temps 약 `60→166`, instruction slots `22,436→60,933`, 크기
+`589KB→1.58MB`로 커졌다. 따라서 이 실험은 철회했고 위 2번의 coarse 한 구간
+rewind→fine 복귀가 현재 런타임 계약이다. OptimizationCB offset 44는 padding이고
+진단 ID 82는 예약/무효다.
+
+향후 경계 연구는 빈 공간을 보수적으로 판정하는 occupancy/max-mip 계층이나, 전환 전체를
+추적하지 않는 제한적 final-density quadrature로 분리한다. 둘 다 이번 단계에는 구현하지 않는다.
+
 4× Search의 400m deterministic midpoint는 Base Texture3D의 최단 파장 약 522m를
 Nyquist 조건보다 성기게 읽는다. 2026-08-19 사용자 검증에서 카메라 중심의 거리 껍질과
 coarse/full 전환이 등고선·물결무늬로 드러났으므로 Fast/4×는 탈락했다. 활성 최저 비용은
@@ -937,3 +1036,48 @@ preview = 1 - exp(-tau * debugExposure)   // 기본 exposure=4
 Cloud Shadow Map이며, slice 번호가 커질수록 더 높은 지점부터 태양까지의 Light Cache를 본다.
 최상단 slice는 정의상 tau 0이므로 검정이 정상이다. Cascade 진단은 불투명 픽셀에는 복원한
 표면 월드 위치를, 하늘에는 구름층 중간 높이와 카메라 레이의 교차점을 사용한다.
+
+## Stage 15B: Physical Fill과 full-resolution NTE rim
+
+Physical Atmosphere에서는 Manual Reference의 고정 `Sky/Ground Strength`를 쓰지 않고
+LUT가 계산한 입사광에 cloud-only 배율을 곱한다.
+
+```text
+skyIncident = SkyIrradianceLUT(referenceAltitude) * physicalSkyFillScale
+groundIncident = GroundIrradianceLUT(referenceAltitude)
+               * groundAlbedo / PI
+               * groundBounceMultiplier
+               * physicalGroundFillScale
+```
+
+Weather Physical의 `referenceAltitude = bottom + 0.5*activeMaximumThickness`다.
+중심형 Cirrus는 예외로
+`cloudBottomAltitude + cloudLayerThickness*cirrusVerticalProfileCenter`를 써서 실제
+profile 중심에서 LUT를 조회한다. 컬럼 내부 높이 가중은 전역 도메인 높이가 아니라
+`PhysicalColumnGeometry.localHeight`를 쓴다. 두 배율은 구름 조명만 바꾸며 대기
+배경·Aerial·Sky View LUT를 다시 만들지 않는다.
+
+Spatial/Temporal resolve는 이제 장면을 합성하지 않고 full-resolution
+`cloud(scattering.rgb,T)`와 `aux(cloudDepth,sceneLimit)` pair를 만든다. Temporal On은 방금
+쓴 write-history pair를, Off/Capture는 같은 규격의 spatial target을 쓴다. 그 뒤
+`CloudComposite`가 아래 순서로 실행된다.
+
+1. 중심 구름 opacity가 threshold band 안쪽인지 검사한다.
+2. 좌/우/위/아래를 `widthPixels`만큼 이동해 더 투명한 이웃을 찾는다.
+3. Fractional linear 이웃 표본의 bilinear footprint 전체가 중심과 같은 geometry/sky class인지,
+   geometry라면 scene limit도 연속인지 검사한다. 이후 유효 구름 깊이가 크게 다르면 거부한다.
+4. 안쪽→바깥쪽 화면 방향과 투영된 태양 방향의 정렬만 `sunPower`로 남긴다.
+5. LUT/직접 태양 radiance, tint, intensity와 중심 opacity를 곱한 값을 premultiplied
+   cloud scattering에 더하고 대기를 합성한다.
+
+Rim은 resolve/history 후 매 프레임 새로 계산하므로 ghost를 만들지 않는다. 또한 장면
+깊이 경계를 건너지 않고 태양 쪽만 선택하므로 모든 둘레에 붙는 스티커 외곽선이
+아니다. ID 83은 방향·깊이·opacity를 통과한 mask, 84는 HDR 기여도다.
+Composite 모드의 Spatial/Temporal resolve는 pair 두 MRT만 기록하고 최종 HDR target은
+`CloudComposite`가 한 번만 clear/write한다. Rim 진단의 Temporal Off 캡처도 일반 렌더와 같은
+Spatial upsample 경로를 사용한다.
+
+Composite PS는 일반 rim과 `VCLOUD_DISABLE_RIM=1` no-rim 두 variant로 컴파일한다.
+Low·Reference 또는 콘셉트/설정상 실효 rim이 Off이면 no-rim variant를 선택해 4방향
+이웃 표본과 rim 기여를 compile-time에 제거한다. 장면·대기 합성 pass 자체는 그대로
+실행되므로 no-rim은 Composite 전체를 생략한다는 뜻이 아니다.

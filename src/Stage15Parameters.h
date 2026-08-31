@@ -7,8 +7,11 @@
 
 #include "AtmosphereParameters.h"
 #include "CloudAppearance.h"
+#include "CloudFormationPresetStore.h"
 #include "CloudDomainParameters.h"
 #include "CloudLodParameters.h"
+#include "CloudRimParameters.h"
+#include "CloudShapeDomainContract.h"
 #include "EnvironmentParameters.h"
 #include "GroundLightingParameters.h"
 #include "LightParameters.h"
@@ -19,6 +22,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 enum class Stage15QualityPreset : std::uint32_t
 {
@@ -116,6 +120,10 @@ struct Stage15QualityDescriptor
 
 struct Stage15ConceptDescriptor
 {
+    // Stage 15B 이후 구름 형성의 단일 원본. 아래 weather/appearance/domain/shape
+    // 필드는 구형 CPU 테스트·metadata를 위한 호환 projection이며 ResolveConcept
+    // 마지막에 반드시 이 snapshot에서 파생한다.
+    CloudFormationSettings formation = {};
     Stage5WeatherPreset weatherPreset = Stage5WeatherPreset::PeriodicPerlin;
     WeatherMapGeneratorSettings weather = {};
     CloudAppearanceSettings appearance = {};
@@ -127,6 +135,7 @@ struct Stage15ConceptDescriptor
     Stage7PhasePreset phasePreset = Stage7PhasePreset::SilverLining;
     EnvironmentParameters environment = {};
     Stage8EnvironmentPreset environmentPreset = Stage8EnvironmentPreset::Custom;
+    CloudRimParameters rim = {};
     AtmosphereParameters atmosphere = {};
     GroundLightingParameters ground = {};
     std::uint32_t surfaceShadowEnabled = 1u;
@@ -586,6 +595,12 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.appearance.densityMultiplier = 1.20f;
         result.appearance.extinctionPerMeter = 0.00039f;
         result.appearance.detailErosion = 0.20f;
+        result.appearance.stratusMinimumThicknessMeters = 1500.0f;
+        result.appearance.stratusMaximumThicknessMeters = 2500.0f;
+        result.appearance.cumulusMinimumThicknessMeters = 3000.0f;
+        result.appearance.cumulusMaximumThicknessMeters = 4600.0f;
+        result.appearance.localBaseLiftMaxMeters = 200.0f;
+        result.appearance.footprintCoverageInfluence = 0.40f;
         result.weather.cloudTypeMode = CloudTypeMode::WeatherMap;
         result.weather.coverage = Channel(1103u, 3u, 9u, 0.38f, 0.0f, 1.05f);
         result.weather.cloudType = Channel(2101u, 2u, 5u, 0.28f, 0.08f, 1.0f);
@@ -601,9 +616,10 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.light.edgeInfluence = 0.70f;
         result.light.edgeOpticalDepthScale = 1.8f;
         result.light.shadowExponent = 1.30f;
-        result.environment.skyStrength *= 0.95f;
-        result.environment.groundStrength *= 0.95f;
+        result.environment.physicalSkyFillScale = 0.95f;
+        result.environment.physicalGroundFillScale = 0.95f;
         result.environment.multipleScatteringInteriorBlend = 0.60f;
+        cloudrim::ApplyPreset(result.rim, CloudRimPreset::MeadowNte);
         stage14ground::ApplyPreset(result.ground, GroundMaterialPreset::Grass);
         result.ground.bounceMultiplier = 1.0f;
         result.surfaceShadowStrength = 0.65f;
@@ -617,6 +633,8 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.appearance.densityMultiplier = 0.40f;
         result.appearance.extinctionPerMeter = 0.00010f;
         result.appearance.detailErosion = 0.22f;
+        result.appearance.localBaseLiftMaxMeters = 0.0f;
+        result.appearance.footprintCoverageInfluence = 0.0f;
         result.weather.cloudTypeMode = CloudTypeMode::WeatherMap;
         result.weather.coverage = Channel(1201u, 2u, 8u, 0.30f, -0.04f, 1.20f);
         result.weather.cloudType = Channel(2203u, 2u, 4u, 0.20f, 0.0f, 0.85f);
@@ -636,9 +654,10 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.light.edgeInfluence = 0.20f;
         result.light.edgeOpticalDepthScale = 1.2f;
         result.light.shadowExponent = 1.05f;
-        result.environment.skyStrength *= 1.0f;
-        result.environment.groundStrength *= 1.0f;
+        result.environment.physicalSkyFillScale = 1.0f;
+        result.environment.physicalGroundFillScale = 1.0f;
         result.environment.multipleScatteringInteriorBlend = 0.25f;
+        cloudrim::ApplyPreset(result.rim, CloudRimPreset::Off);
         stage14atmosphere::ApplyPreset(result.atmosphere, AtmospherePreset::EarthHazy);
         stage14ground::ApplyPreset(result.ground, GroundMaterialPreset::Desert);
         result.ground.bounceMultiplier = 0.5f;
@@ -650,6 +669,10 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.appearance.densityMultiplier = 1.25f;
         result.appearance.extinctionPerMeter = 0.00046f;
         result.appearance.detailErosion = 0.10f;
+        result.appearance.stratusMinimumThicknessMeters = 1500.0f;
+        result.appearance.stratusMaximumThicknessMeters = 2300.0f;
+        result.appearance.localBaseLiftMaxMeters = 0.0f;
+        result.appearance.footprintCoverageInfluence = 0.20f;
         result.weather.cloudTypeMode = CloudTypeMode::Stratus;
         result.weather.coverage = Channel(1301u, 2u, 6u, 0.20f, 0.10f, 0.85f);
         result.weather.cloudType = Channel(2309u, 2u, 4u, 0.15f, -0.30f, 0.60f);
@@ -665,9 +688,10 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.light.edgeInfluence = 0.35f;
         result.light.edgeOpticalDepthScale = 1.4f;
         result.light.shadowExponent = 1.15f;
-        result.environment.skyStrength *= 1.10f;
-        result.environment.groundStrength *= 1.10f;
+        result.environment.physicalSkyFillScale = 1.10f;
+        result.environment.physicalGroundFillScale = 1.10f;
         result.environment.multipleScatteringInteriorBlend = 0.80f;
+        cloudrim::ApplyPreset(result.rim, CloudRimPreset::Off);
         stage14ground::ApplyPreset(result.ground, GroundMaterialPreset::Snow);
         result.ground.bounceMultiplier = 1.5f;
         result.surfaceShadowStrength = 0.40f;
@@ -680,6 +704,10 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.appearance.densityMultiplier = 1.10f;
         result.appearance.extinctionPerMeter = 0.00036f;
         result.appearance.detailErosion = 0.24f;
+        result.appearance.cumulusMinimumThicknessMeters = 2000.0f;
+        result.appearance.cumulusMaximumThicknessMeters = 3200.0f;
+        result.appearance.localBaseLiftMaxMeters = 300.0f;
+        result.appearance.footprintCoverageInfluence = 0.50f;
         result.weather.cloudTypeMode = CloudTypeMode::Cumulus;
         result.weather.coverage = Channel(1013u, 4u, 11u, 0.42f, -0.02f, 1.15f);
         result.weather.cloudType = Channel(2017u, 2u, 4u, 0.20f, 0.20f, 0.85f);
@@ -695,25 +723,65 @@ inline Stage15ConceptDescriptor ResolveConcept(Stage15ConceptPreset preset)
         result.light.edgeInfluence = 0.85f;
         result.light.edgeOpticalDepthScale = 2.0f;
         result.light.shadowExponent = 1.35f;
-        result.environment.skyStrength *= 0.85f;
-        result.environment.groundStrength *= 0.85f;
+        result.environment.physicalSkyFillScale = 0.85f;
+        result.environment.physicalGroundFillScale = 0.85f;
         result.environment.multipleScatteringInteriorBlend = 0.55f;
+        cloudrim::ApplyPreset(result.rim, CloudRimPreset::UrbanNte);
         stage14ground::ApplyPreset(result.ground, GroundMaterialPreset::Concrete);
         result.ground.bounceMultiplier = 1.0f;
         result.surfaceShadowStrength = 0.55f;
         break;
     }
 
-    result.domain.maxViewTraceDistance = preset == Stage15ConceptPreset::DesertCirrus
-        ? 60000.0f : 50000.0f;
-    result.domain.viewTraceFadeStartDistance = preset == Stage15ConceptPreset::DesertCirrus
-        ? 50000.0f : 40000.0f;
-    result.domain.maxLightTraceDistance = 20000.0f;
-    result.domain = SanitizeCloudDomainParameters(result.domain);
-    result.shape = SanitizeCloudShapeParameters(result.shape);
-    result.weather = SanitizeWeatherMapGeneratorSettings(result.weather);
+    CloudFormationConcept formationConcept =
+        CloudFormationConcept::UrbanFairWeather;
+    switch (preset)
+    {
+    case Stage15ConceptPreset::MeadowBrokenClouds:
+        formationConcept = CloudFormationConcept::MeadowBrokenClouds;
+        break;
+    case Stage15ConceptPreset::DesertCirrus:
+        formationConcept = CloudFormationConcept::DesertCirrus;
+        break;
+    case Stage15ConceptPreset::SnowOvercast:
+        formationConcept = CloudFormationConcept::SnowOvercast;
+        break;
+    case Stage15ConceptPreset::UrbanFairWeather:
+    case Stage15ConceptPreset::Custom:
+    default:
+        formationConcept = CloudFormationConcept::UrbanFairWeather;
+        break;
+    }
+    CloudFormationSettings canonicalFormation;
+    PreparedCloudFormation preparedFormation;
+    std::string formationStatus;
+    if (ResolveBuiltInCloudFormation(
+            formationConcept, canonicalFormation) &&
+        PrepareCloudFormationSettings(
+            canonicalFormation, preparedFormation, formationStatus, 200.0f))
+    {
+        result.formation = preparedFormation.settings;
+        result.weatherPreset = result.formation.weatherPreset;
+        result.weather = result.formation.weather;
+        result.shape = result.formation.shape;
+        result.domain = preparedFormation.domain;
+        result.weatherWorldSizeMeters =
+            result.formation.weatherWorldSizeMeters;
+
+        CloudParameters compatibilityCloud;
+        compatibilityCloud.coverage = result.formation.coverage;
+        compatibilityCloud.densityMultiplier =
+            result.formation.densityMultiplier;
+        compatibilityCloud.extinctionCoefficient =
+            result.formation.extinctionPerMeter;
+        compatibilityCloud.detailErosionStrength =
+            result.formation.detailErosion;
+        result.appearance = CaptureCloudAppearance(
+            compatibilityCloud, result.shape, result.weather);
+    }
     result.light = stage6light::Sanitize(result.light);
     result.environment = stage8environment::Sanitize(result.environment);
+    result.rim = cloudrim::Sanitize(result.rim);
     result.atmosphere = stage14atmosphere::Sanitize(result.atmosphere);
     result.ground = stage14ground::Sanitize(result.ground);
     return result;

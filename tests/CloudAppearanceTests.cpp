@@ -93,7 +93,9 @@ int main()
         !Near(dense.weatherSoftness, 0.20f) ||
         !Near(dense.densityCoverageLink, 0.45f) ||
         !Near(dense.thicknessCoverageLink, 0.60f) ||
-        !Near(dense.cloudTypeBias, 0.08f))
+        !Near(dense.cloudTypeBias, 0.08f) ||
+        !Near(dense.localBaseLiftMaxMeters, 0.0f) ||
+        !Near(dense.footprintCoverageInfluence, 0.20f))
         Fail("Dense Mixed exact contract changed");
     if (stratus.cloudTypeMode != CloudTypeMode::Stratus ||
         !Near(stratus.globalCoverage, 0.40f) ||
@@ -135,9 +137,13 @@ int main()
         0.68f, 0.8f, 0.95f, 0.5f, 0.25f, 1.2f, 1.1f, true);
     const float half = EvaluateAppearanceBaseDensity(
         0.68f, 0.8f, 0.95f, 0.5f, 0.50f, 1.2f, 1.1f, true);
+    const float footprintDisabled = EvaluateAppearanceHorizontalCoverage(
+        0.68f, 1.0f, 0.1f, 0.0f);
+    const float footprintFull = EvaluateAppearanceHorizontalCoverage(
+        0.68f, 1.0f, 0.1f, 1.0f);
     if (!(quarter > 0.0f) || !Near(half, quarter * 2.0f, 1.0e-5f) ||
-        !Near(EvaluateAppearanceHorizontalCoverage(0.68f, 0.8f, 0.1f),
-              EvaluateAppearanceHorizontalCoverage(0.68f, 0.8f, 0.1f)))
+        !Near(footprintDisabled, 0.68f) ||
+        !Near(footprintFull, 0.068f))
         Fail("vertical profile must multiply density once, not shrink threshold");
 
     const float lightReference = EvaluateAppearanceLightBaseDensity(
@@ -165,6 +171,18 @@ int main()
         generator.coverage.macroPeriod != 7u ||
         !Near(cloud.windSpeed, 123.0f) || !Near(cloud.noiseOffset, 19.0f))
         Fail("appearance preset must preserve seeds, periods, wind, and offset");
+    CloudShapeParameters shapeOnly;
+    shapeOnly.cirrusMaximumThicknessMeters = 1234.0f;
+    CloudAppearanceSettings shapeContract = cumulus;
+    shapeContract.localBaseLiftMaxMeters = 420.0f;
+    shapeContract.footprintCoverageInfluence = 0.63f;
+    ApplyCloudAppearanceShape(shapeContract, shapeOnly);
+    if (!Near(shapeOnly.localBaseLiftMaxMeters, 420.0f) ||
+        !Near(shapeOnly.footprintCoverageInfluence, 0.63f) ||
+        !Near(shapeOnly.cumulusMaximumThicknessMeters,
+              shapeContract.cumulusMaximumThicknessMeters) ||
+        !Near(shapeOnly.cirrusMaximumThicknessMeters, 1234.0f))
+        Fail("shape-only appearance apply must preserve unrelated Cirrus state");
     if (ResolvePipelineComparisonTime(true, 17.5f) != 0.0f ||
         !Near(ResolvePipelineComparisonTime(false, 17.5f), 17.5f))
         Fail("Pipeline Compare must use render-only time zero");
@@ -174,12 +192,59 @@ int main()
         (L"vcloud-appearance-test-" + std::to_wstring(GetCurrentProcessId()));
     const std::filesystem::path file = root / L"custom" / L"noise-settings.json";
     std::string status;
-    if (!SaveCustomCloudAppearanceAtomic(file, cumulus, status))
+    CloudAppearanceSettings schema30Settings = cumulus;
+    schema30Settings.localBaseLiftMaxMeters = 420.0f;
+    schema30Settings.footprintCoverageInfluence = 0.63f;
+    if (!SaveCustomCloudAppearanceAtomic(file, schema30Settings, status))
         Fail("valid Custom settings did not save atomically");
     CloudAppearanceSettings loaded = dense;
     if (!LoadCustomCloudAppearance(file, loaded, status) ||
-        !CloudAppearanceSettingsEqual(loaded, cumulus))
-        Fail("schema 29 Custom round trip changed values");
+        !CloudAppearanceSettingsEqual(loaded, schema30Settings))
+        Fail("schema 30 Custom round trip changed values");
+
+    std::string schema29Text;
+    {
+        std::ifstream input(file, std::ios::binary);
+        schema29Text.assign(std::istreambuf_iterator<char>(input), {});
+    }
+    const auto replaceOnce = [](std::string& text, const std::string& from,
+                                const std::string& to)
+    {
+        const std::size_t position = text.find(from);
+        if (position == std::string::npos)
+            return false;
+        text.replace(position, from.size(), to);
+        return true;
+    };
+    const auto eraseKeyLine = [](std::string& text, const std::string& key)
+    {
+        const std::size_t keyPosition = text.find(key);
+        if (keyPosition == std::string::npos)
+            return false;
+        const std::size_t lineStart = text.rfind('\n', keyPosition);
+        const std::size_t lineEnd = text.find('\n', keyPosition);
+        if (lineEnd == std::string::npos)
+            return false;
+        text.erase(lineStart == std::string::npos ? 0u : lineStart + 1u,
+                   lineEnd - (lineStart == std::string::npos ? 0u : lineStart + 1u) + 1u);
+        return true;
+    };
+    if (!replaceOnce(schema29Text, "\"schemaVersion\": 30",
+                     "\"schemaVersion\": 29") ||
+        !replaceOnce(schema29Text, "\"implementationStage\": \"15B\"",
+                     "\"implementationStage\": \"13-4E\"") ||
+        !eraseKeyLine(schema29Text, "\"localBaseLiftMaxMeters\"") ||
+        !eraseKeyLine(schema29Text, "\"footprintCoverageInfluence\""))
+        Fail("failed to construct schema 29 migration fixture");
+    {
+        std::ofstream output(file, std::ios::binary | std::ios::trunc);
+        output << schema29Text;
+    }
+    CloudAppearanceSettings migrated = schema30Settings;
+    if (!LoadCustomCloudAppearance(file, migrated, status) ||
+        !Near(migrated.localBaseLiftMaxMeters, 0.0f) ||
+        !Near(migrated.footprintCoverageInfluence, 0.20f))
+        Fail("schema 29 Custom must migrate conservative Stage 15B defaults");
 
     CloudAppearanceSettings sentinel = stratus;
     CloudAppearanceSettings missingResult = sentinel;

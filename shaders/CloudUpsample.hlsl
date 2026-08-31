@@ -30,6 +30,15 @@ struct VSOut
     float2 uv : TEXCOORD0;
 };
 
+struct SpatialResolveOutput
+{
+    float4 resolvedCloud : SV_Target0;
+    float2 resolvedAux : SV_Target1;
+    // 기존 resolve 진단 전용 출력. Composite/83/84는 Renderer가 t0/t1의
+    // full-resolution pair를 별도 CloudComposite pass로 합성한다.
+    float4 directOutput : SV_Target2;
+};
+
 struct CloudTap
 {
     float3 scattering;
@@ -277,7 +286,7 @@ CloudTap JointCloud(float2 uv, int2 targetPixel, float targetDeviceDepth,
     return center;
 }
 
-float4 main(VSOut input) : SV_TARGET
+SpatialResolveOutput main(VSOut input)
 {
     float2 uv = saturate(input.uv);
     uint cloudWidth = 1u;
@@ -308,47 +317,62 @@ float4 main(VSOut input) : SV_TARGET
                            sceneAcceptance, cloudAcceptance,
                            transmittanceAcceptance, acceptedTapCount);
 
+    SpatialResolveOutput output;
+    output.resolvedCloud = float4(
+        max(cloud.scattering, 0.0.xxx), saturate(cloud.transmittance));
+    output.resolvedAux = float2(max(cloud.cloudDepth, 0.0),
+                                max(targetSceneLimit, 0.0));
+    output.directOutput = 0.0.xxxx;
+
     // Stage 15 화질 readback은 장면/대기 합성 뒤 색이 아니라 실제로
     // resolve된 cloud scattering과 T를 비교한다. Temporal resolve와 같은
     // 숨김 79/기존 8 계약을 Spatial resolve에도 유지한다.
     if (debugMode == 8)
-        return float4(saturate(cloud.transmittance).xxx, 1.0);
+    {
+        output.directOutput = float4(
+            saturate(cloud.transmittance).xxx, 1.0);
+        return output;
+    }
     if (debugMode == 79)
-        return float4(max(cloud.scattering, 0.0.xxx), 1.0);
+    {
+        output.directOutput = float4(
+            max(cloud.scattering, 0.0.xxx), 1.0);
+        return output;
+    }
 
     if (debugMode == 64)
     {
         float2 grid = abs(frac(uv * float2(cloudDimensions)) - 0.5);
         float gridLine = 1.0 - smoothstep(0.45, 0.49,
                                          max(grid.x, grid.y));
-        return float4(lerp(float3(0.03, 0.05, 0.08),
-                           float3(0.1, 0.9, 1.0), gridLine), 1.0);
+        output.directOutput = float4(lerp(float3(0.03, 0.05, 0.08),
+            float3(0.1, 0.9, 1.0), gridLine), 1.0);
+        return output;
     }
     if (debugMode == 65)
-        return float4(saturate(sceneAcceptance).xxx, 1.0);
+    {
+        output.directOutput = float4(saturate(sceneAcceptance).xxx, 1.0);
+        return output;
+    }
     if (debugMode == 66)
-        return float4(saturate(cloudAcceptance).xxx, 1.0);
+    {
+        output.directOutput = float4(saturate(cloudAcceptance).xxx, 1.0);
+        return output;
+    }
     if (debugMode == 67)
-        return float4(saturate(transmittanceAcceptance).xxx, 1.0);
+    {
+        output.directOutput = float4(
+            saturate(transmittanceAcceptance).xxx, 1.0);
+        return output;
+    }
     if (debugMode == 80)
     {
         if (resolutionScale >= 0.9999)
-            return float4(0.18, 0.18, 0.18, 1.0); // Full RT: spatial N/A
-        return float4(saturate(float(acceptedTapCount) * 0.25).xxx, 1.0);
+            output.directOutput = float4(0.18, 0.18, 0.18, 1.0);
+        else
+            output.directOutput = float4(
+                saturate(float(acceptedTapCount) * 0.25).xxx, 1.0);
+        return output;
     }
-
-    float3 background = hasGeometry
-        ? sceneColorTexture.Load(int3(int2(input.position.xy), 0)).rgb
-        : 0.0.xxx;
-    if (modeFlags.x != kAtmosphereModePhysical && hasGeometry &&
-        stage12SurfaceShadowEnabled != 0u)
-    {
-        float3 worldPosition = ReconstructWorldPosition(uv, deviceDepth);
-        background *= Stage12SurfaceFactor(
-            Stage12SurfaceTransmittance(worldPosition));
-    }
-    float3 composite = ComposeStage14Atmosphere(
-        uv, rayDirection, hasGeometry, background, targetSceneLimit,
-        cloud.scattering, cloud.transmittance, cloud.cloudDepth);
-    return float4(max(composite, 0.0.xxx), 1.0);
+    return output;
 }

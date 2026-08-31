@@ -28,7 +28,8 @@ class Window
 {
 public:
     Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
-           bool showWindow = true);
+           bool showWindow = true,
+           bool useInteractiveStartupPlacement = false);
     ~Window();
 
     // 입력을 받을 대상 연결
@@ -74,6 +75,7 @@ private:
     void MarkCameraManuallyAdjusted();
     bool UpdatePhysicalClientExtent(bool notifyRenderer);
     bool ResizeClientArea(int width, int height, UINT dpi);
+    bool ApplyInteractiveStartupPlacement();
     bool ApplySavedWindowedState();
 
     struct WindowedRestoreState

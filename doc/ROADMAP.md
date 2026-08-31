@@ -4,7 +4,7 @@
 학습 기록을 보존하며 실행 순서만 다음과 같이 확정한다.
 
 ```text
-0~8 완료 → 13 재구축 → 9 → 10 → 11 → 12 → 14 → 15
+0~8 완료 → 13 재구축 → 9 → 10 → 11 → 12 → 14 → 15 → 15B
 ```
 
 ## 승인 완료
@@ -105,6 +105,34 @@
   - [x] Debug/Release 전체 CTest 각각 `54/54` — Stage 12 explicit 96×54 fixture 수정 포함
   - [x] 48조합 120 warmup+600 timestamp 성능 gate — clean 48/48, High Cloud 최악
     `9.95738ms`, Resolve 최악 `1.12026ms`, Stage 14 독립 3-block median `6.21363ms`/`0.818341×`
+  - [ ] Stage 15B: 형상 계약·독립 formation 제작·UI Zoom·Physical Fill·NTE 외곽 — 사용자 미승인
+    - [x] `PhysicalColumnGeometry` 공통화, Weather 열별 base lift, domain fit/추가 200m headroom 원자 거부
+    - [x] b7 112바이트의 offset 56/60에 base lift/footprint, b5 offset 24에 LUT 대표 고도를 배치
+    - [x] 256² Weather를 유지하고 `17.6~160km` 로그 제작 범위와 F2 Scale Budget을 추가
+    - [x] `Windows DPI / 96 × userZoom`, vector default font, 원본 Dark style 재계산,
+      렌더와 분리된 `developer-ui.json` schema 1
+    - [x] F1/F4 공통 `CloudFormationSettings`와 strict preflight/Weather 생성/GPU commit 원자 transaction
+    - [x] F4 Concept 4개·F1 Type 3개·Custom 1개의 독립 schema 1 파일과 내장 resolver,
+      저장 대상·dirty/source·Built-in 복원 상태
+    - [x] F1 Cirrus 제작 UI — flow와 Base/Detail 비등방 meter scale, 중심형 두께/profile;
+      공용 128³/32³ Texture3D 내용은 불변
+    - [x] 일반 대화형 물리 client 1920×1080 중앙 배치와 작은 작업영역 정수 16:9 fit
+    - [x] UI Zoom 다섯 버튼, F1~F4 단일 우측 하단 패널과 overlay 교차 시 내부 scroll
+    - [x] b4 offset 60/76 Physical sky/ground fill `0~2`, LUT 무효화 없이 cloud-only 적용
+    - [x] boundary refinement 실험 철회 — b9 offset 44 padding과 Stage 9 coarse→rewind→fine 복구,
+      ID 81 유지·ID 82 예약/무효
+    - [x] full-resolution resolve pair 후 별도 `CloudComposite`, 일반/no-rim compiled variant,
+      독립 48바이트 Rim CB와 ID 83/84
+    - [x] D3D11 PS CB 상한 b0~b13을 준수해 계획 b14 대신 Composite pass-local b10 재사용
+    - [x] schema 38/15B·Cirrus/rim/rollback/idempotency Stage 15B preset smoke 최신 144/144
+    - [x] Debug/Release 전체 CTest 각각 56/56, Stage 15 화질 96/96
+    - [x] Release 48-case 48/48, Stage 14 Cloud p95 `0.917465×`,
+      Composite/rim 최악 `0.167936ms ≤ 0.75ms`
+    - [x] 독립 formation 저장소/공통 renderer entrypoint/1920×1080/Zoom·패널 통합 뒤
+      Debug/Release 전체 CTest 56/56과 Stage 15 smoke 재실행; DPI 144 일반 실행도
+      물리 client 1920×1080·바깥 창 1942×1136·작업영역 가로 50.6%·중앙 오차 0px 확인
+    - [ ] 수평 바닥/상단 절단·스티커 rim·Temporal 잔상 사용자 확인
+    - [ ] F1/F4/Custom 저장 독립성·Cirrus 제작·초기 창/Zoom·패널 사용자 확인
   - [ ] 사용자 콘셉트·Temporal 화면 비교와 포트폴리오 캡처 승인
 
 세부 결정과 수치는 [VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md](VOLUMETRIC_CLOUD_PORTFOLIO_PLAN.md)를 따른다.

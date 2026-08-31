@@ -19,7 +19,8 @@ cbuffer CloudDomainCB : register(b5)
 
     float viewTraceFadeStartDistance;
     float maxLightTraceDistance;
-    float2 cloudDomainPadding;
+    float cloudLightingReferenceAltitudeMeters;
+    float cloudDomainPadding;
 };
 
 bool IsFiniteDomainScalar(float value)

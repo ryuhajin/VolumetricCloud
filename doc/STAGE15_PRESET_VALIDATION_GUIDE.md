@@ -2,25 +2,37 @@
 
 이 문서는 Stage 15 실행 파일의 자동 검증 상태를 먼저 확인한 뒤 사용자가 직접 보고 최종 승인하는
 공식 절차다. Stage 15는 **Quality(렌더 비용과 정밀도)** 와 **Concept(구름·대기·지면의 외형)** 를
-분리한다. 검증의 핵심은 다음 5개 계약이 화면에서도 지켜지는지 확인하는 것이다.
+분리한다. Stage 15B는 이 계약에 로컬 두께·제작 UI·Physical Fill·NTE 외곽을
+추가한다. 검증의 핵심은 다음 12개 계약이 화면에서도 지켜지는지 확인하는 것이다.
 
 1. Concept를 바꿔도 Quality와 Temporal 선택은 유지된다.
 2. Quality를 바꿔도 같은 구름의 위치·층 높이·대기·지면은 바뀌지 않는다.
 3. Capture/Reference를 끝내면 진입 전 실시간 상태가 정확히 복원된다.
 4. 자동 화질·성능 수치와 별개로 최종 외형과 포트폴리오 화면은 사용자가 승인한다.
 5. High는 Full RT고 Capture는 exact Native 1080p의 4-sample HDR 누적이다.
+6. 로컬 상단은 전역 도메인에 잘리지 않고 약한 컬럼의 바닥은 열별로 달라야 한다.
+7. UI Zoom은 렌더 extent, LUT/cache, fingerprint와 Temporal history를 바꾸지 않는다.
+8. Physical Fill은 구름 간접광만 바꾸고 하늘/Aerial/LUT generation을 바꾸지 않는다.
+9. NTE rim은 태양 쪽 내부 경계에만 보이고 장면 depth를 넘거나 history에 잔상을 남기지 않는다.
+10. F1 Type 3개, F4 Concept 4개와 Custom은 저장 파일이 독립이며 상대 슬롯을 바꾸지 않는다.
+11. F1과 F4에 같은 formation을 넣으면 Weather/Shape/Domain과 밀도 결과가 같아야 한다.
+12. 일반 대화형 실행은 물리 1920×1080 client로 시작하고 F1~F4 패널은 한 번에 하나만 열린다.
 
 에이전트는 포트폴리오 PNG를 만들거나 화면 미학을 합격 처리하지 않는다. 사용자가 같은
 카메라·시간·창 크기에서 직접 비교하고 스크린샷을 촬영한다. 내부 성능 회귀 조사 원문은
 [`changes/STAGE15_PERFORMANCE_REGRESSION.md`](changes/STAGE15_PERFORMANCE_REGRESSION.md),
 수치 계약은 [`PERFORMANCE.md`](PERFORMANCE.md)를 함께 참고한다.
 
-> 검증 증거 상태(2026-08-31): 물리 출력/DPI, High Full RT, Temporal reset/phase,
+> 검증 증거 상태(2026-08-31): Stage 15A 물리 출력/DPI, High Full RT, Temporal reset/phase,
 > Joint4 rejection, Native 1080p Capture 4/4와 Release 96-case 화질 gate는 통과했다.
 > Release 전체 CTest 첫 실행은 Stage 12 smoke의 최초 캡처 크기 drift로 `53/54`였고,
 > 캡처 전 `96×54`를 명시한 뒤 최종 Debug/Release 전체 CTest가 각각 `54/54`로 통과했다.
 > High Full 성능 첫 실행은 외부 게임 PID의 GPU 3D 약 37%와 동시 fixture로 오염되어 무효였다.
-> 게임 종료 뒤 clean 48-case와 독립 3-block Stage 14 probe가 모두 통과했다. 사용자 렌더 검증만 남아 있다.
+> 게임 종료 뒤 clean 48-case와 독립 3-block Stage 14 probe가 모두 통과했다.
+> Stage 15B의 P0~P3 자동 matrix와 화질/성능 재측정은 통과했다. 이후 추가한 독립 formation
+> 저장소·초기 창·패널 배치까지 포함한 최신 Debug/Release 전체 CTest도 각각 56/56을 통과했다.
+> DPI 144 일반 실행은 물리 client 1920×1080·바깥 창 1942×1136·중앙 오차 0px로 측정했다.
+> 아래 수동 화면 판정과 사용자 미학 승인은 아직 전이다.
 
 ---
 
@@ -53,9 +65,10 @@
 | 시간 | F1 Effective Time, F3 태양 시간 | 구름 이동과 태양색을 고정하기 위해 |
 | Tone | ACES, Exposure EV, White Balance | 밝기 차이를 품질 차이로 오인하지 않기 위해 |
 
-일반 수동 실행의 기본 창은 1280×720이어도 괜찮다. 다만 자동 gate의 1920×1080과
-동일한 측정이라고 기록해서는 안 된다. Native 1080p에서 Medium Cloud RT는 960×540,
-High/Capture Cloud RT는 1920×1080이어야 한다.
+일반 수동 실행은 주 모니터 중앙의 물리 1920×1080 client로 시작해야 한다. 바깥 frame까지
+작업영역을 벗어나는 작은 모니터에서만 가장 큰 정수 16:9 client로 축소되는 것이 정상이다.
+Medium Cloud RT는 client 축의 50%, 즉 1920×1080에서 960×540이고 High/Capture Cloud RT는
+1920×1080이어야 한다. 자동 fixture는 각 테스트가 지정한 작은 extent를 유지한다.
 
 ---
 
@@ -67,9 +80,8 @@ High/Capture Cloud RT는 1920×1080이어야 한다.
 1. 새 Release 프로세스를 실행하고 `0`, `F5`를 누른다. F4에서 두 overlay를 켜고 시작값이
    `Urban Fair Weather / Medium / Temporal On / 50% / 100.0m/512 / Cone 6 /
    Balanced 512 / Diagnostic None`인지 확인한다.
-2. F4 출력 extent에서 PMv2가 On이고 Physical/Swap/Viewport/Scene/Depth/History가 서로
-   같은지 본다. 일반 1280×720이면 Medium Cloud RT 640×360이며, Native 1080p를 켰을
-   때는 전자가 1920×1080, Medium이 960×540이어야 한다.
+2. 창이 주 모니터 중앙에 있고 F4 출력 extent에서 PMv2가 On, Physical/Swap/Viewport/
+   Scene/Depth/History가 모두 1920×1080인지 본다. Medium Cloud RT는 960×540이어야 한다.
 3. F1 `Animation`의 `Pause Time`을 켜고 `Reset Time`을 누른다. F3 `Time of Day`가 재생
    중이면 `Pause Time`, F3 `Tone Mapping`은 `ACES On / 0 EV / 6500 K`로 맞춘다.
 4. 네 Concept를 두 차례 빠르게 순환한다. 검은 flash나 이전 지면과 새 구름의 혼합 없이 전체
@@ -84,7 +96,24 @@ High/Capture Cloud RT는 1920×1080이어야 한다.
    `0/4 → 4/4 Ready`로 증가하며 누적 동안 카메라·시간이 고정되어야 한다.
 9. Capture Ready→Reference→Restore Realtime을 확인한다. Capture가 Native를 켰다면
    이전 일반 창으로 돌아와야 하고, 진단 전 Quality/T는 정확히 복원되어야 한다.
-10. 실제 캡처 전 F4에서 두 overlay를 모두 끈 뒤 F1~F4를 닫는다. 최종 화면은 사용자가 직접 저장한다.
+10. Urban/Medium/F6에서 Advanced Diagnostics의 `Local Base Offset`을 본다. 열별 밝기가
+    다르고 Composite에서 공통 수평 바닥·상단 절단이 없어야 한다.
+11. F4 UI Zoom 버튼을 `100→125→200→125%`로 왕복한다. 두 125%의 크기가 같고 extent,
+    LUT generation, history reset count가 변하지 않아야 한다. F1→F2를 누르면 F1은 닫히고
+    F2 하나만 우측 하단에 열리며 같은 F2를 다시 누르면 닫혀야 한다.
+12. F3 Physical Fill을 `Cloud Indirect Off→Balanced`로 왕복한다. Off에서는 구름
+    Sky/Ground/Multiple만 사라지고 하늘·Aerial·직접광·silver lining은 남아야 한다.
+13. Urban과 Meadow에서 ID 83/84를 본다. 태양 쪽 1~2px 안쪽 경계만 밝고 건물/
+    지면 깊이 경계를 넘지 않아야 한다. Snow/Desert는 기본 Off다.
+14. Urban/Medium/F5에서 Temporal Off/Stable로 회전·정지한다. 정지 후 rim 위치가 같고
+    밝은 history 잔상이 남지 않아야 한다.
+15. F1 Stratus에서 Coverage를 작은 폭으로 바꾸고 `Save to Preset`을 누른 뒤 F4 Snow를
+    불러온다. Snow가 바뀌지 않아야 한다. 반대 방향도 확인하고 두 값을 원래대로 복원한다.
+16. F1 Cirrus에서 Flow Angle과 Base Along을 바꿔 결의 회전·길이 변화를 확인한다.
+    Texture3D generation/hash가 바뀌지 않아야 하며 저장 뒤 F4 Desert에는 영향이 없어야 한다.
+17. 현재 formation을 `Save as Custom`으로 저장하고 다른 일곱 target을 순환한 뒤 Custom을
+    다시 불러온다. Custom만 저장값을 재현해야 한다.
+18. 실제 캡처 전 F4에서 두 overlay를 모두 끈 뒤 F1~F4를 닫는다. 최종 화면은 사용자가 직접 저장한다.
 
 하나라도 실패하면 6절의 증상별 진단표로 이동한다. 외형 숫자를 임의로 바꿔 실패를 숨기지 말고
 같은 fixture와 Debug View를 먼저 기록한다.
@@ -92,6 +121,27 @@ High/Capture Cloud RT는 1920×1080이어야 한다.
 ---
 
 ## 3. 조작 위치와 화면 계약
+
+### F1 formation target과 저장
+
+| 실제 UI | 직접 바꾸는 것 | 바꾸지 않아야 하는 것 |
+|---|---|---|
+| `Stratus`, `Cumulus`, `Cirrus` | 독립 F1 Type formation을 불러오고 F4 Concept target을 해제 | F4 Concept 사용자 파일, Quality, 조명·대기·지면 |
+| `Custom` | `cloud-presets/custom.json`의 formation | 파일이 없을 때 현재 렌더 상태와 다른 7개 슬롯 |
+| F1/F2 구름 슬라이더 | 현재 표시된 target의 formation, `Source: Unsaved` | target 자체, F3 장면 값 |
+| `Save to Preset` | 현재 F1 Type 또는 F4 Concept 파일 하나 | 다른 7개 파일, Custom, 장면 설정 |
+| `Save as Custom` | 현재 formation을 `custom.json`에 저장하고 target을 Custom으로 전환 | F1/F4 7개 파일 |
+| `Restore Built-in` | 확인 뒤 현재 F1/F4 override 하나 제거·내장 formation 적용 | Custom과 다른 F1/F4 파일 |
+
+F1 상단 `Target: F1 / Stratus`, `Target: F4 / Snow Overcast`, `Target: Custom`과
+`Source: Built-in/User Override/Unsaved`가 실제 저장 목적지다. F4 Concept를 고른 뒤
+F1/F2에서 구름을 조절해도 F4 target은 유지된다. F3 장면 편집은 `Scene modified`만 표시하고
+formation 저장 파일에는 포함되지 않는다. Custom 파일이 없을 때 Custom 버튼은 Dense Mixed를
+대신 적용하지 않고 현재 상태를 유지하며 상태 문구를 표시해야 한다.
+
+저장 파일은 `captures/noise-lab/cloud-presets/` 아래 Concept 4개, Type 3개,
+Custom 1개다. 파일이 손상되면 Concept/Type은 그 파일을 보존한 채 Built-in으로 fallback하고,
+Custom은 적용에 실패한다. 자동 smoke/performance 실행은 사용자 override를 무시한다.
 
 ### F4 Stage 15 조작
 
@@ -101,15 +151,22 @@ High/Capture Cloud RT는 1920×1080이어야 한다.
 | `Low`, `Medium`, `High` 또는 `Q` | RT/Spatial/Temporal, View, distance, cone, Detail LOD, Shadow | Weather 배치, 층, 조명·대기·지면 |
 | `T` | 현재 Off/Stable/Full Resolution Temporal만 임시 반전 | Quality가 소유한 RT 해상도와 Concept |
 | `Output / DPI` | Physical/Swap/Viewport/Scene/Depth/Cloud/History, DPI/PMv2/Native를 표시 | 렌더 상태 |
+| `Developer UI / UI Zoom` | `100/125/150/175/200%` 버튼과 Windows DPI로 ImGui·preview 크기 | 렌더 extent, LUT/cache, formation target/fingerprint, Temporal history |
 | `Native 1080p` / Restore | exact 1920×1080 borderless client / 저장한 일반 창 | Quality/Concept |
 | `Compact Stage 15 Overlay` | 왼쪽 위 상태 창 | 렌더 상태 |
 | `Performance Overlay` | 오른쪽 위 CPU/GPU 창 | 렌더 상태 |
 | `Advanced Capture / Reference → Capture Still` | exact Native 1080p, Full/T Off, 50m/1024, Balanced512, projection jitter 4개 HDR 누적 | 저장된 실시간 Quality/T |
 | `Advanced Capture / Reference → Reference` | Full, T Off, 50m/1024, distance·LOD Off에 Fine Reference와 Direct Reference 추가 | 저장된 실시간 Quality/T |
 | `Advanced Capture / Reference → Restore Realtime` | 진입 전 Quality와 T override | 진단 중 선택한 Concept |
+| `Advanced Diagnostics → 81/83/84` | Local Base/Rim Mask/Rim Contribution; 82는 예약/무효 | Quality/Concept 설정 자체 |
 
 Capture Still 또는 Reference 중에는 Quality 버튼이 비활성화되고 Q/T도 무시되는 것이 정상이다.
 Concept 변경은 같은 Reference 조건으로 외형을 비교하기 위해 허용한다.
+
+F1~F4는 동시에 둘 이상 열리지 않는다. 다른 F키는 현재 패널을 닫고 새 패널을 우측 하단에
+열며, 같은 F키는 닫는다. 열린 패널을 옮길 수는 있지만 다시 열거나 Zoom/DPI가 바뀌면 우측
+하단 anchor로 돌아간다. 패널과 좌상단·우상단 overlay가 겹칠 때는 패널 높이가 줄고 내부
+스크롤이 생겨야 하며, overlay를 끄면 다시 긴 높이를 사용할 수 있어야 한다.
 
 ### 숫자 0~9는 Concept 키가 아니다
 
@@ -153,11 +210,13 @@ Desert의 전역 domain은 7.0~10.5km지만 center `8.68km`와 0.5~1.5km 로컬 
 - **조작 위치와 순서:** `0` → `F5` → F4를 열고 두 overlay를 켠다.
 - **직접 바뀌는 값:** Composite와 Hero 카메라만 선택한다.
 - **검증 대상:** 실행 기본값과 실제 적용값.
-- **정상 화면:** `Urban Fair Weather`, `Medium`, `Temporal On`, RT `50%`, View
+- **정상 화면:** 주 모니터 중앙의 물리 client `1920×1080`, `Urban Fair Weather`,
+  `Medium`, `Temporal On`, RT `50%`/`960×540`, View
   `100.0m/512`, Cone 6, Shadow `Balanced 512`, Diagnostic `None`. Concrete와 Physical
   Atmosphere/Ground Bounce가 적용된다.
 - **허용되는 일시 현상:** 시작 직후 `GPU warming up`, history invalid와 4~16프레임의 누적.
-- **실패 징후:** Custom 시작, Full RT, Fast 256, T Off, 전체 검정/자홍, overlay와 실제값 불일치.
+- **실패 징후:** 작업영역이 충분한데 1280×720 등으로 시작, 좌상단에 치우침, Custom 시작,
+  Full RT, Fast 256, T Off, 전체 검정/자홍, overlay와 실제값 불일치.
 - **실패 시 다음 Debug View:** F1 shader status, 이후 `2→3→5`.
 
 ### FIXTURE-01 — 구름 시간·태양·Tone 고정
@@ -226,7 +285,8 @@ Desert의 전역 domain은 7.0~10.5km지만 center `8.68km`와 0.5~1.5km 로컬 
 
 - **사전 상태·카메라:** Desert/Medium/T Off, F1 Pause Time On, F6 숫자 0. F8은 빈
   negative-control로 따로 확인한다.
-- **조작 위치와 순서:** F1 Shape mode와 Cirrus read-only flow/scale/thickness/profile을 기록한다.
+- **조작 위치와 순서:** F1 Shape mode와 Cirrus flow/scale/thickness/profile의 시작값을 기록한다.
+  Flow Angle과 Base Along을 작은 폭으로 편집해 방향·길이 변화를 본 뒤 원래 값으로 되돌린다.
   Pause를 잠깐 풀어 Bulk travel 증가를 보고 다시 Pause한다. 카메라를 옆으로 이동 후 돌아온다.
 - **직접 바뀌는 값:** 카메라만 움직이며, 시간 재생 중 Weather/Base/Detail은
   `Cloud Wind Speed (Bulk)`로 함께 이동한다.
@@ -241,7 +301,7 @@ Desert의 전역 domain은 7.0~10.5km지만 center `8.68km`와 0.5~1.5km 로컬 
   작은 구멍은 noise/coverage에 의한 정상 후보일 수 있다.
 - **실패 시 다음 Debug View:** `2→1→3→5`. Final만 0이면 coverage/erosion, 모두 0이면 mode/교차.
 
-기본 read-only 기준은 flow `(0.9397, 0.3420)`, Base `20/4/1km`, Detail
+기본 제작 시작값은 flow `(0.9397, 0.3420)`, Base `20/4/1km`, Detail
 `6/1.5/0.5km`, 두께 `0.5~1.5km`, profile `0.48/0.45`다.
 
 ### QUALITY-01 — Low/Medium/High
@@ -385,40 +445,160 @@ Temporal만 Off가 된다. override를 해제하면 Low/Medium은 Stable 4-Phase
 - **실패 징후:** Medium/Full/50m 잔류, override 손실, Concept Urban 복귀, Diagnostic 잔류.
 - **실패 시 다음 Debug View:** 진입 전/진단/복원 후 overlay와 F1/F3 실제값 세 장.
 
-### OWNERSHIP-01 — 수동 편집의 Custom 판정
+### OWNERSHIP-01 — F1/F4/Custom 저장 독립성
 
-- **사전 상태·카메라:** Urban/Medium/T On, Diagnostic None.
-- **조작 위치와 순서:** F3 Aggressive 24–40km, 다시 Medium, Ground/Atmosphere 외형 하나와
-  `Surface Cloud Shadow` 또는 `Surface Ambient Floor`, 다시 Urban, F1 Temporal Off를 각각
-  한 번씩 바꾼다.
-- **직접 바뀌는 값:** sampling/LOD/Temporal은 Quality, Ground/Atmosphere와 Surface 합성 외형은
-  Concept 소유다.
-- **검증 대상:** 관련 preset만 Custom으로 만드는지.
-- **정상 화면:** LOD와 F1 Temporal은 Quality만 Custom, Ground/Atmosphere/Surface 외형은 Concept만
-  Custom. named Urban을 다시 적용하면 Surface On/Strength/Ambient Floor도 descriptor 값으로
-  복원된다. F1 Temporal 직접 편집은 임시 override를 해제한다.
-- **허용되는 일시 현상:** history reset, 실제 atmosphere hash 변경의 LUT 재생성.
-- **실패 징후:** 둘 다 Custom, Ground가 Quality 변경, F1 직접 편집 뒤 override 잔류.
-- **실패 시 다음 Debug View:** 변경 전후 overlay와 실제 필드, Medium/Urban canonical 복원 확인.
+- **사전 상태·카메라:** 사용자 override가 필요하면 별도 backup을 남긴다. Urban/Medium/T Off/F6,
+  시간 정지로 시작한다.
+- **조작 위치와 순서:** F1 Stratus를 선택해 Target을 기록하고 Coverage를 조금 바꾼 뒤
+  `Save to Preset`. F4 Snow를 불러와 전후 Shape/Weather를 비교한다. 이번에는 F4 Snow의
+  Density를 바꿔 저장하고 F1 Stratus를 다시 비교한다. 마지막으로 현재 상태를
+  `Save as Custom`하고 다른 일곱 target을 순환한 뒤 Custom을 다시 연다.
+- **직접 바뀌는 값:** 저장 버튼이 가리키는 formation 파일 하나와 현재 target/source만 바뀐다.
+  F3의 태양·대기·지면·Rim은 formation 저장 대상이 아니다.
+- **검증 대상:** 8개 schema 1 파일의 독립성, target 유지, 재실행 load와 Custom fallback 없음.
+- **정상 화면:** F1 Stratus 저장은 F4 Snow를, F4 Snow 저장은 F1 Stratus를 바꾸지 않는다.
+  Custom은 현재 formation을 재현하지만 다른 7개 파일을 바꾸지 않는다. F4를 편집하는 동안
+  F1/F2 슬라이더를 만져도 Target은 `F4 / Snow Overcast`다. 재실행하면 각 override만 다시 로드된다.
+- **허용되는 일시 현상:** formation 적용 때 Temporal reset 한 번과 Weather texture hash 갱신.
+- **실패 징후:** F1 저장 후 F4가 같은 값으로 따라감, target이 슬라이더 조작만으로 Custom/None이 됨,
+  `Save as Custom`이 원래 target 파일도 덮음, 빈 Custom이 Dense Mixed를 적용함.
+- **실패 시 다음 진단:** F1 Target/Source/Unsaved 문구, 해당 8개 파일의 수정 시각과
+  `2 Weather → 3 Base → 5 Final`을 같이 기록한다.
 
-### EXPORT-01 — schema 37
+### FORMATION-01 — 같은 입력의 공통 계산 경로
+
+- **사전 상태·카메라:** F1 Cumulus와 F4 Urban의 내장 formation을 사용하고 사용자 override는
+  `Restore Built-in`으로 분리한다.
+- **조작 위치와 순서:** F1 Cumulus에서 Weather/Shape/Domain 수치와 Weather hash를 기록하고
+  F4 Urban을 불러와 같은 항목을 기록한다. F3 조명은 비교 대상에서 제외한다.
+- **직접 바뀌는 값:** target과 F4 scene 값. Quality와 Texture3D seed/resolution은 유지한다.
+- **검증 대상:** 두 진입점의 `CloudFormationSettings`와 원자 transaction, 공통 Weather 생성기와
+  HLSL variant.
+- **정상 화면:** Stage 15B 최초 내장 pair는 formation/Weather hash와 `2/3/5` 밀도 진단이 같다.
+  Temporal reset은 적용당 한 번이다. 최종 Composite 색만 Urban 장면 설정 때문에 달라질 수 있다.
+- **실패 징후:** 같은 수치인데 Weather hash·로컬 두께·Base/Final이 다름, 한 경로만 domain fit을
+  거부함, F1/F4용으로 서로 다른 noise texture generation이 생김.
+- **실패 시 다음 진단:** F1/F4 Target, Weather hash, Shape mode, Domain/LUT 대표 고도와
+  Base/Detail texture hash를 한 화면에 기록한다.
+
+### CIRRUS-AUTHORING-01 — 방향·비율·두께 제작
+
+- **사전 상태·카메라:** F1 Cirrus/Medium/T Off/F6, 구름 시간 정지.
+- **조작 위치와 순서:** Flow Angle을 ±20° 움직이고 Base Along을 0.5×/2×, Base Across와
+  Min/Max Thickness, Layer Center, Profile Half Width를 한 항목씩 왕복한다. 다음으로 Detail
+  Along/Across/Vertical과 Erosion을 조절한다.
+- **직접 바뀌는 값:** 같은 128³ Base/32³ Detail texture를 읽는 flow basis와 meter scale,
+  중심형 로컬 층과 density. Texture 자체는 바뀌지 않는다.
+- **검증 대상:** [Cirrus 제작 가이드](CIRRUS_CLOUD_AUTHORING.md)의 비등방 sampling 계약.
+- **정상 화면:** Flow는 월드에 고정된 긴 결을 회전하고 Along은 길이, Across는 폭,
+  Thickness/Profile은 Y 질량만 바꾼다. 모든 조작에서 Base/Detail texture hash는 같다.
+- **실패 징후:** Flow가 카메라 yaw와 함께 회전, Along 변경이 texture 재생성을 일으킴,
+  Weather G가 Cirrus shape를 바꿈, barcode·솜구름·수평 절단이 왕복 뒤에도 남음.
+- **실패 시 다음 Debug View:** Weather Coverage/Thickness → Local Thickness/Height →
+  Raw Noise → Base Density → Detail Noise → Final Density.
+
+### STAGE15B-P0 — 로컬 두께·가변 바닥·Scale Budget
+
+- **사전 상태·카메라:** Urban/Medium/T Off/F6, 구름과 태양 시간 정지.
+- **조작 위치와 순서:** F4 Advanced Diagnostics에서 `81 Local Base Offset`, 그 뒤 `0`
+  Composite를 본다. F2 Weather의 읽기 전용 `Scale Budget`을 기록하고 Weather World
+  Size의 하한 17,600m, Urban 기본, Cirrus 128,000m를 각각 확인한다.
+- **직접 바뀌는 값:** 수동 Weather world size는 맵 파장만 바꾼다. ID 81은 상태를
+  바꾸지 않는다.
+- **검증 대상:** View/support precheck/Light/DeepCache가 같은 local bottom/top을 쓰는지,
+  `maximum thickness + maximum lift + 200m <= domain`인지, Weather 파장이 Base/Detail/step보다
+  충분히 큰지.
+- **정상 화면:** ID 81의 구름 열마다 밝기가 다르고 두껕고 높은 열은 어둡다.
+  Composite의 전역 바닥·상단에 일자 절단이 없다. Scale Budget은
+  `Domain ≥ local shape`, `Weather ≫ Base > Detail > step`을 표시한다.
+- **허용되는 일시 현상:** 형상/Weather 수정 직후 Temporal reset; T Off fixture에서는 영향 없음.
+- **실패 징후:** ID 81 전체가 동일한 회색, 도메인 top의 평평한 잘림, Light/DeepCache만
+  이전 공통 바닥을 따름, 17.6km 아래 수동 값 허용, fit 실패 뒤 부분 적용.
+- **실패 시 다음 Debug View:** `2 Weather → 3 Base → 5 Final → 9 Light T`, ID 81과
+  F2 domain/local/headroom 수치를 같이 기록한다.
+
+### STAGE15B-P1 — DPI·UI Zoom 렌더 비침범성
+
+- **사전 상태·카메라:** Urban/Medium/T Stable/F5, F4 Output/DPI와 history reset count 표시.
+- **조작 위치와 순서:** F4 Developer UI 버튼에서 `100→125→200→125%`. 가능하면 창을
+  96/144/192 DPI 모니터로 옮겨 각각 왕복한다. 패널을 닫은 상태에서도 모니터를
+  옮긴 뒤 다시 F4를 연다. F1→F2→F3→F4를 차례로 누르고 같은 F4를 한 번 더 누른다.
+  overlay On/Off에서도 긴 패널 끝까지 스크롤한다.
+- **직접 바뀌는 값:** ImGui font/style/panel/overlay/preview의 표시 크기와
+  `developer-ui.json` schema 1의 Zoom만 바꾼다.
+- **검증 대상:** `DPI/96×Zoom`, 원본 style 재계산, vector font, 단일 패널·우측 하단 anchor,
+  overlay 교차 회피와 렌더 상태 비침범성.
+- **정상 화면:** 144 DPI/125%에서 Effective 187.5%다. 첫 번째와 두 번째 125%의
+  글자/간격/패널이 같고 매우 흐리지 않다. F1~F4는 항상 하나만 보이고 새 패널은 우측
+  하단에 열린다. overlay가 켜져 겹칠 높이면 패널만 짧아지고 스크롤이 생기며 Off에서 다시
+  길어진다. Physical/Swap/Cloud extent, LUT/cache generation, Stage 15 fingerprint,
+  history reset count가 전후 같다.
+- **허용되는 일시 현상:** 창을 다른 DPI 모니터로 옮길 때 OS 배치가 한 번 조정됨.
+- **실패 징후:** 왕복할수록 UI가 커짐, bitmap 확대처럼 흐림, 패널을 닫으면 DPI
+  상태가 갱신되지 않음, 패널 여러 개가 겹침, overlay 위에 패널이 올라감, Zoom만으로
+  Renderer resize/LUT/Temporal reset/formation target 변경 발생.
+- **실패 시 다음 진단:** F4의 Windows DPI/User Zoom/Effective, 전후 extent/fingerprint/reset
+  count, `developer-ui.json`을 같이 기록한다.
+
+### STAGE15B-P2 — Physical Fill 분리
+
+- **사전 상태·카메라:** Urban/High/T Off/F7, Physical Atmosphere, 태양 시간·Tone 정지.
+- **조작 위치와 순서:** F3 Physical Fill에서 `Cloud Indirect Off → Balanced → Strong Fill
+  → Ground Check → Portfolio`를 선택한다. 각 상태의 Sky/Ground/Multiple 진단과 Atmosphere
+  LUT generation/hash를 기록한다.
+- **직접 바뀌는 값:** EnvironmentCB b4의 Physical sky/ground `0~2`, Multiple 프리셋과
+  Temporal history만 바꾼다.
+- **검증 대상:** cloud-only LUT incident fill과 대기 배경/LUT 분리.
+- **정상 화면:** Off의 Sky/Ground/Multiple 구름 기여는 0이지만 Direct/Silver Lining,
+  하늘·Aerial·지면은 그대로다. Ground Check는 sky 0/ground 1, Strong은 1.25/1.25와
+  3 octaves다. 모든 전환에서 LUT hash/generation은 같다.
+- **허용되는 일시 현상:** b4 변경에 따른 Temporal reset 한 번.
+- **실패 징후:** Fill과 하늘 배경이 함께 바뀔, LUT generation/hash 증가, Off에서 Direct/
+  rim까지 사라짐, Manual Sky/Ground Strength가 Physical에 영향.
+- **실패 시 다음 Debug View:** Accumulated Direct, Sky/Ground/Multiple contribution, ID 84 Rim
+  Contribution을 따로 저장한다.
+
+### STAGE15B-P3 — Full-resolution NTE Rim
+
+- **사전 상태·카메라:** Urban/Medium/F5, 태양·구름 시간 정지, Temporal Off.
+- **조작 위치와 순서:** ID 83 `NTE Rim Mask`, 84 `NTE Rim Contribution`, 0 Composite를
+  순서대로 본다. Medium→High, Off→Stable, F5~F8로 반복하고
+  Meadow도 같이 본다. Snow/Desert의 기본 rim Off를 negative control로 쓴다.
+- **직접 바뀌는 값:** Concept는 Urban `1.5px/0.45`, Meadow `1.25px/0.30`,
+  Snow/Desert Off rim을 소유한다. ID 82는 예약/무효이며 Quality가 값을 소유하지 않는다.
+- **검증 대상:** full-resolution 태양 방향 내부 rim, scene/cloud-depth rejection, history 비저장.
+- **정상 화면:** ID 83/84는 태양 쪽 1~2px
+  내부 경계에 제한되며 반대쪽은 어둡다. Fractional 폭의 scene footprint 전체를 거부하므로
+  건물/지면 경계를 넘지 않고
+  Temporal Off/Stable의 정지 결과가 같으며 이동 후 밝은 잔상이 없다.
+- **허용되는 일시 현상:** 진단/품질 전환 직후 history가 다시 쌓이는 4~16 frame.
+- **실패 징후:** 전 둘레의 스티커 선, geometry depth 누출,
+  Temporal이 켜져야만 보이거나 끈 후에도 남는 rim, Snow/Desert에 기본 rim.
+- **실패 시 다음 Debug View:** `5 Final Density → 8 View T → 83 → 84`, Scene Depth/
+  Current Source Validity를 같이 기록한다.
+
+### EXPORT-01 — schema 38
 
 - **사전 상태·카메라:** Desert/High/T On/F6. F4 `Save Current Position` 후 카메라를 조금 옮긴다.
 - **조작 위치와 순서:** `Export 4 PNG + JSON`, 생성된 `noise-settings.json`을 연다.
 - **직접 바뀌는 값:** 상태는 유지하고 진단 PNG 4장과 JSON만 쓴다.
-- **검증 대상:** schema, 현재/저장 카메라, Stage 15와 Cirrus 실제값.
-- **정상 화면:** `schemaVersion=37`, `implementationStage="15"`, `stage15` 선택과
+- **검증 대상:** schema, 현재/저장 카메라, Stage 15B shape/fill/rim과 Cirrus 실제값.
+- **정상 화면:** `schemaVersion=38`, `implementationStage="15B"`, `stage15` 선택과
   `camera.current`/`camera.savedPosition`이 있다.
   `cloudShape.mode="cirrusPhysicalLayer"`; `cloudShape.cirrus`에 `flowDirectionXZ`,
   `baseScaleMeters`, `detailScaleMeters`, `thicknessMeters`, `verticalProfile` 배열이 있고 Bulk 값은
   `effectiveBulkWindSpeedMetersPerSecond`, `bulkWindSpeedMetersPerEffectiveSecond`,
-  `bulkAdvectionDistanceMeters`에서 null이 아니다. 함께 생성된 네 PNG는 Noise Lab의
+  `bulkAdvectionDistanceMeters`에서 null이 아니다. local base lift/footprint, lighting reference altitude,
+  Physical sky/ground fill과 rim 필드도 있다. OptimizationCB offset 44는 padding이며
+  boundary 필드는 없다. UI Zoom은 이 JSON에 없고
+  독립 `developer-ui.json` schema 1에만 있다. 함께 생성된 네 PNG는 Noise Lab의
   XY/XZ/YZ 단면과 Weather Map 진단 자료이며
   포트폴리오 최종 화면이 아니다.
 - **허용되는 일시 현상:** 저장하지 않았다면 savedPosition null, 짧은 readback 지연.
-- **실패 징후:** schema≤36, High Full Resolution 누락, legacy/weather mode,
+- **실패 징후:** schema≤37, High Full Resolution 누락, 15B 필드/CloudRim 누락, legacy/weather mode,
   Cirrus 누락/NaN, export가 preset 변경.
-- **실패 시 다음 Debug View:** F1 Shape/Cirrus read-only와 JSON을 대조한다. schema 29와 혼동 금지.
+- **실패 시 다음 Debug View:** F1 Shape/Cirrus 제작값과 JSON을 대조한다. Custom schema 30,
+  구버전 migration 29, Developer UI schema 1과 혼동하지 않는다.
 
 ### CAPTURE-01 — 포트폴리오 캡처
 
@@ -455,6 +635,11 @@ Temporal만 Off가 된다. override를 해제하면 Low/Medium은 Stable 4-Phase
 | Reference 검정 | reference 경로 | Capture와 같은 상태 비교 | Fine/Direct 표시 | 느린 것 정상, 검정은 실패 |
 | Restore 불일치 | snapshot 손실 | RESTORE-01 1회 | 세 상태 overlay | Quality/T 복원+Concept 유지가 정상 |
 | FPS만 순간 악화 | warmup/외부 GPU | GPU Engine 확인 | 16프레임+프로세스 | 순간 EMA로 회귀 판정 금지 |
+| 수평 구름 바닥/top | 공통 domain bottom 오용/fit 누락 | `81→3→5` | base offset+Final | 81 열별 변화와 끝까지 둥근 실루엣이 정상 |
+| Zoom 왕복할수록 커짐 | style 누적 확대 | 100→125→200→125 | 두 125% 캡처 | 크기가 같아야 함 |
+| Fill과 하늘이 함께 변함 | LUT/배경에 scale 오적용 | Off↔Balanced | LUT hash+배경 | 구름 간접광만 변해야 함 |
+| 전 둘레 rim/건물 누출 | 태양·depth gate 실패 | `83→84`+Scene Depth | mask/contribution | 태양 쪽 내부 경계만 정상 |
+| 이동 뒤 밝은 rim 잔상 | rim이 history에 저장됨 | Off↔Stable 회전/정지 | 83+Composite | resolve 후 매 frame 계산이 정상 |
 
 ---
 
@@ -465,10 +650,11 @@ overlay, preview와 PNG export를 생략한다.
 
 | 명령/산출물 | 확인 필드와 gate | 2026-08-31 증거 상태 |
 |---|---|---|
-| `--stage15-preset-smoke-test` / `preset-smoke.json` | 실제 extent, High Full, FullResolution/schema37, Capture 4 jitter/state, 48 cases, rollback/idempotency, D3D 0 | Debug/Release 48/48 통과. Release Stage10/11/15 targeted suite도 8/8 통과 |
-| `--stage15-quality-test` / `quality.json,csv` | 전체·cloudMask·cloudEdgeMask SSIM/RMSE/T MAE, High Full 필수, High edge 개선, Temporal 4/8/16 age/reset | Release 96/96 통과. High 16개가 모두 Full이고 edge/Temporal 수렴 gate 통과 |
-| `--stage15-performance-test` / `performance.json,csv` | 48×(120 warmup+600 unique); Frame/Cloud/Resolve p95 `16.67/10/2ms`; Low≥3% faster; High Full Cloud≤10ms; Stage14≤103% | clean 48/48 통과. 최악 Frame/Cloud `10.0014/9.95738ms`, 전체 Resolve 최악 `1.12026ms`, 내부 Stage14 `6.37645ms`/`0.839784×` |
-| `--stage15-stage14-regression-probe` / `regression_probe.json,csv` | 3 blocks, 동일 fingerprint, Cloud≈Shadow+Raymarch+Resolve, median≤`7.8207488ms` | 최신 source clean 3-block `6.57203/6.15219/6.21363ms`, 중앙값 `6.21363ms`, ratio `0.818341`, invariant/D3D 통과 |
+| `--stage15-preset-smoke-test` / `preset-smoke.json` | 실제 extent, High Full, FullResolution/schema38/15B, Capture 4 jitter/state, 144 cases, rollback/idempotency, D3D 0 | Stage 15B 최신 144/144 PASS; `cirrusSchema38`, rim 진단, rollback/idempotency, `debugLayerPassed` 모두 true |
+| `--stage15-quality-test` / `quality.json,csv` | 전체·cloudMask·cloudEdgeMask SSIM/RMSE/T MAE, High Full 필수, High edge 개선, Temporal 4/8/16 age/reset | Release 96/96 통과. High edge RGB/T 개선, Temporal edge RGB 개선과 T `1.071×≤1.1` 통과 |
+| `--stage15-performance-test` / `performance.json,csv` | 48×(120 warmup+600 unique); Frame/Cloud/Resolve p95 `16.67/10/2ms`; Stage15B는 Composite/rim `≤0.75ms`도 분리 | 15B 48/48, Stage14 Cloud `0.917465×`, 최악 Cloud `9.224192ms`, Composite `0.167936ms` |
+| `--stage15-stage14-regression-probe` / `regression_probe.json,csv` | 3 blocks, 동일 fingerprint, Composite 통계, raymarch/deep-shadow/Composite shader hash, Cloud≈Shadow+Raymarch+Resolve+Composite, median≤`7.8207488ms` | 별도 15A probe 보존; 15B 성능 명령 내부 Stage14 회귀 `6.966272ms/0.917465×` 통과 |
+| Stage 15B shape/fill/rim/formation suite | b4/b5/b7/Rim CB offset·sanitize/schema migration, b9 offset 44 padding, 8-slot 독립 저장/rollback, 공통 renderer entrypoint, 4 Concept×3 Quality×3 Temporal×4 Camera, LUT/hash/domain/dispatch/Composite | 144 preset·96 quality·48 performance와 Debug/Release 56/56 통과 |
 
 Low/Medium은 같은 50% 구조라 `Shadow+Raymarch` 상대 비교를 유지한다. High는 Full RT로
 구조가 다르므로 이전 High/Medium 180% gate 대신 Cloud p95 10ms 절대 gate를 쓴다.
@@ -502,7 +688,7 @@ invariant가 모두 같을 때만 판정한다.
 | 11 | quality 96개가 비정상적으로 쉽게 통과 | 숨김 `Stage15ResolvedCloud=79`가 sanitizer에서 Composite로 바뀌고 Temporal Off의 `CloudUpsample`도 ID 8/79를 분리하지 않음 | debug mode와 spatial resolve 출력 추적 | sanitizer는 내부 79만 허용하고 spatial resolve는 8=T, 79=scattering을 명시; 기존 96-result 폐기·재실행 |
 | 12 | 실패한 전환/target 할당이 다른 후보로 조용히 측정될 가능성 | 요청 뒤 enum을 검사하지 않고 resolved capture가 Full direct로 fallback | transition status와 capture 분기 추적 | Concept/Quality/Diagnostic/Temporal/Shadow 상태를 매 요청 뒤 확인하고 target 준비 실패는 capture 실패로 처리 |
 | 13 | 올바른 산란/T 재측정 전체 실패 | 절대 gate 또는 기존 RMSE/T MAE not-worse | 96행과 두 상대 flag 분리 | 96개 절대·High 상대 gate는 통과; Meadow Inside Temporal16 RMSE 증가 `0.00011572`가 tolerance `0.00011`을 `0.00000572` 초과. gate/descriptor는 바꾸지 않고 실패로 보존 |
-| 14 | 전체 평균이 선명도 수렴을 가림 | reference T로 cloud/cloud-edge mask 고정 | 동일 edge 1,876,893픽셀과 4/16 frame 집계 | 최신 Release 96/96 통과. Medium→High edge RGB/T와 Temporal edge 두 지표 모두 개선 |
+| 14 | 전체 평균이 선명도 수렴을 가림 | reference T로 cloud/cloud-edge mask 고정 | 동일 edge와 4/16 frame 집계 | 최신 Release 96/96 통과. Medium→High edge RGB/T 개선, Temporal edge RGB 개선과 T `1.071×≤1.1` |
 | 15 | High Full 성능 첫 재실행 실패 | Windows GPU Engine과 동시 fixture 확인 | 외부 게임 PID 약 37% 3D, 별도 VolumetricCloud 인스턴스 | 생성된 실패 수치는 무효. 프로세스 단독 clean 재실행 전에는 성능 미검증 |
 | 16 | 게임 종료 뒤 clean 재실행 | 시작 전 외부 3D peak 약 1.7%, 단독 fixture | 48/48와 독립 3-block probe | High Cloud 최악 `9.95738ms`, Stage14 median ratio `0.818341`; 성능 gate 통과 |
 
@@ -523,7 +709,7 @@ temps/div/rsq와 b7 범위를 비교한다. 성능은 먼저 Shadow/Raymarch/Res
 ### 자동 증거
 
 - [x] PMv2·Physical/Swap/Viewport/Scene/Depth/Cloud/History extent와 Native 1080p/restore smoke
-- [x] High Full/Nearest/Full Resolution, T의 RT 불변, schema37 통과
+- [x] Stage 15A High Full/Nearest/Full Resolution, T의 RT 불변, schema37 통과
 - [x] Temporal 4-phase 방문, history age 증가, no-op/reset count/reason 통과
 - [x] Joint4 class/plane/sky/fallback과 sky accepted tap 평균 2 이상 통과
 - [x] Capture exact 1080p 4/4 HDR, 입력/시간 lock, Native 소유권 복원 통과
@@ -533,6 +719,18 @@ temps/div/rsq와 b7 범위를 비교한다. 성능은 먼저 Shadow/Raymarch/Res
 - [x] 최신 shader Stage 14 regression 3-block 중앙값 — `6.21363ms`, ratio `0.818341`
 - [x] Release Stage10/11/15 targeted 8/8과 Stage 12 focused Debug/Release 2/2 재확인
 - [x] Debug/Release 전체 CTest 각각 54/54 — Stage 12 fixture를 explicit 96×54로 고정한 최종 source
+- [x] Stage 15B preset smoke 144 cases — schema38/15B metadata, Cirrus 내부 밀도, rim 진단, rollback/idempotency, D3D11 0
+- [x] Custom30/29 migration과 DeveloperUI1, b4/b5/b7/CloudRimCB size·offset,
+  b9 offset 44 padding, sanitize·preset exact value를 포함한 Debug/Release 전체 56/56
+- [x] Stage 15 화질 96/96, 4 Concept×3 Quality×4 Camera 성능 48/48
+- [x] domain/dispatch invariant, Stage 14 Cloud p95 `0.917465×`, Composite/rim 최악
+  `0.167936ms ≤ 0.75ms`
+- [x] `CloudFormationPresetStore` schema 1 round-trip, 8파일 byte 독립성, 손상/range/domain
+  파일 보존 fallback, 원자 replace 실패, schema 29/30 Custom migration 재실행
+- [x] 같은 formation의 F1/F4 renderer entrypoint hash, 실제 Save/Custom/reload/Restore와
+  실패 주입 rollback, Quality·scene·Base/Detail texture hash 불변, 사용자 override 무시 통과
+- [x] 96/144/192 DPI×다섯 Zoom, 단일 패널·우측 하단 anchor·overlay 비겹침 smoke 통과;
+  DPI 144 일반 실행은 1920×1080 client, 1942×1136 outer, 가로 50.6%, 중앙 오차 0px
 
 ### 사용자 화면
 
@@ -548,8 +746,15 @@ temps/div/rsq와 b7 범위를 비교한다. 성능은 먼저 Shadow/Raymarch/Res
 - [ ] TONE-01 Exposure/WB/history 분리
 - [ ] DIAGNOSTIC-01/RESTORE-01 입력 차단과 복원
 - [ ] 실제 extent 1080p·High Full·Capture 4/4 Ready와 Native 소유권 복원
-- [ ] OWNERSHIP-01 Quality/Concept Custom 분리
-- [ ] EXPORT-01 schema 37, High Full Resolution과 Cirrus/카메라 값
+- [ ] OWNERSHIP-01 F1/F4/Custom 8개 저장 슬롯 독립성·재실행·Built-in 복원
+- [ ] FORMATION-01 같은 F1/F4 입력의 Shape/Domain/Weather hash·밀도 결과 일치
+- [ ] CIRRUS-AUTHORING-01 방향·aspect·두께/profile과 noise texture hash 불변
+- [ ] STAGE15B-P0 로컬 top/domain fit·열별 base offset·Scale Budget
+- [ ] STAGE15B-P1 96/144/192 DPI·Zoom 버튼 왕복, 단일 우측 하단 패널·overlay 비겹침,
+  렌더/history 비침범성
+- [ ] STAGE15B-P2 Physical Fill·LUT hash/generation 불변·Off 성분 분리
+- [ ] STAGE15B-P3 태양 쪽 rim·depth 거부·Temporal 잔상 없음
+- [ ] EXPORT-01 schema 38/15B, High Full Resolution과 shape/fill/rim/Cirrus/카메라 값
 - [ ] 두 overlay와 F1~F4를 숨기고 사용자가 직접 촬영
 - [ ] 사용자 최종 미학 승인
 

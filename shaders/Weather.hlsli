@@ -28,6 +28,18 @@ struct WeatherSample
     float2 uv;               // 실제 조회한 반복 Weather UV(0~1).
 };
 
+// Weather A/G와 전역 도메인으로부터 한 번 계산한 로컬 컬럼 계약이다.
+// View, support precheck, Light Ray와 Deep Shadow가 이 값을 공유해야 같은
+// 위치에서 구름이 시작하고 끝난다.
+struct PhysicalColumnGeometry
+{
+    float localThicknessMeters;
+    float localBaseLiftMeters;
+    float localBottomMeters;
+    float localTopMeters;
+    float localHeightFraction;
+};
+
 // 8-bit UNORM에서 0.5는 정확히 저장되지 않고 128/255가 된다. 디버그 맵의
 // 0/0.5/1 기준값을 다시 정확히 복원해 F2의 Type 0.5와 B 중립 1.0을 보장한다.
 float DecodeCanonicalWeatherChannel(float value)
@@ -185,6 +197,16 @@ float EvaluatePhysicalLocalHeight(float worldY, float localThicknessMeters)
     return (worldY - cloudBoundsMin.y) / max(localThicknessMeters, 1.0);
 }
 
+float EvaluatePhysicalLocalBaseLift(float thicknessPotential,
+                                    float localThicknessMeters,
+                                    float typeScale)
+{
+    float weakColumn = 1.0 - saturate(thicknessPotential);
+    float desiredLift = max(localBaseLiftMaxMeters, 0.0) *
+        saturate(typeScale) * pow(weakColumn, 1.5);
+    return min(desiredLift, max(localThicknessMeters, 0.0) * 0.25);
+}
+
 float EvaluateCirrusLocalThickness(float thicknessPotential)
 {
 #if VCLOUD_CIRRUS_VARIANT == 0
@@ -196,17 +218,62 @@ float EvaluateCirrusLocalThickness(float thicknessPotential)
 #endif
 }
 
-float EvaluateCirrusLocalHeight(float worldY, float localThicknessMeters)
+float EvaluateCirrusLocalBottom(float localThicknessMeters)
 {
 #if VCLOUD_CIRRUS_VARIANT == 0
-    return -1.0;
+    return cloudBoundsMin.y;
 #else
     float layerThickness = max(cloudBoundsMax.y - cloudBoundsMin.y, 1.0);
     float center = cloudBoundsMin.y +
         layerThickness * saturate(cirrusVerticalProfileCenter);
-    float localBottom = center - localThicknessMeters * 0.5;
-    return (worldY - localBottom) / max(localThicknessMeters, 1.0);
+    return center - localThicknessMeters * 0.5;
 #endif
+}
+
+float EvaluateCirrusLocalHeight(float worldY, float localThicknessMeters)
+{
+    return (worldY - EvaluateCirrusLocalBottom(localThicknessMeters)) /
+        max(localThicknessMeters, 1.0);
+}
+
+PhysicalColumnGeometry EvaluatePhysicalColumnGeometry(
+    float worldY, WeatherSample weather)
+{
+    PhysicalColumnGeometry result = (PhysicalColumnGeometry)0;
+    if (IsCirrusCloudShape())
+    {
+        result.localThicknessMeters = EvaluateCirrusLocalThickness(
+            weather.localThicknessPotential);
+        result.localBottomMeters = EvaluateCirrusLocalBottom(
+            result.localThicknessMeters);
+        result.localTopMeters = result.localBottomMeters +
+            result.localThicknessMeters;
+        // Cirrus는 전역 바닥 기준 lift가 아니라 중심형 얇은 층을 사용한다.
+        result.localBaseLiftMeters = 0.0;
+    }
+    else
+    {
+        result.localThicknessMeters = EvaluatePhysicalLocalThickness(
+            weather.localThicknessPotential, weather.cloudType);
+        float typeScale = lerp(0.15, 1.0, saturate(weather.cloudType));
+        result.localBaseLiftMeters = EvaluatePhysicalLocalBaseLift(
+            weather.localThicknessPotential, result.localThicknessMeters,
+            typeScale);
+        result.localBottomMeters = cloudBoundsMin.y +
+            result.localBaseLiftMeters;
+        result.localTopMeters = result.localBottomMeters +
+            result.localThicknessMeters;
+    }
+    result.localHeightFraction = (worldY - result.localBottomMeters) /
+        max(result.localThicknessMeters, 1.0);
+    return result;
+}
+
+float EvaluateFootprintCoverageFactor(float typedFootprintScale)
+{
+    float influence = saturate(footprintCoverageInfluence);
+    return lerp(1.0 - influence, 1.0,
+                saturate(typedFootprintScale));
 }
 
 float EvaluateCirrusVerticalProfile(float localHeightFraction)
@@ -284,8 +351,8 @@ float EvaluatePhysicalTypedFootprintScale(float heightFraction, float cloudType)
         : lerp(mixed, cumulus, (type - 0.5) * 2.0);
 }
 
-// 디버그용 결합 profile이다. 13-4E 실제 density에서는 vertical은 최종 Base
-// 밀도에 한 번, footprint는 horizontal threshold에 20%만 반영한다.
+// 디버그용 결합 profile이다. 실제 density에서는 vertical은 최종 Base 밀도에
+// 한 번, footprint는 footprintCoverageInfluence만큼 horizontal threshold에 반영한다.
 float EvaluatePhysicalTypedShapeProfile(float heightFraction, float cloudType)
 {
     return saturate(

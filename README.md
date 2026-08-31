@@ -44,14 +44,14 @@ Medium + Temporal On + Balanced512`이며, Concept에 맞는 Planar Layer와 64~
 - 태양색·세기·산란계수를 적용한 직접 단일 산란
 - Phase Off에서 단계 6을 보존하는 Dual-lobe Henyey-Greenstein Phase Function
 - 독립적인 전방·후방 g, 혼합 비율, Phase 강도와 LDR highlight shoulder
-- 별도 64바이트 EnvironmentCB와 외부 텍스처 없는 하늘·지면 환경광
+- 별도 80바이트 EnvironmentCB와 Physical sky/ground fill 배율을 포함한 하늘·지면 환경광
 - 높이 가중치, 밀도 기반 Ambient Occlusion과 광학 깊이 재사용 다중 산란
-- 선택한 50/67/75/100% 축 해상도의 RGBA16F scattering/T + RG32F cloud/scene depth MRT
+- 선택한 50/100% 축 해상도의 RGBA16F scattering/T + RG32F cloud/scene depth MRT
 - Nearest/Bilinear/Depth·Cloud·T Joint4/Joint9 Full-resolution 공간 복원
 - 50% 2×2 4-phase jitter와 Full RGBA16F/RG16F temporal history ping-pong
 - 대표 Cloud Depth·Physical Wind 기반 재투영, Scene/Cloud/T 거부와 neighborhood clipping
 - 좌측 상단 Stage 15 compact 상태와 우측 상단 FPS·CPU/GPU Frame·Cloud Raymarch·
-  Spatial/Temporal Resolve·GPU Cloud Total 성능 오버레이
+  Spatial/Temporal Resolve·Cloud Composite·GPU Cloud Total 성능 오버레이
 - `b13`, `t8~t13`, `s3`의 Transmittance/Multi/Sky View/Sky Irradiance/Aerial R/T LUT
 - Physical 태양·하늘광을 공유하는 구름/지면/건물 조명과 Concrete/Grass/Snow/Desert 지면 preset
 - Full/Spatial/Temporal 공통 대기 원근, RGBA16F HDR composite와 Exposure/white balance/ACES 최종 출력
@@ -113,25 +113,24 @@ Base R은 Perlin-Worley, G/B/A는 서로 다른 Worley 주파수이며, Detail R
 CPU가 만드는 별도 RGBA8 Texture2D이고, Light Ray는 Weather·Type·Height가 적용된 Base만
 읽으며 Detail은 생략합니다.
 
-개발 UI는 실제 구름 위에 뜨는 네 독립 창입니다. F1/F3은 각각 하나의 메인 Debug View
+개발 UI는 실제 구름 위에 뜨는 F1~F4 패널이며 한 번에 하나만 열립니다. 새 패널은 우측 하단에
+배치되고 overlay와 겹치면 높이를 줄여 내부 scroll을 사용합니다. F1/F3은 각각 하나의 메인 Debug View
 콤보를 제공하고 F2는 Periodic Perlin·Channel Debug와 Cloud Type Mode를 관리합니다.
 F4 상단은 Stage 15 Concept/Quality, Temporal override, compact/performance overlay와 Advanced
 Capture/Reference/Restore를 관리하고, 아래에서 네 고정 카메라와 현재/저장 카메라를 관리합니다.
 좌클릭 FPS free-look과 휠·`WASD` 이동을 지원하며 Shift는 표시 속도의 4배입니다.
 Base/Detail 파장당 표본, 대표 광학 깊이, View/Light budget과 Weather texel 크기를 함께 표시합니다.
-Noise Lab의 `3D Noise Volumes`에서 현재 noise source를 확인하고 `Regenerate 3D Noise`를
-실행할 수 있습니다. Procedural Legacy는 Pipeline Compare와 자동 회귀 내부에서만 선택됩니다.
-F1의 `Open World Render Pipeline Compare`는 현재 기하와 카메라를 고정한 채 Legacy
-1000x→Texture3D→Periodic Weather→Physical Shape→Full Open World를 누적 적용합니다.
-Open World 시작값과 `Open World Render Defaults`는 항상 마지막 최신 경로입니다.
+Noise Lab의 `3D Noise Volumes`에서 현재 noise source를 확인할 수 있습니다. Procedural Legacy와
+구형 Pipeline Compare는 schema·CLI·GPU 회귀 내부에만 남고 F1~F4 제작 UI에는 노출되지 않습니다.
 F1의 `Temporal`에서 Off/Stable 4-Phase, history weight, near-cloud fade와 reset을 조작하고
 phase/history valid/누적 프레임을 확인할 수 있습니다. F3 독립 `Tone Mapping`에도 Exposure와
 White Balance 변경 때 history가 유지되는지 바로 볼 수 있는 읽기 전용 Temporal 상태를 표시합니다.
 Stage 15 일반 시작값은 `Urban Fair Weather + Medium + Temporal On + Balanced512`입니다.
 F1 형상 상태는 `Legacy Normalized Layer`, `Weather Physical Thickness`, `Cirrus Physical Layer`를
-구분합니다. Cirrus에서는
-Weather/Detail 전용 wind 대신 공통 `Cloud Wind Speed (Bulk)`와 `Bulk travel`을 표시하고, flow·Base/Detail
-방향 축척·물리 두께·profile을 읽기 전용으로 확인할 수 있습니다.
+구분합니다. F1의 Stratus/Cumulus/Cirrus와 F4의 네 Concept는 같은 formation 원자 적용 경로를
+쓰되 schema 1 저장 파일은 서로 독립입니다. Cirrus에서는 Weather/Detail 전용 wind 대신 공통
+`Cloud Wind Speed (Bulk)`와 `Bulk travel`을 표시하고, flow angle, Base/Detail along/across/vertical
+meter scale, 물리 두께와 중심형 profile을 로그 슬라이더로 직접 제작할 수 있습니다.
 F4의 `Compact Stage 15 Overlay`와 `Performance Overlay`는 기본 On입니다. 사용자가 UI 없는
 포트폴리오 화면을 찍을 때는 둘 다 Off로 바꾸고 F1~F4 창도 숨깁니다. Capture Still 또는
 Reference 중에는 Low/Medium/High와 Q/T를 받지 않습니다. Capture Still은 4개 표본의 장면을
@@ -141,17 +140,19 @@ Temporal On/Off의 50% 공간 복원은 Full Scene과 geometry/sky class·D32 su
 low-res source만 사용하며, On에서 유효 current가 없으면 검증된 Full history를 유지합니다.
 `Current Source Validity` debug에서 valid 초록, class 빨강, surface/plane 노랑,
 guide/후보 없음 파랑, history 유지 회색을 확인할 수 있습니다.
-사용자가 누르는 `Export 4 PNG + JSON`은 전체 snapshot schema 37로 `sceneContract`, 현재/저장
+사용자가 누르는 `Export 4 PNG + JSON`은 전체 snapshot schema 38/`15B`로 `sceneContract`, 현재/저장
 카메라, 단계 9~14 실제 설정과 Stage 15 quality/concept/diagnostic/Temporal override를 저장합니다.
 Cirrus는 `cloudShape.mode=cirrusPhysicalLayer`와 flow·Base/Detail 축척·두께·profile의 실제 적용값을
 기록하므로 Legacy/Weather Physical로 잘못 해석되지 않습니다.
 자동 Stage 15 명령은 네 PNG readback을 호출하지 않는다. preset smoke만 schema 계약을 위해
-metadata-only export를 `%TEMP%/VolumetricCloudStage15Schema37-*`에 한 번 쓰고, 나머지 결과는
-JSON/CSV로 기록한다. Custom 외형 전용 파일은 schema 29를 유지합니다.
+metadata-only export를 `%TEMP%/VolumetricCloudStage15Schema38-*`에 한 번 쓰고, 나머지 결과는
+JSON/CSV로 기록한다. 구형 Custom Appearance는 schema 30이며 schema 29를 읽어 migration합니다.
+현재 F1/F4 formation은 `captures/noise-lab/cloud-presets/` 아래 Concept 4개·Type 3개·Custom 1개의
+독립 schema 1 파일로 저장됩니다.
 
 우측 상단 성능 오버레이는 `F1` 창을 숨겨도 유지되며 F4의 `Performance Overlay`로 따로 숨깁니다.
 F1의 `Performance` 항목에서는 VSync를 켜거나 끌 수 있습니다. CPU Frame은 `Present`와 VSync 대기를 포함하지만
-GPU Frame은 Present를 제외하며, 최적화 비교에는 Shadow Cache+Raymarch+Resolve 세 구간 합인
+GPU Frame은 Present를 제외하며, 최적화 비교에는 Shadow Cache+Raymarch+Resolve+Composite 네 구간 합인
 `GPU Cloud Total ms`를 사용합니다.
 재현 가능한 측정 절차는 [성능 측정 기준](doc/PERFORMANCE.md)에 정리되어 있습니다.
 

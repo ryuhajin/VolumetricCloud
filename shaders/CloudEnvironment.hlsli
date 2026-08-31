@@ -40,7 +40,7 @@ CloudLightingContext BuildCloudLightingContext()
     if (modeFlags.x == kAtmosphereModePhysical)
     {
         float representativeAltitudeKm = max(
-            cloudBottomAltitude + 0.5 * cloudLayerThickness, 0.0) * 0.001;
+            cloudLightingReferenceAltitudeMeters, 0.0) * 0.001;
         float3 atmosphereSun = AtmosphereSunDirection();
         float3 representativeSun = SampleAtmosphereSunRadiance(
             representativeAltitudeKm, atmosphereSun);
@@ -56,10 +56,12 @@ CloudLightingContext BuildCloudLightingContext()
         float3 groundSun = SampleAtmosphereSunRadiance(0.0, atmosphereSun) *
             saturate(atmosphereSun.y);
         context.sunIncident = representativeSun;
-        context.skyIncident = representativeSky;
+        context.skyIncident = representativeSky *
+            max(physicalSkyFillScale, 0.0);
         context.groundIncident = max(groundAlbedoAndDebugExposure.xyz,
             0.0.xxx) * (groundSun + groundSky) / kAtmospherePi *
-            max(sunTintAndGroundBounce.w, 0.0);
+            max(sunTintAndGroundBounce.w, 0.0) *
+            max(physicalGroundFillScale, 0.0);
     }
     else
     {
@@ -126,7 +128,12 @@ EnvironmentLightingSample EvaluateEnvironmentLighting(
 {
     EnvironmentLightingSample result = (EnvironmentLightingSample)0;
     float density = max(densitySample.finalDensity, 0.0);
-    float height = saturate(densitySample.heightFraction);
+    // Physical column은 전역 AABB 높이가 아니라 컬럼별 local bottom/top을
+    // 기준으로 하늘·지면 가중치를 계산한다. Manual Reference는 단계 8의
+    // 기존 전역 높이 계약을 그대로 유지한다.
+    float height = saturate(modeFlags.x == kAtmosphereModePhysical
+        ? densitySample.localHeightFraction
+        : densitySample.heightFraction);
     float localVisibility = exp(
         -density * max(ambientOcclusionStrength, 0.0));
     float safeAmbientExponent = clamp(ambientShadowExponent, 0.1, 8.0);

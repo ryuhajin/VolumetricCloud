@@ -711,6 +711,15 @@ TemporalOutput main(VSOut input)
                                sceneLimit);
     output.historyStatistics = float2(accepted ? 1.0 : 0.0, finalWeight);
 
+    // Composite와 rim 진단은 history pair가 확정된 뒤 별도 full-resolution
+    // CloudComposite pass에서 계산한다. 여기서 대기 합성을 먼저 계산하면
+    // rim을 history에 넣거나 같은 합성을 두 번 실행하게 된다.
+    if (debugMode == 0 || debugMode == 83 || debugMode == 84)
+    {
+        output.composite = 0.0.xxxx;
+        return output;
+    }
+
     // Stage 15 자동 화질 검증은 최종 temporal resolve가 실제로 사용한 T를
     // 읽는다. 숫자 8의 기존 Transmittance 디버그 의미도 그대로 유지한다.
     if (debugMode == 8)

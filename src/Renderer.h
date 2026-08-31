@@ -18,6 +18,8 @@
 
 #include "CloudParameters.h"
 #include "CloudAppearance.h"
+#include "CloudFormationPresetStore.h"
+#include "CloudFormationSettings.h"
 #include "CloudLodParameters.h"
 #include "CloudShapeParameters.h"
 #include "CloudDomainParameters.h"
@@ -206,6 +208,36 @@ public:
     }
     bool ApplyOpenWorldPipelinePreset(OpenWorldPipelinePreset preset);
     bool ApplyCloudAppearancePreset(CloudAppearancePreset preset);
+    CloudFormationSettings CurrentCloudFormation() const;
+    bool ApplyCloudFormationPresetForValidation(
+        const CloudFormationPresetTarget& target,
+        bool allowUserOverrides = false);
+    bool ApplyCloudFormationSettingsForValidation(
+        const CloudFormationSettings& settings);
+    bool SaveCurrentCloudFormationPresetForValidation();
+    bool SaveCurrentCloudFormationAsCustomForValidation();
+    bool RestoreCurrentCloudFormationBuiltInForValidation();
+    void InjectCloudFormationApplyFailureForValidation()
+    {
+        m_failNextCloudFormationApplyForValidation = true;
+    }
+    const std::filesystem::path& CloudFormationPresetRootForValidation() const
+    {
+        return m_cloudFormationPresetRoot;
+    }
+    void SetCloudFormationPresetRootForValidation(
+        const std::filesystem::path& root);
+    const CloudFormationPresetTarget& FormationTarget() const
+    {
+        return m_cloudFormationTarget;
+    }
+    bool FormationTargetValid() const { return m_cloudFormationTargetValid; }
+    CloudFormationPresetSource FormationSource() const
+    {
+        return m_cloudFormationSource;
+    }
+    bool FormationCloudDirty() const { return m_cloudFormationCloudDirty; }
+    bool FormationSceneDirty() const { return m_cloudFormationSceneDirty; }
     bool SaveCurrentCloudAppearance();
     CloudAppearanceSettings CaptureCurrentCloudAppearance() const;
     CloudAppearancePreset AppearancePreset() const
@@ -270,6 +302,19 @@ public:
     Stage8EnvironmentPreset EnvironmentPreset() const { return m_environmentPreset; }
     const LightParameters& LightSettings() const { return m_lightParameters; }
     const EnvironmentParameters& EnvironmentSettings() const { return m_environmentParameters; }
+    EnvironmentParameters& MutableEnvironmentSettings()
+    {
+        return m_environmentParameters;
+    }
+    const CloudRimParameters& RimSettings() const { return m_cloudRimParameters; }
+    // 자동 검증 전용: Composite-only 변경이 history reset을 일으키지 않는지
+    // 다른 preset 소유권을 건드리지 않고 확인한다.
+    void SetRimEnabledForValidation(bool enabled)
+    {
+        m_cloudRimParameters.enabled = enabled ? 1u : 0u;
+    }
+    bool LastEffectiveRimEnabled() const { return m_lastEffectiveRimEnabled; }
+    bool LastRimUploadSucceeded() const { return m_lastRimUploadSucceeded; }
     const AtmosphereParameters& AtmosphereSettings() const
     {
         return m_atmosphereParameters;
@@ -297,6 +342,10 @@ public:
     std::uint64_t AtmosphereLutGeneration(std::size_t index) const
     {
         return index < 6 ? m_atmosphereLutGenerations[index] : 0u;
+    }
+    std::uint64_t AtmosphereLutHash(std::size_t index) const
+    {
+        return index < 6 ? m_atmosphereLutHashes[index] : 0u;
     }
     bool ValidateStage14Luts(Stage14LutValidationResult& result);
     const CloudLodParameters& LodSettings() const { return m_cloudLodParameters; }
@@ -331,8 +380,50 @@ public:
     void EnableFrameHashCapture(bool enabled) { m_captureFrameHashes = enabled; }
     void EnableNoiseLabPreviews(bool enabled) { m_renderNoiseLabPreviews = enabled; }
     void SetNoiseLabVisible(bool visible) { m_noiseLab.SetVisible(visible); }
+    void SetDeveloperUiScaleForValidation(unsigned int dpi, float userZoom)
+    {
+        m_noiseLab.SetDeveloperUiScaleForValidation(dpi, userZoom);
+    }
+    float DeveloperUiUserZoom() const { return m_noiseLab.UserZoom(); }
+    float DeveloperUiEffectiveScale() const
+    {
+        return m_noiseLab.EffectiveUiScale();
+    }
+    float DeveloperUiWindowPaddingXForValidation() const
+    {
+        return m_noiseLab.StyleWindowPaddingXForValidation();
+    }
+    float DeveloperUiPanelWidthForValidation(std::size_t panelIndex) const
+    {
+        return m_noiseLab.PanelWidthForValidation(panelIndex);
+    }
+    bool DeveloperUiPanelVisibleForValidation(std::size_t panelIndex) const
+    {
+        return m_noiseLab.PanelVisibleForValidation(panelIndex);
+    }
+    DirectX::XMFLOAT4 DeveloperUiPanelRectForValidation(
+        std::size_t panelIndex) const
+    {
+        return m_noiseLab.PanelRectForValidation(panelIndex);
+    }
+    DirectX::XMFLOAT4 Stage15OverlayRectForValidation() const
+    {
+        return m_noiseLab.Stage15OverlayRectForValidation();
+    }
+    DirectX::XMFLOAT4 PerformanceOverlayRectForValidation() const
+    {
+        return m_noiseLab.PerformanceOverlayRectForValidation();
+    }
+    void SetOverlayVisibilityForValidation(bool status, bool performance)
+    {
+        m_stage15StatusOverlayVisible = status;
+        m_performanceOverlayVisible = performance;
+    }
     // 자동 성능 fixture는 ImGui/overlay/preview/export를 GPU frame에서 완전히 제외한다.
     void SetAutomatedRenderMode(bool enabled) { m_automatedRenderMode = enabled; }
+    // UI 자체를 검증하는 자동 smoke도 사용자 디스크 preset에는 의존하면 안 된다.
+    // 렌더 자동화와 저장 override 정책을 분리해 그 두 계약을 동시에 지킨다.
+    void SetIgnoreCloudFormationPresetOverrides(bool ignored);
     void ToggleDeveloperUiPanel(DeveloperUiPanel panel)
     {
         m_noiseLab.TogglePanel(panel);
@@ -359,6 +450,10 @@ public:
     std::uint64_t CirrusDeepShadowShaderHash() const
     {
         return m_cirrusDeepShadowShaderHash;
+    }
+    std::uint64_t CloudCompositeShaderHash() const
+    {
+        return m_cloudCompositeShaderHash;
     }
     std::uint64_t WeatherUploadCount() const { return m_weatherUploadCount; }
     std::uint64_t Stage15TransitionCommitCount() const
@@ -590,6 +685,20 @@ private:
     bool ApplyCloudAppearanceSettings(
         const CloudAppearanceSettings& settings,
         CloudAppearancePreset preset);
+    bool ApplyCloudFormationAtomic(
+        const CloudFormationSettings& settings,
+        bool resetState = true);
+    bool ApplyCloudFormationPresetTarget(
+        const CloudFormationPresetTarget& target,
+        bool allowUserOverrides,
+        bool resetState = true);
+    bool SaveCurrentCloudFormationToTarget(
+        const CloudFormationPresetTarget& target,
+        bool switchTargetAfterSave);
+    bool RestoreCurrentCloudFormationBuiltIn();
+    void RefreshSavedCustomFormationState();
+    void MarkCloudFormationDirty();
+    void MarkCloudFormationSceneDirty();
     void MarkCloudAppearanceDirty();
     void ReleaseSizeDependentResources();
     void RenderDiagnosticScene(const Camera& camera,
@@ -608,6 +717,11 @@ private:
     void RenderCloudUpsamplePass(const Camera& camera, float timeSeconds,
                                  ID3D11RenderTargetView* targetOverride = nullptr,
                                  DirectX::XMFLOAT2 jitterPixels = {});
+    void RenderCloudCompositePass(
+        const Camera& camera, float timeSeconds,
+        ID3D11ShaderResourceView* resolvedCloud,
+        ID3D11ShaderResourceView* resolvedAux,
+        ID3D11RenderTargetView* targetOverride = nullptr);
     bool RenderCloudTemporalPass(const Camera& camera, float timeSeconds,
                                  ID3D11RenderTargetView* targetOverride = nullptr);
     void UpdateTemporalStatisticsReadback();
@@ -693,6 +807,8 @@ private:
     ComPtr<ID3D11PixelShader> m_cirrusOptimizedDataPs;
     ComPtr<ID3D11PixelShader> m_cloudUpsamplePs;
     ComPtr<ID3D11PixelShader> m_cloudTemporalResolvePs;
+    ComPtr<ID3D11PixelShader> m_cloudCompositePs;
+    ComPtr<ID3D11PixelShader> m_cloudCompositeNoRimPs;
     ComPtr<ID3D11PixelShader> m_noiseLabPs;
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
@@ -720,6 +836,7 @@ private:
     ComPtr<ID3D11Buffer> m_optimizationCb;
     ComPtr<ID3D11Buffer> m_upsamplingCb;
     ComPtr<ID3D11Buffer> m_temporalCb;
+    ComPtr<ID3D11Buffer> m_cloudRimCb;
     ComPtr<ID3D11Buffer> m_shadowCb;
     ComPtr<ID3D11Buffer> m_stage14Cb;
     ComPtr<ID3D11Buffer> m_sceneCb;
@@ -771,6 +888,16 @@ private:
     bool m_cloudAppearanceDirty = false;
     std::string m_cloudAppearanceStatus;
     std::filesystem::path m_customAppearancePath;
+    std::filesystem::path m_cloudFormationPresetRoot;
+    CloudFormationPresetTarget m_cloudFormationTarget =
+        CustomFormationTarget();
+    bool m_cloudFormationTargetValid = false;
+    CloudFormationPresetSource m_cloudFormationSource =
+        CloudFormationPresetSource::BuiltIn;
+    bool m_cloudFormationCloudDirty = false;
+    bool m_cloudFormationSceneDirty = false;
+    bool m_hasSavedCustomFormation = false;
+    std::string m_cloudFormationStatus = "No formation target";
     bool m_pipelineComparisonActive = false;
     float m_cameraMoveSpeedMetersPerSecond =
         stage13scene::kMoveSpeedMetersPerSecond;
@@ -785,6 +912,9 @@ private:
         Stage10ResolutionPreset::Full;
     Stage11TemporalParameters m_temporalParameters;
     Stage12ShadowParameters m_shadowParameters;
+    CloudRimParameters m_cloudRimParameters;
+    bool m_lastEffectiveRimEnabled = false;
+    bool m_lastRimUploadSucceeded = false;
     bool m_temporalHistoryValid = false;
     bool m_temporalPreviousFrameValid = false;
     std::uint32_t m_temporalHistoryReadIndex = 0;
@@ -845,6 +975,7 @@ private:
     std::wstring m_cloudShaderPath;
     std::wstring m_cloudUpsampleShaderPath;
     std::wstring m_cloudTemporalResolveShaderPath;
+    std::wstring m_cloudCompositeShaderPath;
     std::wstring m_noiseLabShaderPath;
     std::wstring m_sceneShaderPath;
     std::wstring m_noiseVolumeShaderPath;
@@ -854,7 +985,8 @@ private:
     std::wstring m_stage15CaptureAccumulateShaderPath;
     bool m_noiseVolumesEnabled = true;
     bool m_automatedRenderMode = false;
-    bool m_bypassShaderCache = false;
+    bool m_ignoreCloudFormationPresetOverrides = false;
+    bool m_failNextCloudFormationApplyForValidation = false;
     std::uint64_t m_shaderCompileCallCount = 0;
     std::uint64_t m_shaderCacheHitCount = 0;
     std::map<std::wstring, std::filesystem::file_time_type> m_shaderWriteTimes;
@@ -862,6 +994,7 @@ private:
     std::uint64_t m_nonCirrusRaymarchShaderHash = 0;
     std::uint64_t m_nonCirrusDeepShadowShaderHash = 0;
     std::uint64_t m_cirrusDeepShadowShaderHash = 0;
+    std::uint64_t m_cloudCompositeShaderHash = 0;
     std::string m_shaderStatus = "Not compiled";
     std::string m_shaderError;
     bool m_captureFrameHashes = false;

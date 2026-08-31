@@ -13,6 +13,8 @@
 static const wchar_t* kClassName = L"VolumetricCloudWindowClass";
 static constexpr int kNative1080pWidth = 1920;
 static constexpr int kNative1080pHeight = 1080;
+static constexpr int kInteractiveClientWidth = 1920;
+static constexpr int kInteractiveClientHeight = 1080;
 
 namespace
 {
@@ -25,7 +27,7 @@ bool SetWindowStyle(HWND hwnd, int index, LONG_PTR value)
 }
 
 Window::Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
-               bool showWindow)
+               bool showWindow, bool useInteractiveStartupPlacement)
 {
     // ---- 윈도우 클래스 등록 ----
     WNDCLASSEX wc = {};
@@ -57,8 +59,12 @@ Window::Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
         m_dpi = std::max<UINT>(GetDpiForWindow(m_hwnd), 96);
         int physicalWidth = 0;
         int physicalHeight = 0;
-        if (!QueryPhysicalClientExtent(physicalWidth, physicalHeight) ||
-            physicalWidth != width || physicalHeight != height)
+        if (useInteractiveStartupPlacement)
+        {
+            ApplyInteractiveStartupPlacement();
+        }
+        else if (!QueryPhysicalClientExtent(physicalWidth, physicalHeight) ||
+                 physicalWidth != width || physicalHeight != height)
         {
             ResizeClientArea(width, height, m_dpi);
         }
@@ -129,6 +135,90 @@ bool Window::ResizeClientArea(int width, int height, UINT dpi)
                outerRect.bottom - outerRect.top,
                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE |
                    SWP_NOOWNERZORDER | SWP_FRAMECHANGED) != FALSE;
+}
+
+bool Window::ApplyInteractiveStartupPlacement()
+{
+    if (!m_hwnd)
+        return false;
+
+    // 일반 제작 실행은 primary 작업영역 중앙의 1920x1080 physical client를
+    // 기준으로 한다. 작업 표시줄을 제외한 영역에 바깥 창까지 들어가지 않을 때만
+    // non-client frame을 뺀 뒤 가장 큰 정수 16:9 client로 축소한다.
+    const POINT primaryPoint = { 0, 0 };
+    const HMONITOR monitor = MonitorFromPoint(
+        primaryPoint, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO monitorInfo = { sizeof(MONITORINFO) };
+    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo))
+        return false;
+
+    const DWORD style = static_cast<DWORD>(
+        GetWindowLongPtrW(m_hwnd, GWL_STYLE));
+    const DWORD exStyle = static_cast<DWORD>(
+        GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE));
+    const UINT dpi = std::max<UINT>(GetDpiForWindow(m_hwnd), 96);
+    const auto outerSizeForClient = [&](int clientWidth, int clientHeight,
+                                        int& outerWidth, int& outerHeight)
+    {
+        RECT outerRect = { 0, 0, clientWidth, clientHeight };
+        if (!AdjustWindowRectExForDpi(
+                &outerRect, style, FALSE, exStyle, dpi) &&
+            !AdjustWindowRectEx(&outerRect, style, FALSE, exStyle))
+        {
+            return false;
+        }
+        outerWidth = outerRect.right - outerRect.left;
+        outerHeight = outerRect.bottom - outerRect.top;
+        return outerWidth > 0 && outerHeight > 0;
+    };
+
+    const int workWidth =
+        monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+    const int workHeight =
+        monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+    int clientWidth = kInteractiveClientWidth;
+    int clientHeight = kInteractiveClientHeight;
+    int outerWidth = 0;
+    int outerHeight = 0;
+    if (!outerSizeForClient(
+            clientWidth, clientHeight, outerWidth, outerHeight))
+        return false;
+
+    if (outerWidth > workWidth || outerHeight > workHeight)
+    {
+        const int nonClientWidth = outerWidth - clientWidth;
+        const int nonClientHeight = outerHeight - clientHeight;
+        const int availableClientWidth = workWidth - nonClientWidth;
+        const int availableClientHeight = workHeight - nonClientHeight;
+        const int aspectUnit = std::min(
+            availableClientWidth / 16, availableClientHeight / 9);
+        if (aspectUnit <= 0)
+            return false;
+        clientWidth = aspectUnit * 16;
+        clientHeight = aspectUnit * 9;
+        if (!outerSizeForClient(
+                clientWidth, clientHeight, outerWidth, outerHeight) ||
+            outerWidth > workWidth || outerHeight > workHeight)
+        {
+            return false;
+        }
+    }
+
+    const int x = monitorInfo.rcWork.left + (workWidth - outerWidth) / 2;
+    const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
+    if (!SetWindowPos(
+            m_hwnd, nullptr, x, y, outerWidth, outerHeight,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                SWP_FRAMECHANGED))
+    {
+        return false;
+    }
+
+    int actualClientWidth = 0;
+    int actualClientHeight = 0;
+    return QueryPhysicalClientExtent(actualClientWidth, actualClientHeight) &&
+        actualClientWidth == clientWidth &&
+        actualClientHeight == clientHeight;
 }
 
 bool Window::IsPerMonitorV2DpiAware() const

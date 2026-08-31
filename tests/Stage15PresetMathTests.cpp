@@ -151,7 +151,6 @@ int main()
         !stage9optimization::UsesReferenceShader(reference.optimization) ||
         reference.shadowMode != Stage12ShadowMode::DirectReference)
         Fail("Reference diagnostic must use Fine/Direct reference paths");
-
     DirectX::XMFLOAT2 captureJitterSum{};
     for (std::uint32_t sample = 0; sample < kCaptureSampleCount; ++sample)
     {
@@ -220,8 +219,19 @@ int main()
         Stage15ConceptPreset::DesertCirrus);
     const Stage15ConceptDescriptor snow = ResolveConcept(
         Stage15ConceptPreset::SnowOvercast);
+    const Stage15ConceptDescriptor meadow = ResolveConcept(
+        Stage15ConceptPreset::MeadowBrokenClouds);
     if (!Near(urban.domain.cloudBottomAltitude, 1800.0f) ||
         !Near(urban.domain.cloudLayerThickness, 3700.0f) ||
+        !Near(urban.shape.cumulusMinimumThicknessMeters, 2000.0f) ||
+        !Near(urban.shape.cumulusMaximumThicknessMeters, 3200.0f) ||
+        !Near(urban.shape.localBaseLiftMaxMeters, 300.0f) ||
+        !Near(urban.shape.footprintCoverageInfluence, 0.50f) ||
+        !Near(urban.domain.cloudLightingReferenceAltitudeMeters, 3400.0f) ||
+        !Near(urban.environment.physicalSkyFillScale, 0.85f) ||
+        !Near(urban.environment.physicalGroundFillScale, 0.85f) ||
+        urban.rim.enabled != 1u || !Near(urban.rim.widthPixels, 1.5f) ||
+        !Near(urban.rim.intensity, 0.45f) ||
         urban.ground.preset != GroundMaterialPreset::Concrete ||
         !Near(urban.ground.bounceMultiplier, 1.0f))
         Fail("Urban concept mapping is incorrect");
@@ -229,13 +239,75 @@ int main()
             CloudShapeMode::CirrusPhysicalLayer) ||
         !Near(desert.domain.maxViewTraceDistance, 60000.0f) ||
         !Near(desert.domain.viewTraceFadeStartDistance, 50000.0f) ||
+        !Near(desert.shape.localBaseLiftMaxMeters, 0.0f) ||
+        !Near(desert.shape.footprintCoverageInfluence, 0.0f) ||
+        !Near(desert.environment.physicalSkyFillScale, 1.0f) ||
+        !Near(desert.environment.physicalGroundFillScale, 1.0f) ||
+        desert.rim.enabled != 0u ||
         desert.atmosphere.preset != AtmospherePreset::EarthHazy ||
         desert.ground.preset != GroundMaterialPreset::Desert ||
         !Near(desert.ground.bounceMultiplier, 0.5f))
         Fail("Desert Cirrus must preserve the 60 km far-plane contract");
+    if (!Near(meadow.shape.stratusMinimumThicknessMeters, 1500.0f) ||
+        !Near(meadow.shape.stratusMaximumThicknessMeters, 2500.0f) ||
+        !Near(meadow.shape.cumulusMinimumThicknessMeters, 3000.0f) ||
+        !Near(meadow.shape.cumulusMaximumThicknessMeters, 4600.0f) ||
+        !Near(meadow.shape.localBaseLiftMaxMeters, 200.0f) ||
+        !Near(meadow.shape.footprintCoverageInfluence, 0.40f) ||
+        !Near(meadow.environment.physicalSkyFillScale, 0.95f) ||
+        !Near(meadow.environment.physicalGroundFillScale, 0.95f) ||
+        meadow.rim.enabled != 1u ||
+        !Near(meadow.rim.widthPixels, 1.25f) ||
+        !Near(meadow.rim.intensity, 0.30f))
+        Fail("Meadow local shape contract is incorrect");
     if (snow.ground.preset != GroundMaterialPreset::Snow ||
+        !Near(snow.shape.stratusMinimumThicknessMeters, 1500.0f) ||
+        !Near(snow.shape.stratusMaximumThicknessMeters, 2300.0f) ||
+        !Near(snow.shape.localBaseLiftMaxMeters, 0.0f) ||
+        !Near(snow.shape.footprintCoverageInfluence, 0.20f) ||
+        !Near(snow.environment.physicalSkyFillScale, 1.10f) ||
+        !Near(snow.environment.physicalGroundFillScale, 1.10f) ||
+        snow.rim.enabled != 0u ||
         !Near(snow.ground.bounceMultiplier, 1.5f))
         Fail("Snow ground bounce mapping is incorrect");
+
+    for (const Stage15ConceptPreset concept : concepts)
+    {
+        const Stage15ConceptDescriptor descriptor = ResolveConcept(concept);
+        CloudFormationConcept formationConcept =
+            CloudFormationConcept::UrbanFairWeather;
+        switch (concept)
+        {
+        case Stage15ConceptPreset::MeadowBrokenClouds:
+            formationConcept = CloudFormationConcept::MeadowBrokenClouds;
+            break;
+        case Stage15ConceptPreset::DesertCirrus:
+            formationConcept = CloudFormationConcept::DesertCirrus;
+            break;
+        case Stage15ConceptPreset::SnowOvercast:
+            formationConcept = CloudFormationConcept::SnowOvercast;
+            break;
+        case Stage15ConceptPreset::UrbanFairWeather:
+        case Stage15ConceptPreset::Custom:
+        default:
+            break;
+        }
+        CloudFormationSettings canonicalFormation;
+        if (!ResolveBuiltInCloudFormation(
+                formationConcept, canonicalFormation) ||
+            !CloudFormationSettingsEqual(
+                descriptor.formation, canonicalFormation))
+        {
+            Fail("F4 descriptor must project the canonical formation resolver");
+        }
+        if (descriptor.appearance.cloudTypeMode !=
+            descriptor.weather.cloudTypeMode)
+            Fail("Stage 15 appearance/weather type preflight must agree");
+        if (!cloudshapedomain::EvaluateFit(
+                descriptor.shape, descriptor.weather.cloudTypeMode,
+                descriptor.domain, 200.0f).valid)
+            Fail("Stage 15 local shape must retain 200 m domain headroom");
+    }
 
     LightParameters conceptLightA = urban.light;
     LightParameters conceptLightB = conceptLightA;
@@ -284,9 +356,41 @@ int main()
         Fail("quality resolution must not mutate concept-owned appearance");
 
     if (sizeof(CloudShapeParameters) != 112u ||
+        offsetof(CloudShapeParameters, localBaseLiftMaxMeters) != 56u ||
+        offsetof(CloudShapeParameters, footprintCoverageInfluence) != 60u ||
         offsetof(CloudShapeParameters, cirrusFlowDirectionXZ) != 64u ||
         offsetof(CloudShapeParameters, cirrusMinimumThicknessMeters) != 96u)
         Fail("CloudShapeCB b7 ABI must be 112 bytes with an appended Cirrus block");
+    if (sizeof(CloudRimParameters) != 48u ||
+        offsetof(CloudRimParameters, enabled) != 0u ||
+        offsetof(CloudRimParameters, cloudDepthRejectionThreshold) != 28u ||
+        offsetof(CloudRimParameters, tint) != 32u ||
+        offsetof(CloudRimParameters, radianceClamp) != 44u ||
+        cloudrim::kConstantBufferSlot != 10u)
+        Fail("CloudRimCB must remain 48 bytes on the composite-only b10 slot");
+    CloudRimParameters invalidRim;
+    invalidRim.enabled = 7u;
+    invalidRim.widthPixels = INFINITY;
+    invalidRim.intensity = -1.0f;
+    invalidRim.opacityThreshold = NAN;
+    invalidRim.opacitySoftness = 0.0f;
+    invalidRim.sunAlignment = 2.0f;
+    invalidRim.sunPower = INFINITY;
+    invalidRim.cloudDepthRejectionThreshold = -1.0f;
+    invalidRim.tint = { NAN, -1.0f, INFINITY };
+    invalidRim.radianceClamp = 1000.0f;
+    const CloudRimParameters safeRim = cloudrim::Sanitize(invalidRim);
+    if (safeRim.enabled != 1u || !Near(safeRim.widthPixels, 1.5f) ||
+        !Near(safeRim.intensity, 0.0f) ||
+        !Near(safeRim.opacityThreshold, 0.10f) ||
+        !Near(safeRim.opacitySoftness, 0.001f) ||
+        !Near(safeRim.sunAlignment, 0.99f) ||
+        !Near(safeRim.sunPower, 2.0f) ||
+        !Near(safeRim.cloudDepthRejectionThreshold, 0.0f) ||
+        !Near(safeRim.tint.x, 1.0f) || !Near(safeRim.tint.y, 0.0f) ||
+        !Near(safeRim.tint.z, 0.85f) ||
+        !Near(safeRim.radianceClamp, 64.0f))
+        Fail("CloudRim sanitize must keep every field finite and bounded");
 
     CloudShapeParameters invalid;
     invalid.shapeMode = static_cast<std::uint32_t>(

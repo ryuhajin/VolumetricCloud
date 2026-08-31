@@ -2,6 +2,7 @@
 #include "Stage6LightMath.h"
 #include "Stage8AmbientMath.h"
 
+#include <cstddef>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -28,16 +29,24 @@ int main()
 {
     Require(sizeof(EnvironmentParameters) == 80u,
             "EnvironmentCB CPU layout must remain 80 bytes");
+    Require(offsetof(EnvironmentParameters, physicalSkyFillScale) == 60u &&
+                offsetof(EnvironmentParameters, physicalGroundFillScale) == 76u,
+            "Physical fill controls must occupy the former padding offsets");
 
     EnvironmentParameters off;
     stage8environment::ApplyPreset(off, Stage8EnvironmentPreset::Off);
     Require(off.skyStrength == 0.0f && off.groundStrength == 0.0f &&
+                off.physicalSkyFillScale == 0.0f &&
+                off.physicalGroundFillScale == 0.0f &&
                 off.multipleScatteringEnabled == 0.0f &&
                 off.multipleScatteringOctaves == 0u &&
                 stage8::MultipleScatteringFactor(2.0f, 4.0f, off) == 0.0f,
             "Off must preserve stage 7 without indirect light");
 
     EnvironmentParameters balanced;
+    Require(balanced.physicalSkyFillScale == 1.0f &&
+                balanced.physicalGroundFillScale == 1.0f,
+            "Balanced Physical fill must be neutral");
     const auto bottom = stage8::EvaluateWeights(0.0f, 0.4f, balanced);
     const auto middle = stage8::EvaluateWeights(0.5f, 0.4f, balanced);
     const auto top = stage8::EvaluateWeights(1.0f, 0.4f, balanced);
@@ -62,6 +71,16 @@ int main()
                 Near(doubledAmbient.sky.g, baseAmbient.sky.g * 2.0f) &&
                 Near(doubledAmbient.ground.r, baseAmbient.ground.r),
             "sky strength must scale only sky radiance linearly");
+    EnvironmentParameters physicalFillOff = balanced;
+    physicalFillOff.physicalSkyFillScale = 0.0f;
+    physicalFillOff.physicalGroundFillScale = 0.0f;
+    const auto manualAmbientWithPhysicalFillOff = stage8::EvaluateAmbientRadiance(
+        0.5f, 0.4f, physicalFillOff);
+    Require(Near(manualAmbientWithPhysicalFillOff.sky.r, baseAmbient.sky.r) &&
+                Near(manualAmbientWithPhysicalFillOff.sky.g, baseAmbient.sky.g) &&
+                Near(manualAmbientWithPhysicalFillOff.ground.r,
+                     baseAmbient.ground.r),
+            "Physical fill controls must not change Manual Reference radiance");
 
     EnvironmentParameters one = balanced;
     one.multipleScatteringOctaves = 1;
@@ -86,11 +105,15 @@ int main()
     stage8environment::ApplyPreset(strong, Stage8EnvironmentPreset::StrongFill);
     Require(Near(strong.skyStrength, 0.40f) &&
                 Near(strong.groundStrength, 0.15f) &&
+                Near(strong.physicalSkyFillScale, 1.25f) &&
+                Near(strong.physicalGroundFillScale, 1.25f) &&
                 strong.multipleScatteringOctaves == 3u,
             "Strong Fill preset must be deterministic");
     EnvironmentParameters ground;
     stage8environment::ApplyPreset(ground, Stage8EnvironmentPreset::GroundCheck);
     Require(ground.skyStrength == 0.0f && Near(ground.groundStrength, 0.35f) &&
+                ground.physicalSkyFillScale == 0.0f &&
+                ground.physicalGroundFillScale == 1.0f &&
                 ground.multipleScatteringEnabled == 0.0f,
             "Ground Check must isolate ground bounce");
     EnvironmentParameters hero;
@@ -99,6 +122,8 @@ int main()
     const float heroShadow = stage8::AmbientVisibility(0.4f, 0.1f, hero);
     Require(hero.ambientShadowCoupling > 0.0f &&
                 hero.multipleScatteringInteriorBlend > 0.0f &&
+                hero.physicalSkyFillScale == 1.0f &&
+                hero.physicalGroundFillScale == 1.0f &&
                 heroShadow < heroLit,
             "Portfolio Hero must couple ambient fill to sun visibility");
     Require(stage8::MultipleScatteringInteriorWeight(1.0f, hero) <
@@ -126,6 +151,8 @@ int main()
     invalid.ambientShadowCoupling = 10.0f;
     invalid.ambientShadowExponent = -10.0f;
     invalid.multipleScatteringInteriorBlend = 10.0f;
+    invalid.physicalSkyFillScale = std::numeric_limits<float>::quiet_NaN();
+    invalid.physicalGroundFillScale = 10.0f;
     invalid = stage8environment::Sanitize(invalid);
     const auto safeWeights = stage8::EvaluateWeights(
         std::numeric_limits<float>::quiet_NaN(),
@@ -137,6 +164,8 @@ int main()
                 invalid.ambientShadowCoupling == 1.0f &&
                 invalid.ambientShadowExponent == 0.1f &&
                 invalid.multipleScatteringInteriorBlend == 1.0f &&
+                invalid.physicalSkyFillScale == 1.0f &&
+                invalid.physicalGroundFillScale == 2.0f &&
                 std::isfinite(safeWeights.sky) &&
                 std::isfinite(safeWeights.ground) &&
                 std::isfinite(safeWeights.ambientOcclusion) &&

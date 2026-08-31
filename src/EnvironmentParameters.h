@@ -5,6 +5,7 @@
 
 #include <DirectXMath.h>
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 
@@ -36,17 +37,23 @@ struct alignas(16) EnvironmentParameters
     float multipleScatteringAttenuation = 0.20f;
     float multipleScatteringExtinctionFactor = 0.50f;
     float multipleScatteringPhaseFactor = 0.25f;
-    float environmentPadding = 0.0f;
+    // Physical Atmosphere의 LUT 입사광만 조절한다. Manual Reference의
+    // sky/ground color·strength와 분리해 배경 대기 LUT를 다시 만들지 않는다.
+    float physicalSkyFillScale = 1.0f;
 
     // 13-5 외곽광 보완. 중립값(0, 1, 0)은 기존 환경광을 정확히 보존한다.
     float ambientShadowCoupling = 0.0f;
     float ambientShadowExponent = 1.0f;
     float multipleScatteringInteriorBlend = 0.0f;
-    float lightingPadding = 0.0f;
+    float physicalGroundFillScale = 1.0f;
 };
 
 static_assert(sizeof(EnvironmentParameters) == 80,
               "EnvironmentParameters must match EnvironmentCB");
+static_assert(offsetof(EnvironmentParameters, physicalSkyFillScale) == 60,
+              "physicalSkyFillScale must match EnvironmentCB offset 60");
+static_assert(offsetof(EnvironmentParameters, physicalGroundFillScale) == 76,
+              "physicalGroundFillScale must match EnvironmentCB offset 76");
 
 namespace stage8environment
 {
@@ -94,6 +101,10 @@ inline EnvironmentParameters Sanitize(EnvironmentParameters value)
         std::isfinite(value.multipleScatteringPhaseFactor)
             ? value.multipleScatteringPhaseFactor : 0.25f,
         0.0f, 1.0f);
+    value.physicalSkyFillScale = std::clamp(
+        std::isfinite(value.physicalSkyFillScale)
+            ? value.physicalSkyFillScale : 1.0f,
+        0.0f, 2.0f);
     value.ambientShadowCoupling = std::clamp(
         std::isfinite(value.ambientShadowCoupling)
             ? value.ambientShadowCoupling : 0.0f,
@@ -106,8 +117,10 @@ inline EnvironmentParameters Sanitize(EnvironmentParameters value)
         std::isfinite(value.multipleScatteringInteriorBlend)
             ? value.multipleScatteringInteriorBlend : 0.0f,
         0.0f, 1.0f);
-    value.environmentPadding = 0.0f;
-    value.lightingPadding = 0.0f;
+    value.physicalGroundFillScale = std::clamp(
+        std::isfinite(value.physicalGroundFillScale)
+            ? value.physicalGroundFillScale : 1.0f,
+        0.0f, 2.0f);
     return value;
 }
 
@@ -125,12 +138,16 @@ inline void ApplyPreset(EnvironmentParameters& value,
     case Stage8EnvironmentPreset::Off:
         value.skyStrength = 0.0f;
         value.groundStrength = 0.0f;
+        value.physicalSkyFillScale = 0.0f;
+        value.physicalGroundFillScale = 0.0f;
         value.multipleScatteringEnabled = 0.0f;
         value.multipleScatteringOctaves = 0;
         break;
     case Stage8EnvironmentPreset::StrongFill:
         value.skyStrength = 0.40f;
         value.groundStrength = 0.15f;
+        value.physicalSkyFillScale = 1.25f;
+        value.physicalGroundFillScale = 1.25f;
         value.ambientOcclusionStrength = 0.80f;
         value.multipleScatteringOctaves = 3;
         value.multipleScatteringAttenuation = 0.45f;
@@ -138,6 +155,8 @@ inline void ApplyPreset(EnvironmentParameters& value,
     case Stage8EnvironmentPreset::GroundCheck:
         value.skyStrength = 0.0f;
         value.groundStrength = 0.35f;
+        value.physicalSkyFillScale = 0.0f;
+        value.physicalGroundFillScale = 1.0f;
         value.ambientOcclusionStrength = 0.0f;
         value.multipleScatteringEnabled = 0.0f;
         value.multipleScatteringOctaves = 0;
@@ -156,6 +175,8 @@ inline void ApplyPreset(EnvironmentParameters& value,
         value.ambientShadowCoupling = 0.55f;
         value.ambientShadowExponent = 0.50f;
         value.multipleScatteringInteriorBlend = 0.75f;
+        value.physicalSkyFillScale = 1.0f;
+        value.physicalGroundFillScale = 1.0f;
         break;
     case Stage8EnvironmentPreset::Balanced:
     default:
