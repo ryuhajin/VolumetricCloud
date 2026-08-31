@@ -158,76 +158,29 @@ float Camera::GetPitchDegrees() const
 
 DirectX::XMMATRIX Camera::GetViewProj() const
 {
-    return GetViewProj(0.0f, 0.0f, 1, 1);
-}
-
-DirectX::XMMATRIX Camera::GetProjection(float jitterXPixels,
-                                        float jitterYPixels,
-                                        int renderWidth,
-                                        int renderHeight) const
-{
-    XMMATRIX projection = XMMatrixPerspectiveFovLH(
-        m_fovY, m_aspect, m_nearZ, m_farZ);
-    if (renderWidth <= 0 || renderHeight <= 0 ||
-        !std::isfinite(jitterXPixels) || !std::isfinite(jitterYPixels))
-        return projection;
-
-    // DirectX row-vector projection에서 _31/_32는 clip x/y를 z에 비례해
-    // 옮긴다. 정점과 cloud ray가 같은 행렬을 사용해야 물체/하늘 경계의
-    // Capture SSAA 표본이 서로 어긋나지 않는다.
-    projection.r[2] = XMVectorAdd(
-        projection.r[2],
-        XMVectorSet(
-            -2.0f * jitterXPixels / static_cast<float>(renderWidth),
-             2.0f * jitterYPixels / static_cast<float>(renderHeight),
-             0.0f, 0.0f));
-    return projection;
-}
-
-DirectX::XMMATRIX Camera::GetViewProj(float jitterXPixels,
-                                      float jitterYPixels,
-                                      int renderWidth,
-                                      int renderHeight) const
-{
     const XMFLOAT3 target = GetTarget();
     XMVECTOR eye = XMLoadFloat3(&m_position);
     XMVECTOR at  = XMLoadFloat3(&target);
     XMVECTOR up  = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
-    XMMATRIX proj = GetProjection(
-        jitterXPixels, jitterYPixels, renderWidth, renderHeight);
-    return XMMatrixMultiply(view, proj);
+    return XMMatrixMultiply(view, GetProjection());
 }
 
 DirectX::XMMATRIX Camera::GetInvViewProj() const
 {
-    return GetInvViewProj(0.0f, 0.0f, 1, 1);
-}
-
-DirectX::XMMATRIX Camera::GetInvViewProj(float jitterXPixels,
-                                         float jitterYPixels,
-                                         int renderWidth,
-                                         int renderHeight) const
-{
-    XMMATRIX vp = GetViewProj(
-        jitterXPixels, jitterYPixels, renderWidth, renderHeight);
-    return XMMatrixInverse(nullptr, vp);
+    return XMMatrixInverse(nullptr, GetViewProj());
 }
 
 DirectX::XMMATRIX Camera::GetInvProjection() const
 {
-    return GetInvProjection(0.0f, 0.0f, 1, 1);
+    return XMMatrixInverse(nullptr, GetProjection());
 }
 
-DirectX::XMMATRIX Camera::GetInvProjection(float jitterXPixels,
-                                           float jitterYPixels,
-                                           int renderWidth,
-                                           int renderHeight) const
+DirectX::XMMATRIX Camera::GetProjection() const
 {
-    const XMMATRIX projection = GetProjection(
-        jitterXPixels, jitterYPixels, renderWidth, renderHeight);
-    return XMMatrixInverse(nullptr, projection);
+    return XMMatrixPerspectiveFovLH(
+        m_fovY, m_aspect, m_nearZ, m_farZ);
 }
 
 DirectX::XMMATRIX Camera::GetInvViewRotation() const

@@ -1,5 +1,4 @@
 #include "Stage13OpenWorldMath.h"
-#include "LightParameters.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -96,15 +95,6 @@ int main()
             Near(ViewDistanceFade(45000.0, value), 0.5) &&
             Near(ViewDistanceFade(50000.0, value), 0.0),
             "view fade must transition smoothly from 40 km to 50 km");
-
-    LightParameters light;
-    light.maxLightSteps = value.maxLightSteps;
-    light.lightStepSize = static_cast<float>(value.lightStepMeters);
-    light.lightRayBias = static_cast<float>(value.lightRayBiasMeters);
-    light = stage6light::Sanitize(light);
-    Require(light.maxLightSteps == 80u &&
-            Near(light.lightStepSize, 250.0) && Near(light.lightRayBias, 1.0),
-            "Light sanitize must preserve the open-world sampling budget");
 
     std::cout << "Stage13OpenWorldMath passed\n";
     return 0;

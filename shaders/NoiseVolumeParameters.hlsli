@@ -4,15 +4,12 @@
 #ifndef VCLOUD_NOISE_VOLUME_PARAMETERS_HLSLI
 #define VCLOUD_NOISE_VOLUME_PARAMETERS_HLSLI
 
-static const uint kNoiseSourceProceduralLegacy = 0u;
-static const uint kNoiseSourceTexture3D = 1u;
-
 cbuffer NoiseVolumeCB : register(b6)
 {
-    uint noiseSource;
     uint baseVolumeResolution;
     uint detailVolumeResolution;
     uint noiseVolumeSeed;
+    uint noiseVolumePaddingUint0;
 
     float baseVolumeWorldSizeMeters;
     float detailVolumeWorldSizeMeters;

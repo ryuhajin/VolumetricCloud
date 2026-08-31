@@ -5,10 +5,9 @@
 #define VCLOUD_STAGE14_ATMOSPHERE_HLSLI
 
 static const float kAtmospherePi = 3.14159265358979323846;
-static const uint kAtmosphereModePhysical = 0u;
 
 // CPU stage14::GpuParameters와 같은 14레지스터(224바이트)다.
-cbuffer Stage14CB : register(b13)
+cbuffer Stage14CB : register(b9)
 {
     float4 planetRadiiDensityHeights;
     float4 rayleighScatteringAndScale;
@@ -20,7 +19,7 @@ cbuffer Stage14CB : register(b13)
     float4 sunTintAndGroundBounce;
     float4 groundAlbedoAndDebugExposure;
     float4 toneAndTime;
-    uint4 modeFlags;
+    uint4 renderFlags;
     float4 transmittanceMultiSize;
     float4 skyViewIrradianceSize;
     uint4 aerialDebugGeneration;
@@ -280,16 +279,6 @@ float3 ComposeStage14Atmosphere(
     float3 cloudScattering, float cloudTransmittance,
     float cloudRepresentativeDepth)
 {
-    if (modeFlags.x != kAtmosphereModePhysical)
-    {
-        float height = saturate(rayDirection.y * 0.5 + 0.5);
-        float3 manualSky = lerp(float3(0.55, 0.63, 0.72),
-                                float3(0.12, 0.27, 0.52), height);
-        float3 manualBackground = hasGeometry ? litSurface : manualSky;
-        return cloudScattering + saturate(cloudTransmittance) *
-               manualBackground;
-    }
-
     float3 clearBackground;
     if (hasGeometry)
     {

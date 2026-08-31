@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudFormationPresetStore.cpp - Stage 15B 독립 formation JSON/내장값
+//  CloudFormationPresetStore.cpp - 내장 formation과 단일 Custom JSON
 // ============================================================================
 #include "CloudFormationPresetStore.h"
 
@@ -41,8 +41,6 @@ CloudFormationSettings BasePhysicalFormation()
     result.weather = WeatherMapGeneratorSettings{};
     result.weatherWorldSizeMeters = 64000.0f;
     result.shape = CloudShapeParameters{};
-    result.shape.shapeMode = static_cast<std::uint32_t>(
-        CloudShapeMode::WeatherPhysicalThickness);
     result.shape.stratusMinimumThicknessMeters = 1500.0f;
     result.shape.stratusMaximumThicknessMeters = 2500.0f;
     result.shape.cumulusMinimumThicknessMeters = 3000.0f;
@@ -96,8 +94,6 @@ const char* TargetId(const CloudFormationPresetTarget& target)
             return "urban-fair-weather";
         case CloudFormationConcept::MeadowBrokenClouds:
             return "meadow-broken-clouds";
-        case CloudFormationConcept::DesertCirrus:
-            return "desert-cirrus";
         case CloudFormationConcept::SnowOvercast:
             return "snow-overcast";
         }
@@ -106,7 +102,7 @@ const char* TargetId(const CloudFormationPresetTarget& target)
     {
     case CloudFormationType::Stratus: return "stratus";
     case CloudFormationType::Cumulus: return "cumulus";
-    case CloudFormationType::Cirrus: return "cirrus";
+    case CloudFormationType::Mixed: return "mixed";
     }
     return "invalid";
 }
@@ -203,7 +199,6 @@ bool ParseFormation(const std::string& text, CloudFormationSettings& value)
 {
     std::uint32_t weatherPreset = 0;
     std::uint32_t cloudTypeMode = 0;
-    std::uint32_t shapeMode = 0;
     if (!ParseFloat(text, "coverage", value.coverage) ||
         !ParseFloat(text, "densityMultiplier", value.densityMultiplier) ||
         !ParseFloat(text, "extinctionPerMeter", value.extinctionPerMeter) ||
@@ -225,7 +220,6 @@ bool ParseFormation(const std::string& text, CloudFormationSettings& value)
         !ParseUnsigned(text, "weatherCloudTypeMode", cloudTypeMode) ||
         !ParseFloat(text, "weatherWorldSizeMeters",
                     value.weatherWorldSizeMeters) ||
-        !ParseUnsigned(text, "shapeMode", shapeMode) ||
         !ParseFloat(text, "stratusMinimumThicknessMeters",
                     value.shape.stratusMinimumThicknessMeters) ||
         !ParseFloat(text, "stratusMaximumThicknessMeters",
@@ -256,30 +250,6 @@ bool ParseFormation(const std::string& text, CloudFormationSettings& value)
                     value.shape.localBaseLiftMaxMeters) ||
         !ParseFloat(text, "footprintCoverageInfluence",
                     value.shape.footprintCoverageInfluence) ||
-        !ParseFloat(text, "cirrusFlowDirectionX",
-                    value.shape.cirrusFlowDirectionXZ.x) ||
-        !ParseFloat(text, "cirrusFlowDirectionZ",
-                    value.shape.cirrusFlowDirectionXZ.y) ||
-        !ParseFloat(text, "cirrusBaseAlongScaleMeters",
-                    value.shape.cirrusBaseAlongScaleMeters) ||
-        !ParseFloat(text, "cirrusBaseAcrossScaleMeters",
-                    value.shape.cirrusBaseAcrossScaleMeters) ||
-        !ParseFloat(text, "cirrusBaseVerticalScaleMeters",
-                    value.shape.cirrusBaseVerticalScaleMeters) ||
-        !ParseFloat(text, "cirrusDetailAlongScaleMeters",
-                    value.shape.cirrusDetailAlongScaleMeters) ||
-        !ParseFloat(text, "cirrusDetailAcrossScaleMeters",
-                    value.shape.cirrusDetailAcrossScaleMeters) ||
-        !ParseFloat(text, "cirrusDetailVerticalScaleMeters",
-                    value.shape.cirrusDetailVerticalScaleMeters) ||
-        !ParseFloat(text, "cirrusMinimumThicknessMeters",
-                    value.shape.cirrusMinimumThicknessMeters) ||
-        !ParseFloat(text, "cirrusMaximumThicknessMeters",
-                    value.shape.cirrusMaximumThicknessMeters) ||
-        !ParseFloat(text, "cirrusVerticalProfileCenter",
-                    value.shape.cirrusVerticalProfileCenter) ||
-        !ParseFloat(text, "cirrusVerticalProfileHalfWidth",
-                    value.shape.cirrusVerticalProfileHalfWidth) ||
         !ParseFloat(text, "domainBottomMeters", value.domainBottomMeters) ||
         !ParseFloat(text, "domainThicknessMeters",
                     value.domainThicknessMeters) ||
@@ -305,7 +275,6 @@ bool ParseFormation(const std::string& text, CloudFormationSettings& value)
     }
     value.weatherPreset = static_cast<Stage5WeatherPreset>(weatherPreset);
     value.weather.cloudTypeMode = static_cast<CloudTypeMode>(cloudTypeMode);
-    value.shape.shapeMode = shapeMode;
     return true;
 }
 
@@ -351,7 +320,6 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << static_cast<std::uint32_t>(value.weather.cloudTypeMode) << ",\n"
            << "    \"weatherWorldSizeMeters\": "
            << value.weatherWorldSizeMeters << ",\n"
-           << "    \"shapeMode\": " << value.shape.shapeMode << ",\n"
            << "    \"stratusMinimumThicknessMeters\": "
            << value.shape.stratusMinimumThicknessMeters << ",\n"
            << "    \"stratusMaximumThicknessMeters\": "
@@ -382,30 +350,6 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << value.shape.localBaseLiftMaxMeters << ",\n"
            << "    \"footprintCoverageInfluence\": "
            << value.shape.footprintCoverageInfluence << ",\n"
-           << "    \"cirrusFlowDirectionX\": "
-           << value.shape.cirrusFlowDirectionXZ.x << ",\n"
-           << "    \"cirrusFlowDirectionZ\": "
-           << value.shape.cirrusFlowDirectionXZ.y << ",\n"
-           << "    \"cirrusBaseAlongScaleMeters\": "
-           << value.shape.cirrusBaseAlongScaleMeters << ",\n"
-           << "    \"cirrusBaseAcrossScaleMeters\": "
-           << value.shape.cirrusBaseAcrossScaleMeters << ",\n"
-           << "    \"cirrusBaseVerticalScaleMeters\": "
-           << value.shape.cirrusBaseVerticalScaleMeters << ",\n"
-           << "    \"cirrusDetailAlongScaleMeters\": "
-           << value.shape.cirrusDetailAlongScaleMeters << ",\n"
-           << "    \"cirrusDetailAcrossScaleMeters\": "
-           << value.shape.cirrusDetailAcrossScaleMeters << ",\n"
-           << "    \"cirrusDetailVerticalScaleMeters\": "
-           << value.shape.cirrusDetailVerticalScaleMeters << ",\n"
-           << "    \"cirrusMinimumThicknessMeters\": "
-           << value.shape.cirrusMinimumThicknessMeters << ",\n"
-           << "    \"cirrusMaximumThicknessMeters\": "
-           << value.shape.cirrusMaximumThicknessMeters << ",\n"
-           << "    \"cirrusVerticalProfileCenter\": "
-           << value.shape.cirrusVerticalProfileCenter << ",\n"
-           << "    \"cirrusVerticalProfileHalfWidth\": "
-           << value.shape.cirrusVerticalProfileHalfWidth << ",\n"
            << "    \"domainBottomMeters\": "
            << value.domainBottomMeters << ",\n"
            << "    \"domainThicknessMeters\": "
@@ -463,7 +407,7 @@ bool IsValidCloudFormationPresetTarget(
             CloudFormationConcept::SnowOvercast);
     case CloudFormationPresetGroup::Type:
         return target.index <= static_cast<std::uint32_t>(
-            CloudFormationType::Cirrus);
+            CloudFormationType::Mixed);
     case CloudFormationPresetGroup::Custom:
         return target.index == 0u;
     case CloudFormationPresetGroup::None:
@@ -496,8 +440,6 @@ const char* CloudFormationPresetTargetName(
             return "Urban Fair Weather";
         case CloudFormationConcept::MeadowBrokenClouds:
             return "Meadow Broken Clouds";
-        case CloudFormationConcept::DesertCirrus:
-            return "Desert Cirrus";
         case CloudFormationConcept::SnowOvercast:
             return "Snow Overcast";
         }
@@ -506,7 +448,7 @@ const char* CloudFormationPresetTargetName(
     {
     case CloudFormationType::Stratus: return "Stratus";
     case CloudFormationType::Cumulus: return "Cumulus";
-    case CloudFormationType::Cirrus: return "Cirrus";
+    case CloudFormationType::Mixed: return "Mixed";
     }
     return "Invalid";
 }
@@ -538,21 +480,12 @@ bool CloudFormationCanSaveToPreset(
     const CloudFormationPresetTarget& target, bool targetValid)
 {
     return targetValid && IsValidCloudFormationPresetTarget(target) &&
-        target.group != CloudFormationPresetGroup::Custom;
-}
-
-bool CloudFormationCanRestoreBuiltIn(
-    const CloudFormationPresetTarget& target, bool targetValid,
-    CloudFormationPresetSource source)
-{
-    return CloudFormationCanSaveToPreset(target, targetValid) &&
-        source == CloudFormationPresetSource::UserOverride;
+        target.group == CloudFormationPresetGroup::Custom;
 }
 
 std::filesystem::path DefaultCloudFormationPresetRoot()
 {
-    return std::filesystem::path("captures") / "noise-lab" /
-        "cloud-presets";
+    return std::filesystem::path("captures") / "noise-lab";
 }
 
 std::filesystem::path CloudFormationPresetPath(
@@ -562,7 +495,7 @@ std::filesystem::path CloudFormationPresetPath(
     if (!IsValidCloudFormationPresetTarget(target))
         return {};
     if (target.group == CloudFormationPresetGroup::Custom)
-        return root / "custom.json";
+        return root / "custom-cloud.json";
     if (target.group == CloudFormationPresetGroup::Concept)
         return root / "concepts" / (std::string(TargetId(target)) + ".json");
     return root / "types" / (std::string(TargetId(target)) + ".json");
@@ -615,28 +548,6 @@ bool ResolveBuiltInCloudFormation(
         value.domainBottomMeters = 1500.0f;
         value.domainThicknessMeters = 5000.0f;
         break;
-    case CloudFormationConcept::DesertCirrus:
-        value.coverage = 0.42f;
-        value.densityMultiplier = 0.40f;
-        value.extinctionPerMeter = 0.00010f;
-        value.detailErosion = 0.22f;
-        value.weather.cloudTypeMode = CloudTypeMode::WeatherMap;
-        value.weather.coverage = Channel(1201u, 2u, 8u, 0.30f, -0.04f, 1.20f);
-        value.weather.cloudType = Channel(2203u, 2u, 4u, 0.20f, 0.0f, 0.85f);
-        value.weather.density = Channel(3203u, 2u, 6u, 0.22f, -0.10f, 0.80f);
-        value.weather.localThickness = Channel(4201u, 2u, 5u, 0.18f, -0.05f, 0.75f);
-        value.weather.coverageThreshold = 0.52f;
-        value.weather.coverageSoftness = 0.13f;
-        value.weatherWorldSizeMeters = 128000.0f;
-        value.shape.shapeMode = static_cast<std::uint32_t>(
-            CloudShapeMode::CirrusPhysicalLayer);
-        value.shape.localBaseLiftMaxMeters = 0.0f;
-        value.shape.footprintCoverageInfluence = 0.0f;
-        value.domainBottomMeters = 7000.0f;
-        value.domainThicknessMeters = 3500.0f;
-        value.maximumViewTraceDistanceMeters = 60000.0f;
-        value.viewTraceFadeStartDistanceMeters = 50000.0f;
-        break;
     case CloudFormationConcept::SnowOvercast:
         value.coverage = 0.90f;
         value.densityMultiplier = 1.25f;
@@ -667,23 +578,23 @@ bool ResolveBuiltInCloudFormation(
 bool ResolveBuiltInCloudFormation(
     CloudFormationType type, CloudFormationSettings& outSettings)
 {
-    // 아래 값은 해당 F4 resolver 호출 결과가 아니다. Stage 15B 도입 시점의
-    // Snow/Urban/Desert formation을 복사한 독립 F1 기본값이다.
+    // F1 타입은 장면 콘셉트와 독립된 formation 기본값이다.
     CloudFormationSettings value = BasePhysicalFormation();
     switch (type)
     {
     case CloudFormationType::Stratus:
-        value.coverage = 0.90f;
-        value.densityMultiplier = 1.25f;
-        value.extinctionPerMeter = 0.00046f;
-        value.detailErosion = 0.10f;
+        value.coverage = 0.40f;
+        value.densityMultiplier = 1.20f;
+        value.extinctionPerMeter = 0.00042f;
+        value.detailErosion = 0.12f;
         value.weather.cloudTypeMode = CloudTypeMode::Stratus;
-        value.weather.coverage = Channel(1301u, 2u, 6u, 0.20f, 0.10f, 0.85f);
-        value.weather.cloudType = Channel(2309u, 2u, 4u, 0.15f, -0.30f, 0.60f);
-        value.weather.density = Channel(3301u, 2u, 5u, 0.18f, 0.05f, 0.75f);
-        value.weather.localThickness = Channel(4303u, 2u, 4u, 0.15f, 0.0f, 0.70f);
-        value.weather.coverageThreshold = 0.46f;
-        value.weather.coverageSoftness = 0.20f;
+        value.weather.coverageThreshold = 0.49f;
+        value.weather.coverageSoftness = 0.22f;
+        value.weather.coverage.bias = 0.01f;
+        value.weather.coverage.contrast = 1.03f;
+        value.weather.densityCoverageInfluence = 0.50f;
+        value.weather.thicknessCoverageInfluence = 0.65f;
+        value.weather.cloudType.bias = 0.0f;
         value.shape.stratusMinimumThicknessMeters = 1500.0f;
         value.shape.stratusMaximumThicknessMeters = 2300.0f;
         value.shape.stratusBottomFadeEnd = 0.05f;
@@ -694,46 +605,60 @@ bool ResolveBuiltInCloudFormation(
         value.domainThicknessMeters = 2500.0f;
         break;
     case CloudFormationType::Cumulus:
-        value.coverage = 0.38f;
-        value.densityMultiplier = 1.10f;
-        value.extinctionPerMeter = 0.00036f;
-        value.detailErosion = 0.24f;
+        value.coverage = 0.45f;
+        value.densityMultiplier = 1.25f;
+        value.extinctionPerMeter = 0.00038f;
+        value.detailErosion = 0.18f;
         value.weather.cloudTypeMode = CloudTypeMode::Cumulus;
-        value.weather.coverage = Channel(1013u, 4u, 11u, 0.42f, -0.02f, 1.15f);
-        value.weather.cloudType = Channel(2017u, 2u, 4u, 0.20f, 0.20f, 0.85f);
-        value.weather.density = Channel(3019u, 3u, 6u, 0.25f, 0.0f, 0.75f);
-        value.weather.localThickness = Channel(4021u, 2u, 5u, 0.20f, 0.0f, 0.90f);
-        value.weather.coverageThreshold = 0.53f;
-        value.weather.coverageSoftness = 0.14f;
+        value.weather.coverageThreshold = 0.52f;
+        value.weather.coverageSoftness = 0.20f;
+        value.weather.coverage.bias = 0.0f;
+        value.weather.coverage.contrast = 1.05f;
+        value.weather.densityCoverageInfluence = 0.45f;
+        value.weather.thicknessCoverageInfluence = 0.70f;
+        value.weather.cloudType.bias = 0.0f;
         value.shape.cumulusMinimumThicknessMeters = 2000.0f;
         value.shape.cumulusMaximumThicknessMeters = 3200.0f;
+        value.shape.cumulusBottomFadeEnd = 0.08f;
         value.shape.cumulusTopFadeStart = 0.94f;
+        value.shape.cumulusUpperMassBottom = 0.65f;
+        value.shape.cumulusUpperMassStart = 0.08f;
+        value.shape.cumulusUpperMassEnd = 0.70f;
         value.shape.localBaseLiftMaxMeters = 300.0f;
         value.shape.footprintCoverageInfluence = 0.50f;
         value.domainBottomMeters = 1800.0f;
         value.domainThicknessMeters = 3700.0f;
         break;
-    case CloudFormationType::Cirrus:
-        value.coverage = 0.42f;
-        value.densityMultiplier = 0.40f;
-        value.extinctionPerMeter = 0.00010f;
-        value.detailErosion = 0.22f;
+    case CloudFormationType::Mixed:
+        value.coverage = 0.68f;
+        value.densityMultiplier = 1.15f;
+        value.extinctionPerMeter = 0.00035f;
+        value.detailErosion = 0.18f;
         value.weather.cloudTypeMode = CloudTypeMode::WeatherMap;
-        value.weather.coverage = Channel(1201u, 2u, 8u, 0.30f, -0.04f, 1.20f);
-        value.weather.cloudType = Channel(2203u, 2u, 4u, 0.20f, 0.0f, 0.85f);
-        value.weather.density = Channel(3203u, 2u, 6u, 0.22f, -0.10f, 0.80f);
-        value.weather.localThickness = Channel(4201u, 2u, 5u, 0.18f, -0.05f, 0.75f);
-        value.weather.coverageThreshold = 0.52f;
-        value.weather.coverageSoftness = 0.13f;
-        value.weatherWorldSizeMeters = 128000.0f;
-        value.shape.shapeMode = static_cast<std::uint32_t>(
-            CloudShapeMode::CirrusPhysicalLayer);
-        value.shape.localBaseLiftMaxMeters = 0.0f;
-        value.shape.footprintCoverageInfluence = 0.0f;
-        value.domainBottomMeters = 7000.0f;
-        value.domainThicknessMeters = 3500.0f;
-        value.maximumViewTraceDistanceMeters = 60000.0f;
-        value.viewTraceFadeStartDistanceMeters = 50000.0f;
+        value.weather.coverageThreshold = 0.50f;
+        value.weather.coverageSoftness = 0.20f;
+        value.weather.coverage.bias = 0.0f;
+        value.weather.coverage.contrast = 1.05f;
+        value.weather.densityCoverageInfluence = 0.45f;
+        value.weather.thicknessCoverageInfluence = 0.60f;
+        value.weather.cloudType.bias = 0.08f;
+        value.shape.stratusMinimumThicknessMeters = 1500.0f;
+        value.shape.stratusMaximumThicknessMeters = 2500.0f;
+        value.shape.cumulusMinimumThicknessMeters = 3000.0f;
+        value.shape.cumulusMaximumThicknessMeters = 4600.0f;
+        value.shape.stratusBottomFadeEnd = 0.06f;
+        value.shape.stratusTopFadeStart = 0.65f;
+        value.shape.mixedBottomFadeEnd = 0.10f;
+        value.shape.mixedTopFadeStart = 0.86f;
+        value.shape.cumulusBottomFadeEnd = 0.08f;
+        value.shape.cumulusTopFadeStart = 0.93f;
+        value.shape.cumulusUpperMassBottom = 0.65f;
+        value.shape.cumulusUpperMassStart = 0.08f;
+        value.shape.cumulusUpperMassEnd = 0.70f;
+        value.shape.localBaseLiftMaxMeters = 200.0f;
+        value.shape.footprintCoverageInfluence = 0.40f;
+        value.domainBottomMeters = 1500.0f;
+        value.domainThicknessMeters = 5000.0f;
         break;
     default:
         return false;
@@ -765,9 +690,10 @@ bool SaveCloudFormationPresetAtomic(
     const CloudFormationPresetTarget& target,
     const CloudFormationSettings& settings, std::string& status)
 {
-    if (path.empty() || !IsValidCloudFormationPresetTarget(target))
+    if (path.empty() || !IsValidCloudFormationPresetTarget(target) ||
+        target.group != CloudFormationPresetGroup::Custom)
     {
-        status = "Formation save rejected: invalid preset target";
+        status = "Formation save rejected: only Custom is writable";
         return false;
     }
     PreparedCloudFormation prepared;
@@ -791,12 +717,6 @@ bool SaveCloudFormationPresetAtomic(
         }
         file << "{\n"
              << "  \"schemaVersion\": 1,\n"
-             << "  \"presetGroup\": \""
-             << (target.group == CloudFormationPresetGroup::Concept
-                    ? "concept" :
-                (target.group == CloudFormationPresetGroup::Type
-                    ? "type" : "custom")) << "\",\n"
-             << "  \"presetId\": \"" << TargetId(target) << "\",\n"
              << "  \"cloudFormation\": {\n";
         WriteFormation(file, prepared.settings);
         file << "  }\n}\n";
@@ -826,9 +746,10 @@ bool LoadCloudFormationPreset(
     const CloudFormationPresetTarget& expectedTarget,
     CloudFormationSettings& outSettings, std::string& status)
 {
-    if (path.empty() || !IsValidCloudFormationPresetTarget(expectedTarget))
+    if (path.empty() || !IsValidCloudFormationPresetTarget(expectedTarget) ||
+        expectedTarget.group != CloudFormationPresetGroup::Custom)
     {
-        status = "Formation load rejected: invalid preset target";
+        status = "Formation load rejected: only Custom is file-backed";
         return false;
     }
     std::error_code error;
@@ -840,9 +761,7 @@ bool LoadCloudFormationPreset(
     }
     if (!exists)
     {
-        status = expectedTarget.group == CloudFormationPresetGroup::Custom
-            ? "No saved Custom"
-            : "No saved formation override";
+        status = "No saved Custom";
         return false;
     }
     const std::uintmax_t size = std::filesystem::file_size(path, error);
@@ -866,18 +785,8 @@ bool LoadCloudFormationPreset(
     buffer << file.rdbuf();
     const std::string text = buffer.str();
     std::uint32_t schemaVersion = 0;
-    std::string group;
-    std::string id;
-    const char* expectedGroup =
-        expectedTarget.group == CloudFormationPresetGroup::Concept
-            ? "concept" :
-        (expectedTarget.group == CloudFormationPresetGroup::Type
-            ? "type" : "custom");
     if (!ParseUnsigned(text, "schemaVersion", schemaVersion) ||
-        schemaVersion != 1u ||
-        !ParseString(text, "presetGroup", group) ||
-        group != expectedGroup ||
-        !ParseString(text, "presetId", id) || id != TargetId(expectedTarget))
+        schemaVersion != 1u)
     {
         status = "Formation override rejected: schema or slot mismatch";
         return false;
@@ -912,39 +821,21 @@ bool ResolveCloudFormationPreset(
         status = "Formation resolve rejected: invalid preset target";
         return false;
     }
-    const std::filesystem::path path = CloudFormationPresetPath(root, target);
-    if (allowUserOverrides)
-    {
-        CloudFormationSettings loaded;
-        std::string loadStatus;
-        if (LoadCloudFormationPreset(path, target, loaded, loadStatus))
-        {
-            outSettings = loaded;
-            outSource = CloudFormationPresetSource::UserOverride;
-            status = loadStatus;
-            return true;
-        }
-        if (target.group == CloudFormationPresetGroup::Custom)
-        {
-            status = loadStatus;
-            return false;
-        }
-        CloudFormationSettings builtIn;
-        if (!ResolveBuiltInCloudFormation(target, builtIn))
-        {
-            status = "Formation resolve failed: no built-in preset";
-            return false;
-        }
-        outSettings = builtIn;
-        outSource = CloudFormationPresetSource::BuiltIn;
-        status = loadStatus + "; built-in fallback applied";
-        return true;
-    }
-
     if (target.group == CloudFormationPresetGroup::Custom)
     {
-        status = "Custom formation unavailable while user overrides are ignored";
-        return false;
+        if (!allowUserOverrides)
+        {
+            status = "Custom formation unavailable in isolated test mode";
+            return false;
+        }
+        CloudFormationSettings loaded;
+        if (!LoadCloudFormationPreset(
+                CloudFormationPresetPath(root, target), target,
+                loaded, status))
+            return false;
+        outSettings = loaded;
+        outSource = CloudFormationPresetSource::UserOverride;
+        return true;
     }
     CloudFormationSettings builtIn;
     if (!ResolveBuiltInCloudFormation(target, builtIn))
@@ -955,138 +846,6 @@ bool ResolveCloudFormationPreset(
     outSettings = builtIn;
     outSource = CloudFormationPresetSource::BuiltIn;
     status = std::string(CloudFormationPresetTargetName(target)) +
-        " built-in loaded (user overrides ignored)";
+        " built-in loaded";
     return true;
-}
-
-bool RemoveCloudFormationPresetOverride(
-    const std::filesystem::path& root,
-    const CloudFormationPresetTarget& target, std::string& status)
-{
-    if (!IsValidCloudFormationPresetTarget(target) ||
-        target.group == CloudFormationPresetGroup::Custom)
-    {
-        status = "Restore rejected: only F1/F4 presets have built-in values";
-        return false;
-    }
-    std::error_code error;
-    const std::filesystem::path path = CloudFormationPresetPath(root, target);
-    const bool removed = std::filesystem::remove(path, error);
-    if (error)
-    {
-        status = "Restore failed: cannot remove preset override";
-        return false;
-    }
-    status = std::string(CloudFormationPresetTargetName(target)) +
-        (removed ? " override removed" : " already uses built-in values");
-    return true;
-}
-
-CloudFormationSettings ConvertLegacyCloudAppearanceToFormation(
-    const CloudAppearanceSettings& legacy,
-    const CloudFormationSettings& baseFormation)
-{
-    CloudFormationSettings result = baseFormation;
-    result.coverage = legacy.globalCoverage;
-    result.densityMultiplier = legacy.densityMultiplier;
-    result.extinctionPerMeter = legacy.extinctionPerMeter;
-    result.detailErosion = legacy.detailErosion;
-    result.weather.cloudTypeMode = legacy.cloudTypeMode;
-    result.weather.coverageThreshold = legacy.weatherThreshold;
-    result.weather.coverageSoftness = legacy.weatherSoftness;
-    result.weather.coverage.bias = legacy.coverageBias;
-    result.weather.coverage.contrast = legacy.coverageContrast;
-    result.weather.densityCoverageInfluence = legacy.densityCoverageLink;
-    result.weather.thicknessCoverageInfluence = legacy.thicknessCoverageLink;
-    result.weather.cloudType.bias = legacy.cloudTypeBias;
-    result.shape.shapeMode = static_cast<std::uint32_t>(
-        CloudShapeMode::WeatherPhysicalThickness);
-    result.shape.stratusMinimumThicknessMeters =
-        legacy.stratusMinimumThicknessMeters;
-    result.shape.stratusMaximumThicknessMeters =
-        legacy.stratusMaximumThicknessMeters;
-    result.shape.cumulusMinimumThicknessMeters =
-        legacy.cumulusMinimumThicknessMeters;
-    result.shape.cumulusMaximumThicknessMeters =
-        legacy.cumulusMaximumThicknessMeters;
-    result.shape.localBaseLiftMaxMeters = legacy.localBaseLiftMaxMeters;
-    result.shape.footprintCoverageInfluence =
-        legacy.footprintCoverageInfluence;
-    result.shape.stratusBottomFadeEnd = legacy.stratusBottomFadeEnd;
-    result.shape.stratusTopFadeStart = legacy.stratusTopFadeStart;
-    result.shape.mixedBottomFadeEnd = legacy.mixedBottomFadeEnd;
-    result.shape.mixedTopFadeStart = legacy.mixedTopFadeStart;
-    result.shape.cumulusBottomFadeEnd = legacy.cumulusBottomFadeEnd;
-    result.shape.cumulusTopFadeStart = legacy.cumulusTopFadeStart;
-    result.shape.cumulusUpperMassBottom = legacy.cumulusUpperMassBottom;
-    result.shape.cumulusUpperMassStart = legacy.cumulusUpperMassStart;
-    result.shape.cumulusUpperMassEnd = legacy.cumulusUpperMassEnd;
-    return SanitizeCloudFormationSettings(result);
-}
-
-LegacyCloudFormationMigrationResult MigrateLegacyCustomCloudFormation(
-    const std::filesystem::path& legacyAppearancePath,
-    const std::filesystem::path& newPresetRoot,
-    const CloudFormationSettings& baseFormation, std::string& status)
-{
-    const CloudFormationPresetTarget custom = CustomFormationTarget();
-    const std::filesystem::path customPath =
-        CloudFormationPresetPath(newPresetRoot, custom);
-    std::error_code error;
-    const bool customExists = std::filesystem::exists(customPath, error);
-    if (error)
-    {
-        status = "Custom formation migration skipped: cannot inspect custom.json";
-        return LegacyCloudFormationMigrationResult::NotNeeded;
-    }
-    if (customExists)
-    {
-        status = "Custom formation migration skipped: custom.json exists";
-        return LegacyCloudFormationMigrationResult::NotNeeded;
-    }
-    error.clear();
-    if (!std::filesystem::exists(legacyAppearancePath, error) || error)
-    {
-        status = "Custom formation migration skipped: no legacy file";
-        return LegacyCloudFormationMigrationResult::NoLegacyFile;
-    }
-
-    CloudAppearanceSettings legacy;
-    std::string legacyStatus;
-    if (!LoadCustomCloudAppearance(
-            legacyAppearancePath, legacy, legacyStatus))
-    {
-        status = "Legacy Custom preserved but rejected: " + legacyStatus;
-        return LegacyCloudFormationMigrationResult::Rejected;
-    }
-    CloudFormationSettings converted =
-        ConvertLegacyCloudAppearanceToFormation(legacy, baseFormation);
-    // schema 29/30에는 domain이 없었다. 새 F1 Cumulus(3.7 km)를 그대로
-    // 빌리면 과거 Custom의 6 km 두께가 대부분 migration 단계에서 탈락한다.
-    // Appearance 값은 손대지 않고, 새 snapshot이 200 m top 여유를 만족하는
-    // 최소 domain만 파생해 기존 파일을 실제로 불러올 수 있게 한다.
-    constexpr float kMigrationTopHeadroomMeters = 200.0f;
-    const float requiredDomainThickness =
-        cloudshapedomain::ActiveMaximumThicknessMeters(
-            converted.shape, converted.weather.cloudTypeMode) +
-        converted.shape.localBaseLiftMaxMeters +
-        kMigrationTopHeadroomMeters;
-    if (std::isfinite(requiredDomainThickness))
-    {
-        converted.domainThicknessMeters = std::max(
-            converted.domainThicknessMeters, requiredDomainThickness);
-    }
-    PreparedCloudFormation prepared;
-    if (!PrepareCloudFormationSettings(converted, prepared, status))
-    {
-        status = "Legacy Custom preserved but " + status;
-        return LegacyCloudFormationMigrationResult::Rejected;
-    }
-    if (!SaveCloudFormationPresetAtomic(
-            customPath, custom, prepared.settings, status))
-    {
-        return LegacyCloudFormationMigrationResult::SaveFailed;
-    }
-    status = "Legacy schema 29/30 Custom migrated to formation schema 1";
-    return LegacyCloudFormationMigrationResult::Migrated;
 }

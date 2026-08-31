@@ -128,7 +128,6 @@ int main()
         Fail("effective time must pause exactly and resume continuously");
 
     CloudShapeParameters invalidShape;
-    invalidShape.shapeMode = 99u;
     invalidShape.stratusMinimumThicknessMeters = NAN;
     invalidShape.stratusMaximumThicknessMeters = -100.0f;
     invalidShape.cumulusMinimumThicknessMeters = INFINITY;
@@ -137,13 +136,11 @@ int main()
     invalidShape.footprintCoverageInfluence = 2.0f;
     const CloudShapeParameters sanitizedShape =
         SanitizeCloudShapeParameters(invalidShape);
-    if (sanitizedShape.shapeMode != static_cast<std::uint32_t>(
-            CloudShapeMode::LegacyNormalizedLayer) ||
-        sanitizedShape.stratusMinimumThicknessMeters < 1.0f ||
+    if (sanitizedShape.stratusMinimumThicknessMeters < 1.0f ||
         sanitizedShape.stratusMaximumThicknessMeters <
             sanitizedShape.stratusMinimumThicknessMeters ||
         sanitizedShape.cumulusMaximumThicknessMeters > 6000.0f ||
-        sanitizedShape.localBaseLiftMaxMeters != 0.0f ||
+        sanitizedShape.localBaseLiftMaxMeters != 200.0f ||
         sanitizedShape.footprintCoverageInfluence != 1.0f)
         Fail("CloudShapeCB sanitize must preserve ordered finite bounds");
 

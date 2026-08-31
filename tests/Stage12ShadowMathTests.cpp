@@ -38,8 +38,8 @@ int main()
                       "UV is invariant along a sun ray");
 
     const DirectX::XMFLOAT3 snapped = SnappedCenter(
-        center, basis, kNearWidthMeters, kBalancedResolution);
-    const float texel = kNearWidthMeters / kBalancedResolution;
+        center, basis, kNearWidthMeters, kResolution);
+    const float texel = kNearWidthMeters / kResolution;
     passed &= Require(
         std::abs(Dot(snapped, basis.right) -
                  std::round(Dot(snapped, basis.right) / texel) * texel) < 1.0e-3f &&
@@ -73,31 +73,27 @@ int main()
                       "surface diagnostic composite contract");
 
     Stage12ShadowParameters parameters{};
-    ApplyPreset(parameters, Stage12ShadowPreset::Fast256);
     parameters.surfaceShadowStrength = NAN;
     parameters.cacheDebugExposure = INFINITY;
+    parameters.nearResolution = 1u;
+    parameters.farResolution = 2u;
     parameters.debugNearSlice = 999u;
     parameters.debugFarSlice = 999u;
     parameters = Sanitize(parameters);
     passed &= Require(sizeof(parameters) == 160 &&
-                      parameters.nearResolution == 256 &&
-                      parameters.farResolution == 256 &&
+                      parameters.nearResolution == 512 &&
+                      parameters.farResolution == 512 &&
                       parameters.surfaceShadowStrength == 1.0f &&
                       parameters.cacheDebugExposure == 4.0f &&
                       parameters.debugNearSlice == 79u &&
                       parameters.debugFarSlice == 39u &&
-                      CacheBytes(Stage12ShadowPreset::Fast256) == 30ull * 1024ull * 1024ull &&
-                      CacheBytes(Stage12ShadowPreset::Balanced512) == 120ull * 1024ull * 1024ull,
-                      "b12 ABI, preset sizes and sanitization");
-    passed &= Require(ModeFromSnapshot(33u, 1u) ==
-                          Stage12ShadowMode::DirectReference &&
-                      ModeFromSnapshot(34u, 1u) == Stage12ShadowMode::DeepCache,
-                      "schema 33 preserves Stage 11 direct lighting");
+                      kCacheBytes == 120ull * 1024ull * 1024ull,
+                      "b8 ABI, fixed cache size and sanitization");
 
     const DirectX::XMFLOAT3 fullCenter = SnappedCenter(
-        center, basis, kNearWidthMeters, kBalancedResolution);
+        center, basis, kNearWidthMeters, kResolution);
     const DirectX::XMFLOAT3 halfCenter = SnappedCenter(
-        center, basis, kNearWidthMeters, kBalancedResolution);
+        center, basis, kNearWidthMeters, kResolution);
     passed &= Require(Length(Add(fullCenter, Scale(halfCenter, -1.0f))) < 1.0e-6f,
                       "Full and 50 percent use the same world cache");
 

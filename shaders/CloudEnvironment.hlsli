@@ -37,41 +37,29 @@ struct CloudLightingContext
 CloudLightingContext BuildCloudLightingContext()
 {
     CloudLightingContext context = (CloudLightingContext)0;
-    if (modeFlags.x == kAtmosphereModePhysical)
-    {
-        float representativeAltitudeKm = max(
-            cloudLightingReferenceAltitudeMeters, 0.0) * 0.001;
-        float3 atmosphereSun = AtmosphereSunDirection();
-        float3 representativeSun = SampleAtmosphereSunRadiance(
-            representativeAltitudeKm, atmosphereSun);
-        float atmosphereThicknessKm = max(
-            AtmosphereTopRadiusKm() - AtmosphereBottomRadiusKm(), 1.0e-6);
-        float sunUv = atmosphereSun.y * 0.5 + 0.5;
-        float3 representativeSky = atmosphereSkyIrradianceLut.SampleLevel(
-            atmosphereLinearClampSampler,
-            float2(sunUv, saturate(representativeAltitudeKm /
-                atmosphereThicknessKm)), 0).rgb;
-        float3 groundSky = atmosphereSkyIrradianceLut.SampleLevel(
-            atmosphereLinearClampSampler, float2(sunUv, 0.0), 0).rgb;
-        float3 groundSun = SampleAtmosphereSunRadiance(0.0, atmosphereSun) *
-            saturate(atmosphereSun.y);
-        context.sunIncident = representativeSun;
-        context.skyIncident = representativeSky *
-            max(physicalSkyFillScale, 0.0);
-        context.groundIncident = max(groundAlbedoAndDebugExposure.xyz,
-            0.0.xxx) * (groundSun + groundSky) / kAtmospherePi *
-            max(sunTintAndGroundBounce.w, 0.0) *
-            max(physicalGroundFillScale, 0.0);
-    }
-    else
-    {
-        context.sunIncident = max(sunColor, 0.0.xxx) *
-            max(sunIntensity, 0.0);
-        context.skyIncident = max(skyColor, 0.0.xxx) *
-            max(skyStrength, 0.0);
-        context.groundIncident = max(groundColor, 0.0.xxx) *
-            max(groundStrength, 0.0);
-    }
+    float representativeAltitudeKm = max(
+        cloudLightingReferenceAltitudeMeters, 0.0) * 0.001;
+    float3 atmosphereSun = AtmosphereSunDirection();
+    float3 representativeSun = SampleAtmosphereSunRadiance(
+        representativeAltitudeKm, atmosphereSun);
+    float atmosphereThicknessKm = max(
+        AtmosphereTopRadiusKm() - AtmosphereBottomRadiusKm(), 1.0e-6);
+    float sunUv = atmosphereSun.y * 0.5 + 0.5;
+    float3 representativeSky = atmosphereSkyIrradianceLut.SampleLevel(
+        atmosphereLinearClampSampler,
+        float2(sunUv, saturate(representativeAltitudeKm /
+            atmosphereThicknessKm)), 0).rgb;
+    float3 groundSky = atmosphereSkyIrradianceLut.SampleLevel(
+        atmosphereLinearClampSampler, float2(sunUv, 0.0), 0).rgb;
+    float3 groundSun = SampleAtmosphereSunRadiance(0.0, atmosphereSun) *
+        saturate(atmosphereSun.y);
+    context.sunIncident = representativeSun;
+    context.skyIncident = representativeSky *
+        max(physicalSkyFillScale, 0.0);
+    context.groundIncident = max(groundAlbedoAndDebugExposure.xyz,
+        0.0.xxx) * (groundSun + groundSky) / kAtmospherePi *
+        max(sunTintAndGroundBounce.w, 0.0) *
+        max(physicalGroundFillScale, 0.0);
     return context;
 }
 
@@ -128,12 +116,8 @@ EnvironmentLightingSample EvaluateEnvironmentLighting(
 {
     EnvironmentLightingSample result = (EnvironmentLightingSample)0;
     float density = max(densitySample.finalDensity, 0.0);
-    // Physical column은 전역 AABB 높이가 아니라 컬럼별 local bottom/top을
-    // 기준으로 하늘·지면 가중치를 계산한다. Manual Reference는 단계 8의
-    // 기존 전역 높이 계약을 그대로 유지한다.
-    float height = saturate(modeFlags.x == kAtmosphereModePhysical
-        ? densitySample.localHeightFraction
-        : densitySample.heightFraction);
+    // 컬럼별 local bottom/top을 기준으로 하늘·지면 가중치를 계산한다.
+    float height = saturate(densitySample.localHeightFraction);
     float localVisibility = exp(
         -density * max(ambientOcclusionStrength, 0.0));
     float safeAmbientExponent = clamp(ambientShadowExponent, 0.1, 8.0);

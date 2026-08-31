@@ -1,5 +1,10 @@
 # Stage 14 대기·지면 조명 사용자 검증 가이드
 
+> 보관 문서(2026-09-01): 이 문서는 Stage 14 승인 당시의 UI와 Full/저해상도/Temporal 비교
+> 이력이다. 현재 런타임은 Full-resolution High만 사용하며 Desert ground preset과 Temporal
+> 상태 UI도 없다. 현재 조작과 최종 판정은
+> [Stage 15 검증 가이드](STAGE15_PRESET_VALIDATION_GUIDE.md)를 따른다.
+
 이 문서는 자동 수치 검증이 대신할 수 없는 하늘, 구름, 지면, 대기 원근과 HDR 출력의
 화면 품질을 판정한다. 일반 실행 뒤 F1이 열려 있으면 F1로 닫고 F3를 연다.
 최상단 `Atmosphere Debug`, 독립 `Tone Mapping`, 그 아래 `Lighting & Atmosphere`에서 아래 항목을 조작한다.

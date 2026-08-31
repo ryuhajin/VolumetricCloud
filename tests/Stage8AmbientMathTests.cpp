@@ -80,7 +80,7 @@ int main()
                 Near(manualAmbientWithPhysicalFillOff.sky.g, baseAmbient.sky.g) &&
                 Near(manualAmbientWithPhysicalFillOff.ground.r,
                      baseAmbient.ground.r),
-            "Physical fill controls must not change Manual Reference radiance");
+            "Physical fill controls must not change legacy analytic radiance");
 
     EnvironmentParameters one = balanced;
     one.multipleScatteringOctaves = 1;

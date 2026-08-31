@@ -59,25 +59,25 @@ int main()
         Require(SanitizeDebugMode(static_cast<CloudDebugMode>(removed)) ==
                     CloudDebugMode::Composite,
                 "removed HLSL IDs 1-7 must sanitize to Composite");
-    Require(SanitizeDebugMode(CloudDebugMode::Stage15ResolvedCloud) ==
-                CloudDebugMode::Stage15ResolvedCloud,
-            "Stage 15 automatic quality readback mode must be preserved");
-    Require(SanitizeDebugMode(CloudDebugMode::UpsampleAcceptedTapCount) ==
-                CloudDebugMode::UpsampleAcceptedTapCount,
-            "Joint4 accepted tap count debug mode must be preserved");
     Require(SanitizeDebugMode(CloudDebugMode::LocalBaseOffset) ==
                 CloudDebugMode::LocalBaseOffset &&
-            SanitizeDebugMode(CloudDebugMode::NteRimMask) ==
-                CloudDebugMode::NteRimMask &&
-            SanitizeDebugMode(CloudDebugMode::NteRimContribution) ==
-                CloudDebugMode::NteRimContribution,
-            "Stage 15B appended diagnostics must be preserved");
+            SanitizeDebugMode(CloudDebugMode::CloudDepth) ==
+                CloudDebugMode::CloudDepth,
+            "High-only diagnostics must be preserved");
+    for (std::int32_t removed = 64; removed <= 73; ++removed)
+        Require(SanitizeDebugMode(static_cast<CloudDebugMode>(removed)) ==
+                    CloudDebugMode::Composite,
+                "removed legacy diagnostics stay invalid");
+    for (std::int32_t removed = 78; removed <= 80; ++removed)
+        Require(SanitizeDebugMode(static_cast<CloudDebugMode>(removed)) ==
+                    CloudDebugMode::Composite,
+                "removed comparison diagnostics stay invalid");
     Require(SanitizeDebugMode(static_cast<CloudDebugMode>(82)) ==
                 CloudDebugMode::Composite,
             "withdrawn boundary diagnostic ID 82 must stay reserved");
-    Require(SanitizeDebugMode(static_cast<CloudDebugMode>(85)) ==
+    Require(SanitizeDebugMode(static_cast<CloudDebugMode>(83)) ==
                 CloudDebugMode::Composite,
-            "undefined debug modes after hidden diagnostics must sanitize");
+            "removed rim diagnostics must sanitize");
     std::cout << "[UNIFIED-SCENE][MATH] GROUND=10000 BUILDING=20x60x20 RADIUS=50000 PASS\n";
     return 0;
 }

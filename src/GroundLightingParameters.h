@@ -14,7 +14,6 @@ enum class GroundMaterialPreset : std::uint32_t
     Concrete,
     Grass,
     Snow,
-    Desert,
     Custom,
 };
 
@@ -35,8 +34,6 @@ inline DirectX::XMFLOAT3 PresetAlbedo(GroundMaterialPreset preset)
         return { 0.05f, 0.20f, 0.04f };
     case GroundMaterialPreset::Snow:
         return { 0.80f, 0.85f, 0.90f };
-    case GroundMaterialPreset::Desert:
-        return { 0.45f, 0.30f, 0.16f };
     case GroundMaterialPreset::Concrete:
     case GroundMaterialPreset::Custom:
     default:

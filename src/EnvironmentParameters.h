@@ -37,7 +37,7 @@ struct alignas(16) EnvironmentParameters
     float multipleScatteringAttenuation = 0.20f;
     float multipleScatteringExtinctionFactor = 0.50f;
     float multipleScatteringPhaseFactor = 0.25f;
-    // Physical Atmosphere의 LUT 입사광만 조절한다. Manual Reference의
+    // Physical Atmosphere의 LUT 입사광만 조절한다. 기존 분석적
     // sky/ground color·strength와 분리해 배경 대기 LUT를 다시 만들지 않는다.
     float physicalSkyFillScale = 1.0f;
 

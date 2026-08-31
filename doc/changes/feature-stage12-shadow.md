@@ -1,5 +1,7 @@
 # feature/stage12-shadow
 
+> 현재 상태(2026-09-01): Deep Cache 알고리즘은 유지하지만 최종 모드는 Balanced512 하나다. ShadowCB는 현재 b8이며 DirectReference와 Stage10/11 연결은 삭제했다.
+
 ## 목적
 
 단계 11의 Full/50% 화면 경로와 Temporal 안정성을 유지하면서, 반복 Light Ray를 대체할 수 있는

@@ -1,5 +1,5 @@
 // ============================================================================
-//  FrameProfiler.h - 비동기 D3D11 GPU timestamp와 CPU frame 시간 계측
+//  FrameProfiler.h - High 단일 파이프라인 GPU/CPU 계측
 // ============================================================================
 #pragma once
 
@@ -14,35 +14,26 @@
 struct FrameTimingSnapshot
 {
     std::uint64_t frameIndex = 0;
+    std::uint64_t gpuSampleIndex = 0;
     double fps = 0.0;
     double cpuFrameMs = 0.0;
     double gpuFrameMs = 0.0;
-    double gpuCloudMs = 0.0;
-    double gpuShadowCacheMs = 0.0;
     double gpuAtmosphereLutMs = 0.0;
+    double gpuShadowCacheMs = 0.0;
     double gpuOpaqueSceneMs = 0.0;
-    double gpuCloudRaymarchMs = 0.0;
-    // 이름은 Stage 10 호환을 위해 유지한다. Stage 15B부터 이 값은
-    // raymarch 종료~CloudComposite 시작 사이의 spatial/temporal resolve다.
-    double gpuUpsampleCompositeMs = 0.0;
-    double gpuCloudCompositeMs = 0.0;
+    double gpuCloudMs = 0.0;
     double gpuToneMapMs = 0.0;
     double rawCpuFrameMs = 0.0;
     double rawGpuFrameMs = 0.0;
-    double rawGpuCloudMs = 0.0;
-    double rawGpuShadowCacheMs = 0.0;
     double rawGpuAtmosphereLutMs = 0.0;
+    double rawGpuShadowCacheMs = 0.0;
     double rawGpuOpaqueSceneMs = 0.0;
-    double rawGpuCloudRaymarchMs = 0.0;
-    double rawGpuUpsampleCompositeMs = 0.0;
-    double rawGpuCloudCompositeMs = 0.0;
+    double rawGpuCloudMs = 0.0;
     double rawGpuToneMapMs = 0.0;
-    std::uint64_t gpuSampleIndex = 0;
     bool cpuValid = false;
     bool gpuValid = false;
 };
 
-// GPU와 무관한 EMA 계산을 별도 클래스로 두어 CPU 단위 테스트에서 검증한다.
 class FrameTimingAccumulator
 {
 public:
@@ -51,23 +42,17 @@ public:
     void Reset();
     void AdvanceFrame();
     void RecordCpuMilliseconds(double milliseconds);
-    void RecordGpuMilliseconds(double frameMilliseconds,
-                               double cloudMilliseconds,
-                               double cloudRaymarchMilliseconds = -1.0,
-                               double shadowCacheMilliseconds = 0.0);
-    void RecordStage14GpuMilliseconds(
-        double frameMilliseconds, double atmosphereMilliseconds,
-        double shadowCacheMilliseconds, double opaqueSceneMilliseconds,
-        double cloudRaymarchMilliseconds, double resolveMilliseconds,
-        double cloudCompositeMilliseconds, double toneMapMilliseconds);
+    void RecordGpuMilliseconds(
+        double frameMilliseconds,
+        double atmosphereMilliseconds,
+        double shadowMilliseconds,
+        double opaqueMilliseconds,
+        double cloudMilliseconds,
+        double toneMilliseconds);
     const FrameTimingSnapshot& Snapshot() const { return m_snapshot; }
 
 private:
     FrameTimingSnapshot m_snapshot;
-    // 오버레이는 EMA를 표시하고 자동 성능 gate는 snapshot의 원본 표본을 읽는다.
-    double m_lastRawCpuFrameMs = 0.0;
-    double m_lastRawGpuFrameMs = 0.0;
-    double m_lastRawGpuCloudMs = 0.0;
 };
 
 class FrameProfiler
@@ -77,24 +62,13 @@ public:
 
     bool Init(ID3D11Device* device);
     void ResetMeasurements();
-
-    // CPU frame은 Render 시작부터 Present 반환까지 측정한다.
     void BeginCpuFrame();
     void EndCpuFrame();
-
-    // GPU frame은 진단 장면 직전부터 ImGui draw 직후까지이며 Present는 제외한다.
-    // timestamp query는 End로 기록하고 GetData에는 DONOTFLUSH만 사용한다.
     void BeginGpuFrame(ID3D11DeviceContext* context);
-    void BeginCloudPass(ID3D11DeviceContext* context);
     void MarkAtmosphereLutEnd(ID3D11DeviceContext* context);
     void MarkShadowCacheEnd(ID3D11DeviceContext* context);
     void MarkOpaqueSceneEnd(ID3D11DeviceContext* context);
-    void MarkCloudRaymarchEnd(ID3D11DeviceContext* context);
-    // Resolve가 끝나고 별도 CloudComposite draw를 시작하기 직전에 호출한다.
-    // 별도 composite가 없는 direct 경로도 EndCloudPass 직전에 호출해야 하며,
-    // 그러면 composite 구간은 연속 timestamp 사이의 거의 0인 값이 된다.
-    void MarkCloudCompositeBegin(ID3D11DeviceContext* context);
-    void EndCloudPass(ID3D11DeviceContext* context);
+    void MarkCloudEnd(ID3D11DeviceContext* context);
     void MarkToneMapEnd(ID3D11DeviceContext* context);
     void EndGpuFrame(ID3D11DeviceContext* context);
 
@@ -112,18 +86,13 @@ private:
     {
         ComPtr<ID3D11Query> disjoint;
         ComPtr<ID3D11Query> frameStart;
-        ComPtr<ID3D11Query> cloudStart;
-        ComPtr<ID3D11Query> atmosphereLutEnd;
-        ComPtr<ID3D11Query> shadowCacheEnd;
-        ComPtr<ID3D11Query> opaqueSceneEnd;
-        ComPtr<ID3D11Query> cloudRaymarchEnd;
-        ComPtr<ID3D11Query> cloudCompositeBegin;
+        ComPtr<ID3D11Query> atmosphereEnd;
+        ComPtr<ID3D11Query> shadowEnd;
+        ComPtr<ID3D11Query> opaqueEnd;
         ComPtr<ID3D11Query> cloudEnd;
-        ComPtr<ID3D11Query> toneMapEnd;
+        ComPtr<ID3D11Query> toneEnd;
         ComPtr<ID3D11Query> frameEnd;
         bool inFlight = false;
-        bool cloudCompositeMarked = false;
-        bool cloudPassEnded = false;
         std::uint64_t generation = 0;
     };
 

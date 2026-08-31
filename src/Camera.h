@@ -31,18 +31,8 @@ public:
 
     // 행렬 계산 (열은 row-major DirectXMath 기준)
     DirectX::XMMATRIX GetViewProj() const;
-    DirectX::XMMATRIX GetViewProj(float jitterXPixels, float jitterYPixels,
-                                  int renderWidth, int renderHeight) const;
     DirectX::XMMATRIX GetInvViewProj() const;    // 셰이더 레이 생성용
-    DirectX::XMMATRIX GetInvViewProj(float jitterXPixels,
-                                     float jitterYPixels,
-                                     int renderWidth,
-                                     int renderHeight) const;
     DirectX::XMMATRIX GetInvProjection() const;
-    DirectX::XMMATRIX GetInvProjection(float jitterXPixels,
-                                       float jitterYPixels,
-                                       int renderWidth,
-                                       int renderHeight) const;
     DirectX::XMMATRIX GetInvViewRotation() const;
     DirectX::XMFLOAT3 GetPosition() const;       // 레이 원점
     DirectX::XMFLOAT3 GetForward() const;
@@ -57,10 +47,7 @@ public:
     bool WasManuallyAdjusted() const { return m_manuallyAdjusted; }
 
 private:
-    DirectX::XMMATRIX GetProjection(float jitterXPixels,
-                                    float jitterYPixels,
-                                    int renderWidth,
-                                    int renderHeight) const;
+    DirectX::XMMATRIX GetProjection() const;
     DirectX::XMFLOAT3 m_position; // 실제 카메라 위치
     float m_yaw;                  // 월드 +Z 기준 좌우 시선 (라디안)
     float m_pitch;                // 수평 기준 상하 시선 (라디안)

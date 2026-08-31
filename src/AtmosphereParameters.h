@@ -9,12 +9,6 @@
 #include <cmath>
 #include <cstdint>
 
-enum class AtmosphereMode : std::uint32_t
-{
-    Physical,
-    ManualReference,
-};
-
 enum class AtmospherePreset : std::uint32_t
 {
     EarthClear,
@@ -56,7 +50,6 @@ enum class Stage14DebugChannel : std::uint32_t
 
 struct AtmosphereParameters
 {
-    AtmosphereMode mode = AtmosphereMode::Physical;
     AtmospherePreset preset = AtmospherePreset::EarthClear;
     SunControlMode sunControlMode = SunControlMode::Angles;
 

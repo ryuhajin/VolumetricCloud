@@ -11,7 +11,7 @@
 //  Detail Erosion은 비용과 고주파 깜박임을 분리하기 위해 Light Ray에서 생략한다.
 //  단계 8 환경광/다중 산란은 CloudEnvironment.hlsli가 이 결과 위에 더한다.
 //  13-5 Light 전용 공백 precheck와 T<=0.0001 조기 종료를 사용한다.
-//  View Ray early exit와 coarse march는 단계 9까지 미룬다.
+//  View Ray의 고정 High early exit와 coarse march는 VolumetricClouds가 담당한다.
 // ============================================================================
 #ifndef VCLOUD_CLOUD_LIGHTING_HLSLI
 #define VCLOUD_CLOUD_LIGHTING_HLSLI
@@ -29,7 +29,6 @@ struct LightMarchResult
 {
     float transmittance; // 태양빛 생존 비율. 1=막힘 없음, 0=완전히 소멸.
     float opticalDepth;  // Base Density × 소멸계수 × 거리의 누적값.
-    float stepCount;     // 조기 종료까지 실제 실행한 Light 표본 수. float로 보관.
 };
 
 struct DirectLightingResponse
@@ -76,69 +75,6 @@ float3 ComputeDirectInteractionColor(
            interactionFraction;
 }
 
-// 현재 View 표본에서 태양까지 구름이 얼마나 빛을 가리는지 계산한다.
-// samplePosition은 월드 위치(m), lightDirection은 표본→태양 단위 방향이다.
-// 길이가 거의 0인 방향, 퇴화 AABB 또는 유효 이탈 구간이 없으면 빛을 막을
-// 구름을 계산할 수 없으므로 중립값 transmittance=1을 반환한다.
-LightMarchResult ComputeLightTransmittanceStraight(
-    float3 samplePosition, float3 lightDirection)
-{
-    LightMarchResult result = { 1.0, 0.0, 0.0 };
-    float directionLengthSquared = dot(lightDirection, lightDirection);
-    // 1. 방향이 잘못되면 아래 계산을 건너뛰고 중립값을 반환한다.
-    bool validInput = directionLengthSquared > 1e-8;
-    if (validInput)
-    {
-        float3 safeDirection = lightDirection * rsqrt(directionLengthSquared);
-
-        // 2. 현재 표면을 다시 맞히지 않도록 아주 조금 태양 쪽에서 시작한다.
-        // CPU sanitize와 같은 0~100m 계약을 사용한다. 1000x 상사 프리셋의
-        // 10m bias가 1m로 잘리지 않아야 공간 배율별 그림자 시작점이 같다.
-        float safeBias = clamp(lightRayBias, 0.0, 100.0);
-        float3 rayOrigin = samplePosition + safeDirection * safeBias;
-        float segmentStart = 0.0;
-        float segmentEnd = 0.0;
-        bool intersects = IntersectCloudDomain(
-            rayOrigin, safeDirection, 1e30, true,
-            segmentStart, segmentEnd);
-        float segmentLength = segmentEnd - segmentStart;
-        if (intersects && segmentLength > 1e-5)
-        {
-            // 3. 전체 이탈 구간을 maxLightSteps 안에서 균등하게 다시 나눈다.
-            float safeTargetStep = max(lightStepSize, 1e-4);
-            uint safeMaxSteps = max(maxLightSteps, 1u);
-            uint stepCount = min(safeMaxSteps,
-                                 (uint)ceil(segmentLength / safeTargetStep));
-            float actualStepLength = segmentLength / (float)stepCount;
-            float safeExtinction = max(extinctionCoefficient, 0.0);
-
-            // 4. Weather·Cloud Type·Height를 포함한 Base만 누적한다.
-            float opticalDepth = 0.0;
-            uint executedStepCount = 0u;
-            [loop]
-            for (uint stepIndex = 0u; stepIndex < stepCount; ++stepIndex)
-            {
-                float sampleDistance = segmentStart +
-                    ((float)stepIndex + 0.5) * actualStepLength;
-                float3 lightSamplePosition =
-                    rayOrigin + safeDirection * sampleDistance;
-                float baseDensity = EvaluateLightCloudDensity(
-                    lightSamplePosition, time);
-                opticalDepth += max(baseDensity, 0.0) *
-                                safeExtinction * actualStepLength;
-                executedStepCount = stepIndex + 1u;
-                if (opticalDepth >= kLightEarlyExitOpticalDepth)
-                    break;
-            }
-
-            // 5. 광학 깊이가 클수록 지수적으로 태양빛이 줄어든다.
-            result.opticalDepth = max(opticalDepth, 0.0);
-            result.transmittance = saturate(exp(-result.opticalDepth));
-            result.stepCount = (float)executedStepCount;
-        }
-    }
-    return result;
-}
 
 float ConeBoundaryFraction(uint index, uint count)
 {
@@ -146,16 +82,16 @@ float ConeBoundaryFraction(uint index, uint count)
         return 1.0;
     float denominator = max((float)(count - 1u), 1.0);
     return pow((float)index / denominator, 1.5) *
-        clamp(lightFarSampleFraction, 0.50, 0.98);
+        kHighLightFarSampleFraction;
 }
 
 // 같은 태양 직선의 균일 표본이 만드는 평행 띠를 줄이기 위해 태양 축 주변을
 // golden-angle로 넓혀 읽는다. 각 표본은 담당 구간 길이를 그대로 가중치로 써
-// 균일 밀도에서는 Straight Ray와 같은 Beer-Lambert 광학 깊이를 만든다.
+// 균일 밀도에서도 Beer-Lambert 광학 깊이를 보존한다.
 LightMarchResult ComputeLightTransmittanceCone(
     float3 samplePosition, float3 lightDirection)
 {
-    LightMarchResult result = { 1.0, 0.0, 0.0 };
+    LightMarchResult result = { 1.0, 0.0 };
     float directionLengthSquared = dot(lightDirection, lightDirection);
     if (directionLengthSquared <= 1e-8)
         return result;
@@ -165,8 +101,8 @@ LightMarchResult ComputeLightTransmittanceCone(
         ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
     float3 tangent = normalize(cross(helper, safeDirection));
     float3 bitangent = cross(safeDirection, tangent);
-    float safeBias = clamp(lightRayBias, 0.0, 100.0);
-    float3 rayOrigin = samplePosition + safeDirection * safeBias;
+    float3 rayOrigin = samplePosition + safeDirection *
+        kHighLightRayBiasMeters;
     float segmentStart = 0.0;
     float segmentEnd = 0.0;
     bool intersects = IntersectCloudDomain(
@@ -175,11 +111,10 @@ LightMarchResult ComputeLightTransmittanceCone(
     if (!intersects || segmentLength <= 1e-5)
         return result;
 
-    uint count = clamp(coneSampleCount, 5u, 12u);
+    uint count = kHighConeSampleCount;
     float safeExtinction = max(extinctionCoefficient, 0.0);
-    float coneTangent = tan(radians(clamp(coneAngleDegrees, 0.0, 8.0)));
+    float coneTangent = tan(radians(kHighConeAngleDegrees));
     float opticalDepth = 0.0;
-    uint executedCount = 0u;
     static const float goldenAngle = 2.39996323;
     [loop]
     for (uint index = 0u; index < count; ++index)
@@ -199,31 +134,26 @@ LightMarchResult ComputeLightTransmittanceCone(
             (tangent * disk.x + bitangent * disk.y) * coneRadius;
         float density = EvaluateLightCloudDensity(position, time);
         opticalDepth += max(density, 0.0) * safeExtinction * intervalLength;
-        executedCount = index + 1u;
         if (opticalDepth >= kLightEarlyExitOpticalDepth)
             break;
     }
     result.opticalDepth = max(opticalDepth, 0.0);
     result.transmittance = saturate(exp(-result.opticalDepth));
-    result.stepCount = (float)executedCount;
     return result;
 }
 
 LightMarchResult ComputeLightTransmittance(
     float3 samplePosition, float3 lightDirection)
 {
-    LightMarchResult result = { 1.0, 0.0, 0.0 };
+    LightMarchResult result = { 1.0, 0.0 };
     Stage12ShadowSample cached = SampleStage12DeepShadow(samplePosition);
     if (cached.valid > 0.5)
     {
         result.transmittance = cached.transmittance;
         result.opticalDepth = cached.opticalDepth;
-        result.stepCount = 0.0;
     }
-    else if (lightSamplingMode == kLightSamplingDeterministicCone)
-        result = ComputeLightTransmittanceCone(samplePosition, lightDirection);
     else
-        result = ComputeLightTransmittanceStraight(samplePosition, lightDirection);
+        result = ComputeLightTransmittanceCone(samplePosition, lightDirection);
     return result;
 }
 

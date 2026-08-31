@@ -2,12 +2,17 @@
 
 #include <algorithm>
 
+namespace
+{
+double Ema(double current, double sample)
+{
+    return current + FrameTimingAccumulator::kEmaAlpha * (sample - current);
+}
+}
+
 void FrameTimingAccumulator::Reset()
 {
     m_snapshot = {};
-    m_lastRawCpuFrameMs = 0.0;
-    m_lastRawGpuFrameMs = 0.0;
-    m_lastRawGpuCloudMs = 0.0;
 }
 
 void FrameTimingAccumulator::AdvanceFrame()
@@ -19,141 +24,68 @@ void FrameTimingAccumulator::RecordCpuMilliseconds(double milliseconds)
 {
     if (!std::isfinite(milliseconds) || milliseconds <= 0.0)
         return;
-    m_lastRawCpuFrameMs = milliseconds;
     m_snapshot.rawCpuFrameMs = milliseconds;
     m_snapshot.cpuFrameMs = m_snapshot.cpuValid
-        ? m_snapshot.cpuFrameMs +
-              kEmaAlpha * (milliseconds - m_snapshot.cpuFrameMs)
-        : milliseconds;
+        ? Ema(m_snapshot.cpuFrameMs, milliseconds) : milliseconds;
     m_snapshot.cpuValid = true;
     m_snapshot.fps = 1000.0 / m_snapshot.cpuFrameMs;
 }
 
-void FrameTimingAccumulator::RecordGpuMilliseconds(double frameMilliseconds,
-                                                    double cloudMilliseconds,
-                                                    double cloudRaymarchMilliseconds,
-                                                    double shadowCacheMilliseconds)
-{
-    if (cloudRaymarchMilliseconds < 0.0)
-        cloudRaymarchMilliseconds = cloudMilliseconds;
-    if (!std::isfinite(frameMilliseconds) ||
-        !std::isfinite(cloudMilliseconds) ||
-        !std::isfinite(cloudRaymarchMilliseconds) ||
-        !std::isfinite(shadowCacheMilliseconds) ||
-        frameMilliseconds <= 0.0 || cloudMilliseconds < 0.0 ||
-        cloudMilliseconds > frameMilliseconds ||
-        cloudRaymarchMilliseconds < 0.0 ||
-        shadowCacheMilliseconds < 0.0 ||
-        cloudRaymarchMilliseconds + shadowCacheMilliseconds > cloudMilliseconds)
-        return;
-    m_lastRawGpuFrameMs = frameMilliseconds;
-    m_lastRawGpuCloudMs = cloudMilliseconds;
-    m_snapshot.rawGpuFrameMs = frameMilliseconds;
-    m_snapshot.rawGpuCloudMs = cloudMilliseconds;
-    m_snapshot.rawGpuShadowCacheMs = shadowCacheMilliseconds;
-    m_snapshot.rawGpuCloudRaymarchMs = cloudRaymarchMilliseconds;
-    m_snapshot.rawGpuUpsampleCompositeMs =
-        cloudMilliseconds - shadowCacheMilliseconds - cloudRaymarchMilliseconds;
-    // 구형 aggregate API에는 독립 Composite 구간이 없다.
-    m_snapshot.rawGpuCloudCompositeMs = 0.0;
-    ++m_snapshot.gpuSampleIndex;
-    if (m_snapshot.gpuValid)
-    {
-        m_snapshot.gpuFrameMs += kEmaAlpha *
-            (frameMilliseconds - m_snapshot.gpuFrameMs);
-        m_snapshot.gpuCloudMs += kEmaAlpha *
-            (cloudMilliseconds - m_snapshot.gpuCloudMs);
-        m_snapshot.gpuShadowCacheMs += kEmaAlpha *
-            (shadowCacheMilliseconds - m_snapshot.gpuShadowCacheMs);
-        m_snapshot.gpuCloudRaymarchMs += kEmaAlpha *
-            (cloudRaymarchMilliseconds - m_snapshot.gpuCloudRaymarchMs);
-        const double upsampleMilliseconds = cloudMilliseconds -
-            shadowCacheMilliseconds - cloudRaymarchMilliseconds;
-        m_snapshot.gpuUpsampleCompositeMs += kEmaAlpha *
-            (upsampleMilliseconds - m_snapshot.gpuUpsampleCompositeMs);
-        m_snapshot.gpuCloudCompositeMs += kEmaAlpha *
-            (0.0 - m_snapshot.gpuCloudCompositeMs);
-    }
-    else
-    {
-        m_snapshot.gpuFrameMs = frameMilliseconds;
-        m_snapshot.gpuCloudMs = cloudMilliseconds;
-        m_snapshot.gpuShadowCacheMs = shadowCacheMilliseconds;
-        m_snapshot.gpuCloudRaymarchMs = cloudRaymarchMilliseconds;
-        m_snapshot.gpuUpsampleCompositeMs = cloudMilliseconds -
-            shadowCacheMilliseconds - cloudRaymarchMilliseconds;
-        m_snapshot.gpuCloudCompositeMs = 0.0;
-    }
-    m_snapshot.gpuValid = true;
-}
-
-void FrameTimingAccumulator::RecordStage14GpuMilliseconds(
-    double frameMilliseconds, double atmosphereMilliseconds,
-    double shadowCacheMilliseconds, double opaqueSceneMilliseconds,
-    double cloudRaymarchMilliseconds, double resolveMilliseconds,
-    double cloudCompositeMilliseconds, double toneMapMilliseconds)
+void FrameTimingAccumulator::RecordGpuMilliseconds(
+    double frameMilliseconds,
+    double atmosphereMilliseconds,
+    double shadowMilliseconds,
+    double opaqueMilliseconds,
+    double cloudMilliseconds,
+    double toneMilliseconds)
 {
     const double values[] = {
-        frameMilliseconds, atmosphereMilliseconds, shadowCacheMilliseconds,
-        opaqueSceneMilliseconds, cloudRaymarchMilliseconds,
-        resolveMilliseconds, cloudCompositeMilliseconds, toneMapMilliseconds
+        frameMilliseconds, atmosphereMilliseconds, shadowMilliseconds,
+        opaqueMilliseconds, cloudMilliseconds, toneMilliseconds
     };
     if (!std::all_of(std::begin(values), std::end(values),
-                     [](double value) { return std::isfinite(value) && value >= 0.0; }) ||
+                     [](double value)
+                     {
+                         return std::isfinite(value) && value >= 0.0;
+                     }) ||
         frameMilliseconds <= 0.0 ||
-        atmosphereMilliseconds + shadowCacheMilliseconds +
-            opaqueSceneMilliseconds + cloudRaymarchMilliseconds +
-            resolveMilliseconds + cloudCompositeMilliseconds +
-            toneMapMilliseconds > frameMilliseconds + 1.0e-6)
+        atmosphereMilliseconds + shadowMilliseconds + opaqueMilliseconds +
+            cloudMilliseconds + toneMilliseconds > frameMilliseconds + 1.0e-6)
+    {
         return;
-    const double cloudMilliseconds = shadowCacheMilliseconds +
-                                     cloudRaymarchMilliseconds +
-                                     resolveMilliseconds +
-                                     cloudCompositeMilliseconds;
-    m_lastRawGpuFrameMs = frameMilliseconds;
-    m_lastRawGpuCloudMs = cloudMilliseconds;
+    }
+
     m_snapshot.rawGpuFrameMs = frameMilliseconds;
-    m_snapshot.rawGpuCloudMs = cloudMilliseconds;
     m_snapshot.rawGpuAtmosphereLutMs = atmosphereMilliseconds;
-    m_snapshot.rawGpuShadowCacheMs = shadowCacheMilliseconds;
-    m_snapshot.rawGpuOpaqueSceneMs = opaqueSceneMilliseconds;
-    m_snapshot.rawGpuCloudRaymarchMs = cloudRaymarchMilliseconds;
-    m_snapshot.rawGpuUpsampleCompositeMs = resolveMilliseconds;
-    m_snapshot.rawGpuCloudCompositeMs = cloudCompositeMilliseconds;
-    m_snapshot.rawGpuToneMapMs = toneMapMilliseconds;
+    m_snapshot.rawGpuShadowCacheMs = shadowMilliseconds;
+    m_snapshot.rawGpuOpaqueSceneMs = opaqueMilliseconds;
+    m_snapshot.rawGpuCloudMs = cloudMilliseconds;
+    m_snapshot.rawGpuToneMapMs = toneMilliseconds;
     ++m_snapshot.gpuSampleIndex;
+
     if (m_snapshot.gpuValid)
     {
-        m_snapshot.gpuFrameMs += kEmaAlpha *
-            (frameMilliseconds - m_snapshot.gpuFrameMs);
-        m_snapshot.gpuCloudMs += kEmaAlpha *
-            (cloudMilliseconds - m_snapshot.gpuCloudMs);
-        m_snapshot.gpuAtmosphereLutMs += kEmaAlpha *
-            (atmosphereMilliseconds - m_snapshot.gpuAtmosphereLutMs);
-        m_snapshot.gpuShadowCacheMs += kEmaAlpha *
-            (shadowCacheMilliseconds - m_snapshot.gpuShadowCacheMs);
-        m_snapshot.gpuOpaqueSceneMs += kEmaAlpha *
-            (opaqueSceneMilliseconds - m_snapshot.gpuOpaqueSceneMs);
-        m_snapshot.gpuCloudRaymarchMs += kEmaAlpha *
-            (cloudRaymarchMilliseconds - m_snapshot.gpuCloudRaymarchMs);
-        m_snapshot.gpuUpsampleCompositeMs += kEmaAlpha *
-            (resolveMilliseconds - m_snapshot.gpuUpsampleCompositeMs);
-        m_snapshot.gpuCloudCompositeMs += kEmaAlpha *
-            (cloudCompositeMilliseconds - m_snapshot.gpuCloudCompositeMs);
-        m_snapshot.gpuToneMapMs += kEmaAlpha *
-            (toneMapMilliseconds - m_snapshot.gpuToneMapMs);
+        m_snapshot.gpuFrameMs = Ema(
+            m_snapshot.gpuFrameMs, frameMilliseconds);
+        m_snapshot.gpuAtmosphereLutMs = Ema(
+            m_snapshot.gpuAtmosphereLutMs, atmosphereMilliseconds);
+        m_snapshot.gpuShadowCacheMs = Ema(
+            m_snapshot.gpuShadowCacheMs, shadowMilliseconds);
+        m_snapshot.gpuOpaqueSceneMs = Ema(
+            m_snapshot.gpuOpaqueSceneMs, opaqueMilliseconds);
+        m_snapshot.gpuCloudMs = Ema(
+            m_snapshot.gpuCloudMs, cloudMilliseconds);
+        m_snapshot.gpuToneMapMs = Ema(
+            m_snapshot.gpuToneMapMs, toneMilliseconds);
     }
     else
     {
         m_snapshot.gpuFrameMs = frameMilliseconds;
-        m_snapshot.gpuCloudMs = cloudMilliseconds;
         m_snapshot.gpuAtmosphereLutMs = atmosphereMilliseconds;
-        m_snapshot.gpuShadowCacheMs = shadowCacheMilliseconds;
-        m_snapshot.gpuOpaqueSceneMs = opaqueSceneMilliseconds;
-        m_snapshot.gpuCloudRaymarchMs = cloudRaymarchMilliseconds;
-        m_snapshot.gpuUpsampleCompositeMs = resolveMilliseconds;
-        m_snapshot.gpuCloudCompositeMs = cloudCompositeMilliseconds;
-        m_snapshot.gpuToneMapMs = toneMapMilliseconds;
+        m_snapshot.gpuShadowCacheMs = shadowMilliseconds;
+        m_snapshot.gpuOpaqueSceneMs = opaqueMilliseconds;
+        m_snapshot.gpuCloudMs = cloudMilliseconds;
+        m_snapshot.gpuToneMapMs = toneMilliseconds;
     }
     m_snapshot.gpuValid = true;
 }
@@ -164,18 +96,14 @@ bool FrameProfiler::CreateSlot(ID3D11Device* device, QuerySlot& slot)
     desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
     if (FAILED(device->CreateQuery(&desc, &slot.disjoint)))
         return false;
-
     desc.Query = D3D11_QUERY_TIMESTAMP;
     return SUCCEEDED(device->CreateQuery(&desc, &slot.frameStart)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.cloudStart)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.atmosphereLutEnd)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.shadowCacheEnd)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.opaqueSceneEnd)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.cloudRaymarchEnd)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.cloudCompositeBegin)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.cloudEnd)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.toneMapEnd)) &&
-           SUCCEEDED(device->CreateQuery(&desc, &slot.frameEnd));
+        SUCCEEDED(device->CreateQuery(&desc, &slot.atmosphereEnd)) &&
+        SUCCEEDED(device->CreateQuery(&desc, &slot.shadowEnd)) &&
+        SUCCEEDED(device->CreateQuery(&desc, &slot.opaqueEnd)) &&
+        SUCCEEDED(device->CreateQuery(&desc, &slot.cloudEnd)) &&
+        SUCCEEDED(device->CreateQuery(&desc, &slot.toneEnd)) &&
+        SUCCEEDED(device->CreateQuery(&desc, &slot.frameEnd));
 }
 
 bool FrameProfiler::Init(ID3D11Device* device)
@@ -187,7 +115,6 @@ bool FrameProfiler::Init(ID3D11Device* device)
         if (!CreateSlot(device, slot))
         {
             m_slots = {};
-            m_initialized = false;
             return false;
         }
     }
@@ -215,9 +142,8 @@ void FrameProfiler::EndCpuFrame()
 {
     if (!m_cpuFrameActive)
         return;
-    const auto end = std::chrono::steady_clock::now();
-    const double milliseconds =
-        std::chrono::duration<double, std::milli>(end - m_cpuStart).count();
+    const double milliseconds = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - m_cpuStart).count();
     m_accumulator.RecordCpuMilliseconds(milliseconds);
     m_cpuFrameActive = false;
 }
@@ -234,73 +160,40 @@ void FrameProfiler::ResolveCompleted(ID3D11DeviceContext* context)
         if (context->GetData(slot.disjoint.Get(), &disjoint, sizeof(disjoint),
                              D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
             continue;
-
-        UINT64 frameStart = 0;
-        UINT64 cloudStart = 0;
-        UINT64 atmosphereLutEnd = 0;
-        UINT64 shadowCacheEnd = 0;
-        UINT64 opaqueSceneEnd = 0;
-        UINT64 cloudRaymarchEnd = 0;
-        UINT64 cloudCompositeBegin = 0;
-        UINT64 cloudEnd = 0;
-        UINT64 toneMapEnd = 0;
-        UINT64 frameEnd = 0;
-        const bool timestampsReady =
-            context->GetData(slot.frameStart.Get(), &frameStart, sizeof(frameStart),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.cloudStart.Get(), &cloudStart, sizeof(cloudStart),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.atmosphereLutEnd.Get(), &atmosphereLutEnd,
-                             sizeof(atmosphereLutEnd),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.shadowCacheEnd.Get(), &shadowCacheEnd,
-                             sizeof(shadowCacheEnd),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.opaqueSceneEnd.Get(), &opaqueSceneEnd,
-                             sizeof(opaqueSceneEnd),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.cloudRaymarchEnd.Get(), &cloudRaymarchEnd,
-                             sizeof(cloudRaymarchEnd),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.cloudCompositeBegin.Get(),
-                             &cloudCompositeBegin,
-                             sizeof(cloudCompositeBegin),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.cloudEnd.Get(), &cloudEnd, sizeof(cloudEnd),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.toneMapEnd.Get(), &toneMapEnd,
-                             sizeof(toneMapEnd),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
-            context->GetData(slot.frameEnd.Get(), &frameEnd, sizeof(frameEnd),
-                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
-        if (!timestampsReady)
+        UINT64 frameStart = 0, atmosphereEnd = 0, shadowEnd = 0;
+        UINT64 opaqueEnd = 0, cloudEnd = 0, toneEnd = 0, frameEnd = 0;
+        const bool ready =
+            context->GetData(slot.frameStart.Get(), &frameStart,
+                sizeof(frameStart), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+            context->GetData(slot.atmosphereEnd.Get(), &atmosphereEnd,
+                sizeof(atmosphereEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+            context->GetData(slot.shadowEnd.Get(), &shadowEnd,
+                sizeof(shadowEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+            context->GetData(slot.opaqueEnd.Get(), &opaqueEnd,
+                sizeof(opaqueEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+            context->GetData(slot.cloudEnd.Get(), &cloudEnd,
+                sizeof(cloudEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+            context->GetData(slot.toneEnd.Get(), &toneEnd,
+                sizeof(toneEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+            context->GetData(slot.frameEnd.Get(), &frameEnd,
+                sizeof(frameEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+        if (!ready)
             continue;
-
         slot.inFlight = false;
         if (slot.generation != m_generation || disjoint.Disjoint ||
-            disjoint.Frequency == 0 || frameEnd < frameStart ||
-            cloudEnd < cloudStart || cloudStart < frameStart ||
-            atmosphereLutEnd < frameStart || cloudStart < atmosphereLutEnd ||
-            shadowCacheEnd < cloudStart || opaqueSceneEnd < shadowCacheEnd ||
-            cloudRaymarchEnd < opaqueSceneEnd ||
-            cloudCompositeBegin < cloudRaymarchEnd ||
-            cloudCompositeBegin > cloudEnd ||
-            toneMapEnd < cloudEnd || toneMapEnd > frameEnd)
+            disjoint.Frequency == 0 ||
+            !(frameStart <= atmosphereEnd && atmosphereEnd <= shadowEnd &&
+              shadowEnd <= opaqueEnd && opaqueEnd <= cloudEnd &&
+              cloudEnd <= toneEnd && toneEnd <= frameEnd))
             continue;
-
-        const double millisecondsPerTick =
-            1000.0 / static_cast<double>(disjoint.Frequency);
-        m_accumulator.RecordStage14GpuMilliseconds(
-            static_cast<double>(frameEnd - frameStart) * millisecondsPerTick,
-            static_cast<double>(atmosphereLutEnd - frameStart) * millisecondsPerTick,
-            static_cast<double>(shadowCacheEnd - cloudStart) * millisecondsPerTick,
-            static_cast<double>(opaqueSceneEnd - shadowCacheEnd) * millisecondsPerTick,
-            static_cast<double>(cloudRaymarchEnd - opaqueSceneEnd) * millisecondsPerTick,
-            static_cast<double>(cloudCompositeBegin - cloudRaymarchEnd) *
-                millisecondsPerTick,
-            static_cast<double>(cloudEnd - cloudCompositeBegin) *
-                millisecondsPerTick,
-            static_cast<double>(toneMapEnd - cloudEnd) * millisecondsPerTick);
+        const double scale = 1000.0 / static_cast<double>(disjoint.Frequency);
+        m_accumulator.RecordGpuMilliseconds(
+            (frameEnd - frameStart) * scale,
+            (atmosphereEnd - frameStart) * scale,
+            (shadowEnd - atmosphereEnd) * scale,
+            (opaqueEnd - shadowEnd) * scale,
+            (cloudEnd - opaqueEnd) * scale,
+            (toneEnd - cloudEnd) * scale);
     }
 }
 
@@ -310,7 +203,6 @@ void FrameProfiler::BeginGpuFrame(ID3D11DeviceContext* context)
     if (!m_initialized || !context)
         return;
     ResolveCompleted(context);
-
     for (std::size_t offset = 0; offset < m_slots.size(); ++offset)
     {
         const std::size_t index = (m_nextSlot + offset) % m_slots.size();
@@ -318,82 +210,29 @@ void FrameProfiler::BeginGpuFrame(ID3D11DeviceContext* context)
             continue;
         QuerySlot& slot = m_slots[index];
         slot.generation = m_generation;
-        slot.cloudCompositeMarked = false;
-        slot.cloudPassEnded = false;
         context->Begin(slot.disjoint.Get());
         context->End(slot.frameStart.Get());
         m_activeSlot = static_cast<int>(index);
-        m_nextSlot = (index + 1) % m_slots.size();
+        m_nextSlot = (index + 1u) % m_slots.size();
         return;
     }
-    // GPU가 8개 slot보다 늦으면 이 프레임은 계측하지 않고 렌더를 계속한다.
 }
 
-void FrameProfiler::BeginCloudPass(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot >= 0 && context)
-        context->End(m_slots[static_cast<std::size_t>(m_activeSlot)].cloudStart.Get());
+#define VCLOUD_MARK_QUERY(methodName, fieldName)                              \
+void FrameProfiler::methodName(ID3D11DeviceContext* context)                 \
+{                                                                            \
+    if (m_activeSlot >= 0 && context)                                         \
+        context->End(m_slots[static_cast<std::size_t>(m_activeSlot)].         \
+                     fieldName.Get());                                        \
 }
 
-void FrameProfiler::MarkAtmosphereLutEnd(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot >= 0 && context)
-        context->End(m_slots[static_cast<std::size_t>(m_activeSlot)].
-                     atmosphereLutEnd.Get());
-}
+VCLOUD_MARK_QUERY(MarkAtmosphereLutEnd, atmosphereEnd)
+VCLOUD_MARK_QUERY(MarkShadowCacheEnd, shadowEnd)
+VCLOUD_MARK_QUERY(MarkOpaqueSceneEnd, opaqueEnd)
+VCLOUD_MARK_QUERY(MarkCloudEnd, cloudEnd)
+VCLOUD_MARK_QUERY(MarkToneMapEnd, toneEnd)
 
-void FrameProfiler::MarkShadowCacheEnd(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot >= 0 && context)
-        context->End(m_slots[static_cast<std::size_t>(m_activeSlot)].
-                     shadowCacheEnd.Get());
-}
-
-void FrameProfiler::MarkOpaqueSceneEnd(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot >= 0 && context)
-        context->End(m_slots[static_cast<std::size_t>(m_activeSlot)].
-                     opaqueSceneEnd.Get());
-}
-
-void FrameProfiler::MarkCloudRaymarchEnd(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot >= 0 && context)
-        context->End(m_slots[static_cast<std::size_t>(m_activeSlot)].
-                     cloudRaymarchEnd.Get());
-}
-
-void FrameProfiler::MarkCloudCompositeBegin(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot < 0 || !context)
-        return;
-    QuerySlot& slot = m_slots[static_cast<std::size_t>(m_activeSlot)];
-    if (slot.cloudCompositeMarked || slot.cloudPassEnded)
-        return;
-    context->End(slot.cloudCompositeBegin.Get());
-    slot.cloudCompositeMarked = true;
-}
-
-void FrameProfiler::EndCloudPass(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot < 0 || !context)
-        return;
-    QuerySlot& slot = m_slots[static_cast<std::size_t>(m_activeSlot)];
-    if (slot.cloudPassEnded)
-        return;
-    // Direct/legacy 진단처럼 별도 Composite draw가 없는 경로는 두 timestamp를
-    // 연속 기록해 composite 비용을 0에 가깝게 유지한다.
-    MarkCloudCompositeBegin(context);
-    context->End(slot.cloudEnd.Get());
-    slot.cloudPassEnded = true;
-}
-
-void FrameProfiler::MarkToneMapEnd(ID3D11DeviceContext* context)
-{
-    if (m_activeSlot >= 0 && context)
-        context->End(m_slots[static_cast<std::size_t>(m_activeSlot)].
-                     toneMapEnd.Get());
-}
+#undef VCLOUD_MARK_QUERY
 
 void FrameProfiler::EndGpuFrame(ID3D11DeviceContext* context)
 {

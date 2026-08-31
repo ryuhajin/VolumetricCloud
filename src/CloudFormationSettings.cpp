@@ -83,20 +83,9 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
         static_cast<std::uint32_t>(value.weatherPreset);
     const std::uint32_t cloudType =
         static_cast<std::uint32_t>(value.weather.cloudTypeMode);
-    const CloudShapeMode shapeMode = cloudshape::Mode(value.shape.shapeMode);
     if (weatherPreset >
             static_cast<std::uint32_t>(Stage5WeatherPreset::ChannelDebug) ||
-        cloudType > static_cast<std::uint32_t>(CloudTypeMode::WeatherMap) ||
-        (shapeMode != CloudShapeMode::WeatherPhysicalThickness &&
-         shapeMode != CloudShapeMode::CirrusPhysicalLayer))
-    {
-        return false;
-    }
-
-    // Cirrus는 Weather G를 cloud family로 해석하지 않는다. 전용 shape variant와
-    // 실제 G texture를 함께 사용한다는 계약을 명시해 잘못된 fixed-G 조합을 막는다.
-    if (shapeMode == CloudShapeMode::CirrusPhysicalLayer &&
-        value.weather.cloudTypeMode != CloudTypeMode::WeatherMap)
+        cloudType > static_cast<std::uint32_t>(CloudTypeMode::WeatherMap))
     {
         return false;
     }
@@ -107,14 +96,7 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
     {
         return std::isfinite(a) && std::abs(a - b) <= 1.0e-5f;
     };
-    const float flowLength = std::sqrt(
-        value.shape.cirrusFlowDirectionXZ.x *
-            value.shape.cirrusFlowDirectionXZ.x +
-        value.shape.cirrusFlowDirectionXZ.y *
-            value.shape.cirrusFlowDirectionXZ.y);
-    if (!std::isfinite(flowLength) || flowLength <= 1.0e-6f ||
-        sanitizedShape.shapeMode != value.shape.shapeMode ||
-        !shapeFloatEqual(sanitizedShape.stratusMinimumThicknessMeters,
+    if (!shapeFloatEqual(sanitizedShape.stratusMinimumThicknessMeters,
                          value.shape.stratusMinimumThicknessMeters) ||
         !shapeFloatEqual(sanitizedShape.stratusMaximumThicknessMeters,
                          value.shape.stratusMaximumThicknessMeters) ||
@@ -143,27 +125,7 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
         !shapeFloatEqual(sanitizedShape.localBaseLiftMaxMeters,
                          value.shape.localBaseLiftMaxMeters) ||
         !shapeFloatEqual(sanitizedShape.footprintCoverageInfluence,
-                         value.shape.footprintCoverageInfluence) ||
-        !shapeFloatEqual(sanitizedShape.cirrusBaseAlongScaleMeters,
-                         value.shape.cirrusBaseAlongScaleMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusBaseAcrossScaleMeters,
-                         value.shape.cirrusBaseAcrossScaleMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusBaseVerticalScaleMeters,
-                         value.shape.cirrusBaseVerticalScaleMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusDetailAlongScaleMeters,
-                         value.shape.cirrusDetailAlongScaleMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusDetailAcrossScaleMeters,
-                         value.shape.cirrusDetailAcrossScaleMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusDetailVerticalScaleMeters,
-                         value.shape.cirrusDetailVerticalScaleMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusMinimumThicknessMeters,
-                         value.shape.cirrusMinimumThicknessMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusMaximumThicknessMeters,
-                         value.shape.cirrusMaximumThicknessMeters) ||
-        !shapeFloatEqual(sanitizedShape.cirrusVerticalProfileCenter,
-                         value.shape.cirrusVerticalProfileCenter) ||
-        !shapeFloatEqual(sanitizedShape.cirrusVerticalProfileHalfWidth,
-                         value.shape.cirrusVerticalProfileHalfWidth))
+                         value.shape.footprintCoverageInfluence))
     {
         return false;
     }
@@ -223,11 +185,6 @@ CloudFormationSettings SanitizeCloudFormationSettings(
         finiteOr(result.weatherWorldSizeMeters, 64000.0f),
         17600.0f, 160000.0f);
     result.shape = SanitizeCloudShapeParameters(result.shape);
-    if (cloudshape::Mode(result.shape.shapeMode) ==
-        CloudShapeMode::CirrusPhysicalLayer)
-    {
-        result.weather.cloudTypeMode = CloudTypeMode::WeatherMap;
-    }
     const float windLength = std::sqrt(
         result.windDirection.x * result.windDirection.x +
         result.windDirection.z * result.windDirection.z);
@@ -281,8 +238,6 @@ bool PrepareCloudFormationSettings(
 
     PreparedCloudFormation prepared;
     prepared.settings = SanitizeCloudFormationSettings(value);
-    prepared.domain.domainType = static_cast<std::uint32_t>(
-        CloudDomainType::PlanarLayer);
     prepared.domain.cloudBottomAltitude = prepared.settings.domainBottomMeters;
     prepared.domain.cloudLayerThickness =
         prepared.settings.domainThicknessMeters;
@@ -389,7 +344,6 @@ void WriteCloudFormationToRuntime(
     domain = formation.domain;
     weatherPreset = value.weatherPreset;
     weather = value.weather;
-    noise.noiseSource = static_cast<std::uint32_t>(NoiseSource::Texture3D);
     noise.baseWorldSizeMeters = value.baseNoiseWorldSizeMeters;
     noise.baseVerticalWorldSizeMeters = value.baseNoiseVerticalWorldSizeMeters;
     noise.detailWorldSizeMeters = value.detailNoiseWorldSizeMeters;
@@ -401,7 +355,6 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
 {
     if (a.weatherPreset != b.weatherPreset ||
         a.weather.cloudTypeMode != b.weather.cloudTypeMode ||
-        a.shape.shapeMode != b.shape.shapeMode ||
         !ChannelEqual(a.weather.coverage, b.weather.coverage, epsilon) ||
         !ChannelEqual(a.weather.cloudType, b.weather.cloudType, epsilon) ||
         !ChannelEqual(a.weather.density, b.weather.density, epsilon) ||
@@ -410,7 +363,7 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
     {
         return false;
     }
-    const std::array<float, 48> av = {{
+    const std::array<float, 36> av = {{
         a.coverage, a.densityMultiplier, a.extinctionPerMeter,
         a.detailErosion, a.weather.coverageThreshold,
         a.weather.coverageSoftness, a.weather.densityCoverageInfluence,
@@ -425,18 +378,6 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
         a.shape.cumulusUpperMassBottom, a.shape.cumulusUpperMassStart,
         a.shape.cumulusUpperMassEnd, a.shape.localBaseLiftMaxMeters,
         a.shape.footprintCoverageInfluence,
-        a.shape.cirrusFlowDirectionXZ.x,
-        a.shape.cirrusFlowDirectionXZ.y,
-        a.shape.cirrusBaseAlongScaleMeters,
-        a.shape.cirrusBaseAcrossScaleMeters,
-        a.shape.cirrusBaseVerticalScaleMeters,
-        a.shape.cirrusDetailAlongScaleMeters,
-        a.shape.cirrusDetailAcrossScaleMeters,
-        a.shape.cirrusDetailVerticalScaleMeters,
-        a.shape.cirrusMinimumThicknessMeters,
-        a.shape.cirrusMaximumThicknessMeters,
-        a.shape.cirrusVerticalProfileCenter,
-        a.shape.cirrusVerticalProfileHalfWidth,
         a.domainBottomMeters, a.domainThicknessMeters,
         a.maximumViewTraceDistanceMeters,
         a.viewTraceFadeStartDistanceMeters,
@@ -446,7 +387,7 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
         a.windDirection.y, a.windDirection.z,
         a.windSpeedMetersPerSecond,
     }};
-    const std::array<float, 48> bv = {{
+    const std::array<float, 36> bv = {{
         b.coverage, b.densityMultiplier, b.extinctionPerMeter,
         b.detailErosion, b.weather.coverageThreshold,
         b.weather.coverageSoftness, b.weather.densityCoverageInfluence,
@@ -461,18 +402,6 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
         b.shape.cumulusUpperMassBottom, b.shape.cumulusUpperMassStart,
         b.shape.cumulusUpperMassEnd, b.shape.localBaseLiftMaxMeters,
         b.shape.footprintCoverageInfluence,
-        b.shape.cirrusFlowDirectionXZ.x,
-        b.shape.cirrusFlowDirectionXZ.y,
-        b.shape.cirrusBaseAlongScaleMeters,
-        b.shape.cirrusBaseAcrossScaleMeters,
-        b.shape.cirrusBaseVerticalScaleMeters,
-        b.shape.cirrusDetailAlongScaleMeters,
-        b.shape.cirrusDetailAcrossScaleMeters,
-        b.shape.cirrusDetailVerticalScaleMeters,
-        b.shape.cirrusMinimumThicknessMeters,
-        b.shape.cirrusMaximumThicknessMeters,
-        b.shape.cirrusVerticalProfileCenter,
-        b.shape.cirrusVerticalProfileHalfWidth,
         b.domainBottomMeters, b.domainThicknessMeters,
         b.maximumViewTraceDistanceMeters,
         b.viewTraceFadeStartDistanceMeters,
@@ -510,8 +439,7 @@ std::uint64_t HashCloudFormationSettings(const CloudFormationSettings& input)
     HashFloat(hash, value.weather.thicknessCoverageInfluence);
     HashUnsigned(hash, static_cast<std::uint32_t>(value.weather.cloudTypeMode));
     HashFloat(hash, value.weatherWorldSizeMeters);
-    HashUnsigned(hash, value.shape.shapeMode);
-    const std::array<float, 38> fields = {{
+    const std::array<float, 26> fields = {{
         value.shape.stratusMinimumThicknessMeters,
         value.shape.stratusMaximumThicknessMeters,
         value.shape.cumulusMinimumThicknessMeters,
@@ -527,18 +455,6 @@ std::uint64_t HashCloudFormationSettings(const CloudFormationSettings& input)
         value.shape.cumulusUpperMassEnd,
         value.shape.localBaseLiftMaxMeters,
         value.shape.footprintCoverageInfluence,
-        value.shape.cirrusFlowDirectionXZ.x,
-        value.shape.cirrusFlowDirectionXZ.y,
-        value.shape.cirrusBaseAlongScaleMeters,
-        value.shape.cirrusBaseAcrossScaleMeters,
-        value.shape.cirrusBaseVerticalScaleMeters,
-        value.shape.cirrusDetailAlongScaleMeters,
-        value.shape.cirrusDetailAcrossScaleMeters,
-        value.shape.cirrusDetailVerticalScaleMeters,
-        value.shape.cirrusMinimumThicknessMeters,
-        value.shape.cirrusMaximumThicknessMeters,
-        value.shape.cirrusVerticalProfileCenter,
-        value.shape.cirrusVerticalProfileHalfWidth,
         value.domainBottomMeters, value.domainThicknessMeters,
         value.maximumViewTraceDistanceMeters,
         value.viewTraceFadeStartDistanceMeters,

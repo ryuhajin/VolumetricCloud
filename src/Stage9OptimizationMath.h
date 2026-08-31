@@ -1,10 +1,11 @@
 #pragma once
 
-#include "OptimizationParameters.h"
+#include "HighCloudQuality.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <numeric>
 #include <vector>
 
@@ -12,47 +13,30 @@ namespace stage9
 {
 inline double Smoothstep(double a, double b, double x)
 {
-    const double t = std::clamp((x - a) / std::max(b - a, 1.0e-9), 0.0, 1.0);
+    const double t = std::clamp(
+        (x - a) / std::max(b - a, 1.0e-9), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
 }
 
-inline double ViewStepMeters(double baseStep, double distance,
-                             const OptimizationParameters& parameters)
+inline double ViewStepMeters(double distanceMeters)
 {
-    if (parameters.distanceStepEnabled == 0u)
-        return baseStep;
     const double factor = 1.0 +
-        (parameters.farStepMultiplier - 1.0) * Smoothstep(
-            parameters.distanceStepStartMeters,
-            parameters.distanceStepEndMeters, distance);
-    return baseStep * factor;
+        (highcloud::kFarStepMultiplier - 1.0) * Smoothstep(
+            highcloud::kDistanceStepStartMeters,
+            highcloud::kDistanceStepEndMeters,
+            distanceMeters);
+    return highcloud::kViewStepMeters * factor;
 }
 
-inline double ConeBoundary(std::size_t index, std::size_t count,
-                           double farSampleFraction)
-{
-    if (count == 0u)
-        return 0.0;
-    if (count == 1u)
-        return index == 0u ? 0.0 : 1.0;
-    if (index >= count)
-        return 1.0;
-    const double nearFraction = std::clamp(farSampleFraction, 0.50, 0.98);
-    return std::pow(static_cast<double>(index) /
-                    static_cast<double>(count - 1u), 1.5) * nearFraction;
-}
-
-inline std::vector<double> BuildViewStepLengths(
-    double segmentLength, double baseStep,
-    const OptimizationParameters& parameters, std::size_t maxSteps)
+inline std::vector<double> BuildViewStepLengths(double segmentLength)
 {
     std::vector<double> result;
     double cursor = 0.0;
-    while (cursor < segmentLength && result.size() < maxSteps)
+    while (cursor < segmentLength &&
+           result.size() < highcloud::kMaximumViewSteps)
     {
         const double step = std::min(
-            ViewStepMeters(baseStep, cursor, parameters),
-            segmentLength - cursor);
+            ViewStepMeters(cursor), segmentLength - cursor);
         if (!(step > 0.0) || !std::isfinite(step))
             break;
         result.push_back(step);
@@ -70,10 +54,30 @@ inline double BeerLambert(double density, double extinction,
                     std::max(extinction, 0.0) * distance);
 }
 
+inline double CoarseStepMeters(double fullStepMeters)
+{
+    return std::min(
+        fullStepMeters * highcloud::kCoarseStepMultiplier,
+        std::max<double>(highcloud::kMaximumSearchStepMeters,
+                         fullStepMeters));
+}
+
 inline double RewindCoarseHit(double cursor, double coarseLength,
                               double segmentStart = 0.0)
 {
     return std::max(segmentStart, cursor - std::max(coarseLength, 0.0));
+}
+
+inline bool ShouldEnterCoarse(std::uint32_t consecutiveEmptySamples)
+{
+    return consecutiveEmptySamples >= highcloud::kEmptySamplesBeforeCoarse;
+}
+
+inline bool ShouldEarlyExit(double transmittance)
+{
+    return std::isfinite(transmittance) &&
+        static_cast<float>(transmittance) <=
+            highcloud::kTransmittanceThreshold;
 }
 
 inline bool SupportDefinitelyEmpty(double localHeight,
@@ -87,6 +91,16 @@ inline bool SupportDefinitelyEmpty(double localHeight,
         coverage <= 0.0 || densityMultiplier <= 0.0;
 }
 
+inline double ConeBoundary(std::size_t index)
+{
+    if (index >= highcloud::kConeSampleCount)
+        return 1.0;
+    const double denominator =
+        static_cast<double>(highcloud::kConeSampleCount - 1u);
+    return std::pow(static_cast<double>(index) / denominator, 1.5) *
+        highcloud::kLightFarSampleFraction;
+}
+
 struct ConeInterval
 {
     double sampleDistance = 0.0;
@@ -94,22 +108,19 @@ struct ConeInterval
     double radiusMeters = 0.0;
 };
 
-inline std::vector<ConeInterval> BuildConeIntervals(
-    double segmentLength, std::size_t count, double angleDegrees,
-    double farSampleFraction = 0.85)
+inline std::vector<ConeInterval> BuildConeIntervals(double segmentLength)
 {
     std::vector<ConeInterval> result;
-    if (!(segmentLength > 0.0) || count == 0u)
+    if (!(segmentLength > 0.0))
         return result;
-    result.reserve(count);
-    const double tangent = std::tan(std::clamp(angleDegrees, 0.0, 8.0) *
-                                    3.14159265358979323846 / 180.0);
-    for (std::size_t i = 0; i < count; ++i)
+    result.reserve(highcloud::kConeSampleCount);
+    const double tangent = std::tan(
+        highcloud::kConeAngleDegrees * 3.14159265358979323846 / 180.0);
+    for (std::size_t index = 0;
+         index < highcloud::kConeSampleCount; ++index)
     {
-        const double begin = count == 1u ? 0.0 :
-            ConeBoundary(i, count, farSampleFraction) * segmentLength;
-        const double end = count == 1u ? segmentLength :
-            ConeBoundary(i + 1u, count, farSampleFraction) * segmentLength;
+        const double begin = ConeBoundary(index) * segmentLength;
+        const double end = ConeBoundary(index + 1u) * segmentLength;
         const double midpoint = 0.5 * (begin + end);
         result.push_back({ midpoint, end - begin, midpoint * tangent });
     }

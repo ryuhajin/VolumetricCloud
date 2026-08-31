@@ -1,5 +1,7 @@
 # 단계 9 View/Light 기본 최적화
 
+> 현재 상태(2026-09-01): 실험 당시의 preset 비교 이력이다. 최종 런타임은 승인된 High 수치만 `HighCloudQuality` 상수로 유지하며 OptimizationCB와 Balanced/Conservative 선택은 삭제했다.
+
 ## 기준과 범위
 
 - 기준: `stage13-approved` / `7f07f64`, 2026-08-17 사용자 승인 평면층.

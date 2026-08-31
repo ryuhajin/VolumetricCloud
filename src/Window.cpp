@@ -11,20 +11,8 @@
 #include <cwchar>
 
 static const wchar_t* kClassName = L"VolumetricCloudWindowClass";
-static constexpr int kNative1080pWidth = 1920;
-static constexpr int kNative1080pHeight = 1080;
 static constexpr int kInteractiveClientWidth = 1920;
 static constexpr int kInteractiveClientHeight = 1080;
-
-namespace
-{
-bool SetWindowStyle(HWND hwnd, int index, LONG_PTR value)
-{
-    SetLastError(ERROR_SUCCESS);
-    const LONG_PTR previous = SetWindowLongPtrW(hwnd, index, value);
-    return previous != 0 || GetLastError() == ERROR_SUCCESS;
-}
-}
 
 Window::Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
                bool showWindow, bool useInteractiveStartupPlacement)
@@ -230,147 +218,6 @@ bool Window::IsPerMonitorV2DpiAware() const
                context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE;
 }
 
-Native1080pResult Window::EnterNative1080p()
-{
-    if (!m_hwnd)
-        return Native1080pResult::WindowUnavailable;
-    if (m_native1080pActive)
-        return Native1080pResult::AlreadyActive;
-
-    const HMONITOR monitor = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO monitorInfo = { sizeof(MONITORINFO) };
-    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo))
-        return Native1080pResult::Win32Failure;
-
-    const int monitorWidth = monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left;
-    const int monitorHeight = monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top;
-    if (monitorWidth < kNative1080pWidth || monitorHeight < kNative1080pHeight)
-        return Native1080pResult::MonitorTooSmall;
-
-    WindowedRestoreState restore = {};
-    restore.valid = true;
-    restore.style = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
-    restore.exStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
-    restore.placement.length = sizeof(WINDOWPLACEMENT);
-    restore.wasVisible = IsWindowVisible(m_hwnd) != FALSE;
-    QueryPhysicalClientExtent(restore.clientWidth, restore.clientHeight);
-    if (!GetWindowPlacement(m_hwnd, &restore.placement))
-        return Native1080pResult::Win32Failure;
-    m_windowedRestore = restore;
-
-    const LONG_PTR popupStyle = WS_POPUP |
-        (restore.style & (WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS));
-    if (!SetWindowStyle(m_hwnd, GWL_STYLE, popupStyle))
-    {
-        m_windowedRestore.valid = false;
-        return Native1080pResult::Win32Failure;
-    }
-
-    const int x = monitorInfo.rcMonitor.left +
-        (monitorWidth - kNative1080pWidth) / 2;
-    const int y = monitorInfo.rcMonitor.top +
-        (monitorHeight - kNative1080pHeight) / 2;
-    const bool positioned = SetWindowPos(
-        m_hwnd, HWND_TOP, x, y, kNative1080pWidth, kNative1080pHeight,
-        SWP_NOOWNERZORDER | SWP_FRAMECHANGED |
-            (restore.wasVisible ? 0u : SWP_NOACTIVATE)) != FALSE;
-
-    int clientWidth = 0;
-    int clientHeight = 0;
-    const bool exactClient = positioned &&
-        QueryPhysicalClientExtent(clientWidth, clientHeight) &&
-        clientWidth == kNative1080pWidth && clientHeight == kNative1080pHeight;
-    if (!exactClient)
-    {
-        const bool rolledBack = ApplySavedWindowedState();
-        if (rolledBack)
-            m_windowedRestore.valid = false;
-        else
-            m_native1080pActive = true;
-        UpdatePhysicalClientExtent(true);
-        return Native1080pResult::Win32Failure;
-    }
-
-    m_native1080pActive = true;
-    UpdatePhysicalClientExtent(true);
-    return Native1080pResult::Success;
-}
-
-bool Window::ApplySavedWindowedState()
-{
-    if (!m_hwnd || !m_windowedRestore.valid)
-        return false;
-
-    bool succeeded = SetWindowStyle(
-        m_hwnd, GWL_STYLE, m_windowedRestore.style);
-    succeeded = SetWindowStyle(
-        m_hwnd, GWL_EXSTYLE, m_windowedRestore.exStyle) && succeeded;
-    succeeded = SetWindowPlacement(
-        m_hwnd, &m_windowedRestore.placement) != FALSE && succeeded;
-    succeeded = SetWindowPos(
-        m_hwnd, nullptr, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
-            SWP_NOOWNERZORDER | SWP_FRAMECHANGED) != FALSE && succeeded;
-
-    // 보통 창이었다면 저장 당시 물리 client 크기까지 복원한다. 최대화 상태는
-    // WINDOWPLACEMENT가 소유하므로 임의로 크기를 덮어쓰지 않는다.
-    const UINT showCommand = m_windowedRestore.placement.showCmd;
-    if (showCommand != SW_SHOWMAXIMIZED &&
-        m_windowedRestore.clientWidth > 0 &&
-        m_windowedRestore.clientHeight > 0)
-    {
-        succeeded = ResizeClientArea(
-            m_windowedRestore.clientWidth,
-            m_windowedRestore.clientHeight,
-            GetDpiForWindow(m_hwnd)) && succeeded;
-    }
-
-    if (m_windowedRestore.wasVisible)
-        ShowWindow(m_hwnd, showCommand);
-    else
-        ShowWindow(m_hwnd, SW_HIDE);
-
-    int restoredClientWidth = 0;
-    int restoredClientHeight = 0;
-    const bool clientRestored = QueryPhysicalClientExtent(
-        restoredClientWidth, restoredClientHeight) &&
-        restoredClientWidth == m_windowedRestore.clientWidth &&
-        restoredClientHeight == m_windowedRestore.clientHeight;
-    const bool styleRestored =
-        GetWindowLongPtrW(m_hwnd, GWL_STYLE) == m_windowedRestore.style &&
-        GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE) == m_windowedRestore.exStyle;
-    return succeeded && clientRestored && styleRestored;
-}
-
-bool Window::RestoreWindowed()
-{
-    if (!m_windowedRestore.valid)
-        return false;
-
-    // 자동 회귀는 Win32 API 실패 뒤에도 같은 저장 상태로 재시도할 수 있는지
-    // 검사한다. 실제 상태를 바꾸기 전에 한 번만 실패하므로 복구 계약 자체를
-    // 결정적으로 검증할 수 있다.
-    if (m_failNextWindowedRestoreForTest)
-    {
-        m_failNextWindowedRestoreForTest = false;
-        m_native1080pActive = true;
-        return false;
-    }
-
-    // 복원 도중 발생할 수 있는 WM_DPICHANGED는 일반 창 규칙을 사용해야 한다.
-    m_native1080pActive = false;
-    const bool restored = ApplySavedWindowedState();
-    if (restored)
-        m_windowedRestore.valid = false;
-    else
-        // style/placement/client 중 하나라도 아직 복원되지 않았다. 저장 상태와
-        // Native session ownership을 유지해 다음 frame이 같은 요청을 재시도한다.
-        m_native1080pActive = true;
-    m_dpi = std::max<UINT>(GetDpiForWindow(m_hwnd), 96);
-    UpdatePhysicalClientExtent(true);
-    return restored;
-}
-
 bool Window::ProcessMessages()
 {
     MSG msg = {};
@@ -403,16 +250,12 @@ void Window::ApplyCameraPreset(Stage13CameraPresetId id,
         stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
     m_camera->SetFovYDegrees(60.0f);
     m_camera->SetLookAt(preset.position, preset.target);
-    if (m_renderer)
-        m_renderer->ResetTemporalHistory(
-            Stage11HistoryResetReason::CameraCut);
     SetCameraPresetName(displayName);
 }
 
 void Window::UpdateCameraMovement(float deltaSeconds)
 {
-    if (!m_camera || !m_renderer || m_renderer->DeveloperUiWantsKeyboard() ||
-        m_renderer->SceneInputLocked())
+    if (!m_camera || !m_renderer || m_renderer->DeveloperUiWantsKeyboard())
         return;
     const float moveDistance = stage13scene::MovementDistance(
         deltaSeconds, (GetKeyState(VK_SHIFT) & 0x8000) != 0,
@@ -469,12 +312,8 @@ void Window::UpdateDebugTitle()
     const int phasePresetIndex = static_cast<int>(m_renderer->PhasePreset());
     const int environmentPresetIndex =
         static_cast<int>(m_renderer->EnvironmentPreset());
-    const wchar_t* noiseSourceName =
-        m_renderer->CurrentNoiseSource() == NoiseSource::Texture3D
-            ? L"Texture3D" : L"Procedural Legacy";
-    const wchar_t* atmosphereModeName =
-        m_renderer->AtmosphereSettings().mode == AtmosphereMode::Physical
-            ? L"Physical Atmosphere" : L"Manual Atmosphere";
+    const wchar_t* noiseSourceName = L"Texture3D";
+    const wchar_t* atmosphereModeName = L"Physical Atmosphere LUT";
     wchar_t title[512] = {};
     swprintf_s(title, L"VolumetricCloud - Stage 15 | %ls | %ls | Unified 50km Portfolio Scene | %ls | %ls | %ls | %ls | %ls | %ls | WASD %.0f m/s Shift 4x",
                stage13scene::DebugModeName(m_renderer->DebugMode()),
@@ -530,8 +369,6 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     const bool sceneKeyboardBlocked = m_renderer &&
         m_renderer->DeveloperUiWantsKeyboard();
-    const bool sceneInputLocked = m_renderer &&
-        m_renderer->SceneInputLocked();
     // F1~F4는 독립 개발 UI 창이다. F1은 NoiseLab 메시지 경로가 처리하고,
     // F2~F4는 기존 Weather 프리셋 키 대신 Weather/Lighting/Camera 창을 토글한다.
     if (msg == WM_KEYDOWN && m_renderer && !sceneKeyboardBlocked &&
@@ -547,7 +384,7 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     // F5~F8은 단일 씬의 네 고정 카메라다.
     if (msg == WM_KEYDOWN &&
-        !sceneKeyboardBlocked && !sceneInputLocked &&
+        !sceneKeyboardBlocked &&
         wParam >= VK_F5 && wParam <= VK_F8)
     {
         if (m_camera && wParam == VK_F5)
@@ -569,24 +406,7 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
-    // Stage 15 전역 프리셋 키. ImGui가 키보드를 잡았거나 key-repeat이면
-    // 처리하지 않아 텍스트 입력과 한 번 누름 계약을 보존한다.
-    if (msg == WM_KEYDOWN && m_renderer && !sceneKeyboardBlocked &&
-        (lParam & (1ll << 30)) == 0)
-    {
-        if (wParam == 'Q')
-        {
-            m_renderer->CycleStage15QualityPreset();
-            return 0;
-        }
-        if (wParam == 'T')
-        {
-            m_renderer->ToggleStage15TemporalOverride();
-            return 0;
-        }
-    }
-
-    if (msg == WM_KEYDOWN && !sceneKeyboardBlocked && !sceneInputLocked &&
+    if (msg == WM_KEYDOWN && !sceneKeyboardBlocked &&
         !stage13scene::IsCameraMovementKey(
             static_cast<std::uint32_t>(wParam)) &&
         HandleGlobalDebugShortcut(wParam))
@@ -608,17 +428,10 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (!suggestedRect)
             return 0;
 
-        int width = suggestedRect->right - suggestedRect->left;
-        int height = suggestedRect->bottom - suggestedRect->top;
-        if (m_native1080pActive)
-        {
-            // Native 모드는 DPI가 바뀌어도 논리 크기가 아니라 물리 1080p를 유지한다.
-            width = kNative1080pWidth;
-            height = kNative1080pHeight;
-        }
         SetWindowPos(
             hwnd, nullptr, suggestedRect->left, suggestedRect->top,
-            width, height,
+            suggestedRect->right - suggestedRect->left,
+            suggestedRect->bottom - suggestedRect->top,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         UpdatePhysicalClientExtent(true);
         return 0;
@@ -631,8 +444,6 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_LBUTTONDOWN:
-        if (sceneInputLocked)
-            return 0;
         m_dragging   = true;
         m_lastMouseX = GET_X_LPARAM(lParam);
         m_lastMouseY = GET_Y_LPARAM(lParam);
@@ -645,7 +456,7 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_MOUSEMOVE:
-        if (m_dragging && m_camera && !sceneInputLocked)
+        if (m_dragging && m_camera)
         {
             int x = GET_X_LPARAM(lParam);
             int y = GET_Y_LPARAM(lParam);
@@ -660,7 +471,7 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_MOUSEWHEEL:
-        if (m_camera && !sceneInputLocked)
+        if (m_camera)
         {
             const float distance = stage13scene::WheelMovementDistance(
                 static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)),

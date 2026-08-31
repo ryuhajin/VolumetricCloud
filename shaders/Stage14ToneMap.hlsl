@@ -3,8 +3,14 @@
 // ============================================================================
 #include "Stage14Atmosphere.hlsli"
 
-Texture2D<float4> hdrCompositeTexture : register(t0);
+Texture2D<float4> hdrCloudTexture : register(t0);
 SamplerState toneLinearClampSampler : register(s0);
+
+// 강제 핫 리로드 smoke가 임시 shader 복사본에서만 바꾸는 값이다.
+// 제품 경로의 0.0은 화면에 어떤 보정도 더하지 않는다.
+#ifndef VCLOUD_TONE_TEST_BIAS
+#define VCLOUD_TONE_TEST_BIAS 0.0
+#endif
 
 struct VSOut
 {
@@ -98,11 +104,11 @@ float DitherNoise(uint2 pixel)
 
 float3 SelectDebugChannel(float3 color)
 {
-    if (modeFlags.w == 1u)
+    if (renderFlags.w == 1u)
         return color.rrr;
-    if (modeFlags.w == 2u)
+    if (renderFlags.w == 2u)
         return color.ggg;
-    if (modeFlags.w == 3u)
+    if (renderFlags.w == 3u)
         return color.bbb;
     return color;
 }
@@ -123,7 +129,7 @@ float3 ValidateAndExposeDebug(float3 raw, bool bounded)
 
 float4 Stage14DebugOutput(VSOut input, float3 hdr)
 {
-    uint view = modeFlags.z;
+    uint view = renderFlags.z;
     float2 uv = saturate(input.uv);
     float3 raw = 0.0.xxx;
     bool bounded = false;
@@ -206,16 +212,17 @@ float4 Stage14DebugOutput(VSOut input, float3 hdr)
 
 float4 main(VSOut input) : SV_TARGET
 {
-    float3 hdr = max(hdrCompositeTexture.SampleLevel(
-        toneLinearClampSampler, input.uv, 0).rgb, 0.0.xxx);
+    float3 hdr = max(hdrCloudTexture.SampleLevel(
+        toneLinearClampSampler, input.uv, 0).rgb +
+        VCLOUD_TONE_TEST_BIAS.xxx, 0.0.xxx);
     float4 debugOutput = Stage14DebugOutput(input, hdr);
     if (debugOutput.a > 0.5)
         return debugOutput;
     hdr *= exp2(clamp(toneAndTime.x, -8.0, 8.0));
     hdr = max(BradfordWhiteBalance(
         hdr, clamp(toneAndTime.y, 3500.0, 10000.0)), 0.0.xxx);
-    float3 mapped = modeFlags.y == 0u ? AcesFitted(hdr) :
-                    (modeFlags.y == 2u ? LegacyShoulder(hdr) : hdr);
+    float3 mapped = renderFlags.y == 0u ? AcesFitted(hdr) :
+                    (renderFlags.y == 2u ? LegacyShoulder(hdr) : hdr);
     float3 srgb = LinearToSrgb(saturate(mapped));
     srgb += DitherNoise((uint2)input.position.xy) / 255.0;
     return float4(saturate(srgb), 1.0);

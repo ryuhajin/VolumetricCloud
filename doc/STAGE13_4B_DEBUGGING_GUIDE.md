@@ -1,5 +1,9 @@
 # Stage 13-5 / Stage 9 오픈 월드 디버깅 가이드
 
+> 보관 문서(2026-09-01): 이 문서는 Stage 13/9 승인 당시의 조작과 성능 비교 이력이다.
+> 현재 High 단일 런타임에는 Reference, Fine Reference, Detail LOD, 저해상도/업샘플링 UI가
+> 없다. 현재 조작과 판정은 [Stage 15 검증 가이드](STAGE15_PRESET_VALIDATION_GUIDE.md)를 따른다.
+
 파일 이름은 과거 13-4B 링크 호환을 위해 유지하지만 내용은 현재 13-5 단일 포트폴리오
 씬과 단계 9 최적화 기준이다. 13-4C Local Inspector와 13-4D 단일 씬 이력은 변경 기록에 남아 있으며
 현재 런타임에는 scene 전환, 문자 진단 키, F9~F12가 없다. 단계 9 View/Light 기본

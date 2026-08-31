@@ -61,8 +61,7 @@ Stage12ShadowSample SampleStage12DeepShadow(float3 position)
     result.nearWeight = 0.0;
     result.farValidity = 0.0;
     result.valid = 0.0;
-    bool enabled = stage12ShadowMode == kStage12DeepCache &&
-        stage12CacheReady != 0u &&
+    bool enabled = stage12CacheReady != 0u &&
         stage12LightForward.y >= stage12MinimumSunY;
     if (!enabled)
         return result;
@@ -110,7 +109,7 @@ float Stage12SurfaceFactor(float cloudTransmittance)
 // tau/maxTau는 실제 값 대부분이 검게 뭉치므로 1-exp(-tau*exposure)로 시각화한다.
 float4 Stage12DebugCacheTexture(float2 uv, bool nearCascade)
 {
-    if (stage12ShadowMode != kStage12DeepCache || stage12CacheReady == 0u)
+    if (stage12CacheReady == 0u)
         return float4(0.45, 0.0, 0.0, 1.0); // cache unavailable 표시
 
     uint slice = nearCascade

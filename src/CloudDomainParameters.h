@@ -8,46 +8,32 @@
 #include <cmath>
 #include <cstdint>
 
-enum class CloudDomainType : std::uint32_t
-{
-    AabbReference = 0,
-    PlanarLayer = 1,
-};
-
 struct alignas(16) CloudDomainParameters
 {
-    std::uint32_t domainType =
-        static_cast<std::uint32_t>(CloudDomainType::AabbReference);
     float cloudBottomAltitude = 1500.0f;
     float cloudLayerThickness = 3000.0f;
     float maxViewTraceDistance = 50000.0f;
-
     float viewTraceFadeStartDistance = 40000.0f;
+
     float maxLightTraceDistance = 20000.0f;
     // Physical Atmosphere가 구름층 입사광을 한 번 조회할 대표 절대 고도다.
     // 전역 교차 도메인 중앙과 분리해 local shape 범위 변경이 조명 기준을
     // 우연히 바꾸지 않게 한다.
     float cloudLightingReferenceAltitudeMeters = 3000.0f;
-    float domainPadding = 0.0f;
+    float domainPadding0 = 0.0f;
+    float domainPadding1 = 0.0f;
 };
 
 static_assert(sizeof(CloudDomainParameters) == 32,
               "CloudDomainParameters must match CloudDomainCB");
 static_assert(offsetof(CloudDomainParameters,
-                       cloudLightingReferenceAltitudeMeters) == 24,
+                       cloudLightingReferenceAltitudeMeters) == 20,
               "CloudDomainParameters lighting altitude ABI changed");
 
 inline CloudDomainParameters SanitizeCloudDomainParameters(
     const CloudDomainParameters& value)
 {
     CloudDomainParameters result = value;
-    if (result.domainType >
-        static_cast<std::uint32_t>(CloudDomainType::PlanarLayer))
-    {
-        // 현재 런타임은 AABB 회귀와 최종 PlanarLayer만 허용한다.
-        result.domainType =
-            static_cast<std::uint32_t>(CloudDomainType::AabbReference);
-    }
     const auto finiteOr = [](float input, float fallback)
     {
         return std::isfinite(input) ? input : fallback;
@@ -69,6 +55,7 @@ inline CloudDomainParameters SanitizeCloudDomainParameters(
                  result.cloudBottomAltitude +
                      0.5f * result.cloudLayerThickness),
         result.cloudBottomAltitude, layerTop);
-    result.domainPadding = 0.0f;
+    result.domainPadding0 = 0.0f;
+    result.domainPadding1 = 0.0f;
     return result;
 }

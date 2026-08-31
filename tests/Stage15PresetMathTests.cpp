@@ -1,438 +1,172 @@
-#include "Stage15CirrusMath.h"
+#include "CloudShapeDomainContract.h"
+#include "HighCloudQuality.h"
 #include "Stage15Parameters.h"
 
 #include <cmath>
-#include <cstddef>
-#include <cstdio>
 #include <cstdlib>
-#include <string_view>
+#include <iostream>
 
 namespace
 {
-[[noreturn]] void Fail(const char* message)
+void Require(bool condition, const char* message)
 {
-    std::fprintf(stderr, "Stage15PresetMath failure: %s\n", message);
-    std::exit(1);
+    if (!condition)
+    {
+        std::cerr << message << '\n';
+        std::exit(1);
+    }
 }
 
-bool Near(float a, float b, float epsilon = 1.0e-4f)
+bool Near(float a, float b, float epsilon = 1.0e-6f)
 {
     return std::abs(a - b) <= epsilon;
 }
 
-double WeatherOccupancy(const WeatherMapData& map)
+void RequireFit(const CloudFormationSettings& formation,
+                float expectedHeadroom)
 {
-    std::size_t occupied = 0;
-    const std::size_t count = map.rgba.size() / 4u;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-        if (map.rgba[i * 4u] >= 128u)
-            ++occupied;
-    }
-    return static_cast<double>(occupied) /
-        static_cast<double>(std::max<std::size_t>(count, 1u));
+    PreparedCloudFormation prepared;
+    std::string status;
+    Require(PrepareCloudFormationSettings(
+                formation, prepared, status, 200.0f),
+            "formation must fit its planar domain with 200m headroom");
+    Require(prepared.fit.valid &&
+            prepared.fit.remainingHeadroomMeters >= expectedHeadroom - 0.01f,
+            "formation headroom");
+}
+
+void RequireLegacyNonHeight(
+    const CloudFormationSettings& formation, CloudTypeMode mode,
+    float threshold, float softness, float coverageBias,
+    float coverageContrast, float densityLink, float thicknessLink,
+    float cloudTypeBias)
+{
+    Require(formation.weather.cloudTypeMode == mode &&
+            Near(formation.weather.coverageThreshold, threshold) &&
+            Near(formation.weather.coverageSoftness, softness) &&
+            Near(formation.weather.coverage.bias, coverageBias) &&
+            Near(formation.weather.coverage.contrast, coverageContrast) &&
+            Near(formation.weather.densityCoverageInfluence, densityLink) &&
+            Near(formation.weather.thicknessCoverageInfluence, thicknessLink) &&
+            Near(formation.weather.cloudType.bias, cloudTypeBias),
+            "legacy Stage 14 Weather appearance values");
+}
+
+void RequireLegacyProfiles(
+    const CloudFormationSettings& formation,
+    float stratusBottom, float stratusTop,
+    float mixedBottom, float mixedTop,
+    float cumulusBottom, float cumulusTop,
+    float upperBottom, float upperStart, float upperEnd)
+{
+    const CloudShapeParameters& shape = formation.shape;
+    Require(Near(shape.stratusBottomFadeEnd, stratusBottom) &&
+            Near(shape.stratusTopFadeStart, stratusTop) &&
+            Near(shape.mixedBottomFadeEnd, mixedBottom) &&
+            Near(shape.mixedTopFadeStart, mixedTop) &&
+            Near(shape.cumulusBottomFadeEnd, cumulusBottom) &&
+            Near(shape.cumulusTopFadeStart, cumulusTop) &&
+            Near(shape.cumulusUpperMassBottom, upperBottom) &&
+            Near(shape.cumulusUpperMassStart, upperStart) &&
+            Near(shape.cumulusUpperMassEnd, upperEnd),
+            "legacy Stage 14 vertical profile values");
 }
 }
 
 int main()
 {
-    using namespace stage15;
-    using namespace std::literals;
-    if (cloudshape::ModeName(static_cast<std::uint32_t>(
-            CloudShapeMode::LegacyNormalizedLayer)) !=
-            "legacyNormalizedLayer"sv ||
-        cloudshape::ModeName(static_cast<std::uint32_t>(
-            CloudShapeMode::WeatherPhysicalThickness)) !=
-            "weatherPhysicalThickness"sv ||
-        cloudshape::ModeName(static_cast<std::uint32_t>(
-            CloudShapeMode::CirrusPhysicalLayer)) !=
-            "cirrusPhysicalLayer"sv ||
-        cloudshape::ModeDisplayName(static_cast<std::uint32_t>(
-            CloudShapeMode::CirrusPhysicalLayer)) !=
-            "Cirrus Physical Layer"sv)
-        Fail("cloud shape names must preserve the schema/UI contract");
-    if (cloudshape::UsesPhysicalBulkAdvection(static_cast<std::uint32_t>(
-            CloudShapeMode::LegacyNormalizedLayer)) ||
-        !cloudshape::UsesPhysicalBulkAdvection(static_cast<std::uint32_t>(
-            CloudShapeMode::WeatherPhysicalThickness)) ||
-        !cloudshape::UsesPhysicalBulkAdvection(static_cast<std::uint32_t>(
-            CloudShapeMode::CirrusPhysicalLayer)) ||
-        cloudshape::UsesPhysicalBulkAdvection(999u))
-        Fail("only Weather and Cirrus physical modes use bulk advection");
+    Require(sizeof(CloudShapeParameters) == 64u,
+            "physical-only CloudShapeCB must be 64 bytes");
+    Require(highcloud::kMaximumViewSteps == 512u &&
+            highcloud::kViewStepMeters == 100.0f,
+            "Stage 15 uses the fixed High contract");
 
-    const Stage15QualityDescriptor low = ResolveRealtimeQuality(
-        Stage15QualityPreset::Low);
-    const Stage15QualityDescriptor medium = ResolveRealtimeQuality(
-        Stage15QualityPreset::Medium);
-    const Stage15QualityDescriptor high = ResolveRealtimeQuality(
-        Stage15QualityPreset::High);
+    CloudFormationSettings stratus;
+    Require(ResolveBuiltInCloudFormation(
+                CloudFormationType::Stratus, stratus),
+            "resolve Stratus");
+    Require(Near(stratus.coverage, 0.40f) &&
+            Near(stratus.densityMultiplier, 1.20f) &&
+            Near(stratus.extinctionPerMeter, 0.00042f) &&
+            Near(stratus.detailErosion, 0.12f),
+            "Stratus legacy appearance values");
+    RequireLegacyNonHeight(
+        stratus, CloudTypeMode::Stratus,
+        0.49f, 0.22f, 0.01f, 1.03f, 0.50f, 0.65f, 0.0f);
+    RequireLegacyProfiles(
+        stratus, 0.05f, 0.72f, 0.10f, 0.86f,
+        0.08f, 0.93f, 0.65f, 0.08f, 0.70f);
+    Require(Near(stratus.shape.stratusMinimumThicknessMeters, 1500.0f) &&
+            Near(stratus.shape.stratusMaximumThicknessMeters, 2300.0f) &&
+            Near(stratus.shape.localBaseLiftMaxMeters, 0.0f) &&
+            Near(stratus.shape.footprintCoverageInfluence, 0.20f) &&
+            Near(stratus.domainBottomMeters, 1500.0f) &&
+            Near(stratus.domainThicknessMeters, 2500.0f),
+            "Stratus anti-clipping geometry");
+    RequireFit(stratus, 200.0f);
 
-    if (!(low.viewStepMeters > medium.viewStepMeters &&
-          low.maximumViewSamples < medium.maximumViewSamples &&
-          low.optimization.coneSampleCount < medium.optimization.coneSampleCount &&
-          medium.optimization.coneSampleCount < high.optimization.coneSampleCount))
-        Fail("quality sampling budgets must be monotonic");
-    if (!Near(medium.viewStepMeters, 100.0f) ||
-        medium.maximumViewSamples != 512u ||
-        !Near(medium.optimization.distanceStepStartMeters, 16000.0f) ||
-        !Near(medium.optimization.distanceStepEndMeters, 48000.0f) ||
-        !Near(medium.optimization.farStepMultiplier, 1.5f) ||
-        medium.optimization.coneSampleCount != 6u ||
-        medium.maximumLightSamples != 80u ||
-        !Near(medium.lightStepMeters, 250.0f) ||
-        !Near(medium.viewTransmittanceThreshold, 0.01f) ||
-        medium.upsampling.filterMode != static_cast<std::uint32_t>(
-            Stage10UpsampleFilter::Joint4) ||
-        !Near(medium.upsampling.resolutionScale, 0.5f) ||
-        !Near(medium.upsampling.sceneDepthRelativeSigma, 0.0025f) ||
-        !Near(medium.upsampling.cloudDepthRelativeSigma, 0.01f) ||
-        !Near(medium.upsampling.transmittanceSigma, 0.10f) ||
-        !Near(medium.upsampling.minimumWeight, 1.0e-4f) ||
-        medium.shadowPreset != Stage12ShadowPreset::Balanced512)
-        Fail("Medium must exactly preserve the approved Balanced inputs");
-    if (high.resolutionPreset != Stage10ResolutionPreset::Full ||
-        !Near(high.upsampling.resolutionScale, 1.0f) ||
-        high.upsampling.filterMode != static_cast<std::uint32_t>(
-            Stage10UpsampleFilter::Nearest) ||
-        high.temporalMode != Stage11TemporalMode::FullResolution ||
-        !Near(high.temporalTuning.historyWeight, 0.85f) ||
-        !Near(high.viewStepMeters, 100.0f) ||
-        high.maximumViewSamples != 512u ||
-        !Near(high.optimization.maxSearchStepMeters, 200.0f) ||
-        !Near(high.optimization.distanceStepStartMeters, 24000.0f) ||
-        !Near(high.optimization.distanceStepEndMeters, 50000.0f) ||
-        !Near(high.optimization.farStepMultiplier, 1.25f) ||
-        high.optimization.coneSampleCount != 8u ||
-        high.shadowPreset != Stage12ShadowPreset::Balanced512)
-        Fail("High must be the initial Full/Temporal performance candidate");
-    if (low.optimization.coarseStepMultiplier != 2.0f ||
-        low.optimization.farStepMultiplier != 1.5f)
-        Fail("Low must not reuse the rejected Stage 9 Fast multipliers");
-    Stage15QualityDescriptor customQuality = medium;
-    customQuality.viewTransmittanceThreshold = 0.02f;
-    customQuality.upsampling.cloudDepthRelativeSigma = 0.04f;
-    customQuality.temporalTuning.historyWeight = 0.80f;
-    if (QualityDescriptorEqual(customQuality, medium))
-        Fail("quality equality must include early-exit and upsampling tuning");
+    CloudFormationSettings cumulus;
+    Require(ResolveBuiltInCloudFormation(
+                CloudFormationType::Cumulus, cumulus),
+            "resolve Cumulus");
+    Require(Near(cumulus.coverage, 0.45f) &&
+            Near(cumulus.densityMultiplier, 1.25f) &&
+            Near(cumulus.extinctionPerMeter, 0.00038f) &&
+            Near(cumulus.detailErosion, 0.18f),
+            "Cumulus legacy appearance values");
+    RequireLegacyNonHeight(
+        cumulus, CloudTypeMode::Cumulus,
+        0.52f, 0.20f, 0.0f, 1.05f, 0.45f, 0.70f, 0.0f);
+    RequireLegacyProfiles(
+        cumulus, 0.06f, 0.65f, 0.10f, 0.86f,
+        0.08f, 0.94f, 0.65f, 0.08f, 0.70f);
+    Require(Near(cumulus.shape.cumulusMinimumThicknessMeters, 2000.0f) &&
+            Near(cumulus.shape.cumulusMaximumThicknessMeters, 3200.0f) &&
+            Near(cumulus.shape.localBaseLiftMaxMeters, 300.0f) &&
+            Near(cumulus.shape.footprintCoverageInfluence, 0.50f) &&
+            Near(cumulus.domainBottomMeters, 1800.0f) &&
+            Near(cumulus.domainThicknessMeters, 3700.0f),
+            "Cumulus anti-clipping geometry");
+    RequireFit(cumulus, 200.0f);
 
-    const Stage15QualityDescriptor capture = ResolveCaptureQuality();
-    const Stage15QualityDescriptor captureFromLow = ResolveQuality(
-        Stage15QualityPreset::Low, Stage15DiagnosticMode::CaptureStill);
-    const Stage15QualityDescriptor captureFromMedium = ResolveQuality(
-        Stage15QualityPreset::Medium, Stage15DiagnosticMode::CaptureStill);
-    const Stage15QualityDescriptor captureFromHigh = ResolveQuality(
-        Stage15QualityPreset::High, Stage15DiagnosticMode::CaptureStill);
-    const Stage15QualityDescriptor reference = ResolveReferenceQuality();
-    if (!QualityDescriptorEqual(capture, captureFromLow) ||
-        !QualityDescriptorEqual(capture, captureFromMedium) ||
-        !QualityDescriptorEqual(capture, captureFromHigh))
-        Fail("Capture resolver must not inherit the previous realtime quality");
-    if (capture.resolutionPreset != Stage10ResolutionPreset::Full ||
-        capture.upsampling.filterMode != static_cast<std::uint32_t>(
-            Stage10UpsampleFilter::Nearest) ||
-        capture.temporalMode != Stage11TemporalMode::Off ||
-        !Near(capture.viewStepMeters, 50.0f) ||
-        capture.maximumViewSamples != 1024u ||
-        !Near(capture.viewTransmittanceThreshold, 0.005f) ||
-        capture.optimization.supportPrecheckEnabled != 1u ||
-        capture.optimization.emptySpaceSkippingEnabled != 1u ||
-        capture.optimization.viewEarlyExitEnabled != 1u ||
-        capture.optimization.distanceStepEnabled != 0u ||
-        !Near(capture.optimization.maxSearchStepMeters, 100.0f) ||
-        capture.optimization.coneSampleCount != 8u ||
-        !Near(capture.optimization.coneAngleDegrees, 2.0f) ||
-        !Near(capture.optimization.lightFarSampleFraction, 0.77f) ||
-        capture.detailLod.detailLodEnabled != 0u ||
-        capture.shadowMode != Stage12ShadowMode::DeepCache ||
-        capture.shadowPreset != Stage12ShadowPreset::Balanced512)
-        Fail("Capture Still diagnostic contract is incomplete");
-    if (reference.resolutionPreset != Stage10ResolutionPreset::Full ||
-        reference.temporalMode != Stage11TemporalMode::Off ||
-        !stage9optimization::UsesReferenceShader(reference.optimization) ||
-        reference.shadowMode != Stage12ShadowMode::DirectReference)
-        Fail("Reference diagnostic must use Fine/Direct reference paths");
-    DirectX::XMFLOAT2 captureJitterSum{};
-    for (std::uint32_t sample = 0; sample < kCaptureSampleCount; ++sample)
+    CloudFormationSettings mixed;
+    Require(ResolveBuiltInCloudFormation(
+                CloudFormationType::Mixed, mixed),
+            "resolve Mixed");
+    Require(Near(mixed.coverage, 0.68f) &&
+            Near(mixed.densityMultiplier, 1.15f) &&
+            Near(mixed.extinctionPerMeter, 0.00035f) &&
+            Near(mixed.detailErosion, 0.18f),
+            "Mixed legacy appearance values");
+    RequireLegacyNonHeight(
+        mixed, CloudTypeMode::WeatherMap,
+        0.50f, 0.20f, 0.0f, 1.05f, 0.45f, 0.60f, 0.08f);
+    RequireLegacyProfiles(
+        mixed, 0.06f, 0.65f, 0.10f, 0.86f,
+        0.08f, 0.93f, 0.65f, 0.08f, 0.70f);
+    Require(Near(mixed.shape.stratusMinimumThicknessMeters, 1500.0f) &&
+            Near(mixed.shape.stratusMaximumThicknessMeters, 2500.0f) &&
+            Near(mixed.shape.cumulusMinimumThicknessMeters, 3000.0f) &&
+            Near(mixed.shape.cumulusMaximumThicknessMeters, 4600.0f) &&
+            Near(mixed.shape.localBaseLiftMaxMeters, 200.0f) &&
+            Near(mixed.shape.footprintCoverageInfluence, 0.40f) &&
+            Near(mixed.domainBottomMeters, 1500.0f) &&
+            Near(mixed.domainThicknessMeters, 5000.0f),
+            "Mixed anti-clipping geometry");
+    RequireFit(mixed, 200.0f);
+
+    for (std::uint32_t index = 0u; index < 3u; ++index)
     {
-        const DirectX::XMFLOAT2 jitter = CaptureJitterForSample(sample);
-        captureJitterSum.x += jitter.x;
-        captureJitterSum.y += jitter.y;
-        for (std::uint32_t earlier = 0; earlier < sample; ++earlier)
-        {
-            const DirectX::XMFLOAT2 previous =
-                CaptureJitterForSample(earlier);
-            if (jitter.x == previous.x && jitter.y == previous.y)
-                Fail("Capture jitter samples must be unique");
-        }
-    }
-    const DirectX::XMFLOAT2 invalidJitter =
-        CaptureJitterForSample(kCaptureSampleCount);
-    if (!Near(captureJitterSum.x, 0.0f) ||
-        !Near(captureJitterSum.y, 0.0f) ||
-        !Near(invalidJitter.x, 0.0f) || !Near(invalidJitter.y, 0.0f))
-        Fail("Capture jitter must be zero-mean with a safe invalid sample");
-    if (CaptureStateForCompletedSamples(0u) !=
-            Stage15CaptureState::Accumulating ||
-        CaptureStateForCompletedSamples(3u) !=
-            Stage15CaptureState::Accumulating ||
-        CaptureStateForCompletedSamples(4u) != Stage15CaptureState::Ready ||
-        CaptureStateForCompletedSamples(0u, true) !=
-            Stage15CaptureState::Failed)
-        Fail("Capture state helper must finish exactly after four samples");
-
-    const Stage15ConceptPreset concepts[] = {
-        Stage15ConceptPreset::UrbanFairWeather,
-        Stage15ConceptPreset::MeadowBrokenClouds,
-        Stage15ConceptPreset::DesertCirrus,
-        Stage15ConceptPreset::SnowOvercast,
-    };
-    const double minimumOccupancy[] = { 0.30, 0.55, 0.15, 0.85 };
-    const double maximumOccupancy[] = { 0.45, 0.70, 0.30, 0.95 };
-    std::uint64_t previousHash = 0;
-    bool occupancyPassed = true;
-    for (std::size_t i = 0; i < 4; ++i)
-    {
-        const Stage15ConceptDescriptor first = ResolveConcept(concepts[i]);
-        const Stage15ConceptDescriptor second = ResolveConcept(concepts[i]);
-        const WeatherMapData firstMap = BuildWeatherMap(
-            first.weatherPreset, first.weather);
-        const WeatherMapData secondMap = BuildWeatherMap(
-            second.weatherPreset, second.weather);
-        const std::uint64_t hash = HashWeatherMap(firstMap);
-        if (hash == 0u || hash != HashWeatherMap(secondMap) ||
-            (previousHash != 0u && hash == previousHash))
-            Fail("concept Weather maps must be deterministic and distinct");
-        previousHash = hash;
-        const double occupancy = WeatherOccupancy(firstMap);
-        std::printf("[STAGE15][WEATHER] %s occupancy=%.5f hash=%llu\n",
-                    ConceptName(concepts[i]), occupancy,
-                    static_cast<unsigned long long>(hash));
-        occupancyPassed &= occupancy >= minimumOccupancy[i] &&
-                           occupancy <= maximumOccupancy[i];
-    }
-    if (!occupancyPassed)
-        Fail("concept Weather R occupancy is outside its target range");
-
-    const Stage15ConceptDescriptor urban = ResolveConcept(
-        Stage15ConceptPreset::UrbanFairWeather);
-    const Stage15ConceptDescriptor desert = ResolveConcept(
-        Stage15ConceptPreset::DesertCirrus);
-    const Stage15ConceptDescriptor snow = ResolveConcept(
-        Stage15ConceptPreset::SnowOvercast);
-    const Stage15ConceptDescriptor meadow = ResolveConcept(
-        Stage15ConceptPreset::MeadowBrokenClouds);
-    if (!Near(urban.domain.cloudBottomAltitude, 1800.0f) ||
-        !Near(urban.domain.cloudLayerThickness, 3700.0f) ||
-        !Near(urban.shape.cumulusMinimumThicknessMeters, 2000.0f) ||
-        !Near(urban.shape.cumulusMaximumThicknessMeters, 3200.0f) ||
-        !Near(urban.shape.localBaseLiftMaxMeters, 300.0f) ||
-        !Near(urban.shape.footprintCoverageInfluence, 0.50f) ||
-        !Near(urban.domain.cloudLightingReferenceAltitudeMeters, 3400.0f) ||
-        !Near(urban.environment.physicalSkyFillScale, 0.85f) ||
-        !Near(urban.environment.physicalGroundFillScale, 0.85f) ||
-        urban.rim.enabled != 1u || !Near(urban.rim.widthPixels, 1.5f) ||
-        !Near(urban.rim.intensity, 0.45f) ||
-        urban.ground.preset != GroundMaterialPreset::Concrete ||
-        !Near(urban.ground.bounceMultiplier, 1.0f))
-        Fail("Urban concept mapping is incorrect");
-    if (desert.shape.shapeMode != static_cast<std::uint32_t>(
-            CloudShapeMode::CirrusPhysicalLayer) ||
-        !Near(desert.domain.maxViewTraceDistance, 60000.0f) ||
-        !Near(desert.domain.viewTraceFadeStartDistance, 50000.0f) ||
-        !Near(desert.shape.localBaseLiftMaxMeters, 0.0f) ||
-        !Near(desert.shape.footprintCoverageInfluence, 0.0f) ||
-        !Near(desert.environment.physicalSkyFillScale, 1.0f) ||
-        !Near(desert.environment.physicalGroundFillScale, 1.0f) ||
-        desert.rim.enabled != 0u ||
-        desert.atmosphere.preset != AtmospherePreset::EarthHazy ||
-        desert.ground.preset != GroundMaterialPreset::Desert ||
-        !Near(desert.ground.bounceMultiplier, 0.5f))
-        Fail("Desert Cirrus must preserve the 60 km far-plane contract");
-    if (!Near(meadow.shape.stratusMinimumThicknessMeters, 1500.0f) ||
-        !Near(meadow.shape.stratusMaximumThicknessMeters, 2500.0f) ||
-        !Near(meadow.shape.cumulusMinimumThicknessMeters, 3000.0f) ||
-        !Near(meadow.shape.cumulusMaximumThicknessMeters, 4600.0f) ||
-        !Near(meadow.shape.localBaseLiftMaxMeters, 200.0f) ||
-        !Near(meadow.shape.footprintCoverageInfluence, 0.40f) ||
-        !Near(meadow.environment.physicalSkyFillScale, 0.95f) ||
-        !Near(meadow.environment.physicalGroundFillScale, 0.95f) ||
-        meadow.rim.enabled != 1u ||
-        !Near(meadow.rim.widthPixels, 1.25f) ||
-        !Near(meadow.rim.intensity, 0.30f))
-        Fail("Meadow local shape contract is incorrect");
-    if (snow.ground.preset != GroundMaterialPreset::Snow ||
-        !Near(snow.shape.stratusMinimumThicknessMeters, 1500.0f) ||
-        !Near(snow.shape.stratusMaximumThicknessMeters, 2300.0f) ||
-        !Near(snow.shape.localBaseLiftMaxMeters, 0.0f) ||
-        !Near(snow.shape.footprintCoverageInfluence, 0.20f) ||
-        !Near(snow.environment.physicalSkyFillScale, 1.10f) ||
-        !Near(snow.environment.physicalGroundFillScale, 1.10f) ||
-        snow.rim.enabled != 0u ||
-        !Near(snow.ground.bounceMultiplier, 1.5f))
-        Fail("Snow ground bounce mapping is incorrect");
-
-    for (const Stage15ConceptPreset concept : concepts)
-    {
-        const Stage15ConceptDescriptor descriptor = ResolveConcept(concept);
-        CloudFormationConcept formationConcept =
-            CloudFormationConcept::UrbanFairWeather;
-        switch (concept)
-        {
-        case Stage15ConceptPreset::MeadowBrokenClouds:
-            formationConcept = CloudFormationConcept::MeadowBrokenClouds;
-            break;
-        case Stage15ConceptPreset::DesertCirrus:
-            formationConcept = CloudFormationConcept::DesertCirrus;
-            break;
-        case Stage15ConceptPreset::SnowOvercast:
-            formationConcept = CloudFormationConcept::SnowOvercast;
-            break;
-        case Stage15ConceptPreset::UrbanFairWeather:
-        case Stage15ConceptPreset::Custom:
-        default:
-            break;
-        }
-        CloudFormationSettings canonicalFormation;
-        if (!ResolveBuiltInCloudFormation(
-                formationConcept, canonicalFormation) ||
-            !CloudFormationSettingsEqual(
-                descriptor.formation, canonicalFormation))
-        {
-            Fail("F4 descriptor must project the canonical formation resolver");
-        }
-        if (descriptor.appearance.cloudTypeMode !=
-            descriptor.weather.cloudTypeMode)
-            Fail("Stage 15 appearance/weather type preflight must agree");
-        if (!cloudshapedomain::EvaluateFit(
-                descriptor.shape, descriptor.weather.cloudTypeMode,
-                descriptor.domain, 200.0f).valid)
-            Fail("Stage 15 local shape must retain 200 m domain headroom");
+        const auto concept = static_cast<Stage15ConceptPreset>(index);
+        const Stage15SceneDescriptor descriptor =
+            stage15::ResolveSceneConcept(concept);
+        Require(IsValidCloudFormationSettings(descriptor.formation),
+                "scene concept formation is valid");
+        Require(descriptor.surfaceShadowEnabled == 1u,
+                "scene concept keeps physical atmosphere and Deep Cache");
+        RequireFit(descriptor.formation, 200.0f);
     }
 
-    LightParameters conceptLightA = urban.light;
-    LightParameters conceptLightB = conceptLightA;
-    conceptLightB.maxLightSteps += 1u;
-    conceptLightB.lightStepSize *= 0.5f;
-    conceptLightB.lightRayBias *= 2.0f;
-    if (!ConceptLightEqual(conceptLightA, conceptLightB))
-        Fail("quality/developer light sampling must not change Concept ownership");
-    conceptLightB = conceptLightA;
-    conceptLightB.sunColor.x *= 0.5f;
-    if (ConceptLightEqual(conceptLightA, conceptLightB))
-        Fail("Sun Tint edits must make Concept Custom");
-    conceptLightB = conceptLightA;
-    conceptLightB.phaseBlend *= 0.5f;
-    if (ConceptLightEqual(conceptLightA, conceptLightB))
-        Fail("phase appearance edits must make Concept Custom");
-    Stage12ShadowParameters conceptShadowA;
-    Stage12ShadowParameters conceptShadowB = conceptShadowA;
-    conceptShadowB.shadowPreset = static_cast<std::uint32_t>(
-        Stage12ShadowPreset::Fast256);
-    if (!ConceptShadowEqual(conceptShadowA, conceptShadowB))
-        Fail("quality-owned Shadow preset must not change Concept ownership");
-    conceptShadowB = conceptShadowA;
-    conceptShadowB.surfaceShadowStrength = 0.25f;
-    if (ConceptShadowEqual(conceptShadowA, conceptShadowB))
-        Fail("surface shadow appearance edits must make Concept Custom");
-    conceptShadowB = conceptShadowA;
-    conceptShadowB.surfaceShadowEnabled = 0u;
-    if (ConceptShadowEqual(conceptShadowA, conceptShadowB))
-        Fail("surface shadow enable edits must make Concept Custom");
-    conceptShadowB = conceptShadowA;
-    conceptShadowB.surfaceAmbientFloor = 0.5f;
-    if (ConceptShadowEqual(conceptShadowA, conceptShadowB))
-        Fail("surface shadow ambient floor edits must make Concept Custom");
-
-    Stage15ResolvedSettings ownership = Resolve(
-        Stage15QualityPreset::Low,
-        Stage15ConceptPreset::MeadowBrokenClouds,
-        Stage15DiagnosticMode::None);
-    const std::uint64_t meadowHash = HashWeatherMap(BuildWeatherMap(
-        ownership.concept.weatherPreset, ownership.concept.weather));
-    ownership.quality = ResolveRealtimeQuality(Stage15QualityPreset::High);
-    if (HashWeatherMap(BuildWeatherMap(
-            ownership.concept.weatherPreset, ownership.concept.weather)) != meadowHash ||
-        ownership.concept.ground.preset != GroundMaterialPreset::Grass)
-        Fail("quality resolution must not mutate concept-owned appearance");
-
-    if (sizeof(CloudShapeParameters) != 112u ||
-        offsetof(CloudShapeParameters, localBaseLiftMaxMeters) != 56u ||
-        offsetof(CloudShapeParameters, footprintCoverageInfluence) != 60u ||
-        offsetof(CloudShapeParameters, cirrusFlowDirectionXZ) != 64u ||
-        offsetof(CloudShapeParameters, cirrusMinimumThicknessMeters) != 96u)
-        Fail("CloudShapeCB b7 ABI must be 112 bytes with an appended Cirrus block");
-    if (sizeof(CloudRimParameters) != 48u ||
-        offsetof(CloudRimParameters, enabled) != 0u ||
-        offsetof(CloudRimParameters, cloudDepthRejectionThreshold) != 28u ||
-        offsetof(CloudRimParameters, tint) != 32u ||
-        offsetof(CloudRimParameters, radianceClamp) != 44u ||
-        cloudrim::kConstantBufferSlot != 10u)
-        Fail("CloudRimCB must remain 48 bytes on the composite-only b10 slot");
-    CloudRimParameters invalidRim;
-    invalidRim.enabled = 7u;
-    invalidRim.widthPixels = INFINITY;
-    invalidRim.intensity = -1.0f;
-    invalidRim.opacityThreshold = NAN;
-    invalidRim.opacitySoftness = 0.0f;
-    invalidRim.sunAlignment = 2.0f;
-    invalidRim.sunPower = INFINITY;
-    invalidRim.cloudDepthRejectionThreshold = -1.0f;
-    invalidRim.tint = { NAN, -1.0f, INFINITY };
-    invalidRim.radianceClamp = 1000.0f;
-    const CloudRimParameters safeRim = cloudrim::Sanitize(invalidRim);
-    if (safeRim.enabled != 1u || !Near(safeRim.widthPixels, 1.5f) ||
-        !Near(safeRim.intensity, 0.0f) ||
-        !Near(safeRim.opacityThreshold, 0.10f) ||
-        !Near(safeRim.opacitySoftness, 0.001f) ||
-        !Near(safeRim.sunAlignment, 0.99f) ||
-        !Near(safeRim.sunPower, 2.0f) ||
-        !Near(safeRim.cloudDepthRejectionThreshold, 0.0f) ||
-        !Near(safeRim.tint.x, 1.0f) || !Near(safeRim.tint.y, 0.0f) ||
-        !Near(safeRim.tint.z, 0.85f) ||
-        !Near(safeRim.radianceClamp, 64.0f))
-        Fail("CloudRim sanitize must keep every field finite and bounded");
-
-    CloudShapeParameters invalid;
-    invalid.shapeMode = static_cast<std::uint32_t>(
-        CloudShapeMode::CirrusPhysicalLayer);
-    invalid.cirrusFlowDirectionXZ = { NAN, INFINITY };
-    invalid.cirrusBaseAlongScaleMeters = NAN;
-    invalid.cirrusMinimumThicknessMeters = -100.0f;
-    invalid.cirrusMaximumThicknessMeters = INFINITY;
-    invalid.cirrusVerticalProfileCenter = NAN;
-    invalid.cirrusVerticalProfileHalfWidth = -1.0f;
-    const CloudShapeParameters safe = SanitizeCloudShapeParameters(invalid);
-    const stage15cirrus::Basis basis = stage15cirrus::DirectionBasis(safe);
-    const float dot = basis.along.x * basis.across.x +
-                      basis.along.y * basis.across.y;
-    if (!std::isfinite(safe.cirrusBaseAlongScaleMeters) ||
-        safe.cirrusMaximumThicknessMeters < safe.cirrusMinimumThicknessMeters ||
-        !Near(dot, 0.0f, 1.0e-5f))
-        Fail("Cirrus sanitize and directional basis must remain finite");
-
-    const DirectX::XMFLOAT3 world = { 12345.0f, 8750.0f, -6789.0f };
-    const DirectX::XMFLOAT3 uvwA = stage15cirrus::DirectionalUvw(
-        world, desert.shape, false);
-    const DirectX::XMFLOAT3 uvwB = stage15cirrus::DirectionalUvw(
-        world, desert.shape, false);
-    if (!Near(uvwA.x, uvwB.x) || !Near(uvwA.y, uvwB.y) ||
-        !Near(uvwA.z, uvwB.z))
-        Fail("Cirrus coordinates must be world anchored and camera independent");
-    const float localThickness = stage15cirrus::LocalThickness(
-        0.5f, desert.shape);
-    const float centerY = desert.domain.cloudBottomAltitude +
-        desert.domain.cloudLayerThickness *
-            desert.shape.cirrusVerticalProfileCenter;
-    const float centerHeight = stage15cirrus::LocalHeightFraction(
-        centerY, desert.domain.cloudBottomAltitude,
-        desert.domain.cloudBottomAltitude + desert.domain.cloudLayerThickness,
-        localThickness, desert.shape);
-    if (!Near(centerHeight, 0.5f) ||
-        stage15cirrus::VerticalProfile(centerHeight, desert.shape) <= 0.99f ||
-        stage15cirrus::VerticalProfile(-0.01f, desert.shape) != 0.0f ||
-        stage15cirrus::VerticalProfile(1.01f, desert.shape) != 0.0f)
-        Fail("Cirrus profile must peak in the local layer and be zero outside");
-
-    std::puts("Stage15PresetMath passed");
+    std::cout << "Stage15 preset math passed\n";
     return 0;
 }

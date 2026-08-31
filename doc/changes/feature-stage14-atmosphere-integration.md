@@ -1,5 +1,7 @@
 # feature/stage14-atmosphere-integration
 
+> 현재 상태(2026-09-01): 물리 LUT/HDR/Tone 경로는 유지한다. Stage14CB는 현재 b9이며 구름은 별도 Resolve/Temporal/Composite 없이 Full-resolution Cloud PS에서 직접 합성한다.
+
 ## 목적
 
 Rayleigh·Mie·오존 기반 대기 LUT를 추가하고 하늘, 태양, 구름 직접/환경광, 지면·건물,

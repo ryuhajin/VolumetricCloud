@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudFormationSettings.h - Stage 15B 공통 구름 형성 CPU 계약
+//  CloudFormationSettings.h - 최종 High 공통 구름 형성 CPU 계약
 // ----------------------------------------------------------------------------
 //  F1 타입과 F4 콘셉트가 같은 Weather/Shape/Domain 경로를 사용하도록, 화면의
 //  구름 형성에 관여하는 값만 한 snapshot으로 묶는다. 품질/조명/시간/offset과
@@ -85,7 +85,7 @@ CloudFormationSettings CaptureCloudFormationSettingsUnchecked(
     const NoiseVolumeParameters& noise);
 
 // 이미 Prepare를 통과한 값을 현재 CPU 상태의 formation 소유 필드에만 쓴다.
-// ray step, offset, texture seed/resolution, 조명과 Temporal 값은 보존한다.
+// ray step, offset, texture seed/resolution과 조명 값은 보존한다.
 void WriteCloudFormationToRuntime(
     const PreparedCloudFormation& formation,
     CloudParameters& cloud,
