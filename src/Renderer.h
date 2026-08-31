@@ -242,6 +242,10 @@ public:
     {
         m_renderNoiseLabPreviews = enabled;
     }
+    bool ValidateNoiseLabUiContracts() const
+    {
+        return m_noiseLab.ValidateUiContracts();
+    }
     bool ValidateNoiseLabPreviews();
     bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
     std::uint64_t NoiseLabPreviewHash(std::size_t targetIndex);

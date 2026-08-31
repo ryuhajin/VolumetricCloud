@@ -249,7 +249,8 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
     renderer.EnableNoiseLabPreviews(true);
     float timeSeconds = 59.0f;
     RenderFrames(renderer, camera, 2u, timeSeconds);
-    bool passed = renderer.ValidateNoiseLabPreviews() &&
+    bool passed = renderer.ValidateNoiseLabUiContracts() &&
+        renderer.ValidateNoiseLabPreviews() &&
         renderer.NoiseLabPreviewHash(0) != 0u &&
         renderer.NoiseLabPreviewHash(1) != 0u &&
         renderer.NoiseLabPreviewHash(2) != 0u;

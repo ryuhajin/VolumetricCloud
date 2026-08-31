@@ -177,6 +177,7 @@ public:
     {
         m_parameters.outputMode = static_cast<std::uint32_t>(mode);
     }
+    bool ValidateUiContracts() const;
     bool ValidatePreviewData();
     std::uint64_t PreviewHash(std::size_t targetIndex);
     bool ExportSnapshot(
@@ -254,12 +255,12 @@ private:
         Stage15ConceptPreset concept,
         float& cameraMoveSpeedMetersPerSecond,
         const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
-        const FrameTimingSnapshot& timing,
         bool& vsyncEnabled,
         std::uint64_t shaderGeneration,
         const std::string& shaderStatus,
         const std::string& shaderError,
         const shaderreload::ReloadReport& reloadReport);
+    void DrawProfilerOverlay(const FrameTimingSnapshot& timing);
     void DrawSlice(const char* label, NoiseSliceAxis axis,
                    SliceTarget& target);
     bool DrawPeriodicChannelFields(const char* label,

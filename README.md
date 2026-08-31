@@ -71,14 +71,19 @@ cmake --build build --config Release
 | 마우스 왼쪽 드래그 | 카메라 회전 |
 | `W/A/S/D`, 마우스 휠 | 카메라 이동 |
 | `Shift` | 빠른 이동 |
-| `F1` | Stratus/Cumulus/Mixed와 formation, Custom 저장·로드 |
-| `F2` | Base/Detail Texture3D와 Weather 제작 |
+| `F1` | Stratus/Cumulus/Mixed/Custom과 formation, Custom 저장 |
+| `F2` | Weather RGBA, Cloud Type 소스 상태와 Base/Detail Texture3D 제작 |
 | `F3` | 태양, 환경광, 대기, 지면, Tone, Deep Cache |
-| `F4` | 세 콘셉트, 핵심 진단, GPU profiler, reload report |
+| `F4` | 세 콘셉트, 핵심 진단, reload report |
 | `F5`~`F8` | 고정 검증 카메라 |
 | `0`~`9` | 자주 쓰는 구름 진단 view |
 
 기본 실행 상태는 `Urban Fair Weather + High`입니다.
+
+F1~F4는 창의 X 버튼으로 닫은 뒤 같은 기능 키로 다시 열 수 있습니다. 성능 창은
+좌측 상단에 독립적으로 표시하며 FPS, cloud time, CPU/GPU frame과 다섯 GPU 구간을
+보여 줍니다. F2의 Cloud Type 제작 슬라이더는 F1 Mixed의 `Weather Map G` 소스일 때만 활성화되고,
+바람 속도는 Weather/Base/Detail을 함께 이동시키는 공통 world-space advection 값입니다.
 
 ## 프리셋 소유권
 

@@ -369,15 +369,17 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     const bool sceneKeyboardBlocked = m_renderer &&
         m_renderer->DeveloperUiWantsKeyboard();
-    // F1~F4는 독립 개발 UI 창이다. F1은 NoiseLab 메시지 경로가 처리하고,
-    // F2~F4는 기존 Weather 프리셋 키 대신 Weather/Lighting/Camera 창을 토글한다.
+    const int developerPanel = stage13scene::DeveloperUiPanelFromVirtualKey(
+        static_cast<std::uint32_t>(wParam));
+    // F1~F4는 ImGui가 키 메시지를 소비하기 전에 여기서 일관되게 토글한다.
+    // 창의 X 버튼으로 닫은 뒤에도 같은 기능 키로 다시 열 수 있어야 한다.
     if (msg == WM_KEYDOWN && m_renderer && !sceneKeyboardBlocked &&
-        wParam >= VK_F2 && wParam <= VK_F4)
+        developerPanel >= 0)
     {
         if ((lParam & (1ll << 30)) == 0)
         {
             m_renderer->ToggleDeveloperUiPanel(static_cast<DeveloperUiPanel>(
-                static_cast<std::size_t>(wParam - VK_F1)));
+                static_cast<std::size_t>(developerPanel)));
         }
         return 0;
     }

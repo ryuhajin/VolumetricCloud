@@ -230,6 +230,15 @@ int main()
     globalStratusSettings.cloudTypeMode = CloudTypeMode::Stratus;
     const WeatherMapData perlinStratus = BuildWeatherMap(
         Stage5WeatherPreset::PeriodicPerlin, globalStratusSettings);
+    WeatherMapGeneratorSettings changedFixedStratus = globalStratusSettings;
+    ++changedFixedStratus.cloudType.seed;
+    if (HashWeatherMap(BuildWeatherMap(
+            Stage5WeatherPreset::PeriodicPerlin, changedFixedStratus)) !=
+        HashWeatherMap(perlinStratus))
+    {
+        return Fail(
+            "fixed Cloud Type source must ignore disabled G generator fields");
+    }
     for (std::uint32_t y = 0; y < perlinA.height; ++y)
         for (std::uint32_t x = 0; x < perlinA.width; ++x)
         {

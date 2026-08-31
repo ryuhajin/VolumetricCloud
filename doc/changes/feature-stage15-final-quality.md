@@ -107,3 +107,22 @@ Stratus/Cumulus/Mixed의 coverage, density, extinction, detail, Weather threshol
   `8.888/9.788ms`로 12 case 각각의 gate도 통과
 - 삭제 대상 심볼과 삭제 파일의 `src/shaders/tests/CMake` 참조 0건
 - 사용자 Release 화면 검증 및 최종 승인은 미완료
+
+## 2026-09-01 사용자 검증 UI 보완
+
+- F1이 ImGui 메시지 뒤로 빠져 X로 닫은 창을 다시 열지 못하던 입력 순서를 고쳤다.
+  F1~F4를 공통 전역 함수키 매핑으로 처리하고 CPU 회귀를 추가했다.
+- F1 상단에 저장된 formation을 불러오는 `Custom` 버튼을 복원하고 Preview field를
+  slider에서 combo 목록으로 바꿨다.
+- F2 Weather Map RGBA를 Weather Generator 최상단으로 옮겼다. F1이 소유한 현재
+  Cloud Type 소스를 표시하며 고정 타입에서는 무효인 G 제작 slider를 비활성화한다.
+- 기존 Wind speed는 실제 Weather/Base/Detail 공통 advection임을 확인해 이름과
+  설명을 바꿨다. 별도 Weather speed나 독립 offset 시스템은 추가하지 않았다.
+- GPU profiler를 F4에서 분리해 좌측 상단 Performance 창으로 옮겼고 FPS, cloud time,
+  CPU/GPU frame과 Atmosphere/Shadow/Opaque/Cloud/Tone 시간을 표시한다.
+- `CloudDepth`의 누락된 표시 이름 때문에 두 번째 `Composite`가 생긴 문제를 고쳤다.
+  `Optical Depth`/`Cloud Depth`를 구분하고 각 selectable에 enum ID를 부여했다.
+- UI 보완 후 Debug/Release 빌드, Debug CPU `25/25`, Release 전체 CTest
+  `33/33`을 통과했다. NoiseLab smoke는 Cloud view와 Preview label 중복을 하드
+  게이트로 검사한다.
+- 사용자 화면 재검증과 최종 승인은 아직 미완료다.

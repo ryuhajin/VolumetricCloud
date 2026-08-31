@@ -30,7 +30,7 @@ Cloud PS는 구름 scattering과 transmittance를 적분한 뒤 같은 픽셀에
 | `main.cpp` | 일반 실행과 formation/대기/핫 리로드/성능 GPU smoke 진입점 |
 | `Window`, `Camera` | Win32 입력, resize, FPS 카메라와 F5~F8 고정 시점 |
 | `Renderer` | D3D11 자원, 프레임 순서, formation 원자 적용, 셰이더 세대 교체 |
-| `NoiseLab` | F1~F4 UI, Texture3D/Weather preview, schema 39 snapshot |
+| `NoiseLab` | 재개방 가능한 F1~F4 UI, 독립 profiler, Texture3D/Weather preview, schema 39 snapshot |
 | `CloudFormationSettings` | formation 소유 필드의 strict 검증, domain-fit 준비와 런타임 변환 |
 | `CloudFormationPresetStore` | 여섯 내장 formation과 Custom schema 1 원자 저장 |
 | `ShaderManifest` | 프로그램별 source/entry/target/defines/object/dependency/invalidation |
@@ -56,6 +56,12 @@ Cloud PS는 구름 scattering과 transmittance를 적분한 뒤 같은 픽셀에
 ### Cloud type
 
 `ApplyCloudType`은 formation만 바꾼다. 태양·대기·지면·Tone·카메라는 건드리지 않는다.
+
+F2의 Weather G 생성기는 `CloudTypeMode::WeatherMap`에서만 실제 G를 소유한다.
+Stratus/Mixed/Cumulus 고정 소스는 생성된 G를 각각 0/0.5/1로 덮어쓰므로 UI가 해당
+채널 편집을 비활성화한다. 이 구분 덕분에 움직였지만 렌더링에는 반영되지 않는
+슬라이더 상태가 없다. 공통 wind는 Weather/Base/Detail의 sample position에서 같은
+`direction × speed × time`을 빼며 별도 Weather 속도는 존재하지 않는다.
 
 | 타입 | 두께 | Base lift | Footprint | Planar domain |
 |---|---:|---:|---:|---:|
@@ -153,6 +159,10 @@ F4 reload report는 성공 여부, 변경 파일, 영향 프로그램 수, compi
 
 ## 프로파일과 진단
 
-GPU timestamp는 `Atmosphere / Shadow / Opaque / Cloud / Tone / Frame`만 기록한다. F4에는 density, transmittance, cloud depth, Near/Far cache, cascade, surface transmittance와 Atmosphere LUT 진단만 노출한다.
+GPU timestamp는 `Atmosphere / Shadow / Opaque / Cloud / Tone / Frame`만 기록한다.
+좌측 상단의 독립 `Performance` 창은 FPS, cloud time, CPU/GPU frame과 다섯 GPU 구간을
+항상 표시한다. F4에는 density, transmittance, optical/cloud depth, Near/Far cache,
+cascade, surface transmittance와 Atmosphere LUT 진단만 노출한다. 각 combo 항목은
+enum ID를 ImGui ID stack에 넣으며 `Optical Depth`와 `Cloud Depth`는 서로 다른 이름을 쓴다.
 
 셰이더 오류 시 자홍색 화면으로 진행하지 않고 마지막 성공 세대가 계속 렌더링된다. D3D11 debug smoke는 error/corruption뿐 아니라 SRV/RTV/UAV hazard warning도 실패로 처리한다.

@@ -48,6 +48,11 @@ int main()
     }
     for (std::uint32_t key = 0x70u; key <= 0x77u; ++key)
         Require(IsPortfolioGlobalKey(key), "F1-F8 must remain handled");
+    Require(DeveloperUiPanelFromVirtualKey(0x70u) == 0 &&
+            DeveloperUiPanelFromVirtualKey(0x71u) == 1 &&
+            DeveloperUiPanelFromVirtualKey(0x73u) == 3 &&
+            DeveloperUiPanelFromVirtualKey(0x74u) == -1,
+            "F1-F4 must map to all four reopenable developer panels");
     for (std::uint32_t key = 0x78u; key <= 0x7bu; ++key)
         Require(!IsPortfolioGlobalKey(key), "F9-F12 must remain unhandled");
     Require(DebugModeFromDigit(0) == CloudDebugMode::Composite &&

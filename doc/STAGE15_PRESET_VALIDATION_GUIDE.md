@@ -16,17 +16,26 @@ cmake --build build --config Release
 | 조작 | 위치 | 바뀌는 값 | 검증 목적 | 정상 결과 | 실패 징후 |
 |---|---|---|---|---|---|
 | Urban / Meadow / Snow | `F4` 상단 | formation + 태양·환경광·대기·지면 | 세 최종 scene transaction | 한 번에 한 장면으로 전환 | 이전 장면 색/구름이 섞임, 검정 frame |
-| Stratus / Cumulus / Mixed | `F1` 상단 | formation만 | 타입 높이와 profile | 조명·대기·지면은 그대로 | F3 값도 바뀜, 상하단 칼 절단 |
-| Save/Load Custom | `F1` | 현재 formation만 | schema 1 범위 | coverage/shape/Weather/wind만 복원 | 카메라·태양·Tone까지 복원 |
+| Stratus / Cumulus / Mixed / Custom | `F1` 상단 | formation만 | 타입 높이와 profile, Custom 복원 | 조명·대기·지면은 그대로 | F3 값도 바뀜, 상하단 칼 절단 |
+| Save Custom | `F1` | 현재 formation만 | schema 1 범위 | 저장 뒤 Custom 버튼 활성 | 파일 손상, Custom 비활성 |
+| Preview field | `F1 > Preview` combo | 세 preview의 출력 field | 진단 선택성과 ID | 목록에서 즉시 선택 | slider로 한 칸씩 이동, ID 경고 |
+| Weather Map RGBA | `F2 > Weather Generator` 최상단 | CPU 생성 R/G/B/A | 실제 texture와 채널 확인 | 편집 직후 image/hash 변경 | image가 하단에 묻힘, 이전 map 유지 |
+| Cloud type source/G | 같은 영역 | F1이 정한 고정 타입 또는 생성 G | G 채널 소유권 | F1 Mixed/Weather Map G에서만 G 편집 활성 | 고정 모드인데 무효 slider 활성 |
+| Cloud advection speed | `F2` | Weather/Base/Detail 공통 이동 m/s | 동일한 world-space 이동 | 세 구조가 함께 같은 방향으로 이동 | Weather만 미끄러짐, 별도 noise speed처럼 동작 |
 | `F5`~`F8` | 키보드 | 고정 카메라 | 위/내부/수평/원경 교차 | 즉시 안정된 현재 frame | 과거 시점 잔상, 검정/타일 |
 | Density | `F4 > Cloud view` | 최종 density | NaN과 domain 절단 | 덩어리 내부가 연속 | 사각 외곽, 자홍/노랑 오류색 |
 | Transmittance | 같은 combo | View T | 적분과 early exit | 빈 하늘 1, 두꺼운 구름은 낮음 | 화면 전체 0/1, 불연속 띠 |
 | Cloud Depth | 같은 combo | opacity-weighted 거리 | scene/domain 교차 | 구름 거리 변화가 연속 | 건물 뒤 구름, 고정 거리 판 |
 | Near/Far Cache | 같은 combo | cache optical depth | Deep Cache 생성/lookup | 구조가 연속, cascade 전환 완만 | 빈 cache, 타일, 경계 seam |
 | Atmosphere LUT | `F4 > Atmosphere view` | LUT/air 결과 | Stage 14 유지 | 유한·연속적인 LUT | 자홍/빨강/노랑 오류색 |
-| GPU profiler | `F4` 하단 | 6개 GPU 시간 | 삭제 경로 확인 | Atmosphere/Shadow/Opaque/Cloud/Tone/Frame | Resolve/Temporal/Composite 항목 존재 |
+| Performance profiler | 화면 좌측 상단 독립 창 | FPS, Time, CPU/GPU와 GPU 구간 | 삭제 경로·frame 비용 확인 | F1~F4와 무관하게 계속 표시 | F4를 닫으면 사라짐, 폐기 항목 존재 |
 
 F5~F8의 정확한 이름은 F4 카메라 표시에서 확인한다. 각 카메라는 카메라가 layer 아래, 지평선 쪽, layer 내부, layer 위에 있는 경우를 포함한다.
+
+F1 창의 X를 누른 뒤 F1을 다시 눌러 같은 창이 열리는지 먼저 확인한다. F2~F4도
+같은 규칙이다. F4의 Cloud view 목록에는 `Composite`, `Density`, `Transmittance`,
+`Optical Depth`, `Cloud Depth` 등이 각각 한 번만 나타나야 하며 Dear ImGui ID 경고가
+나오면 실패다.
 
 ## 1. 세 콘셉트 × 네 카메라
 
@@ -62,7 +71,7 @@ F5~F8의 정확한 이름은 F4 카메라 표시에서 확인한다. 각 카메�
 
 ## 3. 이동과 shimmer
 
-layer 내부 카메라에서 `W/A/S/D`로 이동하고 F2 Wind speed를 확인한다.
+layer 내부 카메라에서 `W/A/S/D`로 이동하고 F2 `Cloud advection speed`를 확인한다.
 
 - 과거 frame 잔상과 가장자리 끌림은 없어야 한다.
 - Temporal 제거로 생길 수 있는 단일-frame shimmer는 사용자가 허용 가능한지 직접 판단한다.
@@ -86,7 +95,7 @@ Urban의 태양이 보이는 시점에서 시작한다.
 2. Coverage, 두께 또는 Weather threshold를 눈에 띄게 바꾼다.
 3. `Save Custom`을 누른다.
 4. F4에서 Snow를 적용해 조명·대기·지면도 바꾼다.
-5. F1에서 `Load Custom`을 누른다.
+5. F1 상단에서 `Custom`을 누른다.
 
 정상 결과:
 
@@ -103,7 +112,7 @@ Urban의 태양이 보이는 시점에서 시작한다.
 
 ## 6. 성능과 제거 확인
 
-F4 profiler에는 다음 여섯 항목만 있어야 한다.
+좌측 상단 Performance 창의 GPU 구간에는 다음 항목만 있어야 한다.
 
 ```text
 Atmosphere / Shadow / Opaque / Cloud / Tone / Frame
@@ -122,4 +131,7 @@ Release 1920×1080 자동 gate 목표는 Cloud p95 10ms 이하, Frame p95 16.67m
 - [ ] 이동·바람에서 ghost 없음, shimmer 허용 가능
 - [ ] 주 산란·Deep Cache 그림자·대기 원근·Tone 유지
 - [ ] Custom Load가 formation만 복원
+- [ ] F1 X 닫기 뒤 F1로 재개방, Preview combo 선택 정상
+- [ ] F2 RGBA 최상단·Cloud Type G 소스·공통 advection 동작 정상
+- [ ] 좌측 상단 Performance 창과 F4 Cloud view ID 경고 없음
 - [ ] 사용자가 최종 승인

@@ -68,13 +68,38 @@ const char* DebugName(CloudDebugMode mode)
     case CloudDebugMode::Composite: return "Composite";
     case CloudDebugMode::FinalDensity: return "Density";
     case CloudDebugMode::Transmittance: return "Transmittance";
-    case CloudDebugMode::ViewOpticalDepth: return "Cloud Depth";
+    case CloudDebugMode::ViewOpticalDepth: return "Optical Depth";
+    case CloudDebugMode::CloudDepth: return "Cloud Depth";
     case CloudDebugMode::Stage12NearOpticalDepth: return "Near Cache";
     case CloudDebugMode::Stage12FarOpticalDepth: return "Far Cache";
     case CloudDebugMode::Stage12CascadeSelection: return "Cache Cascade";
     case CloudDebugMode::Stage12SurfaceTransmittance:
         return "Surface Transmittance";
-    default: return "Composite";
+    default: return "Unknown";
+    }
+}
+
+constexpr CloudDebugMode kCloudDiagnosticModes[] = {
+    CloudDebugMode::Composite,
+    CloudDebugMode::FinalDensity,
+    CloudDebugMode::Transmittance,
+    CloudDebugMode::ViewOpticalDepth,
+    CloudDebugMode::CloudDepth,
+    CloudDebugMode::Stage12NearOpticalDepth,
+    CloudDebugMode::Stage12FarOpticalDepth,
+    CloudDebugMode::Stage12CascadeSelection,
+    CloudDebugMode::Stage12SurfaceTransmittance,
+};
+
+const char* CloudTypeSourceName(CloudTypeMode mode)
+{
+    switch (mode)
+    {
+    case CloudTypeMode::Stratus: return "Fixed Stratus";
+    case CloudTypeMode::Mixed: return "Fixed Mixed";
+    case CloudTypeMode::Cumulus: return "Fixed Cumulus";
+    case CloudTypeMode::WeatherMap: return "Weather Map G";
+    default: return "Unknown";
     }
 }
 
@@ -353,9 +378,10 @@ void NoiseLab::BeginFrame(
     if (m_panelVisible[3])
         DrawDiagnosticsPanel(camera, cloud, atmosphere, concept,
                              cameraMoveSpeedMetersPerSecond,
-                             atmosphereLutSrvs, timing, vsyncEnabled,
+                             atmosphereLutSrvs, vsyncEnabled,
                              shaderGeneration, shaderStatus, shaderError,
                              reloadReport);
+    DrawProfilerOverlay(timing);
 }
 
 void NoiseLab::DrawFormationPanel(
@@ -395,19 +421,19 @@ void NoiseLab::DrawFormationPanel(
             m_formationPresetPending = true;
         }
     }
+    ImGui::SameLine();
+    if (!hasCustom)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Custom"))
+        m_loadCustomPending = true;
+    if (!hasCustom)
+        ImGui::EndDisabled();
     ImGui::Text("Active: %s (%s)",
                 CloudFormationPresetTargetName(target),
                 CloudFormationPresetSourceName(source));
     ImGui::TextWrapped("%s", status.c_str());
     if (ImGui::Button("Save Custom"))
         m_saveCustomPending = true;
-    ImGui::SameLine();
-    if (!hasCustom)
-        ImGui::BeginDisabled();
-    if (ImGui::Button("Load Custom"))
-        m_loadCustomPending = true;
-    if (!hasCustom)
-        ImGui::EndDisabled();
 
     ImGui::SeparatorText("Formation");
     bool edited = false;
@@ -450,9 +476,23 @@ void NoiseLab::DrawFormationPanel(
     ImGui::SeparatorText("Preview");
     const int maximumMode = static_cast<int>(NoiseOutputMode::LocalBaseOffset);
     int output = static_cast<int>(m_parameters.outputMode);
-    if (ImGui::SliderInt("Preview field", &output, 0, maximumMode,
-                         NoiseOutputName(static_cast<NoiseOutputMode>(output))))
-        m_parameters.outputMode = static_cast<std::uint32_t>(output);
+    if (ImGui::BeginCombo("Preview field", NoiseOutputName(
+            static_cast<NoiseOutputMode>(output))))
+    {
+        for (int modeIndex = 0; modeIndex <= maximumMode; ++modeIndex)
+        {
+            const NoiseOutputMode mode =
+                static_cast<NoiseOutputMode>(modeIndex);
+            const bool selected = modeIndex == output;
+            ImGui::PushID(modeIndex);
+            if (ImGui::Selectable(NoiseOutputName(mode), selected))
+                m_parameters.outputMode = static_cast<std::uint32_t>(mode);
+            ImGui::PopID();
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
     DrawSlice("XY", NoiseSliceAxis::XY, m_targets[0]);
     ImGui::SameLine();
     DrawSlice("XZ", NoiseSliceAxis::XZ, m_targets[1]);
@@ -523,11 +563,38 @@ void NoiseLab::DrawNoiseWeatherPanel(
     edited |= ImGui::SliderFloat3(
         "Wind direction", &cloud.windDirection.x, -1.0f, 1.0f, "%.3f");
     edited |= ImGui::SliderFloat(
-        "Wind speed", &cloud.windSpeed, 0.0f, 80.0f, "%.1f m/s");
+        "Cloud advection speed", &cloud.windSpeed,
+        0.0f, 80.0f, "%.1f m/s");
+    ImGui::TextWrapped(
+        "Weather, Base, and Detail move together. Speed changes the "
+        "world-space offset accumulated over time; it is not a separate "
+        "Weather noise parameter.");
 
     ImGui::SeparatorText("Weather Generator");
+    if (weatherMapSrv)
+    {
+        ImGui::TextUnformatted("Weather Map RGBA");
+        ImGui::Image(ImTextureRef(static_cast<ImTextureID>(
+            reinterpret_cast<std::uintptr_t>(weatherMapSrv))),
+            ImVec2(Ui(256.0f), Ui(256.0f)));
+    }
+    ImGui::Text("Cloud type source: %s",
+                CloudTypeSourceName(weather.cloudTypeMode));
     edited |= DrawPeriodicChannelFields("Coverage channel", weather.coverage);
-    edited |= DrawPeriodicChannelFields("Cloud type channel", weather.cloudType);
+    const bool generatedTypeEnabled =
+        weather.cloudTypeMode == CloudTypeMode::WeatherMap;
+    if (!generatedTypeEnabled)
+        ImGui::BeginDisabled();
+    edited |= DrawPeriodicChannelFields(
+        "Cloud type channel (G)", weather.cloudType);
+    if (!generatedTypeEnabled)
+        ImGui::EndDisabled();
+    if (!generatedTypeEnabled)
+    {
+        ImGui::TextDisabled(
+            "G is fixed by the active F1 type. Apply F1 Mixed to edit "
+            "the generated Weather Map G channel.");
+    }
     edited |= DrawPeriodicChannelFields("Density channel", weather.density);
     edited |= DrawPeriodicChannelFields(
         "Thickness channel", weather.localThickness);
@@ -535,13 +602,6 @@ void NoiseLab::DrawNoiseWeatherPanel(
         &weather.densityCoverageInfluence, 0.0f, 1.0f);
     edited |= ImGui::SliderFloat("Thickness coverage link",
         &weather.thicknessCoverageInfluence, 0.0f, 1.0f);
-    if (weatherMapSrv)
-    {
-        ImGui::TextUnformatted("Weather RGBA");
-        ImGui::Image(ImTextureRef(static_cast<ImTextureID>(
-            reinterpret_cast<std::uintptr_t>(weatherMapSrv))),
-            ImVec2(Ui(256.0f), Ui(256.0f)));
-    }
     if (edited)
         m_formationEdited = true;
     ImGui::End();
@@ -639,7 +699,6 @@ void NoiseLab::DrawDiagnosticsPanel(
     Stage15ConceptPreset concept,
     float& cameraMoveSpeedMetersPerSecond,
     const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
-    const FrameTimingSnapshot& timing,
     bool& vsyncEnabled,
     std::uint64_t shaderGeneration,
     const std::string& shaderStatus,
@@ -648,7 +707,7 @@ void NoiseLab::DrawDiagnosticsPanel(
 {
     ImGui::SetNextWindowSize(ImVec2(Ui(540.0f), Ui(760.0f)),
                              ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("F4 Concepts Diagnostics Profiler", &m_panelVisible[3]))
+    if (!ImGui::Begin("F4 Concepts Diagnostics", &m_panelVisible[3]))
     {
         ImGui::End();
         return;
@@ -668,26 +727,19 @@ void NoiseLab::DrawDiagnosticsPanel(
     ImGui::Text("Current concept: %s", stage15::ConceptName(concept));
 
     ImGui::SeparatorText("Cloud and Cache Diagnostics");
-    const CloudDebugMode cloudModes[] = {
-        CloudDebugMode::Composite,
-        CloudDebugMode::FinalDensity,
-        CloudDebugMode::Transmittance,
-        CloudDebugMode::ViewOpticalDepth,
-        CloudDebugMode::CloudDepth,
-        CloudDebugMode::Stage12NearOpticalDepth,
-        CloudDebugMode::Stage12FarOpticalDepth,
-        CloudDebugMode::Stage12CascadeSelection,
-        CloudDebugMode::Stage12SurfaceTransmittance,
-    };
     int currentCloudMode = cloud.debugMode;
     if (ImGui::BeginCombo("Cloud view", DebugName(
             static_cast<CloudDebugMode>(currentCloudMode))))
     {
-        for (CloudDebugMode mode : cloudModes)
+        for (CloudDebugMode mode : kCloudDiagnosticModes)
         {
             const bool selected = currentCloudMode == static_cast<int>(mode);
+            ImGui::PushID(static_cast<int>(mode));
             if (ImGui::Selectable(DebugName(mode), selected))
                 cloud.debugMode = static_cast<int>(mode);
+            ImGui::PopID();
+            if (selected)
+                ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
@@ -754,18 +806,7 @@ void NoiseLab::DrawDiagnosticsPanel(
     }
     ImGui::TextWrapped("%s", m_developerUiSettingsStatus.c_str());
 
-    ImGui::SeparatorText("GPU Profiler");
-    if (timing.gpuValid)
-    {
-        ImGui::Text("Frame       %7.3f ms", timing.gpuFrameMs);
-        ImGui::Text("Atmosphere  %7.3f ms", timing.gpuAtmosphereLutMs);
-        ImGui::Text("Shadow      %7.3f ms", timing.gpuShadowCacheMs);
-        ImGui::Text("Opaque      %7.3f ms", timing.gpuOpaqueSceneMs);
-        ImGui::Text("Cloud       %7.3f ms", timing.gpuCloudMs);
-        ImGui::Text("Tone        %7.3f ms", timing.gpuToneMapMs);
-    }
-    else
-        ImGui::TextUnformatted("GPU timing warming up");
+    ImGui::SeparatorText("Developer Runtime");
     ImGui::Text("Shader generation: %llu",
                 static_cast<unsigned long long>(shaderGeneration));
     ImGui::TextWrapped("%s", shaderStatus.c_str());
@@ -786,6 +827,74 @@ void NoiseLab::DrawDiagnosticsPanel(
         m_exportPending = true;
     if (!m_exportStatus.empty())
         ImGui::TextWrapped("%s", m_exportStatus.c_str());
+    ImGui::End();
+}
+
+bool NoiseLab::ValidateUiContracts() const
+{
+    for (std::size_t left = 0; left < std::size(kCloudDiagnosticModes); ++left)
+    {
+        if (std::strcmp(DebugName(kCloudDiagnosticModes[left]), "Unknown") == 0)
+            return false;
+        for (std::size_t right = left + 1;
+             right < std::size(kCloudDiagnosticModes); ++right)
+        {
+            if (std::strcmp(DebugName(kCloudDiagnosticModes[left]),
+                            DebugName(kCloudDiagnosticModes[right])) == 0)
+                return false;
+        }
+    }
+    const int maximumMode = static_cast<int>(NoiseOutputMode::LocalBaseOffset);
+    for (int left = 0; left <= maximumMode; ++left)
+    {
+        for (int right = left + 1; right <= maximumMode; ++right)
+        {
+            if (std::strcmp(NoiseOutputName(
+                    static_cast<NoiseOutputMode>(left)), NoiseOutputName(
+                    static_cast<NoiseOutputMode>(right))) == 0)
+                return false;
+        }
+    }
+    return true;
+}
+
+void NoiseLab::DrawProfilerOverlay(const FrameTimingSnapshot& timing)
+{
+    ImGui::SetNextWindowPos(ImVec2(Ui(10.0f), Ui(10.0f)), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.86f);
+    constexpr ImGuiWindowFlags flags =
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!ImGui::Begin("Performance##ProfilerOverlay", nullptr, flags))
+    {
+        ImGui::End();
+        return;
+    }
+    if (timing.cpuValid)
+    {
+        ImGui::Text("FPS       %7.1f", timing.fps);
+        ImGui::Text("CPU frame %7.3f ms", timing.cpuFrameMs);
+    }
+    else
+    {
+        ImGui::TextUnformatted("CPU timing warming up");
+    }
+    ImGui::Text("Time      %7.2f s", m_effectiveTime);
+    if (timing.gpuValid)
+    {
+        ImGui::Text("GPU frame %7.3f ms", timing.gpuFrameMs);
+        ImGui::Separator();
+        ImGui::Text("Atmosphere %7.3f ms", timing.gpuAtmosphereLutMs);
+        ImGui::Text("Shadow     %7.3f ms", timing.gpuShadowCacheMs);
+        ImGui::Text("Opaque     %7.3f ms", timing.gpuOpaqueSceneMs);
+        ImGui::Text("Cloud      %7.3f ms", timing.gpuCloudMs);
+        ImGui::Text("Tone       %7.3f ms", timing.gpuToneMapMs);
+    }
+    else
+    {
+        ImGui::TextUnformatted("GPU timing warming up");
+    }
     ImGui::End();
 }
 

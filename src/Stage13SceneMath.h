@@ -53,6 +53,14 @@ inline int DebugDigitFromVirtualKey(std::uint32_t virtualKey)
     return -1;
 }
 
+inline int DeveloperUiPanelFromVirtualKey(std::uint32_t virtualKey)
+{
+    constexpr std::uint32_t kF1 = 0x70u;
+    constexpr std::uint32_t kF4 = 0x73u;
+    return virtualKey >= kF1 && virtualKey <= kF4
+        ? static_cast<int>(virtualKey - kF1) : -1;
+}
+
 inline bool IsPortfolioGlobalKey(std::uint32_t virtualKey)
 {
     constexpr std::uint32_t kF1 = 0x70u;
