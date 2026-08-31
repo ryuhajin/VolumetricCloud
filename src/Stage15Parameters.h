@@ -145,7 +145,7 @@ struct Stage15ConceptDescriptor
 
 struct Stage15ResolvedSettings
 {
-    Stage15QualityPreset qualityPreset = Stage15QualityPreset::Medium;
+    Stage15QualityPreset qualityPreset = Stage15QualityPreset::High;
     Stage15ConceptPreset conceptPreset = Stage15ConceptPreset::UrbanFairWeather;
     Stage15DiagnosticMode diagnosticMode = Stage15DiagnosticMode::None;
     Stage15QualityDescriptor quality = {};

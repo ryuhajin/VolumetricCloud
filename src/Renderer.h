@@ -932,21 +932,21 @@ private:
     std::uint64_t m_weatherUploadCount = 0;
     std::string m_weatherMapStatus = "Not generated";
     Stage15QualityPreset m_stage15QualityPreset =
-        Stage15QualityPreset::Medium;
+        Stage15QualityPreset::High;
     Stage15ConceptPreset m_stage15ConceptPreset =
         Stage15ConceptPreset::UrbanFairWeather;
     Stage15DiagnosticMode m_stage15DiagnosticMode =
         Stage15DiagnosticMode::None;
     bool m_stage15TemporalOverrideActive = false;
     Stage11TemporalMode m_stage15TemporalOverrideMode =
-        Stage11TemporalMode::Stable4Phase;
+        Stage11TemporalMode::Off;
     Stage11TemporalMode m_stage15TemporalOverrideRestoreMode =
-        Stage11TemporalMode::Stable4Phase;
+        Stage11TemporalMode::Off;
     bool m_stage15StatusOverlayVisible = true;
     bool m_performanceOverlayVisible = true;
     Stage15QualityDescriptor m_stage15SavedRealtimeQuality = {};
     Stage15QualityPreset m_stage15SavedRealtimeQualityPreset =
-        Stage15QualityPreset::Medium;
+        Stage15QualityPreset::High;
     bool m_stage15SavedRealtimeQualityValid = false;
     bool m_stage15ConceptApplied = false;
     Stage15TransitionRequest m_pendingStage15Transition;

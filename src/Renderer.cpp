@@ -4262,38 +4262,11 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             : XMFLOAT2{};
         RenderDiagnosticScene(camera, captureJitter);
         m_frameProfiler.MarkOpaqueSceneEnd(m_context.Get());
-        const CloudDebugMode debugMode = DebugMode();
-        const std::int32_t debugValue =
-            static_cast<std::int32_t>(debugMode);
-        const bool resolvedCloudPath =
-            debugMode == CloudDebugMode::Composite ||
-            (debugValue >= 64 && debugValue <= 73) ||
-            debugMode == CloudDebugMode::Stage15ResolvedCloud ||
-            debugMode == CloudDebugMode::UpsampleAcceptedTapCount ||
-            debugMode == CloudDebugMode::NteRimMask ||
-            debugMode == CloudDebugMode::NteRimContribution;
-        if (resolvedCloudPath && EnsureCloudTargets())
-        {
-            const bool temporalDebug = debugValue >= 68 && debugValue <= 73;
-            if (!captureAccumulating &&
-                (TemporalMode() != Stage11TemporalMode::Off || temporalDebug))
-                PrepareTemporalFrame(camera, effectiveTime);
-            RenderCloudDataPass(camera, effectiveTime, captureJitter);
-            m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
-            if (captureAccumulating ||
-                (TemporalMode() == Stage11TemporalMode::Off &&
-                 !temporalDebug) ||
-                !RenderCloudTemporalPass(camera, effectiveTime))
-            {
-                RenderCloudUpsamplePass(
-                    camera, effectiveTime, nullptr, captureJitter);
-            }
-        }
-        else
-        {
-            RenderCloudPass(camera, effectiveTime);
-            m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
-        }
+        // 최종 Stage 15는 Full-resolution optimized direct 경로 하나만 쓴다.
+        // 저해상도 MRT, 공간 resolve와 Temporal history는 화면 결과에 이득이
+        // 없었으므로 Scene/Atmosphere를 같은 PS에서 바로 합성한다.
+        RenderCloudPass(camera, effectiveTime);
+        m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
         if (captureAccumulating && !AccumulateStage15CaptureSample())
         {
             m_stage15CaptureState = Stage15CaptureState::Failed;
@@ -4750,11 +4723,15 @@ bool Renderer::ApplyStage15Defaults()
         }
     }
     if (!ApplyStage15QualityPresetImmediate(
-            Stage15QualityPreset::Medium, false))
+            Stage15QualityPreset::High, false))
         return false;
     if (!ApplyStage15ConceptPresetImmediate(
             Stage15ConceptPreset::UrbanFairWeather, false))
         return false;
+    stage11temporal::ApplyMode(
+        m_temporalParameters, Stage11TemporalMode::Off);
+    m_cloudLodParameters.detailLodEnabled = 0u;
+    m_cloudRimParameters.enabled = 0u;
     ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     m_frameProfiler.ResetMeasurements();
     return true;
