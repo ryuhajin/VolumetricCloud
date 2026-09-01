@@ -83,9 +83,9 @@ cmake --build build --config Release
 F1~F4는 창의 X 버튼으로 닫은 뒤 같은 기능 키로 다시 열 수 있습니다. 성능 창은
 좌측 상단에 독립적으로 표시하며 FPS, cloud time, CPU/GPU frame과 다섯 GPU 구간을
 보여 줍니다. F2의 Cloud Type 제작 슬라이더는 F1 Mixed의 `Weather Map G` 소스일 때만 활성화되고,
-F2의 base wind는 Weather/Base/Detail을 함께 이동시키는 공통 world-space advection
-값입니다. F1 구름 파라미터 하단의 `Cloud movement speed`는 이 바람에 곱하는 0~4배
-런타임 속도이며 0에서 구름이 멈춥니다. 절대 시간을 직접 움직이는 slider는 없습니다.
+F1 구름 파라미터 하단의 `Cloud movement speed`는 Weather/Base/Detail을 함께 이동시키는
+0~400m/s 실제 world-space 속도이며 0에서 구름이 멈춥니다. F2는 이동 방향만 편집합니다.
+offset은 `경과 시간 × 속도 × 방향`이고 절대 시간을 직접 움직이는 slider는 없습니다.
 일반 실행의 VSync 기본값은 On입니다. Off에서는 OS가 tearing을 지원하면
 `Present(0, DXGI_PRESENT_ALLOW_TEARING)`을 사용하고, 지원하지 않으면 즉시 Present로
 fallback합니다. GPU 자체가 병목이면 VSync를 꺼도 FPS가 오르지 않을 수 있습니다.

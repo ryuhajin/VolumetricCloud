@@ -63,11 +63,13 @@ Stratus/Mixed/Cumulus 고정 소스는 생성된 G를 각각 0/0.5/1로 덮어�
 슬라이더 상태가 없다. 공통 wind는 Weather/Base/Detail의 sample position에서 같은
 `direction × speed × time`을 빼며 별도 Weather 속도는 존재하지 않는다.
 
-공통 effective time은 `NoiseLab::UpdateEffectiveTime`이 매 frame
-`deltaTime × Cloud movement speed`로 누적한다. F1 구름 파라미터 하단의 이 속도는
-0~4배 런타임 배율이며 0이면 정지한다. Cloud PS, Deep Cache, NoiseLab preview는 모두
-`wind direction × base wind m/s × effective time`을 사용하므로 외곽과 내부 무늬가 함께
-움직인다. 이 배율과 effective time은 formation/Custom에 저장되지 않는다.
+공통 effective time은 `NoiseLab::UpdateEffectiveTime`이 매 frame 실제 delta time으로
+누적한다. F1 구름 파라미터 하단의 `Cloud movement speed`는 `CloudCB.windSpeed`를
+0~400m/s 범위에서 직접 편집하며, F2는 수평 wind direction만 편집한다. Cloud PS,
+Deep Cache, NoiseLab preview는 모두
+`wind direction × movement speed(m/s) × effective time(s)`을 사용하므로 외곽과 내부
+무늬가 함께 움직인다. effective time은 저장하지 않지만 speed/direction은 formation과
+Custom schema 1의 wind에 저장한다.
 
 VSync도 F1의 presentation 상태이며 일반 실행 기본은 On이다. 초기화 시
 `DXGI_FEATURE_PRESENT_ALLOW_TEARING`을 조회하고 지원되면 swap chain에

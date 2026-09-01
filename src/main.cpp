@@ -249,18 +249,31 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
     renderer.SetNoiseLabVisible(true);
     renderer.EnableNoiseLabPreviews(true);
     float timeSeconds = 59.0f;
-    renderer.SetCloudRuntimeForValidation(12.0f, 0.0f);
+    renderer.SetCloudTimeForValidation(12.0f);
     RenderFrames(renderer, camera, 2u, timeSeconds);
-    const bool stoppedTimeStable =
-        renderer.CloudMovementSpeedForValidation() == 0.0f &&
-        std::abs(renderer.CloudTimeForValidation() - 12.0f) <= 1.0e-6f;
-    renderer.SetCloudRuntimeForValidation(12.0f, 2.0f);
-    RenderFrames(renderer, camera, 2u, timeSeconds);
-    const bool movementTimeAdvanced =
-        renderer.CloudMovementSpeedForValidation() == 2.0f &&
-        renderer.CloudTimeForValidation() > 12.0f;
-    bool passed = defaultVSyncEnabled && stoppedTimeStable &&
-        movementTimeAdvanced && renderer.ValidateNoiseLabUiContracts() &&
+    const bool cloudTimeAdvanced = renderer.CloudTimeForValidation() > 12.0f;
+
+    renderer.EnableFrameHashCapture(true);
+    renderer.EnableNoiseLabPreviews(false);
+    renderer.SetAutomatedRenderMode(true);
+    renderer.SetCloudMovementSpeedForValidation(0.0f);
+    renderer.Render(camera, 20.0f);
+    const std::uint64_t stationaryHashA = renderer.LastCloudFrameHash();
+    renderer.Render(camera, 37.25f);
+    const std::uint64_t stationaryHashB = renderer.LastCloudFrameHash();
+    const bool stationaryImageStable = stationaryHashA != 0u &&
+        stationaryHashA == stationaryHashB;
+    renderer.SetCloudMovementSpeedForValidation(400.0f);
+    renderer.Render(camera, 20.0f);
+    const std::uint64_t movingHashA = renderer.LastCloudFrameHash();
+    renderer.Render(camera, 37.25f);
+    const std::uint64_t movingHashB = renderer.LastCloudFrameHash();
+    const bool movingImageChanged = movingHashA != 0u && movingHashB != 0u &&
+        movingHashA != movingHashB;
+
+    bool passed = defaultVSyncEnabled && cloudTimeAdvanced &&
+        stationaryImageStable && movingImageChanged &&
+        renderer.ValidateNoiseLabUiContracts() &&
         renderer.ValidateNoiseLabPreviews() &&
         renderer.NoiseLabPreviewHash(0) != 0u &&
         renderer.NoiseLabPreviewHash(1) != 0u &&
@@ -312,9 +325,10 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
     line << "NOISE_LAB_SMOKE=" << (passed ? "PASS" : "FAIL")
          << " default_vsync=" << (defaultVSyncEnabled ? "on" : "off")
          << " tearing=" << (renderer.TearingSupported() ? "supported" : "unavailable")
-         << " zero_speed=" << (stoppedTimeStable ? "stable" : "changed")
-         << " movement_speed="
-         << (movementTimeAdvanced ? "advanced" : "stalled");
+         << " cloud_time=" << (cloudTimeAdvanced ? "advanced" : "stalled")
+         << " stationary_hash="
+         << (stationaryImageStable ? "stable" : "changed")
+         << " moving_hash=" << (movingImageChanged ? "changed" : "stable");
     WriteDiagnosticLine(line.str());
     return passed ? 0 : 1;
 }

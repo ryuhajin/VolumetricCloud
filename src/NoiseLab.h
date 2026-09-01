@@ -160,8 +160,7 @@ public:
     void EndFrame(ID3D11RenderTargetView* backBufferRtv);
 
     float EffectiveTime() const { return m_effectiveTime; }
-    void SetCloudRuntimeForValidation(float timeSeconds, float movementSpeed);
-    float CloudMovementSpeedForValidation() const { return m_timeScale; }
+    void SetCloudTimeForValidation(float timeSeconds);
     bool ConsumeFormationEdited();
     bool ConsumeFormationPresetRequest(CloudFormationPresetTarget& target);
     bool ConsumeSaveCustomRequest();
@@ -306,7 +305,6 @@ private:
     float m_lastApplicationTime = 0.0f;
     float m_effectiveTime = 0.0f;
     bool m_hasApplicationTime = false;
-    float m_timeScale = 1.0f;
 
     bool m_formationEdited = false;
     bool m_formationPresetPending = false;

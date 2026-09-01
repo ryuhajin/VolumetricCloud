@@ -18,12 +18,12 @@ cmake --build build --config Release
 | Urban / Meadow / Snow | `F4` 상단 | formation + 태양·환경광·대기·지면 | 세 최종 scene transaction | 한 번에 한 장면으로 전환 | 이전 장면 색/구름이 섞임, 검정 frame |
 | Stratus / Cumulus / Mixed / Custom | `F1` 상단 | formation만 | 타입 높이와 profile, Custom 복원 | 조명·대기·지면은 그대로 | F3 값도 바뀜, 상하단 칼 절단 |
 | Save Custom | `F1` | 현재 formation만 | schema 1 범위 | 저장 뒤 Custom 버튼 활성 | 파일 손상, Custom 비활성 |
-| Cloud movement speed | `F1`, 구름 파라미터 하단 | 경과 시간에 곱하는 0~4배 속도 | 공통 이동 시작·정지 | 0에서 정지, 올리면 Weather/Base/Detail과 그림자가 함께 이동 | 절대 시간이 slider처럼 흐름, 일부 구조만 이동 |
+| Cloud movement speed | `F1`, 구름 파라미터 하단 | 경과 시간에 곱하는 0~400m/s 속도 | 공통 이동 시작·정지 | 0에서 정지, 100~400에서 Weather/Base/Detail과 그림자가 함께 뚜렷하게 이동 | 높은 값에서도 정지, 일부 구조만 이동 |
 | VSync | `F1 > Presentation` | swap-chain Present 방식 | 동기/즉시 표시 상태 | 기본 On, 지원 환경의 Off는 `immediate + tearing allowed` 표시 | 기본 Off, Off인데 interval 1, scene/preset 변경 |
 | Preview field | `F1 > Preview` combo | 세 preview의 출력 field | 진단 선택성과 ID | 목록에서 즉시 선택 | slider로 한 칸씩 이동, ID 경고 |
 | Weather Map RGBA | `F2 > Weather Generator` 최상단 | CPU 생성 R/G/B/A | 실제 texture와 채널 확인 | 편집 직후 image/hash 변경 | image가 하단에 묻힘, 이전 map 유지 |
 | Cloud type source/G | 같은 영역 | F1이 정한 고정 타입 또는 생성 G | G 채널 소유권 | F1 Mixed/Weather Map G에서만 G 편집 활성 | 고정 모드인데 무효 slider 활성 |
-| Base wind speed | `F2` | Weather/Base/Detail 공통 기본 m/s | 동일한 world-space 이동 | F1 배율과 곱해 세 구조가 같은 방향으로 이동 | Weather만 미끄러짐, 별도 noise speed처럼 동작 |
+| Wind direction | `F2` | Weather/Base/Detail 공통 수평 방향 | 동일한 world-space 이동 | F1 속도로 세 구조가 같은 방향으로 이동 | Weather만 미끄러짐, 별도 offset처럼 동작 |
 | `F5`~`F8` | 키보드 | 고정 카메라 | 위/내부/수평/원경 교차 | 즉시 안정된 현재 frame | 과거 시점 잔상, 검정/타일 |
 | Density | `F4 > Cloud view` | 최종 density | NaN과 domain 절단 | 덩어리 내부가 연속 | 사각 외곽, 자홍/노랑 오류색 |
 | Transmittance | 같은 combo | View T | 적분과 early exit | 빈 하늘 1, 두꺼운 구름은 낮음 | 화면 전체 0/1, 불연속 띠 |
@@ -74,12 +74,12 @@ F1 창의 X를 누른 뒤 F1을 다시 눌러 같은 창이 열리는지 먼저 
 ## 3. 이동과 shimmer
 
 layer 내부 카메라에서 `W/A/S/D`로 이동하고 F1 `Cloud movement speed`와 F2
-`Base wind speed`를 확인한다.
+`Wind direction`을 확인한다.
 
 - 과거 frame 잔상과 가장자리 끌림은 없어야 한다.
-- F1 `Cloud movement speed`를 0으로 하면 현재 위치에서 구름이 멈춘다. 1로 되돌리면
-  F2 wind 방향·기본 속도로 다시 이동하고, 2에서는 같은 시간 동안 약 두 배 이동해야 한다.
-  Weather silhouette, Base/Detail 내부 무늬와 Deep Cache 그림자가 함께 움직여야 한다.
+- F1 `Cloud movement speed`를 0으로 하면 구름이 정지한다. 100m/s에서 이동을 확인하고
+  400m/s에서는 같은 시간 동안 약 네 배 이동해야 한다. Weather silhouette, Base/Detail
+  내부 무늬와 Deep Cache 그림자가 F2 wind 방향으로 함께 움직여야 한다.
 - Temporal 제거로 생길 수 있는 단일-frame shimmer는 사용자가 허용 가능한지 직접 판단한다.
 - shimmer를 확인하려고 VSync를 켰다 꺼도 formation이나 shader generation이 바뀌면 안 된다.
   Off에서 FPS가 그대로라면 Performance 창의 GPU Frame을 먼저 본다. GPU 시간이 한 frame

@@ -10,8 +10,10 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -247,9 +249,9 @@ public:
     {
         return m_noiseLab.ValidateUiContracts();
     }
-    void SetCloudRuntimeForValidation(float timeSeconds, float movementSpeed)
+    void SetCloudTimeForValidation(float timeSeconds)
     {
-        m_noiseLab.SetCloudRuntimeForValidation(timeSeconds, movementSpeed);
+        m_noiseLab.SetCloudTimeForValidation(timeSeconds);
     }
     float CloudTimeForValidation() const
     {
@@ -257,7 +259,13 @@ public:
     }
     float CloudMovementSpeedForValidation() const
     {
-        return m_noiseLab.CloudMovementSpeedForValidation();
+        return m_cloudParameters.windSpeed;
+    }
+    void SetCloudMovementSpeedForValidation(float metersPerSecond)
+    {
+        m_cloudParameters.windSpeed = std::clamp(
+            std::isfinite(metersPerSecond) ? metersPerSecond : 0.0f,
+            0.0f, 400.0f);
     }
     bool ValidateNoiseLabPreviews();
     bool ExportNoiseLabSnapshot(const std::filesystem::path& root);

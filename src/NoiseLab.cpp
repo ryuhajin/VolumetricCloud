@@ -21,7 +21,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 namespace
 {
 constexpr float kMaximumCloudTimeSeconds = 86400.0f;
-constexpr float kMaximumCloudMovementSpeed = 4.0f;
+constexpr float kMaximumCloudMovementSpeedMetersPerSecond = 400.0f;
 
 bool IsMouseMessage(UINT message)
 {
@@ -317,22 +317,18 @@ void NoiseLab::UpdateEffectiveTime(float applicationTime)
     const float delta = std::clamp(
         applicationTime - m_lastApplicationTime, 0.0f, 0.25f);
     m_lastApplicationTime = applicationTime;
-    m_effectiveTime += delta * m_timeScale;
+    m_effectiveTime += delta;
     if (m_effectiveTime > kMaximumCloudTimeSeconds)
         m_effectiveTime = std::fmod(m_effectiveTime, kMaximumCloudTimeSeconds);
     m_parameters.effectiveTime = m_effectiveTime;
 }
 
-void NoiseLab::SetCloudRuntimeForValidation(
-    float timeSeconds, float movementSpeed)
+void NoiseLab::SetCloudTimeForValidation(float timeSeconds)
 {
     m_effectiveTime = std::clamp(
         std::isfinite(timeSeconds) ? timeSeconds : 0.0f,
         0.0f, kMaximumCloudTimeSeconds);
     m_parameters.effectiveTime = m_effectiveTime;
-    m_timeScale = std::clamp(
-        std::isfinite(movementSpeed) ? movementSpeed : 0.0f,
-        0.0f, kMaximumCloudMovementSpeed);
 }
 
 void NoiseLab::BeginFrame(
@@ -506,14 +502,12 @@ void NoiseLab::DrawFormationPanel(
     ImGui::TextUnformatted("Load/apply requires at least 200 m top headroom.");
 
     ImGui::SeparatorText("Cloud Movement");
-    ImGui::SliderFloat("Cloud movement speed", &m_timeScale,
-        0.0f, kMaximumCloudMovementSpeed, "%.2fx",
+    edited |= ImGui::SliderFloat("Cloud movement speed", &cloud.windSpeed,
+        0.0f, kMaximumCloudMovementSpeedMetersPerSecond, "%.1f m/s",
         ImGuiSliderFlags_AlwaysClamp);
-    ImGui::Text("Effective wind speed: %.1f m/s",
-                cloud.windSpeed * m_timeScale);
     ImGui::TextWrapped(
-        "Animation advances by elapsed time x base wind speed x this "
-        "multiplier. Set it to 0 to stop clouds without scrubbing time.");
+        "Cloud offset is elapsed time x this speed along the F2 wind "
+        "direction. Use 100-400 m/s when movement must be obvious.");
 
     ImGui::SeparatorText("Preview");
     const int maximumMode = static_cast<int>(NoiseOutputMode::LocalBaseOffset);
@@ -604,14 +598,9 @@ void NoiseLab::DrawWeatherMapPanel(
         &noiseVolume.detailWorldSizeMeters, 250.0f, 8000.0f, "%.0f m");
     edited |= ImGui::SliderFloat3(
         "Wind direction", &cloud.windDirection.x, -1.0f, 1.0f, "%.3f");
-    edited |= ImGui::SliderFloat(
-        "Base wind speed", &cloud.windSpeed,
-        0.0f, 80.0f, "%.1f m/s");
     ImGui::TextWrapped(
-        "Weather, Base, and Detail move together. Speed changes the "
-        "world-space offset accumulated over time; it is not a separate "
-        "Weather noise parameter. F1 Cloud movement speed is the runtime "
-        "0-4x animation multiplier.");
+        "F1 Cloud movement speed moves Weather, Base, and Detail together "
+        "along this direction. There is no separate Weather offset speed.");
 
     ImGui::SeparatorText("Weather Generator");
     if (weatherMapSrv)
