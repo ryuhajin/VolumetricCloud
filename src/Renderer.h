@@ -246,6 +246,18 @@ public:
     {
         return m_noiseLab.ValidateUiContracts();
     }
+    void SetCloudRuntimeForValidation(float timeSeconds, bool animate)
+    {
+        m_noiseLab.SetCloudRuntimeForValidation(timeSeconds, animate);
+    }
+    float CloudTimeForValidation() const
+    {
+        return m_noiseLab.EffectiveTime();
+    }
+    bool CloudAnimationEnabledForValidation() const
+    {
+        return m_noiseLab.CloudAnimationEnabledForValidation();
+    }
     bool ValidateNoiseLabPreviews();
     bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
     std::uint64_t NoiseLabPreviewHash(std::size_t targetIndex);

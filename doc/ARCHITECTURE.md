@@ -63,6 +63,12 @@ Stratus/Mixed/Cumulus 고정 소스는 생성된 G를 각각 0/0.5/1로 덮어�
 슬라이더 상태가 없다. 공통 wind는 Weather/Base/Detail의 sample position에서 같은
 `direction × speed × time`을 빼며 별도 Weather 속도는 존재하지 않는다.
 
+공통 time은 `NoiseLab::UpdateEffectiveTime`이 매 frame 누적하며 F1의 `Animate clouds`가
+누적 여부를 제어한다. F1 `Time` slider는 같은 값을 직접 scrub하고 Cloud PS, Deep Cache,
+NoiseLab preview가 모두 이 effective time을 사용한다. 이 런타임 값은 formation/Custom에
+저장되지 않는다. VSync도 F1의 presentation 상태이며 일반 실행 기본은 On이다.
+Renderer는 On에서 `Present(1, 0)`, Off에서 `Present(0, 0)`을 호출한다.
+
 | 타입 | 두께 | Base lift | Footprint | Planar domain |
 |---|---:|---:|---:|---:|
 | Stratus | 1500~2300m | 0m | 0.20 | 1500~4000m |

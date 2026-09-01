@@ -159,6 +159,11 @@ public:
     void EndFrame(ID3D11RenderTargetView* backBufferRtv);
 
     float EffectiveTime() const { return m_effectiveTime; }
+    void SetCloudRuntimeForValidation(float timeSeconds, bool animate);
+    bool CloudAnimationEnabledForValidation() const
+    {
+        return !m_timePaused;
+    }
     bool ConsumeFormationEdited();
     bool ConsumeFormationPresetRequest(CloudFormationPresetTarget& target);
     bool ConsumeSaveCustomRequest();
@@ -231,14 +236,15 @@ private:
                             const CloudFormationPresetTarget& target,
                             CloudFormationPresetSource source,
                             bool hasCustom,
-                            const std::string& status);
-    void DrawNoiseWeatherPanel(CloudParameters& cloud,
-                               WeatherMapGeneratorSettings& weather,
-                               NoiseVolumeParameters& noiseVolume,
-                               std::uint64_t baseHash,
-                               std::uint64_t detailHash,
-                               double generationMilliseconds,
-                               ID3D11ShaderResourceView* weatherMapSrv);
+                            const std::string& status,
+                            bool& vsyncEnabled);
+    void DrawWeatherMapPanel(CloudParameters& cloud,
+                             WeatherMapGeneratorSettings& weather,
+                             NoiseVolumeParameters& noiseVolume,
+                             std::uint64_t baseHash,
+                             std::uint64_t detailHash,
+                             double generationMilliseconds,
+                             ID3D11ShaderResourceView* weatherMapSrv);
     void DrawLightingPanel(Stage12ShadowParameters& shadow,
                            LightParameters& light,
                            Stage6SunPreset& sunPreset,
@@ -255,7 +261,6 @@ private:
         Stage15ConceptPreset concept,
         float& cameraMoveSpeedMetersPerSecond,
         const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
-        bool& vsyncEnabled,
         std::uint64_t shaderGeneration,
         const std::string& shaderStatus,
         const std::string& shaderError,

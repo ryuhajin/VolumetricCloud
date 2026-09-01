@@ -243,13 +243,24 @@ int RunAtmosphereSmoke(Renderer& renderer, Camera& camera)
 
 int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
 {
+    const bool defaultVSyncEnabled = renderer.VSyncEnabled();
     renderer.SetAutomatedRenderMode(false);
     renderer.SetVSyncEnabled(false);
     renderer.SetNoiseLabVisible(true);
     renderer.EnableNoiseLabPreviews(true);
     float timeSeconds = 59.0f;
+    renderer.SetCloudRuntimeForValidation(12.0f, false);
     RenderFrames(renderer, camera, 2u, timeSeconds);
-    bool passed = renderer.ValidateNoiseLabUiContracts() &&
+    const bool pausedTimeStable =
+        !renderer.CloudAnimationEnabledForValidation() &&
+        std::abs(renderer.CloudTimeForValidation() - 12.0f) <= 1.0e-6f;
+    renderer.SetCloudRuntimeForValidation(12.0f, true);
+    RenderFrames(renderer, camera, 2u, timeSeconds);
+    const bool animatedTimeAdvanced =
+        renderer.CloudAnimationEnabledForValidation() &&
+        renderer.CloudTimeForValidation() > 12.0f;
+    bool passed = defaultVSyncEnabled && pausedTimeStable &&
+        animatedTimeAdvanced && renderer.ValidateNoiseLabUiContracts() &&
         renderer.ValidateNoiseLabPreviews() &&
         renderer.NoiseLabPreviewHash(0) != 0u &&
         renderer.NoiseLabPreviewHash(1) != 0u &&
@@ -297,8 +308,13 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
     fileError.clear();
     std::filesystem::remove_all(snapshotRoot, fileError);
     passed = schema39 && !fileError && passed;
-    WriteDiagnosticLine(std::string("NOISE_LAB_SMOKE=") +
-                        (passed ? "PASS" : "FAIL"));
+    std::ostringstream line;
+    line << "NOISE_LAB_SMOKE=" << (passed ? "PASS" : "FAIL")
+         << " default_vsync=" << (defaultVSyncEnabled ? "on" : "off")
+         << " paused_time=" << (pausedTimeStable ? "stable" : "changed")
+         << " animated_time="
+         << (animatedTimeAdvanced ? "advanced" : "stalled");
+    WriteDiagnosticLine(line.str());
     return passed ? 0 : 1;
 }
 

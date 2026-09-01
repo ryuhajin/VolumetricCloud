@@ -20,6 +20,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 
 namespace
 {
+constexpr float kMaximumCloudTimeSeconds = 86400.0f;
+
 bool IsMouseMessage(UINT message)
 {
     return (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
@@ -319,6 +321,15 @@ void NoiseLab::UpdateEffectiveTime(float applicationTime)
     m_parameters.effectiveTime = m_effectiveTime;
 }
 
+void NoiseLab::SetCloudRuntimeForValidation(float timeSeconds, bool animate)
+{
+    m_effectiveTime = std::clamp(
+        std::isfinite(timeSeconds) ? timeSeconds : 0.0f,
+        0.0f, kMaximumCloudTimeSeconds);
+    m_parameters.effectiveTime = m_effectiveTime;
+    m_timePaused = !animate;
+}
+
 void NoiseLab::BeginFrame(
     float applicationTime,
     Camera& camera,
@@ -365,12 +376,13 @@ void NoiseLab::BeginFrame(
     if (m_panelVisible[0])
         DrawFormationPanel(cloud, shape, domain, weather,
                            formationTarget, formationSource,
-                           hasCustomFormation, formationStatus);
+                           hasCustomFormation, formationStatus,
+                           vsyncEnabled);
     if (m_panelVisible[1])
-        DrawNoiseWeatherPanel(cloud, weather, noiseVolume,
-                              baseNoiseVolumeHash, detailNoiseVolumeHash,
-                              noiseVolumeGenerationMilliseconds,
-                              weatherMapSrv);
+        DrawWeatherMapPanel(cloud, weather, noiseVolume,
+                            baseNoiseVolumeHash, detailNoiseVolumeHash,
+                            noiseVolumeGenerationMilliseconds,
+                            weatherMapSrv);
     if (m_panelVisible[2])
         DrawLightingPanel(shadow, light, sunPreset, phasePreset,
                           environment, environmentPreset,
@@ -378,7 +390,7 @@ void NoiseLab::BeginFrame(
     if (m_panelVisible[3])
         DrawDiagnosticsPanel(camera, cloud, atmosphere, concept,
                              cameraMoveSpeedMetersPerSecond,
-                             atmosphereLutSrvs, vsyncEnabled,
+                             atmosphereLutSrvs,
                              shaderGeneration, shaderStatus, shaderError,
                              reloadReport);
     DrawProfilerOverlay(timing);
@@ -392,7 +404,8 @@ void NoiseLab::DrawFormationPanel(
     const CloudFormationPresetTarget& target,
     CloudFormationPresetSource source,
     bool hasCustom,
-    const std::string& status)
+    const std::string& status,
+    bool& vsyncEnabled)
 {
     ImGui::SetNextWindowSize(ImVec2(Ui(520.0f), Ui(760.0f)),
                              ImGuiCond_FirstUseEver);
@@ -434,6 +447,23 @@ void NoiseLab::DrawFormationPanel(
     ImGui::TextWrapped("%s", status.c_str());
     if (ImGui::Button("Save Custom"))
         m_saveCustomPending = true;
+
+    ImGui::SeparatorText("Cloud Runtime");
+    bool animateClouds = !m_timePaused;
+    if (ImGui::Checkbox("Animate clouds", &animateClouds))
+        m_timePaused = !animateClouds;
+    if (ImGui::SliderFloat("Time", &m_effectiveTime,
+            0.0f, kMaximumCloudTimeSeconds, "%.2f s",
+            ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic))
+    {
+        m_parameters.effectiveTime = m_effectiveTime;
+    }
+    ImGui::TextWrapped(
+        "Time drives the shared wind advection. Wind direction and speed "
+        "are edited in F2 Weather Map.");
+    ImGui::Checkbox("VSync", &vsyncEnabled);
+    ImGui::SameLine();
+    ImGui::TextDisabled("Default: On");
 
     ImGui::SeparatorText("Formation");
     bool edited = false;
@@ -528,7 +558,7 @@ bool NoiseLab::DrawPeriodicChannelFields(
     return edited;
 }
 
-void NoiseLab::DrawNoiseWeatherPanel(
+void NoiseLab::DrawWeatherMapPanel(
     CloudParameters& cloud,
     WeatherMapGeneratorSettings& weather,
     NoiseVolumeParameters& noiseVolume,
@@ -539,7 +569,7 @@ void NoiseLab::DrawNoiseWeatherPanel(
 {
     ImGui::SetNextWindowSize(ImVec2(Ui(520.0f), Ui(720.0f)),
                              ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("F2 Noise and Weather", &m_panelVisible[1]))
+    if (!ImGui::Begin("F2 Weather Map", &m_panelVisible[1]))
     {
         ImGui::End();
         return;
@@ -699,7 +729,6 @@ void NoiseLab::DrawDiagnosticsPanel(
     Stage15ConceptPreset concept,
     float& cameraMoveSpeedMetersPerSecond,
     const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
-    bool& vsyncEnabled,
     std::uint64_t shaderGeneration,
     const std::string& shaderStatus,
     const std::string& shaderError,
@@ -792,8 +821,6 @@ void NoiseLab::DrawDiagnosticsPanel(
     ImGui::SliderFloat("Move speed", &cameraMoveSpeedMetersPerSecond,
                        1.0f, 5000.0f, "%.0f m/s",
                        ImGuiSliderFlags_Logarithmic);
-    ImGui::Checkbox("Pause cloud time", &m_timePaused);
-    ImGui::Checkbox("VSync", &vsyncEnabled);
     float zoom = m_developerUiSettings.userZoom;
     if (ImGui::SliderFloat("UI zoom", &zoom,
             developerui::kMinimumUserZoom,

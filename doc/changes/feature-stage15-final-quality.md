@@ -126,3 +126,18 @@ Stratus/Cumulus/Mixed의 coverage, density, extinction, detail, Weather threshol
   `33/33`을 통과했다. NoiseLab smoke는 Cloud view와 Preview label 중복을 하드
   게이트로 검사한다.
 - 사용자 화면 재검증과 최종 승인은 아직 미완료다.
+
+### F1 cloud runtime 후속 보완
+
+- F4에 남아 있던 `Pause cloud time`과 `VSync`를 F1 `Cloud Runtime`으로 옮겼다.
+- `Animate clouds` 기본 On은 effective time을 매 frame 누적하고, Off는 현재 시간에서
+  멈춘다. logarithmic `Time` slider는 0~86400초를 직접 scrub하며 Cloud/Deep Cache와
+  NoiseLab preview에 같은 frame으로 전달한다.
+- 일반 실행의 VSync 기본은 기존과 동일하게 On이다. F1에서 On/Off할 수 있고 Renderer는
+  각각 `Present(1, 0)`/`Present(0, 0)`을 사용한다. 자동 성능·smoke만 VSync Off다.
+- F2 ImGui 창 제목을 `F2 Noise and Weather`에서 `F2 Weather Map`으로 바꿨다.
+- NoiseLab smoke는 일반 초기 VSync On, 12초 paused time 고정, animation 재개 뒤
+  time 증가를 직접 검사하며 `default_vsync=on paused_time=stable animated_time=advanced`
+  를 통과했다.
+- 보완 후 Debug/Release 빌드, Debug CPU `25/25`, Release 전체 CTest `33/33`을 통과했다.
+- 사용자 화면 재검증과 최종 승인은 아직 미완료다.

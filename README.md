@@ -71,8 +71,8 @@ cmake --build build --config Release
 | 마우스 왼쪽 드래그 | 카메라 회전 |
 | `W/A/S/D`, 마우스 휠 | 카메라 이동 |
 | `Shift` | 빠른 이동 |
-| `F1` | Stratus/Cumulus/Mixed/Custom과 formation, Custom 저장 |
-| `F2` | Weather RGBA, Cloud Type 소스 상태와 Base/Detail Texture3D 제작 |
+| `F1` | Formation/Custom, cloud animation Time, VSync |
+| `F2` | Weather Map RGBA, Cloud Type 소스 상태와 Base/Detail Texture3D 제작 |
 | `F3` | 태양, 환경광, 대기, 지면, Tone, Deep Cache |
 | `F4` | 세 콘셉트, 핵심 진단, reload report |
 | `F5`~`F8` | 고정 검증 카메라 |
@@ -84,6 +84,9 @@ F1~F4는 창의 X 버튼으로 닫은 뒤 같은 기능 키로 다시 열 수 �
 좌측 상단에 독립적으로 표시하며 FPS, cloud time, CPU/GPU frame과 다섯 GPU 구간을
 보여 줍니다. F2의 Cloud Type 제작 슬라이더는 F1 Mixed의 `Weather Map G` 소스일 때만 활성화되고,
 바람 속도는 Weather/Base/Detail을 함께 이동시키는 공통 world-space advection 값입니다.
+F1의 `Animate clouds`는 기본 On이고 `Time`은 이 공통 이동 시간을 직접 표시·조절합니다.
+일반 실행의 VSync 기본값도 On이며 F1 `VSync`를 끄면 `Present(0, 0)`, 켜면
+`Present(1, 0)`을 사용합니다. 자동 성능·smoke만 측정을 위해 VSync를 강제로 끕니다.
 
 ## 프리셋 소유권
 
