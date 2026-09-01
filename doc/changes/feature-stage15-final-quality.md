@@ -127,17 +127,21 @@ Stratus/Cumulus/Mixed의 coverage, density, extinction, detail, Weather threshol
   게이트로 검사한다.
 - 사용자 화면 재검증과 최종 승인은 아직 미완료다.
 
-### F1 cloud runtime 후속 보완
+### F1 이동 속도와 presentation 후속 보완
 
-- F4에 남아 있던 `Pause cloud time`과 `VSync`를 F1 `Cloud Runtime`으로 옮겼다.
-- `Animate clouds` 기본 On은 effective time을 매 frame 누적하고, Off는 현재 시간에서
-  멈춘다. logarithmic `Time` slider는 0~86400초를 직접 scrub하며 Cloud/Deep Cache와
-  NoiseLab preview에 같은 frame으로 전달한다.
-- 일반 실행의 VSync 기본은 기존과 동일하게 On이다. F1에서 On/Off할 수 있고 Renderer는
-  각각 `Present(1, 0)`/`Present(0, 0)`을 사용한다. 자동 성능·smoke만 VSync Off다.
+- 잘못 복원한 절대 `Time` scrub과 `Animate clouds`를 제거했다. F1 구름 파라미터 하단에
+  기존 의미의 `Cloud movement speed` 0~4배 slider를 복원하고 effective time을
+  `deltaTime × movementSpeed`로 누적한다. 0이면 정지하며 Cloud/Deep Cache/preview가
+  같은 time을 사용한다.
+- F2 값은 `Base wind speed`로 명확히 표시한다. 실제 이동 속도는 base m/s와 F1 런타임
+  배율의 곱이고 Weather/Base/Detail에는 별도 offset이나 속도가 없다.
+- 일반 실행의 VSync 기본은 기존과 동일하게 On이다. 시작할 때 tearing 지원을 조회해
+  swap chain 생성 플래그까지 설정하고, Off는 지원 환경에서
+  `Present(0, DXGI_PRESENT_ALLOW_TEARING)`을 사용한다. F1은 현재 표시 방식과 미지원
+  fallback을 직접 보여 준다.
 - F2 ImGui 창 제목을 `F2 Noise and Weather`에서 `F2 Weather Map`으로 바꿨다.
-- NoiseLab smoke는 일반 초기 VSync On, 12초 paused time 고정, animation 재개 뒤
-  time 증가를 직접 검사하며 `default_vsync=on paused_time=stable animated_time=advanced`
-  를 통과했다.
+- NoiseLab smoke는 일반 초기 VSync On, 속도 0에서 time 고정, 2배에서 time 증가를 직접
+  검사한다. 현재 검증 PC는 tearing 지원으로 확인됐다. Present CPU 테스트는
+  VSync/tearing/fallback 세 조합을 고정한다.
 - 보완 후 Debug/Release 빌드, Debug CPU `25/25`, Release 전체 CTest `33/33`을 통과했다.
 - 사용자 화면 재검증과 최종 승인은 아직 미완료다.

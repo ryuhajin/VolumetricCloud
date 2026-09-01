@@ -29,6 +29,7 @@
 #include "GroundLightingParameters.h"
 #include "LightParameters.h"
 #include "NoiseLab.h"
+#include "PresentationMath.h"
 #include "ShaderManifest.h"
 #include "Stage12ShadowMath.h"
 #include "Stage12ShadowParameters.h"
@@ -246,17 +247,17 @@ public:
     {
         return m_noiseLab.ValidateUiContracts();
     }
-    void SetCloudRuntimeForValidation(float timeSeconds, bool animate)
+    void SetCloudRuntimeForValidation(float timeSeconds, float movementSpeed)
     {
-        m_noiseLab.SetCloudRuntimeForValidation(timeSeconds, animate);
+        m_noiseLab.SetCloudRuntimeForValidation(timeSeconds, movementSpeed);
     }
     float CloudTimeForValidation() const
     {
         return m_noiseLab.EffectiveTime();
     }
-    bool CloudAnimationEnabledForValidation() const
+    float CloudMovementSpeedForValidation() const
     {
-        return m_noiseLab.CloudAnimationEnabledForValidation();
+        return m_noiseLab.CloudMovementSpeedForValidation();
     }
     bool ValidateNoiseLabPreviews();
     bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
@@ -287,6 +288,7 @@ public:
     }
     void SetVSyncEnabled(bool enabled) { m_vsyncEnabled = enabled; }
     bool VSyncEnabled() const { return m_vsyncEnabled; }
+    bool TearingSupported() const { return m_tearingSupported; }
     const FrameTimingSnapshot& TimingSnapshot() const
     {
         return m_frameProfiler.Snapshot();
@@ -614,6 +616,7 @@ private:
     bool m_captureFrameHashes = false;
     bool m_renderNoiseLabPreviews = true;
     bool m_vsyncEnabled = true;
+    bool m_tearingSupported = false;
     bool m_renderOpaqueSceneForTest = true;
     std::uint64_t m_lastCloudFrameHash = 0;
     std::string m_adapterName = "Unknown adapter";

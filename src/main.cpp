@@ -249,18 +249,18 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
     renderer.SetNoiseLabVisible(true);
     renderer.EnableNoiseLabPreviews(true);
     float timeSeconds = 59.0f;
-    renderer.SetCloudRuntimeForValidation(12.0f, false);
+    renderer.SetCloudRuntimeForValidation(12.0f, 0.0f);
     RenderFrames(renderer, camera, 2u, timeSeconds);
-    const bool pausedTimeStable =
-        !renderer.CloudAnimationEnabledForValidation() &&
+    const bool stoppedTimeStable =
+        renderer.CloudMovementSpeedForValidation() == 0.0f &&
         std::abs(renderer.CloudTimeForValidation() - 12.0f) <= 1.0e-6f;
-    renderer.SetCloudRuntimeForValidation(12.0f, true);
+    renderer.SetCloudRuntimeForValidation(12.0f, 2.0f);
     RenderFrames(renderer, camera, 2u, timeSeconds);
-    const bool animatedTimeAdvanced =
-        renderer.CloudAnimationEnabledForValidation() &&
+    const bool movementTimeAdvanced =
+        renderer.CloudMovementSpeedForValidation() == 2.0f &&
         renderer.CloudTimeForValidation() > 12.0f;
-    bool passed = defaultVSyncEnabled && pausedTimeStable &&
-        animatedTimeAdvanced && renderer.ValidateNoiseLabUiContracts() &&
+    bool passed = defaultVSyncEnabled && stoppedTimeStable &&
+        movementTimeAdvanced && renderer.ValidateNoiseLabUiContracts() &&
         renderer.ValidateNoiseLabPreviews() &&
         renderer.NoiseLabPreviewHash(0) != 0u &&
         renderer.NoiseLabPreviewHash(1) != 0u &&
@@ -311,9 +311,10 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
     std::ostringstream line;
     line << "NOISE_LAB_SMOKE=" << (passed ? "PASS" : "FAIL")
          << " default_vsync=" << (defaultVSyncEnabled ? "on" : "off")
-         << " paused_time=" << (pausedTimeStable ? "stable" : "changed")
-         << " animated_time="
-         << (animatedTimeAdvanced ? "advanced" : "stalled");
+         << " tearing=" << (renderer.TearingSupported() ? "supported" : "unavailable")
+         << " zero_speed=" << (stoppedTimeStable ? "stable" : "changed")
+         << " movement_speed="
+         << (movementTimeAdvanced ? "advanced" : "stalled");
     WriteDiagnosticLine(line.str());
     return passed ? 0 : 1;
 }

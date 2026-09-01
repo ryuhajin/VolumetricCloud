@@ -142,6 +142,7 @@ public:
         const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
         const FrameTimingSnapshot& timing,
         bool& vsyncEnabled,
+        bool tearingSupported,
         std::uint64_t shaderGeneration,
         const std::string& shaderStatus,
         const std::string& shaderError,
@@ -159,11 +160,8 @@ public:
     void EndFrame(ID3D11RenderTargetView* backBufferRtv);
 
     float EffectiveTime() const { return m_effectiveTime; }
-    void SetCloudRuntimeForValidation(float timeSeconds, bool animate);
-    bool CloudAnimationEnabledForValidation() const
-    {
-        return !m_timePaused;
-    }
+    void SetCloudRuntimeForValidation(float timeSeconds, float movementSpeed);
+    float CloudMovementSpeedForValidation() const { return m_timeScale; }
     bool ConsumeFormationEdited();
     bool ConsumeFormationPresetRequest(CloudFormationPresetTarget& target);
     bool ConsumeSaveCustomRequest();
@@ -237,7 +235,8 @@ private:
                             CloudFormationPresetSource source,
                             bool hasCustom,
                             const std::string& status,
-                            bool& vsyncEnabled);
+                            bool& vsyncEnabled,
+                            bool tearingSupported);
     void DrawWeatherMapPanel(CloudParameters& cloud,
                              WeatherMapGeneratorSettings& weather,
                              NoiseVolumeParameters& noiseVolume,
@@ -307,7 +306,7 @@ private:
     float m_lastApplicationTime = 0.0f;
     float m_effectiveTime = 0.0f;
     bool m_hasApplicationTime = false;
-    bool m_timePaused = false;
+    float m_timeScale = 1.0f;
 
     bool m_formationEdited = false;
     bool m_formationPresetPending = false;

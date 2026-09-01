@@ -1,4 +1,5 @@
 #include "FrameProfiler.h"
+#include "PresentationMath.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -18,6 +19,20 @@ void Require(bool condition, const char* message)
 
 int main()
 {
+    const presentation::PresentParameters vsync =
+        presentation::ResolvePresentParameters(true, true);
+    Require(vsync.syncInterval == 1u && vsync.flags == 0u,
+            "VSync uses interval one without tearing");
+    const presentation::PresentParameters immediate =
+        presentation::ResolvePresentParameters(false, true);
+    Require(immediate.syncInterval == 0u &&
+            immediate.flags == presentation::kAllowTearingPresentFlag,
+            "VSync off uses immediate tearing when supported");
+    const presentation::PresentParameters fallback =
+        presentation::ResolvePresentParameters(false, false);
+    Require(fallback.syncInterval == 0u && fallback.flags == 0u,
+            "VSync off falls back to immediate present without tearing");
+
     FrameTimingAccumulator accumulator;
     accumulator.AdvanceFrame();
     accumulator.RecordCpuMilliseconds(10.0);

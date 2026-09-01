@@ -15,7 +15,9 @@
 | `Tone` | HDR exposure, white balance, tone curve, sRGB와 dither |
 | `Frame` | 첫 timestamp부터 Tone/ImGui 종료까지 전체 GPU 구간 |
 
-CPU Frame은 `Renderer::Render`부터 `Present` 반환까지이며 VSync 대기를 포함할 수 있다. 성능 gate는 VSync Off의 raw GPU timestamp를 사용한다.
+CPU Frame은 `Renderer::Render`부터 `Present` 반환까지이며 VSync 대기를 포함할 수 있다.
+VSync Off는 지원 환경에서 tearing 허용 즉시 Present를 사용하지만 GPU 렌더 자체가
+병목이면 FPS는 오르지 않는다. 성능 gate는 표시 주기와 분리된 raw GPU timestamp를 사용한다.
 
 ## 최종 성능 gate
 

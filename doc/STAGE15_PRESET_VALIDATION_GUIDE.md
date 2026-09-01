@@ -18,13 +18,12 @@ cmake --build build --config Release
 | Urban / Meadow / Snow | `F4` 상단 | formation + 태양·환경광·대기·지면 | 세 최종 scene transaction | 한 번에 한 장면으로 전환 | 이전 장면 색/구름이 섞임, 검정 frame |
 | Stratus / Cumulus / Mixed / Custom | `F1` 상단 | formation만 | 타입 높이와 profile, Custom 복원 | 조명·대기·지면은 그대로 | F3 값도 바뀜, 상하단 칼 절단 |
 | Save Custom | `F1` | 현재 formation만 | schema 1 범위 | 저장 뒤 Custom 버튼 활성 | 파일 손상, Custom 비활성 |
-| Animate clouds | `F1 > Cloud Runtime` | effective time 누적 on/off | 바람 이동 시작·정지 | On에서 계속 이동, Off에서 같은 frame 형상 유지 | Off인데 이동, On인데 정지 |
-| Time | 같은 영역 | Weather/Base/Detail 공통 시간(s) | 수동 scrub과 공통 advection | slider 이동 즉시 구름·그림자·preview 함께 이동 | 일부만 이동, 한 frame 늦게 반영 |
-| VSync | 같은 영역 | swap-chain Present interval | presentation 상태 | 기본 On, Off에서도 formation 불변 | 기본 Off, 토글 시 scene/preset 변경 |
+| Cloud movement speed | `F1`, 구름 파라미터 하단 | 경과 시간에 곱하는 0~4배 속도 | 공통 이동 시작·정지 | 0에서 정지, 올리면 Weather/Base/Detail과 그림자가 함께 이동 | 절대 시간이 slider처럼 흐름, 일부 구조만 이동 |
+| VSync | `F1 > Presentation` | swap-chain Present 방식 | 동기/즉시 표시 상태 | 기본 On, 지원 환경의 Off는 `immediate + tearing allowed` 표시 | 기본 Off, Off인데 interval 1, scene/preset 변경 |
 | Preview field | `F1 > Preview` combo | 세 preview의 출력 field | 진단 선택성과 ID | 목록에서 즉시 선택 | slider로 한 칸씩 이동, ID 경고 |
 | Weather Map RGBA | `F2 > Weather Generator` 최상단 | CPU 생성 R/G/B/A | 실제 texture와 채널 확인 | 편집 직후 image/hash 변경 | image가 하단에 묻힘, 이전 map 유지 |
 | Cloud type source/G | 같은 영역 | F1이 정한 고정 타입 또는 생성 G | G 채널 소유권 | F1 Mixed/Weather Map G에서만 G 편집 활성 | 고정 모드인데 무효 slider 활성 |
-| Cloud advection speed | `F2` | Weather/Base/Detail 공통 이동 m/s | 동일한 world-space 이동 | 세 구조가 함께 같은 방향으로 이동 | Weather만 미끄러짐, 별도 noise speed처럼 동작 |
+| Base wind speed | `F2` | Weather/Base/Detail 공통 기본 m/s | 동일한 world-space 이동 | F1 배율과 곱해 세 구조가 같은 방향으로 이동 | Weather만 미끄러짐, 별도 noise speed처럼 동작 |
 | `F5`~`F8` | 키보드 | 고정 카메라 | 위/내부/수평/원경 교차 | 즉시 안정된 현재 frame | 과거 시점 잔상, 검정/타일 |
 | Density | `F4 > Cloud view` | 최종 density | NaN과 domain 절단 | 덩어리 내부가 연속 | 사각 외곽, 자홍/노랑 오류색 |
 | Transmittance | 같은 combo | View T | 적분과 early exit | 빈 하늘 1, 두꺼운 구름은 낮음 | 화면 전체 0/1, 불연속 띠 |
@@ -74,14 +73,19 @@ F1 창의 X를 누른 뒤 F1을 다시 눌러 같은 창이 열리는지 먼저 
 
 ## 3. 이동과 shimmer
 
-layer 내부 카메라에서 `W/A/S/D`로 이동하고 F2 `Cloud advection speed`를 확인한다.
+layer 내부 카메라에서 `W/A/S/D`로 이동하고 F1 `Cloud movement speed`와 F2
+`Base wind speed`를 확인한다.
 
 - 과거 frame 잔상과 가장자리 끌림은 없어야 한다.
-- F1 `Animate clouds`를 Off로 하면 Time과 구름이 멈추고, On으로 되돌리면 현재
-  F2 wind 방향·속도로 다시 이동해야 한다. Time slider를 움직이면 Weather silhouette,
-  Base/Detail 내부 무늬와 Deep Cache 그림자가 같은 frame에 함께 이동해야 한다.
+- F1 `Cloud movement speed`를 0으로 하면 현재 위치에서 구름이 멈춘다. 1로 되돌리면
+  F2 wind 방향·기본 속도로 다시 이동하고, 2에서는 같은 시간 동안 약 두 배 이동해야 한다.
+  Weather silhouette, Base/Detail 내부 무늬와 Deep Cache 그림자가 함께 움직여야 한다.
 - Temporal 제거로 생길 수 있는 단일-frame shimmer는 사용자가 허용 가능한지 직접 판단한다.
 - shimmer를 확인하려고 VSync를 켰다 꺼도 formation이나 shader generation이 바뀌면 안 된다.
+  Off에서 FPS가 그대로라면 Performance 창의 GPU Frame을 먼저 본다. GPU 시간이 한 frame
+  예산을 이미 채우면 렌더 병목이므로 FPS가 오르지 않는 것이 정상이다. F1에
+  `immediate + tearing allowed`가 보이는데 CPU Frame만 여전히 주사율에 고정되면
+  드라이버 강제 VSync나 외부 frame limiter를 실패 원인과 함께 기록한다.
 - 일정한 줄무늬가 태양 방향으로 고정되면 cone/cache sampling 문제로 기록한다.
 
 ## 4. 태양·Deep Cache·대기·Tone
@@ -139,7 +143,7 @@ Release 1920×1080 자동 gate 목표는 Cloud p95 10ms 이하, Frame p95 16.67m
 - [ ] Custom Load가 formation만 복원
 - [ ] F1 X 닫기 뒤 F1로 재개방, Preview combo 선택 정상
 - [ ] F1 Animate/Time으로 공통 구름 이동 시작·정지·scrub 정상
-- [ ] F1 VSync 기본 On, On/Off에서 formation과 shader generation 불변
+- [ ] F1 VSync 기본 On, 지원 PC의 Off에서 `immediate + tearing allowed`, On/Off에서 formation과 shader generation 불변
 - [ ] F2 RGBA 최상단·Cloud Type G 소스·공통 advection 동작 정상
 - [ ] 좌측 상단 Performance 창과 F4 Cloud view ID 경고 없음
 - [ ] 사용자가 최종 승인

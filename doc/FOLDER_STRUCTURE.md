@@ -27,6 +27,7 @@ VolumetricCloud/
 | `NoiseLab.*` | F1~F4 ImGui, noise/weather preview, schema 39 export |
 | `DeveloperUiSettings.*` | `developer-ui.json`의 Zoom schema 1 원자 저장 |
 | `FrameProfiler.*` | Atmosphere/Shadow/Opaque/Cloud/Tone/Frame timestamp |
+| `PresentationMath.h` | VSync와 tearing 지원 상태에 따른 Present 인수 계약 |
 | `WeatherMap.*` | 256² periodic Weather RGBA 생성과 hash |
 
 ## 현재 설정과 계약 `src/`

@@ -7,6 +7,7 @@
 #include "Stage14AtmosphereMath.h"
 
 #include <d3dcompiler.h>
+#include <dxgi1_5.h>
 #include <bcrypt.h>
 #include <SetupAPI.h>
 #include <devguid.h>
@@ -25,6 +26,9 @@
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
+
+static_assert(presentation::kAllowTearingPresentFlag ==
+              DXGI_PRESENT_ALLOW_TEARING);
 
 namespace
 {
@@ -599,6 +603,20 @@ bool Renderer::Init(HWND hwnd, int width, int height,
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.Windowed = TRUE;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+    ComPtr<IDXGIFactory1> factory;
+    ComPtr<IDXGIFactory5> factory5;
+    BOOL allowTearing = FALSE;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+        SUCCEEDED(factory.As(&factory5)) &&
+        SUCCEEDED(factory5->CheckFeatureSupport(
+            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+            &allowTearing, sizeof(allowTearing))))
+    {
+        m_tearingSupported = allowTearing == TRUE;
+    }
+    if (m_tearingSupported)
+        swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
     UINT flags = 0;
 #ifdef _DEBUG
@@ -2150,8 +2168,10 @@ void Renderer::Resize(int width, int height)
     m_context->PSSetShaderResources(0, 6, nullSrvs);
     ReleaseSizeDependentResources();
 
+    const UINT resizeFlags = m_tearingSupported
+        ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
     if (SUCCEEDED(m_swapChain->ResizeBuffers(
-            0, width, height, DXGI_FORMAT_UNKNOWN, 0)) &&
+            0, width, height, DXGI_FORMAT_UNKNOWN, resizeFlags)) &&
         CreateBackBufferTarget() && CreateSceneTargets())
     {
         m_sizeDependentResourcesValid = true;
@@ -2498,6 +2518,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             m_baseNoiseVolumeHash, m_detailNoiseVolumeHash,
             m_noiseVolumeGenerationMilliseconds, m_weatherMapSrv.Get(),
             atmosphereLutSrvs, m_frameProfiler.Snapshot(), m_vsyncEnabled,
+            m_tearingSupported,
             m_shaderGeneration, m_shaderStatus, m_shaderError,
             m_lastShaderReloadReport);
 
@@ -2572,7 +2593,10 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         m_noiseLab.EndFrame(m_backBufferRtv.Get());
     m_context->RSSetViewports(1, &viewport);
     m_frameProfiler.EndGpuFrame(m_context.Get());
-    m_swapChain->Present(m_vsyncEnabled ? 1u : 0u, 0);
+    const presentation::PresentParameters present =
+        presentation::ResolvePresentParameters(
+            m_vsyncEnabled, m_tearingSupported, true);
+    m_swapChain->Present(present.syncInterval, present.flags);
     m_frameProfiler.EndCpuFrame();
 }
 
