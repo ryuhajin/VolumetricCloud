@@ -14,6 +14,7 @@
 
 #include "CloudParameters.hlsli"
 #include "CloudShapeParameters.hlsli"
+#include "WeatherColumnParameters.hlsli"
 #include "CloudAdvection.hlsli"
 
 Texture2D<float4> weatherMapTexture : register(t2);
@@ -23,9 +24,22 @@ struct WeatherSample
 {
     float coverage;          // R: 이 위치에 구름이 생길 수 있는 비율(0~1).
     float cloudType;         // G: 0 층운, 0.5 기존 혼합형, 1 적운.
+    float storedRegionalType;// texture G 원본. Fixed 모드에서도 보존/preview한다.
     float densityModifier;   // B를 0.5~1.5로 바꾼 최종 밀도 배율.
     float localThicknessPotential;// A: 타입별 물리 두께 범위 안의 보간값(0~1).
     float2 uv;               // 실제 조회한 반복 Weather UV(0~1).
+};
+
+// Weather A/G와 전역 도메인으로부터 한 번 계산한 로컬 컬럼 계약이다.
+// View, support precheck, Light Ray와 Deep Shadow가 이 값을 공유해야 같은
+// 위치에서 구름이 시작하고 끝난다.
+struct PhysicalColumnGeometry
+{
+    float localThicknessMeters;
+    float localBaseLiftMeters;
+    float localBottomMeters;
+    float localTopMeters;
+    float localHeightFraction;
 };
 
 // 8-bit UNORM에서 0.5는 정확히 저장되지 않고 128/255가 된다. 디버그 맵의
@@ -47,26 +61,10 @@ float DecodeCanonicalWeatherChannel(float value)
 // 음수여도 1e-4m로 보정해 NaN/Inf가 화면 전체로 번지는 것을 막는다.
 float2 ComputeWeatherUv(float3 worldPosition, float timeSeconds)
 {
-    float2 result = float2(0.0, 0.0);
-    if (cloudShapeMode == kCloudShapeWeatherPhysicalThickness)
-    {
-        float3 stationaryWorld = ComputePhysicalCloudSamplePosition(
-            worldPosition, timeSeconds);
-        result = frac(stationaryWorld.xz / max(weatherMapWorldSize, 1e-4) +
-                      weatherMapOffset);
-    }
-    else
-    {
-        float2 windXZ = windDirection.xz;
-        float windLength = length(windXZ);
-        float2 safeWind = windLength > 1e-6 ? windXZ / windLength : 0.0.xx;
-        float safeWorldSize = max(weatherMapWorldSize, 1e-4);
-        float safeTime = max(timeSeconds, 0.0);
-        float2 stationaryWorld = worldPosition.xz -
-            safeWind * max(weatherMapWindSpeed, 0.0) * safeTime;
-        result = frac(stationaryWorld / safeWorldSize + weatherMapOffset);
-    }
-    return result;
+    float3 stationaryWorld = ComputePhysicalCloudSamplePosition(
+        worldPosition, timeSeconds);
+    return frac(stationaryWorld.xz /
+        max(weatherMapWorldSize, 1e-4) + weatherMapOffset);
 }
 
 WeatherSample SampleWeatherMap(float3 worldPosition, float timeSeconds)
@@ -76,26 +74,12 @@ WeatherSample SampleWeatherMap(float3 worldPosition, float timeSeconds)
     float4 channels = saturate(
         weatherMapTexture.SampleLevel(weatherMapSampler, result.uv, 0.0));
     result.coverage = channels.r;
-    result.cloudType = DecodeCanonicalWeatherChannel(channels.g);
+    // G에는 항상 지역별 원본을 저장하고 b10 선택 정책으로 유효 타입을 계산한다.
+    result.storedRegionalType = DecodeCanonicalWeatherChannel(channels.g);
+    result.cloudType = ResolveEffectiveCloudType(result.storedRegionalType);
     result.densityModifier = 0.5 + DecodeCanonicalWeatherChannel(channels.b);
     result.localThicknessPotential = DecodeCanonicalWeatherChannel(channels.a);
     return result;
-}
-
-float EvaluateLocalTopFraction(float localHeightPotential, float cloudType)
-{
-    float minimumThickness = clamp(minimumLocalThicknessFraction, 0.10, 1.0);
-    float rawTop = max(minimumThickness, saturate(localHeightPotential));
-    float cumulusAmount = smoothstep(0.5, 1.0, saturate(cloudType));
-    float typedTop = lerp(rawTop, 1.0,
-        saturate(cumulusTopBoost) * cumulusAmount);
-    return lerp(1.0, typedTop, saturate(localHeightVariation));
-}
-
-float EvaluateLocalHeightFraction(float globalHeightFraction,
-                                  float localTopFraction)
-{
-    return saturate(globalHeightFraction) / max(saturate(localTopFraction), 1e-4);
 }
 
 float2 EvaluatePhysicalThicknessRange(float cloudType)
@@ -117,6 +101,42 @@ float EvaluatePhysicalLocalThickness(float thicknessPotential, float cloudType)
 float EvaluatePhysicalLocalHeight(float worldY, float localThicknessMeters)
 {
     return (worldY - cloudBoundsMin.y) / max(localThicknessMeters, 1.0);
+}
+
+float EvaluatePhysicalLocalBaseLift(float thicknessPotential,
+                                    float localThicknessMeters,
+                                    float typeScale)
+{
+    float weakColumn = 1.0 - saturate(thicknessPotential);
+    float desiredLift = max(maximumBaseLiftMeters, 0.0) *
+        saturate(typeScale) * pow(weakColumn, 1.5);
+    return min(desiredLift, max(localThicknessMeters, 0.0) * 0.25);
+}
+
+PhysicalColumnGeometry EvaluatePhysicalColumnGeometry(
+    float worldY, WeatherSample weather)
+{
+    PhysicalColumnGeometry result = (PhysicalColumnGeometry)0;
+    result.localThicknessMeters = EvaluatePhysicalLocalThickness(
+        weather.localThicknessPotential, weather.cloudType);
+    float typeScale = lerp(0.15, 1.0, saturate(weather.cloudType));
+    result.localBaseLiftMeters = EvaluatePhysicalLocalBaseLift(
+        weather.localThicknessPotential, result.localThicknessMeters,
+        typeScale);
+    result.localBottomMeters = cloudBoundsMin.y +
+        result.localBaseLiftMeters;
+    result.localTopMeters = result.localBottomMeters +
+        result.localThicknessMeters;
+    result.localHeightFraction = (worldY - result.localBottomMeters) /
+        max(result.localThicknessMeters, 1.0);
+    return result;
+}
+
+float EvaluateFootprintCoverageFactor(float typedFootprintScale)
+{
+    float influence = saturate(footprintCoverageInfluence);
+    return lerp(1.0 - influence, 1.0,
+                saturate(typedFootprintScale));
 }
 
 float EvaluateProfileEnvelope(float heightFraction, float bottomFadeEndValue,
@@ -181,82 +201,13 @@ float EvaluatePhysicalTypedFootprintScale(float heightFraction, float cloudType)
         : lerp(mixed, cumulus, (type - 0.5) * 2.0);
 }
 
-// 디버그용 결합 profile이다. 13-4E 실제 density에서는 vertical은 최종 Base
-// 밀도에 한 번, footprint는 horizontal threshold에 20%만 반영한다.
+// 디버그용 결합 profile이다. 실제 density에서는 vertical은 최종 Base 밀도에
+// 한 번, footprint는 footprintCoverageInfluence만큼 horizontal threshold에 반영한다.
 float EvaluatePhysicalTypedShapeProfile(float heightFraction, float cloudType)
 {
     return saturate(
         EvaluatePhysicalTypedVerticalProfile(heightFraction, cloudType) *
         EvaluatePhysicalTypedFootprintScale(heightFraction, cloudType));
-}
-
-// 낮고 평평한 층운: 바닥에서 빠르게 생기고 구름층 중간 전에 사라진다.
-float EvaluateStratusProfile(float heightFraction)
-{
-    float h = saturate(heightFraction);
-    return saturate(smoothstep(0.0, 0.08, h) *
-        (1.0 - smoothstep(0.38, 0.55, h)));
-}
-
-// 위로 발달한 적운: 단계 3보다 상단 fade 시작을 늦추고, 낮은 부분보다 높은
-// 부분의 상대 밀도를 키운다. bottom/top UI는 적운에도 안전한 범위로 반영한다.
-float EvaluateCumulusProfile(float heightFraction)
-{
-    float h = saturate(heightFraction);
-    float safeBottom = max(clamp(bottomFadeEnd, 0.01, 0.99), 0.12);
-    float safeTop = max(clamp(topFadeStart, 0.01, 0.99), 0.88);
-    float envelope = smoothstep(0.0, safeBottom, h) *
-        (1.0 - smoothstep(safeTop, 1.0, h));
-    float upperMass = lerp(0.55, 1.0, smoothstep(0.10, 0.65, h));
-    return saturate(envelope * upperMass);
-}
-
-// cloudType=0.5에서 mixedProfile을 그대로 반환하는 구간별 보간이다.
-// 따라서 F2 Uniform Legacy의 G=0.5는 승인된 단계 3 높이 결과와 정확히 같다.
-float EvaluateTypedHeightProfile(float heightFraction, float cloudType,
-                                 float mixedProfile)
-{
-    float type = saturate(cloudType);
-    float stratus = EvaluateStratusProfile(heightFraction);
-    float cumulus = EvaluateCumulusProfile(heightFraction);
-    return type <= 0.5
-        ? lerp(stratus, mixedProfile, type * 2.0)
-        : lerp(mixedProfile, cumulus, (type - 0.5) * 2.0);
-}
-
-float EvaluateMixedFootprintCutoff(float heightFraction)
-{
-    float h = saturate(heightFraction);
-    float lower = lerp(0.22, 0.04, smoothstep(0.0, 0.35, h));
-    return lerp(lower, 0.38, smoothstep(0.65, 1.0, h));
-}
-
-float EvaluateCumulusFootprintCutoff(float heightFraction)
-{
-    float h = saturate(heightFraction);
-    float lower = lerp(0.32, 0.03, smoothstep(0.0, 0.38, h));
-    return lerp(lower, 0.62, smoothstep(0.62, 1.0, h));
-}
-
-float EvaluateTypedFootprintCutoff(float heightFraction, float cloudType)
-{
-    float type = saturate(cloudType);
-    float stratus = 0.10;
-    float mixed = EvaluateMixedFootprintCutoff(heightFraction);
-    float cumulus = EvaluateCumulusFootprintCutoff(heightFraction);
-    return type <= 0.5
-        ? lerp(stratus, mixed, type * 2.0)
-        : lerp(mixed, cumulus, (type - 0.5) * 2.0);
-}
-
-// R의 부드러운 가장자리를 높이와 종류에 따라 안쪽으로 밀어 적운·혼합형의
-// 상하 수평 폭을 줄인다. R=1은 정확히 1이라 Uniform Legacy가 변하지 않는다.
-float EvaluateTypedWeatherCoverage(float weatherCoverage,
-                                   float heightFraction, float cloudType)
-{
-    float cutoff = EvaluateTypedFootprintCutoff(heightFraction, cloudType);
-    return saturate((saturate(weatherCoverage) - cutoff) /
-        max(1.0 - cutoff, 1e-4));
 }
 
 #endif

@@ -27,8 +27,8 @@ int main()
 {
     using namespace stage6;
 
-    Require(sizeof(LightParameters) == 80u,
-            "LightCB CPU layout must remain 80 bytes");
+    Require(sizeof(LightParameters) == 64u,
+            "High-only LightCB CPU layout must remain 64 bytes");
 
     const auto uniform = MarchConstantDensity(4.0f, 0.35f, 1.0f, 0.25f, 32u);
     Require(Near(uniform.transmittance, std::exp(-1.4f), 1e-5f),
@@ -115,8 +115,6 @@ int main()
     LightParameters bad;
     bad.directionToSun = { 0.0f, 0.0f, 0.0f };
     bad.sunIntensity = -1.0f;
-    bad.maxLightSteps = 0;
-    bad.lightStepSize = -1.0f;
     bad.singleScatteringAlbedo = 2.0f;
     bad.edgeInfluence = 2.0f;
     bad.edgeOpticalDepthScale = -1.0f;
@@ -127,8 +125,8 @@ int main()
         safe.directionToSun.y * safe.directionToSun.y +
         safe.directionToSun.z * safe.directionToSun.z);
     Require(Near(directionLength, 1.0f, 1e-4f), "sun direction must be normalized");
-    Require(safe.sunIntensity == 0.0f && safe.maxLightSteps >= 1u &&
-            safe.lightStepSize > 0.0f, "invalid CPU light settings must be clamped");
+    Require(safe.sunIntensity == 0.0f,
+            "invalid CPU light intensity must be clamped");
     Require(safe.singleScatteringAlbedo == 1.0f,
             "single-scattering albedo above one must clamp to one");
     Require(safe.edgeInfluence == 1.0f &&

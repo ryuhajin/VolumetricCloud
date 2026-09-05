@@ -164,21 +164,23 @@ DirectX::XMMATRIX Camera::GetViewProj() const
     XMVECTOR up  = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
-    XMMATRIX proj = XMMatrixPerspectiveFovLH(m_fovY, m_aspect, m_nearZ, m_farZ);
-    return XMMatrixMultiply(view, proj);
+    return XMMatrixMultiply(view, GetProjection());
 }
 
 DirectX::XMMATRIX Camera::GetInvViewProj() const
 {
-    XMMATRIX vp = GetViewProj();
-    return XMMatrixInverse(nullptr, vp);
+    return XMMatrixInverse(nullptr, GetViewProj());
 }
 
 DirectX::XMMATRIX Camera::GetInvProjection() const
 {
-    const XMMATRIX projection = XMMatrixPerspectiveFovLH(
+    return XMMatrixInverse(nullptr, GetProjection());
+}
+
+DirectX::XMMATRIX Camera::GetProjection() const
+{
+    return XMMatrixPerspectiveFovLH(
         m_fovY, m_aspect, m_nearZ, m_farZ);
-    return XMMatrixInverse(nullptr, projection);
 }
 
 DirectX::XMMATRIX Camera::GetInvViewRotation() const

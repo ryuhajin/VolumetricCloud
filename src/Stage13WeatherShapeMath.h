@@ -34,6 +34,15 @@ struct ThicknessRange
     double maximumMeters = kStratusMaximumThicknessMeters;
 };
 
+struct PhysicalColumnGeometry
+{
+    double localThicknessMeters = 0.0;
+    double localBaseLiftMeters = 0.0;
+    double localBottomMeters = kLayerBottomMeters;
+    double localTopMeters = kLayerBottomMeters;
+    double localHeightFraction = 0.0;
+};
+
 struct HorizontalOffset
 {
     double x = 0.0;
@@ -114,6 +123,43 @@ inline double EvaluateLocalHeight(double worldY, double thicknessMeters,
     const double safeThickness = std::max(
         std::isfinite(thicknessMeters) ? thicknessMeters : 0.0, 1.0);
     return (worldY - layerBottomMeters) / safeThickness;
+}
+
+inline double EvaluateLocalBaseLiftMeters(double thicknessPotential,
+                                          double localThicknessMeters,
+                                          double cloudType,
+                                          double localBaseLiftMaxMeters)
+{
+    const double potential = SaturateFinite(thicknessPotential);
+    const double typeScale = 0.15 + 0.85 * SaturateFinite(cloudType);
+    const double maximumLift = std::isfinite(localBaseLiftMaxMeters)
+        ? std::clamp(localBaseLiftMaxMeters, 0.0, 2000.0) : 0.0;
+    const double thickness = std::isfinite(localThicknessMeters)
+        ? std::max(localThicknessMeters, 0.0) : 0.0;
+    const double desiredLift = maximumLift * typeScale *
+        std::pow(1.0 - potential, 1.5);
+    return std::min(desiredLift, thickness * 0.25);
+}
+
+inline PhysicalColumnGeometry EvaluatePhysicalColumnGeometry(
+    double worldY, double thicknessPotential, double cloudType,
+    double localBaseLiftMaxMeters,
+    double layerBottomMeters = kLayerBottomMeters)
+{
+    PhysicalColumnGeometry result;
+    result.localThicknessMeters = EvaluateLocalThicknessMeters(
+        thicknessPotential, cloudType);
+    result.localBaseLiftMeters = EvaluateLocalBaseLiftMeters(
+        thicknessPotential, result.localThicknessMeters, cloudType,
+        localBaseLiftMaxMeters);
+    const double safeBottom = std::isfinite(layerBottomMeters)
+        ? layerBottomMeters : kLayerBottomMeters;
+    result.localBottomMeters = safeBottom + result.localBaseLiftMeters;
+    result.localTopMeters = result.localBottomMeters +
+        result.localThicknessMeters;
+    result.localHeightFraction = EvaluateLocalHeight(
+        worldY, result.localThicknessMeters, result.localBottomMeters);
+    return result;
 }
 
 inline double EvaluateEnvelope(double height, double bottomFadeEnd,
@@ -198,11 +244,13 @@ inline double EvaluateTypedShapeProfile(double height, double cloudType)
 
 inline double EvaluateEffectiveShapeCoverage(double globalCoverage,
                                              double weatherCoverage,
-                                             double typedFootprintScale)
+                                             double typedFootprintScale,
+                                             double footprintInfluence = 0.20)
 {
     const double weatherFactor = 0.70 + 0.30 * SaturateFinite(weatherCoverage);
-    const double footprintFactor = 0.80 +
-        0.20 * SaturateFinite(typedFootprintScale);
+    const double influence = SaturateFinite(footprintInfluence);
+    const double footprintFactor = (1.0 - influence) +
+        influence * SaturateFinite(typedFootprintScale);
     return SaturateFinite(SaturateFinite(globalCoverage) *
                           weatherFactor * footprintFactor);
 }
@@ -225,14 +273,16 @@ inline double EvaluatePhysicalBaseShape(double rawNoise,
                                         double globalCoverage,
                                         double weatherCoverage,
                                         double height,
-                                        double cloudType)
+                                        double cloudType,
+                                        double footprintInfluence = 0.20)
 {
     const double verticalProfile = EvaluateTypedVerticalProfile(
         height, cloudType);
     const double footprintScale = EvaluateTypedFootprintScale(
         height, cloudType);
     const double shapeCoverage = EvaluateEffectiveShapeCoverage(
-        globalCoverage, weatherCoverage, footprintScale);
+        globalCoverage, weatherCoverage, footprintScale,
+        footprintInfluence);
     return EvaluateWeatherSupport(weatherCoverage) *
         RemapCoverage(rawNoise, shapeCoverage) * verticalProfile;
 }

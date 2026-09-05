@@ -9,12 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-
-enum class NoiseSource : std::uint32_t
-{
-    ProceduralLegacy = 0,
-    Texture3D = 1,
-};
+#include <vector>
 
 namespace stage13noise
 {
@@ -25,10 +20,10 @@ inline constexpr std::uint32_t kBasePerlinOctaveSeedStride = 173u;
 
 struct alignas(16) NoiseVolumeParameters
 {
-    std::uint32_t noiseSource = static_cast<std::uint32_t>(NoiseSource::ProceduralLegacy);
     std::uint32_t baseResolution = 128;
     std::uint32_t detailResolution = 32;
     std::uint32_t seed = 1337;
+    std::uint32_t paddingUint0 = 0;
 
     float baseWorldSizeMeters = stage13noise::kBaseHorizontalWorldSizeMeters;
     float detailWorldSizeMeters = 2000.0f;
@@ -216,5 +211,32 @@ inline double SamplesPerWavelength(double worldSizeMeters,
 inline bool IsNyquistSafe(std::uint32_t resolution, std::uint32_t frequency)
 {
     return frequency <= resolution / 2u;
+}
+
+inline double WeightedDetailMean(
+    const std::vector<std::uint8_t>& rgba,
+    const std::array<double, 4>& weights)
+{
+    if (rgba.empty() || rgba.size() % 4u != 0u)
+        return 0.5;
+    std::array<double, 4> safeWeights = {};
+    for (std::size_t channel = 0; channel < safeWeights.size(); ++channel)
+    {
+        safeWeights[channel] = std::isfinite(weights[channel])
+            ? std::max(weights[channel], 0.0) : 0.0;
+    }
+    double total = 0.0;
+    for (std::size_t texel = 0; texel < rgba.size(); texel += 4u)
+    {
+        double value = 0.0;
+        for (std::size_t channel = 0; channel < 4u; ++channel)
+        {
+            value += (static_cast<double>(rgba[texel + channel]) / 255.0) *
+                safeWeights[channel];
+        }
+        total += std::clamp(value, 0.0, 1.0);
+    }
+    return std::clamp(
+        total / static_cast<double>(rgba.size() / 4u), 0.0, 1.0);
 }
 }

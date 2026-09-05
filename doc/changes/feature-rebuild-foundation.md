@@ -615,7 +615,7 @@
   누락·구버전·손상·비유한·범위 밖 값을 렌더 상태 변경 없이 거부한다.
 - Pipeline Compare UI의 main cloud pass는 effective time 0을 사용해 단계별 좌표를 고정한다.
   일반 animation state는 건드리지 않으며 Compare 밖에서는 즉시 정상 time으로 복귀한다.
-- `CloudAppearanceTests`와 확장 `Stage13UnifiedSceneSmoke`가 점유율, density 0 조건, preset
+- 당시 외형 프리셋 회귀 테스트와 확장 `Stage13UnifiedSceneSmoke`가 점유율, density 0 조건, preset
   불변 상태, Custom JSON, F5/F6 주요 출력의 finite/non-black/distinct hash를 검사한다.
   Debug/Release 전체 CTest는 각각 `39/39`, HLSL 7개 entry의 `/Od /WX`·`/O3 /WX`는
   총 `14/14` 통과했다. Dense Mixed F6의 13-5 품질 Light T/Direct/Composite MAE는

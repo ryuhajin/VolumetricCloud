@@ -1,25 +1,18 @@
 // ============================================================================
-//  WeatherMap.h - 단계 5 CPU 2-scale periodic Perlin Weather Map
+//  WeatherMap.h - GPU Weather Map 계약과 CPU 2-scale periodic Perlin 검증 기준
 // ----------------------------------------------------------------------------
-//  GPU에 올리기 전의 256² RGBA8 데이터와 CPU 전용 생성 설정이다.
-//  CloudCB에는 포함하지 않으며 UI가 바꾸면 같은 texture에 UpdateSubresource한다.
+//  런타임 Compute와 CPU 검증 기준이 공유하는 256² RGBA8 생성 계약이다.
 // ============================================================================
 #pragma once
 
 #include "CloudParameters.h"
+#include "WeatherColumnParameters.h"
 
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 
 constexpr std::uint32_t kWeatherMapSize = 256;
-
-enum class CloudTypeMode : std::uint32_t
-{
-    Stratus = 0,
-    Mixed = 1,
-    Cumulus = 2,
-    WeatherMap = 3,
-};
 
 struct PeriodicChannelSettings
 {
@@ -49,9 +42,46 @@ struct WeatherMapGeneratorSettings
     float coverageSoftness = 0.14f;
     float densityCoverageInfluence = 0.35f;
     float thicknessCoverageInfluence = 0.20f;
-    // WeatherMap이면 생성된 G를 유지하고, 나머지는 모든 preset의 G만 고정한다.
-    CloudTypeMode cloudTypeMode = CloudTypeMode::WeatherMap;
 };
+
+struct WeatherMapDefinition
+{
+    // RGBA 생성만 소유하며 렌더 타입 선택과 이동은 포함하지 않는다.
+    WeatherMapGeneratorSettings generator = {};
+    WeatherColumnSettings column = {};
+    float worldSizeMeters = 64000.0f;
+};
+
+struct alignas(16) WeatherMapChannelGpuParameters
+{
+    std::uint32_t seed = 0;
+    std::uint32_t macroPeriod = 2;
+    std::uint32_t detailPeriod = 5;
+    float detailWeight = 0.25f;
+    float bias = 0.0f;
+    float contrast = 1.0f;
+    float padding0 = 0.0f;
+    float padding1 = 0.0f;
+};
+
+struct alignas(16) WeatherMapComputeParameters
+{
+    WeatherMapChannelGpuParameters channels[4] = {};
+    float coverageThreshold = 0.56f;
+    float coverageSoftness = 0.14f;
+    float densityCoverageInfluence = 0.35f;
+    float thicknessCoverageInfluence = 0.20f;
+    std::uint32_t preset = 0;
+    std::uint32_t width = kWeatherMapSize;
+    std::uint32_t height = kWeatherMapSize;
+    std::uint32_t padding0 = 0;
+};
+
+static_assert(sizeof(WeatherMapComputeParameters) == 160,
+              "WeatherMap compute cbuffer ABI changed");
+
+WeatherMapComputeParameters BuildWeatherMapComputeParameters(
+    Stage5WeatherPreset preset, const WeatherMapGeneratorSettings& settings);
 
 struct WeatherMapData
 {
@@ -64,6 +94,8 @@ WeatherMapGeneratorSettings SanitizeWeatherMapGeneratorSettings(
     const WeatherMapGeneratorSettings& settings);
 bool WeatherMapGeneratorSettingsEqual(const WeatherMapGeneratorSettings& a,
                                       const WeatherMapGeneratorSettings& b);
+WeatherMapDefinition SanitizeWeatherMapDefinition(
+    const WeatherMapDefinition& definition);
 float SamplePeriodicPerlin2D(float u, float v, std::uint32_t period,
                              std::uint32_t seed);
 WeatherMapData BuildWeatherMap(

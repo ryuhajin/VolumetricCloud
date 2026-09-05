@@ -127,21 +127,57 @@ int main()
         stage13shape::AdvanceEffectiveTime(NAN, INFINITY, NAN, false) != 0.0)
         Fail("effective time must pause exactly and resume continuously");
 
+    WeatherColumnSettings invalidColumn;
+    invalidColumn.stratusMinimumThicknessMeters = NAN;
+    invalidColumn.stratusMaximumThicknessMeters = -100.0f;
+    invalidColumn.cumulusMinimumThicknessMeters = INFINITY;
+    invalidColumn.cumulusMaximumThicknessMeters = 100000.0f;
+    invalidColumn.maximumBaseLiftMeters = NAN;
+    const WeatherColumnSettings sanitizedColumn =
+        SanitizeWeatherColumnSettings(invalidColumn);
     CloudShapeParameters invalidShape;
-    invalidShape.shapeMode = 99u;
-    invalidShape.stratusMinimumThicknessMeters = NAN;
-    invalidShape.stratusMaximumThicknessMeters = -100.0f;
-    invalidShape.cumulusMinimumThicknessMeters = INFINITY;
-    invalidShape.cumulusMaximumThicknessMeters = 100000.0f;
+    invalidShape.footprintCoverageInfluence = 2.0f;
     const CloudShapeParameters sanitizedShape =
         SanitizeCloudShapeParameters(invalidShape);
-    if (sanitizedShape.shapeMode != static_cast<std::uint32_t>(
-            CloudShapeMode::LegacyNormalizedLayer) ||
-        sanitizedShape.stratusMinimumThicknessMeters < 1.0f ||
-        sanitizedShape.stratusMaximumThicknessMeters <
-            sanitizedShape.stratusMinimumThicknessMeters ||
-        sanitizedShape.cumulusMaximumThicknessMeters > 6000.0f)
-        Fail("CloudShapeCB sanitize must preserve ordered finite bounds");
+    if (sanitizedColumn.stratusMinimumThicknessMeters < 1.0f ||
+        sanitizedColumn.stratusMaximumThicknessMeters <
+            sanitizedColumn.stratusMinimumThicknessMeters ||
+        sanitizedColumn.cumulusMaximumThicknessMeters > 6000.0f ||
+        sanitizedColumn.maximumBaseLiftMeters != 200.0f ||
+        sanitizedShape.footprintCoverageInfluence != 1.0f)
+        Fail("Weather column and CloudShapeCB sanitize must preserve bounds");
+
+    const auto weakCumulus = stage13shape::EvaluatePhysicalColumnGeometry(
+        1800.0, 0.0, 1.0, 300.0, 1500.0);
+    const auto strongCumulus = stage13shape::EvaluatePhysicalColumnGeometry(
+        4700.0, 1.0, 1.0, 300.0, 1500.0);
+    const auto weakStratus = stage13shape::EvaluatePhysicalColumnGeometry(
+        1545.0, 0.0, 0.0, 300.0, 1500.0);
+    if (std::abs(weakCumulus.localBaseLiftMeters - 300.0) > 1e-9 ||
+        std::abs(weakCumulus.localBottomMeters - 1800.0) > 1e-9 ||
+        std::abs(weakCumulus.localTopMeters - 4800.0) > 1e-9 ||
+        std::abs(weakCumulus.localHeightFraction) > 1e-9 ||
+        strongCumulus.localBaseLiftMeters != 0.0 ||
+        std::abs(strongCumulus.localTopMeters - 7500.0) > 1e-9 ||
+        std::abs(weakStratus.localBaseLiftMeters - 45.0) > 1e-9 ||
+        std::abs(weakStratus.localHeightFraction) > 1e-9 ||
+        std::abs(stage13shape::EvaluateLocalBaseLiftMeters(
+            0.0, 10.0, 1.0, 300.0) - 2.5) > 1e-9)
+        Fail("local column geometry must share type-scaled lift and 25% cap");
+
+    double previousLift = 301.0;
+    for (int index = 0; index <= 20; ++index)
+    {
+        const double potential = index / 20.0;
+        const double thickness = stage13shape::EvaluateLocalThicknessMeters(
+            potential, 1.0);
+        const double lift = stage13shape::EvaluateLocalBaseLiftMeters(
+            potential, thickness, 1.0, 300.0);
+        if (lift > previousLift + 1e-9 || lift < 0.0 ||
+            lift > thickness * 0.25 + 1e-9)
+            Fail("stronger columns must monotonically lower the local base");
+        previousLift = lift;
+    }
 
     const stage13openworld::Parameters openWorld;
     if (std::abs(openWorld.layerBottomMeters - 1500.0) > 1e-6 ||
@@ -217,6 +253,13 @@ int main()
     if (stage13shape::EvaluatePhysicalBaseShape(1.0, 1.0, 1.0, 0.0, 1.0) != 0.0 ||
         stage13shape::EvaluateEffectiveShapeCoverage(1.0, 1.0, 0.5) >= 1.0)
         Fail("shape profile zero must remove support and saturated Weather R must still taper");
+    const double footprintDisabled = stage13shape::EvaluateEffectiveShapeCoverage(
+        0.8, 1.0, 0.25, 0.0);
+    const double footprintFull = stage13shape::EvaluateEffectiveShapeCoverage(
+        0.8, 1.0, 0.25, 1.0);
+    if (std::abs(footprintDisabled - 0.8) > 1e-12 ||
+        std::abs(footprintFull - 0.2) > 1e-12)
+        Fail("footprint influence must interpolate from disabled to full shaping");
     double previousCoverage = 0.0;
     double previousShape = 0.0;
     for (int index = 0; index <= 10; ++index)

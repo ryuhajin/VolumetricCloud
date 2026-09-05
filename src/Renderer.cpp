@@ -1,11 +1,15 @@
 #include "Renderer.h"
 #include "Camera.h"
+#include "CloudShapeDomainContract.h"
+#include "HighCloudQuality.h"
+#include "Fnv1a64.h"
 #include "Stage13CameraPresets.h"
 #include "Stage13SceneMath.h"
-#include "Stage11TemporalMath.h"
 #include "Stage14AtmosphereMath.h"
 
 #include <d3dcompiler.h>
+#include <dxgi1_5.h>
+#include <bcrypt.h>
 #include <SetupAPI.h>
 #include <devguid.h>
 #include <DirectXPackedVector.h>
@@ -14,11 +18,18 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <map>
 #include <sstream>
+#include <string_view>
 #include <vector>
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
+
+static_assert(presentation::kAllowTearingPresentFlag ==
+              DXGI_PRESENT_ALLOW_TEARING);
 
 namespace
 {
@@ -118,12 +129,7 @@ std::string CurrentLocalTimeText()
 
 void HashBytes(std::uint64_t& hash, const void* data, std::size_t size)
 {
-    const auto* bytes = static_cast<const std::uint8_t*>(data);
-    for (std::size_t index = 0; index < size; ++index)
-    {
-        hash ^= bytes[index];
-        hash *= 1099511628211ull;
-    }
+    fnv1a64::Append(hash, data, size);
 }
 
 template <typename T>
@@ -134,7 +140,330 @@ void HashValue(std::uint64_t& hash, const T& value)
 
 std::uint64_t BeginStage14Hash()
 {
-    return 1469598103934665603ull;
+    return fnv1a64::kOffsetBasis;
+}
+
+void AppendCacheBytes(std::vector<std::uint8_t>& bytes,
+                      const void* data, std::size_t size)
+{
+    const std::uint64_t length = static_cast<std::uint64_t>(size);
+    const auto* lengthBytes = reinterpret_cast<const std::uint8_t*>(&length);
+    bytes.insert(bytes.end(), lengthBytes, lengthBytes + sizeof(length));
+    const auto* source = static_cast<const std::uint8_t*>(data);
+    bytes.insert(bytes.end(), source, source + size);
+}
+
+void AppendCacheText(std::vector<std::uint8_t>& bytes,
+                     const std::string& text)
+{
+    AppendCacheBytes(bytes, text.data(), text.size());
+}
+
+using ShaderDependencySources =
+    std::map<std::string, std::vector<char>>;
+
+bool IsShaderPathInsideRoot(
+    const std::filesystem::path& shaderRoot,
+    const std::filesystem::path& shaderPath,
+    std::string& relativePath)
+{
+    std::error_code error;
+    const std::filesystem::path relative =
+        std::filesystem::relative(shaderPath, shaderRoot, error);
+    if (error || relative.empty() || relative.is_absolute())
+        return false;
+    for (const std::filesystem::path& component : relative)
+    {
+        if (component == L"..")
+            return false;
+    }
+    relativePath = relative.generic_string();
+    return !relativePath.empty();
+}
+
+bool ParseLiteralShaderIncludes(
+    const std::vector<char>& contents,
+    std::vector<std::string>& includePaths)
+{
+    const std::string source(contents.begin(), contents.end());
+    std::size_t lineStart = 0;
+    while (lineStart < source.size())
+    {
+        std::size_t lineEnd = source.find('\n', lineStart);
+        if (lineEnd == std::string::npos)
+            lineEnd = source.size();
+
+        std::size_t cursor = lineStart;
+        if (lineStart == 0 && lineEnd >= 3 &&
+            static_cast<unsigned char>(source[0]) == 0xefu &&
+            static_cast<unsigned char>(source[1]) == 0xbbu &&
+            static_cast<unsigned char>(source[2]) == 0xbfu)
+            cursor = 3;
+        while (cursor < lineEnd &&
+               (source[cursor] == ' ' || source[cursor] == '\t' ||
+                source[cursor] == '\v' || source[cursor] == '\f' ||
+                source[cursor] == '\r'))
+            ++cursor;
+        if (cursor >= lineEnd || source[cursor] != '#')
+        {
+            lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+            continue;
+        }
+
+        ++cursor;
+        while (cursor < lineEnd &&
+               (source[cursor] == ' ' || source[cursor] == '\t'))
+            ++cursor;
+        constexpr std::string_view includeDirective = "include";
+        if (cursor + includeDirective.size() > lineEnd ||
+            source.compare(cursor, includeDirective.size(),
+                           includeDirective) != 0)
+        {
+            lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+            continue;
+        }
+        cursor += includeDirective.size();
+        if (cursor < lineEnd &&
+            ((source[cursor] >= 'a' && source[cursor] <= 'z') ||
+             (source[cursor] >= 'A' && source[cursor] <= 'Z') ||
+             (source[cursor] >= '0' && source[cursor] <= '9') ||
+             source[cursor] == '_'))
+        {
+            lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+            continue;
+        }
+        while (cursor < lineEnd &&
+               (source[cursor] == ' ' || source[cursor] == '\t'))
+            ++cursor;
+
+        // 현재 shader 계약은 literal local include만 사용한다. macro include나
+        // 잘못 닫힌 경로는 cache를 포기해 stale bytecode 재사용을 막는다.
+        if (cursor >= lineEnd ||
+            (source[cursor] != '"' && source[cursor] != '<'))
+            return false;
+        const char terminator = source[cursor] == '"' ? '"' : '>';
+        const std::size_t pathStart = ++cursor;
+        const std::size_t pathEnd = source.find(terminator, pathStart);
+        if (pathEnd == std::string::npos || pathEnd >= lineEnd ||
+            pathEnd == pathStart)
+            return false;
+        includePaths.emplace_back(source.substr(pathStart, pathEnd - pathStart));
+        lineStart = lineEnd + (lineEnd < source.size() ? 1u : 0u);
+    }
+    return true;
+}
+
+bool ResolveShaderInclude(
+    const std::filesystem::path& shaderRoot,
+    const std::filesystem::path& includingFile,
+    const std::string& includeText,
+    std::filesystem::path& resolvedPath)
+{
+    const std::filesystem::path includePath =
+        std::filesystem::u8path(includeText);
+    const std::filesystem::path candidates[] = {
+        includingFile.parent_path() / includePath,
+        shaderRoot / includePath,
+    };
+
+    std::filesystem::path selected;
+    for (const std::filesystem::path& candidate : candidates)
+    {
+        std::error_code error;
+        const std::filesystem::path canonical =
+            std::filesystem::canonical(candidate, error);
+        if (error)
+            continue;
+        if (!std::filesystem::is_regular_file(canonical, error) || error)
+            return false;
+
+        std::string relative;
+        if (!IsShaderPathInsideRoot(shaderRoot, canonical, relative))
+            return false;
+        if (selected.empty())
+        {
+            selected = canonical;
+            continue;
+        }
+        if (!std::filesystem::equivalent(selected, canonical, error) || error)
+        {
+            // parent-relative와 root-relative가 서로 다른 파일을 가리키면
+            // 표준 include handler의 선택을 추측하지 않고 cache를 비활성화한다.
+            return false;
+        }
+    }
+    if (selected.empty())
+        return false;
+    resolvedPath = selected;
+    return true;
+}
+
+bool CollectShaderDependencies(
+    const std::filesystem::path& shaderRoot,
+    const std::filesystem::path& shaderPath,
+    ShaderDependencySources& sources)
+{
+    std::error_code error;
+    const std::filesystem::path canonicalPath =
+        std::filesystem::canonical(shaderPath, error);
+    if (error)
+        return false;
+
+    std::string relativePath;
+    if (!IsShaderPathInsideRoot(shaderRoot, canonicalPath, relativePath))
+        return false;
+    if (sources.find(relativePath) != sources.end())
+        return true;
+
+    std::ifstream source(canonicalPath, std::ios::binary);
+    if (!source)
+        return false;
+    std::vector<char> contents(
+        (std::istreambuf_iterator<char>(source)),
+        std::istreambuf_iterator<char>());
+    sources.emplace(relativePath, contents);
+
+    std::vector<std::string> includePaths;
+    if (!ParseLiteralShaderIncludes(contents, includePaths))
+        return false;
+    for (const std::string& includePath : includePaths)
+    {
+        std::filesystem::path dependency;
+        if (!ResolveShaderInclude(
+                shaderRoot, canonicalPath, includePath, dependency) ||
+            !CollectShaderDependencies(shaderRoot, dependency, sources))
+            return false;
+    }
+    return true;
+}
+
+std::string BuildShaderCacheKey(
+    const std::filesystem::path& shaderRoot,
+    const std::filesystem::path& shaderPath,
+    const char* entryPoint, const char* target, UINT compileFlags,
+    const D3D_SHADER_MACRO* defines)
+{
+    std::vector<std::uint8_t> input;
+    AppendCacheText(input, "VolumetricCloudShaderCache-v2-dependency-closure");
+    AppendCacheText(input, shaderPath.filename().string());
+    AppendCacheText(input, entryPoint ? entryPoint : "");
+    AppendCacheText(input, target ? target : "");
+    AppendCacheBytes(input, &compileFlags, sizeof(compileFlags));
+    if (defines)
+    {
+        for (const D3D_SHADER_MACRO* define = defines; define->Name; ++define)
+        {
+            AppendCacheText(input, define->Name);
+            AppendCacheText(input, define->Definition
+                ? define->Definition : "");
+        }
+    }
+
+    std::error_code error;
+    const std::filesystem::path canonicalRoot =
+        std::filesystem::canonical(shaderRoot, error);
+    ShaderDependencySources sources;
+    if (error ||
+        !CollectShaderDependencies(canonicalRoot, shaderPath, sources) ||
+        sources.empty())
+        return {};
+    for (const auto& [relativePath, contents] : sources)
+    {
+        AppendCacheText(input, relativePath);
+        AppendCacheBytes(input, contents.data(), contents.size());
+    }
+
+    wchar_t compilerPath[MAX_PATH] = {};
+    HMODULE compilerModule = GetModuleHandleW(L"d3dcompiler_47.dll");
+    if (compilerModule && GetModuleFileNameW(
+            compilerModule, compilerPath,
+            static_cast<DWORD>(std::size(compilerPath))) > 0)
+    {
+        const std::filesystem::path compiler(compilerPath);
+        AppendCacheText(input, compiler.filename().string());
+        const std::uintmax_t size = std::filesystem::file_size(compiler, error);
+        if (!error)
+            AppendCacheBytes(input, &size, sizeof(size));
+        error.clear();
+        const auto writeTime = std::filesystem::last_write_time(compiler, error);
+        if (!error)
+        {
+            const auto ticks = writeTime.time_since_epoch().count();
+            AppendCacheBytes(input, &ticks, sizeof(ticks));
+        }
+    }
+
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD objectSize = 0;
+    DWORD hashSize = 0;
+    DWORD returned = 0;
+    if (BCryptOpenAlgorithmProvider(
+            &algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ||
+        BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&objectSize), sizeof(objectSize),
+            &returned, 0) < 0 ||
+        BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH,
+            reinterpret_cast<PUCHAR>(&hashSize), sizeof(hashSize),
+            &returned, 0) < 0 || hashSize != 32u)
+    {
+        if (algorithm)
+            BCryptCloseAlgorithmProvider(algorithm, 0);
+        return {};
+    }
+    std::vector<std::uint8_t> object(objectSize);
+    std::array<std::uint8_t, 32> digest = {};
+    const bool succeeded = BCryptCreateHash(
+            algorithm, &hash, object.data(), objectSize,
+            nullptr, 0, 0) >= 0 &&
+        BCryptHashData(hash, input.data(),
+            static_cast<ULONG>(input.size()), 0) >= 0 &&
+        BCryptFinishHash(hash, digest.data(),
+            static_cast<ULONG>(digest.size()), 0) >= 0;
+    if (hash)
+        BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (!succeeded)
+        return {};
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string result(digest.size() * 2u, '0');
+    for (std::size_t index = 0; index < digest.size(); ++index)
+    {
+        result[index * 2u] = hex[digest[index] >> 4u];
+        result[index * 2u + 1u] = hex[digest[index] & 0x0fu];
+    }
+    return result;
+}
+
+bool HasReflectedConstantBufferSize(
+    ID3DBlob* blob, const char* name, UINT expectedSize)
+{
+    if (!blob || !name)
+        return false;
+    ComPtr<ID3D11ShaderReflection> reflection;
+    if (FAILED(D3DReflect(blob->GetBufferPointer(), blob->GetBufferSize(),
+                         __uuidof(ID3D11ShaderReflection), &reflection)))
+        return false;
+    ID3D11ShaderReflectionConstantBuffer* buffer =
+        reflection->GetConstantBufferByName(name);
+    D3D11_SHADER_BUFFER_DESC description = {};
+    return buffer && SUCCEEDED(buffer->GetDesc(&description)) &&
+        description.Size == expectedSize;
+}
+
+bool HasReflectedConstantBufferContract(
+    ID3DBlob* blob, const char* name, UINT expectedSize, UINT expectedSlot)
+{
+    if (!HasReflectedConstantBufferSize(blob, name, expectedSize))
+        return false;
+    ComPtr<ID3D11ShaderReflection> reflection;
+    if (FAILED(D3DReflect(blob->GetBufferPointer(), blob->GetBufferSize(),
+                         __uuidof(ID3D11ShaderReflection), &reflection)))
+        return false;
+    D3D11_SHADER_INPUT_BIND_DESC binding = {};
+    return SUCCEEDED(reflection->GetResourceBindingDescByName(
+               name, &binding)) &&
+        binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == expectedSlot;
 }
 
 std::wstring ResolveShaderDir()
@@ -230,20 +559,21 @@ Renderer::~Renderer()
     m_noiseLab.Shutdown();
 }
 
-bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
+bool Renderer::Init(HWND hwnd, int width, int height,
+                    bool enableNoiseVolumes,
+                    bool showInitializationErrors)
 {
+    m_hwnd = hwnd;
     m_width = width;
     m_height = height;
     m_noiseVolumesEnabled = enableNoiseVolumes;
     m_shaderDir = ResolveShaderDir();
     m_fullscreenShaderPath = m_shaderDir + L"Fullscreen.hlsl";
     m_cloudShaderPath = m_shaderDir + L"VolumetricClouds.hlsl";
-    m_cloudUpsampleShaderPath = m_shaderDir + L"CloudUpsample.hlsl";
-    m_cloudTemporalResolveShaderPath =
-        m_shaderDir + L"CloudTemporalResolve.hlsl";
     m_noiseLabShaderPath = m_shaderDir + L"NoiseLab.hlsl";
     m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
     m_noiseVolumeShaderPath = m_shaderDir + L"NoiseVolume.hlsl";
+    m_weatherMapShaderPath = m_shaderDir + L"WeatherMapCompute.hlsl";
     m_deepShadowShaderPath = m_shaderDir + L"CloudDeepShadow.hlsl";
     m_atmosphereLutShaderPath = m_shaderDir + L"Stage14AtmosphereLut.hlsl";
     m_toneMapShaderPath = m_shaderDir + L"Stage14ToneMap.hlsl";
@@ -253,11 +583,12 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     std::filesystem::path shaderDirectory(m_shaderDir);
     if (shaderDirectory.filename().empty())
         shaderDirectory = shaderDirectory.parent_path();
-    m_customAppearancePath = shaderDirectory.parent_path() / L"captures" /
-        L"noise-lab" / L"custom" / L"noise-settings.json";
-    m_hasSavedCustomAppearance = LoadCustomCloudAppearance(
-        m_customAppearancePath, m_savedCustomAppearance,
-        m_cloudAppearanceStatus);
+    m_cloudFormationPresetRoot = shaderDirectory.parent_path() / L"captures" /
+        L"noise-lab";
+    const std::filesystem::path developerUiSettingsPath =
+        shaderDirectory.parent_path() / L"captures" /
+        L"noise-lab" / L"developer-ui.json";
+    RefreshSavedCustomFormationState();
 
     DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
     swapChainDesc.BufferCount = 2;
@@ -269,6 +600,20 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.Windowed = TRUE;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+    ComPtr<IDXGIFactory1> factory;
+    ComPtr<IDXGIFactory5> factory5;
+    BOOL allowTearing = FALSE;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+        SUCCEEDED(factory.As(&factory5)) &&
+        SUCCEEDED(factory5->CheckFeatureSupport(
+            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+            &allowTearing, sizeof(allowTearing))))
+    {
+        m_tearingSupported = allowTearing == TRUE;
+    }
+    if (m_tearingSupported)
+        swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
     UINT flags = 0;
 #ifdef _DEBUG
@@ -282,7 +627,11 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
         &m_swapChain, &m_device, nullptr, &m_context);
     if (FAILED(createResult))
     {
-        MessageBoxW(hwnd, L"D3D11 디바이스/스왑체인 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        if (showInitializationErrors)
+        {
+            MessageBoxW(hwnd, L"D3D11 디바이스/스왑체인 생성 실패",
+                        L"오류", MB_OK | MB_ICONERROR);
+        }
         return false;
     }
     ComPtr<IDXGIDevice> dxgiDevice;
@@ -318,19 +667,31 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool enableNoiseVolumes)
     m_frameProfiler.Init(m_device.Get());
 
     if (!CreateBackBufferTarget() || !CreateSceneTargets() ||
-        !CreateCloudTargets() || !CreateTemporalHistoryTargets() ||
-        !CreateConstantBuffers() || !CreateShaders(true) ||
+        !CreateConstantBuffers() ||
+        !CreateShaders(showInitializationErrors) ||
         !CreateDiagnosticScene() || !CreatePipelineStates() ||
         !CreateWeatherMapTexture(m_weatherPreset) ||
-        !m_noiseLab.Init(hwnd, m_device.Get(), m_context.Get()))
+        !m_noiseLab.Init(
+            hwnd, m_device.Get(), m_context.Get(), developerUiSettingsPath))
     {
-        MessageBoxW(hwnd, L"단계 8 렌더링 리소스 생성 실패", L"오류", MB_OK | MB_ICONERROR);
+        if (showInitializationErrors)
+        {
+            MessageBoxW(hwnd, L"High 렌더링 리소스 생성 실패",
+                        L"오류", MB_OK | MB_ICONERROR);
+        }
         return false;
     }
+    m_sizeDependentResourcesValid = true;
+    D3D11_VIEWPORT initialViewport = {};
+    initialViewport.Width = static_cast<float>(m_width);
+    initialViewport.Height = static_cast<float>(m_height);
+    initialViewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &initialViewport);
 
-    // 단계 12 cache는 화면 크기와 독립적이다. 실패해도 DirectReference로
-    // 렌더를 계속할 수 있으므로 앱 초기화 자체를 중단하지 않는다.
-    CreateDeepShadowResources(ShadowPreset());
+    // Balanced512 Deep Cache는 화면 크기와 독립적인 고정 자원이다.
+    CreateDeepShadowResources();
+    if (!InitializeStage15Presets())
+        return false;
 
     UpdateShaderWriteTimes();
     return true;
@@ -364,11 +725,11 @@ bool Renderer::CreateSceneTargets()
         return false;
 
     if (FAILED(m_device->CreateTexture2D(
-            &colorDesc, nullptr, &m_hdrComposite)) ||
+            &colorDesc, nullptr, &m_hdrCloud)) ||
         FAILED(m_device->CreateRenderTargetView(
-            m_hdrComposite.Get(), nullptr, &m_hdrCompositeRtv)) ||
+            m_hdrCloud.Get(), nullptr, &m_hdrCloudRtv)) ||
         FAILED(m_device->CreateShaderResourceView(
-            m_hdrComposite.Get(), nullptr, &m_hdrCompositeSrv)))
+            m_hdrCloud.Get(), nullptr, &m_hdrCloudSrv)))
         return false;
 
     D3D11_TEXTURE2D_DESC depthDesc = colorDesc;
@@ -388,129 +749,17 @@ bool Renderer::CreateSceneTargets()
     srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
-    return SUCCEEDED(m_device->CreateShaderResourceView(
-        m_sceneDepth.Get(), &srvDesc, &m_sceneDepthSrv));
-}
-
-bool Renderer::CreateCloudTargets()
-{
-    if (!m_device || m_width <= 0 || m_height <= 0)
+    if (FAILED(m_device->CreateShaderResourceView(
+            m_sceneDepth.Get(), &srvDesc, &m_sceneDepthSrv)))
         return false;
-    m_upsamplingParameters = stage10upsampling::Sanitize(
-        m_upsamplingParameters);
-    m_temporalParameters = stage11temporal::Sanitize(
-        m_temporalParameters);
-    const int targetWidth = stage10upsampling::ScaledExtent(
-        m_width, m_upsamplingParameters.resolutionScale);
-    const int targetHeight = stage10upsampling::ScaledExtent(
-        m_height, m_upsamplingParameters.resolutionScale);
-
-    const auto createTarget = [&](DXGI_FORMAT format,
-                                  ComPtr<ID3D11Texture2D>& texture,
-                                  ComPtr<ID3D11RenderTargetView>& rtv,
-                                  ComPtr<ID3D11ShaderResourceView>& srv)
-    {
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = static_cast<UINT>(targetWidth);
-        desc.Height = static_cast<UINT>(targetHeight);
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = format;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_RENDER_TARGET |
-                         D3D11_BIND_SHADER_RESOURCE;
-        return SUCCEEDED(m_device->CreateTexture2D(
-                   &desc, nullptr, &texture)) &&
-               SUCCEEDED(m_device->CreateRenderTargetView(
-                   texture.Get(), nullptr, &rtv)) &&
-               SUCCEEDED(m_device->CreateShaderResourceView(
-                   texture.Get(), nullptr, &srv));
-    };
-
-    ComPtr<ID3D11Texture2D> scattering;
-    ComPtr<ID3D11RenderTargetView> scatteringRtv;
-    ComPtr<ID3D11ShaderResourceView> scatteringSrv;
-    ComPtr<ID3D11Texture2D> depth;
-    ComPtr<ID3D11RenderTargetView> depthRtv;
-    ComPtr<ID3D11ShaderResourceView> depthSrv;
-    if (!createTarget(DXGI_FORMAT_R16G16B16A16_FLOAT,
-                      scattering, scatteringRtv, scatteringSrv) ||
-        !createTarget(DXGI_FORMAT_R32G32_FLOAT,
-                      depth, depthRtv, depthSrv))
-        return false;
-
-    m_cloudScatteringTransmittance = scattering;
-    m_cloudScatteringTransmittanceRtv = scatteringRtv;
-    m_cloudScatteringTransmittanceSrv = scatteringSrv;
-    m_cloudDepthSceneLimit = depth;
-    m_cloudDepthSceneLimitRtv = depthRtv;
-    m_cloudDepthSceneLimitSrv = depthSrv;
-    m_cloudRenderWidth = targetWidth;
-    m_cloudRenderHeight = targetHeight;
     return true;
 }
 
-bool Renderer::CreateTemporalHistoryTargets()
-{
-    if (!m_device || m_width <= 0 || m_height <= 0)
-        return false;
-
-    const auto createTarget = [&](DXGI_FORMAT format,
-                                  ComPtr<ID3D11Texture2D>& texture,
-                                  ComPtr<ID3D11RenderTargetView>& rtv,
-                                  ComPtr<ID3D11ShaderResourceView>& srv)
-    {
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = static_cast<UINT>(m_width);
-        desc.Height = static_cast<UINT>(m_height);
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = format;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_RENDER_TARGET |
-                         D3D11_BIND_SHADER_RESOURCE;
-        return SUCCEEDED(m_device->CreateTexture2D(&desc, nullptr, &texture)) &&
-               SUCCEEDED(m_device->CreateRenderTargetView(
-                   texture.Get(), nullptr, &rtv)) &&
-               SUCCEEDED(m_device->CreateShaderResourceView(
-                   texture.Get(), nullptr, &srv));
-    };
-
-    ComPtr<ID3D11Texture2D> clouds[2];
-    ComPtr<ID3D11RenderTargetView> cloudRtvs[2];
-    ComPtr<ID3D11ShaderResourceView> cloudSrvs[2];
-    ComPtr<ID3D11Texture2D> auxiliaries[2];
-    ComPtr<ID3D11RenderTargetView> auxiliaryRtvs[2];
-    ComPtr<ID3D11ShaderResourceView> auxiliarySrvs[2];
-    for (int index = 0; index < 2; ++index)
-    {
-        if (!createTarget(DXGI_FORMAT_R16G16B16A16_FLOAT,
-                          clouds[index], cloudRtvs[index], cloudSrvs[index]) ||
-            !createTarget(DXGI_FORMAT_R16G16_FLOAT,
-                          auxiliaries[index], auxiliaryRtvs[index],
-                          auxiliarySrvs[index]))
-            return false;
-    }
-    for (int index = 0; index < 2; ++index)
-    {
-        m_temporalHistoryCloud[index] = clouds[index];
-        m_temporalHistoryCloudRtv[index] = cloudRtvs[index];
-        m_temporalHistoryCloudSrv[index] = cloudSrvs[index];
-        m_temporalHistoryAux[index] = auxiliaries[index];
-        m_temporalHistoryAuxRtv[index] = auxiliaryRtvs[index];
-        m_temporalHistoryAuxSrv[index] = auxiliarySrvs[index];
-    }
-    ResetTemporalHistory(Stage11HistoryResetReason::ResourcesRecreated);
-    return true;
-}
-
-bool Renderer::CreateDeepShadowResources(Stage12ShadowPreset preset)
+bool Renderer::CreateDeepShadowResources()
 {
     if (!m_device)
         return false;
-    const UINT resolution = stage12shadow::Resolution(preset);
+    const UINT resolution = stage12shadow::kResolution;
     const auto createArray = [&](UINT slices,
                                  ComPtr<ID3D11Texture2D>& texture,
                                  ComPtr<ID3D11ShaderResourceView>& srv,
@@ -577,50 +826,72 @@ bool Renderer::CreateDeepShadowResources(Stage12ShadowPreset preset)
     m_shadowFarTexture = farTexture;
     m_shadowFarSrv = farSrv;
     m_shadowFarUav = farUav;
-    stage12shadow::ApplyPreset(m_shadowParameters, preset);
+    m_shadowParameters = stage12shadow::Sanitize(m_shadowParameters);
     return true;
-}
-
-bool Renderer::EnsureCloudTargets()
-{
-    const Stage10UpsamplingParameters sanitized =
-        stage10upsampling::Sanitize(m_upsamplingParameters);
-    const int expectedWidth = stage10upsampling::ScaledExtent(
-        m_width, sanitized.resolutionScale);
-    const int expectedHeight = stage10upsampling::ScaledExtent(
-        m_height, sanitized.resolutionScale);
-    m_upsamplingParameters = sanitized;
-    return (m_cloudScatteringTransmittance && m_cloudDepthSceneLimit &&
-            expectedWidth == m_cloudRenderWidth &&
-            expectedHeight == m_cloudRenderHeight) || CreateCloudTargets();
 }
 
 bool Renderer::CompileShaderFromFile(const std::wstring& path,
                                      const char* entryPoint,
                                      const char* target,
                                      ComPtr<ID3DBlob>& outBlob,
-                                     bool showErrors)
+                                     bool showErrors,
+                                     const D3D_SHADER_MACRO* defines)
 {
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+    if (path == m_weatherMapShaderPath)
+        compileFlags |= D3DCOMPILE_IEEE_STRICTNESS;
 #ifdef _DEBUG
     compileFlags |= D3DCOMPILE_DEBUG;
-    // 동적 단계 9 shader는 /Od에서 하드웨어 instruction 한도를 넘길 수 있다.
-    // 실제 최적화 비용을 재는 경로이기도 하므로 Debug에서도 최소 O1을 사용한다.
-    compileFlags |= (std::strcmp(entryPoint, "mainOptimized") == 0 ||
-                     std::strcmp(entryPoint, "mainOptimizedData") == 0 ||
-                     (std::strcmp(entryPoint, "main") == 0 &&
-                     (path == m_deepShadowShaderPath ||
-                      path == m_atmosphereLutShaderPath)))
+    // High cloud와 compute 경로는 /Od에서 하드웨어 instruction 한도를 넘길 수
+    // 있으므로 Debug에서도 최소 O1을 사용한다.
+    compileFlags |= (std::strcmp(entryPoint, "main") == 0 &&
+                     (path == m_cloudShaderPath ||
+                      path == m_deepShadowShaderPath ||
+                      path == m_atmosphereLutShaderPath))
         ? D3DCOMPILE_OPTIMIZATION_LEVEL1
         : D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
 
+    const std::filesystem::path shaderRoot(m_shaderDir);
+    const std::string cacheKey = BuildShaderCacheKey(
+        shaderRoot, std::filesystem::path(path), entryPoint, target,
+        compileFlags, defines);
+    const std::filesystem::path cacheDirectory =
+        std::filesystem::path(GetExeDir()) / L"shader-cache";
+    const std::filesystem::path cachePath = cacheKey.empty()
+        ? std::filesystem::path{}
+        : cacheDirectory / (std::filesystem::path(cacheKey).wstring() + L".cso");
+    if (!cachePath.empty() &&
+        SUCCEEDED(D3DReadFileToBlob(cachePath.c_str(), &outBlob)) && outBlob)
+    {
+        ++m_shaderCacheHitCount;
+        return true;
+    }
+
     ComPtr<ID3DBlob> errors;
+    ++m_shaderCompileCallCount;
     const HRESULT result = D3DCompileFromFile(
-        path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        path.c_str(), defines, D3D_COMPILE_STANDARD_FILE_INCLUDE,
         entryPoint, target, compileFlags, 0, &outBlob, &errors);
     if (SUCCEEDED(result))
+    {
+        if (!cachePath.empty())
+        {
+            std::error_code cacheError;
+            std::filesystem::create_directories(cacheDirectory, cacheError);
+            if (!cacheError)
+            {
+                const std::filesystem::path temporary = cachePath.wstring() +
+                    L".tmp-" + std::to_wstring(GetCurrentProcessId());
+                if (SUCCEEDED(D3DWriteBlobToFile(
+                        outBlob.Get(), temporary.c_str(), TRUE)))
+                    MoveFileExW(temporary.c_str(), cachePath.c_str(),
+                                MOVEFILE_REPLACE_EXISTING |
+                                MOVEFILE_WRITE_THROUGH);
+            }
+        }
         return true;
+    }
 
     std::string message = "HLSL shader compile failed:\n";
     if (errors)
@@ -633,221 +904,381 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     return false;
 }
 
+bool Renderer::InitializeShaderManifest()
+{
+    std::vector<shaderreload::Program> candidate =
+        shaderreload::MakeHighManifest(m_noiseVolumesEnabled);
+    const std::filesystem::path root(m_shaderDir);
+    std::string dependencyError;
+    for (auto& program : candidate)
+    {
+        if (!shaderreload::RefreshDependencies(
+                root, program, dependencyError))
+        {
+            m_shaderError = "Shader manifest failed for " + program.name +
+                ": " + dependencyError;
+            m_shaderStatus = "Shader manifest initialization failed";
+            return false;
+        }
+    }
+    m_shaderManifest = std::move(candidate);
+    return true;
+}
+
+bool Renderer::ReloadShaderPrograms(
+    const std::vector<std::size_t>& programIndices,
+    const std::vector<std::string>& changedFiles,
+    bool showErrors)
+{
+    using shaderreload::ObjectType;
+    using shaderreload::ProgramId;
+    const auto started = std::chrono::steady_clock::now();
+    const std::uint64_t compileBefore = m_shaderCompileCallCount;
+    const std::uint64_t cacheBefore = m_shaderCacheHitCount;
+    shaderreload::ReloadReport report;
+    report.attempted = true;
+    report.changedFiles = changedFiles;
+    report.affectedPrograms = programIndices.size();
+
+    const auto finish = [&](bool succeeded)
+    {
+        report.succeeded = succeeded;
+        report.compileCount = m_shaderCompileCallCount - compileBefore;
+        report.cacheHits = m_shaderCacheHitCount - cacheBefore;
+        report.elapsedMilliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        m_lastShaderReloadReport = report;
+        std::ostringstream status;
+        status << (succeeded ? "Reload succeeded" : "Reload failed")
+               << ": files=" << report.changedFiles.size()
+               << " programs=" << report.affectedPrograms
+               << " compile=" << report.compileCount
+               << " cache=" << report.cacheHits
+               << " elapsed=" << std::fixed << std::setprecision(2)
+               << report.elapsedMilliseconds << " ms";
+        m_shaderStatus = status.str();
+        return succeeded;
+    };
+
+    if (programIndices.empty())
+        return finish(true);
+
+    struct PendingProgram
+    {
+        std::size_t manifestIndex = 0;
+        ComPtr<ID3DBlob> blob;
+        ComPtr<ID3D11VertexShader> vertexShader;
+        ComPtr<ID3D11PixelShader> pixelShader;
+        ComPtr<ID3D11ComputeShader> computeShader;
+        ComPtr<ID3D11InputLayout> inputLayout;
+    };
+    std::vector<PendingProgram> pending;
+    pending.reserve(programIndices.size());
+    const std::filesystem::path root(m_shaderDir);
+
+    const auto hasContract = [](ID3DBlob* blob, const char* name,
+                                UINT size, UINT slot)
+    {
+        return HasReflectedConstantBufferContract(
+            blob, name, size, slot);
+    };
+    const auto validateContracts = [&](ProgramId id, ID3DBlob* blob)
+    {
+        switch (id)
+        {
+        case ProgramId::CloudPs:
+            return hasContract(blob, "CloudCB", 80u, 1u) &&
+                hasContract(blob, "LightCB", 64u, 3u) &&
+                hasContract(blob, "EnvironmentCB", 80u, 4u) &&
+                hasContract(blob, "CloudDomainCB", 32u, 5u) &&
+                hasContract(blob, "NoiseVolumeCB", 96u, 6u) &&
+                hasContract(blob, "CloudShapeCB", 48u, 7u) &&
+                hasContract(blob, "ShadowCB", 160u, 8u) &&
+                hasContract(blob, "Stage14CB", 224u, 9u) &&
+                hasContract(blob, "WeatherColumnCB", 32u, 10u);
+        case ProgramId::NoiseLabPs:
+            return hasContract(blob, "CloudCB", 80u, 1u) &&
+                hasContract(blob, "NoiseVolumeCB", 96u, 6u) &&
+                hasContract(blob, "CloudShapeCB", 48u, 7u) &&
+                hasContract(blob, "WeatherColumnCB", 32u, 10u);
+        case ProgramId::DeepShadowCs:
+            return hasContract(blob, "CloudCB", 80u, 1u) &&
+                hasContract(blob, "NoiseVolumeCB", 96u, 6u) &&
+                hasContract(blob, "CloudShapeCB", 48u, 7u) &&
+                hasContract(blob, "ShadowCB", 160u, 8u) &&
+                hasContract(blob, "WeatherColumnCB", 32u, 10u);
+        case ProgramId::WeatherMapCs:
+            return hasContract(blob, "WeatherMapBuildCB", 160u, 0u);
+        case ProgramId::ScenePs:
+            return hasContract(blob, "ShadowCB", 160u, 8u) &&
+                hasContract(blob, "Stage14CB", 224u, 9u);
+        case ProgramId::ToneMapPs:
+        case ProgramId::AtmosphereTransmittanceCs:
+        case ProgramId::AtmosphereMultiScatteringCs:
+        case ProgramId::AtmosphereSkyViewCs:
+        case ProgramId::AtmosphereSkyIrradianceCs:
+        case ProgramId::AtmosphereAerialCs:
+            return hasContract(blob, "Stage14CB", 224u, 9u);
+        default:
+            return true;
+        }
+    };
+
+    for (std::size_t manifestIndex : programIndices)
+    {
+        if (manifestIndex >= m_shaderManifest.size())
+        {
+            m_shaderError = "Shader manifest index is out of range";
+            return finish(false);
+        }
+        const shaderreload::Program& program =
+            m_shaderManifest[manifestIndex];
+        std::vector<D3D_SHADER_MACRO> macros;
+        macros.reserve(program.defines.size() + 1u);
+        for (const auto& define : program.defines)
+            macros.push_back({ define.name.c_str(), define.value.c_str() });
+        macros.push_back({ nullptr, nullptr });
+
+        PendingProgram item;
+        item.manifestIndex = manifestIndex;
+        if (!CompileShaderFromFile(
+                (root / program.source).wstring(), program.entry.c_str(),
+                program.target.c_str(), item.blob, showErrors,
+                program.defines.empty() ? nullptr : macros.data()))
+            return finish(false);
+        if (!validateContracts(program.id, item.blob.Get()))
+        {
+            m_shaderError = "Shader reflection contract failed for " +
+                program.name;
+            return finish(false);
+        }
+
+        HRESULT objectResult = E_FAIL;
+        if (program.object == ObjectType::VertexShader)
+            objectResult = m_device->CreateVertexShader(
+                item.blob->GetBufferPointer(), item.blob->GetBufferSize(),
+                nullptr, &item.vertexShader);
+        else if (program.object == ObjectType::PixelShader)
+            objectResult = m_device->CreatePixelShader(
+                item.blob->GetBufferPointer(), item.blob->GetBufferSize(),
+                nullptr, &item.pixelShader);
+        else
+            objectResult = m_device->CreateComputeShader(
+                item.blob->GetBufferPointer(), item.blob->GetBufferSize(),
+                nullptr, &item.computeShader);
+        if (FAILED(objectResult))
+        {
+            m_shaderError = "D3D11 object creation failed for " +
+                program.name;
+            return finish(false);
+        }
+
+        if (program.id == ProgramId::SceneVs)
+        {
+            const D3D11_INPUT_ELEMENT_DESC elements[] = {
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+                  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+                { "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+                  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+                { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 24,
+                  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+                { "MATERIALID", 0, DXGI_FORMAT_R32_UINT, 0, 36,
+                  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            };
+            if (FAILED(m_device->CreateInputLayout(
+                    elements, static_cast<UINT>(std::size(elements)),
+                    item.blob->GetBufferPointer(),
+                    item.blob->GetBufferSize(), &item.inputLayout)))
+            {
+                m_shaderError = "Scene input layout creation failed";
+                return finish(false);
+            }
+        }
+        pending.push_back(std::move(item));
+    }
+
+    std::vector<shaderreload::Program> manifestCandidate = m_shaderManifest;
+    std::string dependencyError;
+    for (std::size_t manifestIndex : programIndices)
+    {
+        if (!shaderreload::RefreshDependencies(
+                root, manifestCandidate[manifestIndex], dependencyError))
+        {
+            m_shaderError = "Shader dependency refresh failed for " +
+                manifestCandidate[manifestIndex].name + ": " +
+                dependencyError;
+            return finish(false);
+        }
+    }
+
+    std::uint32_t invalidation = shaderreload::InvalidateNone;
+    for (std::size_t manifestIndex : programIndices)
+        invalidation |= m_shaderManifest[manifestIndex].invalidation;
+
+    ComPtr<ID3D11Texture3D> generatedBaseTexture;
+    ComPtr<ID3D11ShaderResourceView> generatedBaseSrv;
+    ComPtr<ID3D11Texture3D> generatedDetailTexture;
+    ComPtr<ID3D11ShaderResourceView> generatedDetailSrv;
+    std::uint64_t generatedBaseHash = 0;
+    std::uint64_t generatedDetailHash = 0;
+    float generatedDetailNeutral = 0.5f;
+    double generatedMilliseconds = 0.0;
+    if ((invalidation & shaderreload::InvalidateNoiseVolumes) != 0u &&
+        m_noiseVolumesEnabled)
+    {
+        ID3D11ComputeShader* baseShader = m_noiseBaseCs.Get();
+        ID3D11ComputeShader* detailShader = m_noiseDetailCs.Get();
+        for (const auto& item : pending)
+        {
+            const ProgramId id =
+                m_shaderManifest[item.manifestIndex].id;
+            if (id == ProgramId::NoiseBaseCs)
+                baseShader = item.computeShader.Get();
+            else if (id == ProgramId::NoiseDetailCs)
+                detailShader = item.computeShader.Get();
+        }
+        if (!GenerateNoiseVolumes(
+                baseShader, detailShader,
+                generatedBaseTexture, generatedBaseSrv,
+                generatedDetailTexture, generatedDetailSrv,
+                generatedBaseHash, generatedDetailHash,
+                generatedDetailNeutral, generatedMilliseconds))
+        {
+            m_shaderError = "Texture3D noise regeneration failed";
+            return finish(false);
+        }
+    }
+
+    ComPtr<ID3D11Texture2D> generatedWeatherTexture;
+    ComPtr<ID3D11UnorderedAccessView> generatedWeatherUav;
+    WeatherMapData generatedWeatherData;
+    std::uint64_t generatedWeatherHash = 0;
+    double generatedWeatherMilliseconds = 0.0;
+    if ((invalidation & shaderreload::InvalidateWeatherMap) != 0u)
+    {
+        ID3D11ComputeShader* weatherShader = m_weatherMapCs.Get();
+        for (const auto& item : pending)
+            if (m_shaderManifest[item.manifestIndex].id == ProgramId::WeatherMapCs)
+                weatherShader = item.computeShader.Get();
+        if (!GenerateWeatherMapTexture(weatherShader, m_weatherPreset,
+                m_weatherDefinition.generator, generatedWeatherTexture,
+                generatedWeatherUav, generatedWeatherData,
+                generatedWeatherHash, generatedWeatherMilliseconds))
+        {
+            m_shaderError = "Weather Map regeneration failed";
+            return finish(false);
+        }
+    }
+
+    for (const auto& item : pending)
+    {
+        const ProgramId id = m_shaderManifest[item.manifestIndex].id;
+        switch (id)
+        {
+        case ProgramId::FullscreenVs:
+            m_fullscreenVs = item.vertexShader;
+            break;
+        case ProgramId::CloudPs:
+            m_cloudPs = item.pixelShader;
+            m_cloudShaderHash = fnv1a64::kOffsetBasis;
+            HashBytes(m_cloudShaderHash, item.blob->GetBufferPointer(),
+                      item.blob->GetBufferSize());
+            break;
+        case ProgramId::NoiseLabPs:
+            m_noiseLabPs = item.pixelShader;
+            break;
+        case ProgramId::SceneVs:
+            m_sceneVs = item.vertexShader;
+            m_sceneInputLayout = item.inputLayout;
+            break;
+        case ProgramId::ScenePs:
+            m_scenePs = item.pixelShader;
+            break;
+        case ProgramId::ToneMapPs:
+            m_toneMapPs = item.pixelShader;
+            break;
+        case ProgramId::WeatherMapCs:
+            m_weatherMapCs = item.computeShader;
+            break;
+        case ProgramId::NoiseBaseCs:
+            m_noiseBaseCs = item.computeShader;
+            break;
+        case ProgramId::NoiseDetailCs:
+            m_noiseDetailCs = item.computeShader;
+            break;
+        case ProgramId::DeepShadowCs:
+            m_deepShadowCs = item.computeShader;
+            m_deepShadowShaderHash = fnv1a64::kOffsetBasis;
+            HashBytes(m_deepShadowShaderHash,
+                      item.blob->GetBufferPointer(),
+                      item.blob->GetBufferSize());
+            break;
+        case ProgramId::AtmosphereTransmittanceCs:
+            m_atmosphereTransmittanceCs = item.computeShader;
+            break;
+        case ProgramId::AtmosphereMultiScatteringCs:
+            m_atmosphereMultiScatteringCs = item.computeShader;
+            break;
+        case ProgramId::AtmosphereSkyViewCs:
+            m_atmosphereSkyViewCs = item.computeShader;
+            break;
+        case ProgramId::AtmosphereSkyIrradianceCs:
+            m_atmosphereSkyIrradianceCs = item.computeShader;
+            break;
+        case ProgramId::AtmosphereAerialCs:
+            m_atmosphereAerialCs = item.computeShader;
+            break;
+        }
+    }
+    m_shaderManifest = std::move(manifestCandidate);
+    if ((invalidation & shaderreload::InvalidateAtmosphereLuts) != 0u)
+        std::fill(std::begin(m_atmosphereLutHashes),
+                  std::end(m_atmosphereLutHashes), 0ull);
+    if ((invalidation & shaderreload::InvalidateDeepShadow) != 0u)
+        m_shadowParameters.cacheReady = 0u;
+    if ((invalidation & shaderreload::InvalidateNoiseVolumes) != 0u &&
+        m_noiseVolumesEnabled)
+    {
+        m_baseNoiseVolume = generatedBaseTexture;
+        m_baseNoiseVolumeSrv = generatedBaseSrv;
+        m_detailNoiseVolume = generatedDetailTexture;
+        m_detailNoiseVolumeSrv = generatedDetailSrv;
+        m_baseNoiseVolumeHash = generatedBaseHash;
+        m_detailNoiseVolumeHash = generatedDetailHash;
+        m_noiseVolumeGenerationMilliseconds = generatedMilliseconds;
+        (void)generatedDetailNeutral;
+    }
+    if ((invalidation & shaderreload::InvalidateWeatherMap) != 0u)
+    {
+        if (m_weatherMapTexture)
+        {
+            ID3D11ShaderResourceView* nullWeatherSrv = nullptr;
+            m_context->PSSetShaderResources(2, 1, &nullWeatherSrv);
+            m_context->CopyResource(m_weatherMapTexture.Get(),
+                                    generatedWeatherTexture.Get());
+            ++m_weatherUploadCount;
+            ++m_weatherMapGeneration;
+            m_weatherMapScratchTexture = generatedWeatherTexture;
+            m_weatherMapScratchUav = generatedWeatherUav;
+            m_currentWeatherMapData = std::move(generatedWeatherData);
+            m_weatherMapHash = generatedWeatherHash;
+            m_weatherMapGenerationMilliseconds = generatedWeatherMilliseconds;
+        }
+    }
+    ++m_shaderGeneration;
+    m_shaderError.clear();
+    return finish(true);
+}
+
 bool Renderer::CreateShaders(bool showErrors)
 {
     m_shaderError.clear();
-    ComPtr<ID3DBlob> fullscreenVsBlob;
-    ComPtr<ID3DBlob> cloudReferencePsBlob;
-    ComPtr<ID3DBlob> cloudOptimizedPsBlob;
-    ComPtr<ID3DBlob> cloudReferenceDataPsBlob;
-    ComPtr<ID3DBlob> cloudOptimizedDataPsBlob;
-    ComPtr<ID3DBlob> cloudUpsamplePsBlob;
-    ComPtr<ID3DBlob> cloudTemporalResolvePsBlob;
-    ComPtr<ID3DBlob> noiseLabPsBlob;
-    ComPtr<ID3DBlob> sceneVsBlob;
-    ComPtr<ID3DBlob> scenePsBlob;
-    ComPtr<ID3DBlob> toneMapPsBlob;
-    ComPtr<ID3DBlob> noiseBaseCsBlob;
-    ComPtr<ID3DBlob> noiseDetailCsBlob;
-    ComPtr<ID3DBlob> deepShadowCsBlob;
-    ComPtr<ID3DBlob> atmosphereTransmittanceCsBlob;
-    ComPtr<ID3DBlob> atmosphereMultiScatteringCsBlob;
-    ComPtr<ID3DBlob> atmosphereSkyViewCsBlob;
-    ComPtr<ID3DBlob> atmosphereSkyIrradianceCsBlob;
-    ComPtr<ID3DBlob> atmosphereAerialCsBlob;
-    if (!CompileShaderFromFile(m_fullscreenShaderPath, "main", "vs_5_0", fullscreenVsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudShaderPath, "mainReference", "ps_5_0", cloudReferencePsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudShaderPath, "mainOptimized", "ps_5_0", cloudOptimizedPsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudShaderPath, "mainReferenceData", "ps_5_0", cloudReferenceDataPsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudShaderPath, "mainOptimizedData", "ps_5_0", cloudOptimizedDataPsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudUpsampleShaderPath, "main", "ps_5_0", cloudUpsamplePsBlob, showErrors) ||
-        !CompileShaderFromFile(m_cloudTemporalResolveShaderPath, "main", "ps_5_0", cloudTemporalResolvePsBlob, showErrors) ||
-        !CompileShaderFromFile(m_noiseLabShaderPath, "main", "ps_5_0", noiseLabPsBlob, showErrors) ||
-        !CompileShaderFromFile(m_sceneShaderPath, "VSMain", "vs_5_0", sceneVsBlob, showErrors) ||
-        !CompileShaderFromFile(m_sceneShaderPath, "PSMain", "ps_5_0", scenePsBlob, showErrors) ||
-        !CompileShaderFromFile(m_toneMapShaderPath, "main", "ps_5_0", toneMapPsBlob, showErrors) ||
-        !CompileShaderFromFile(m_deepShadowShaderPath, "main", "cs_5_0", deepShadowCsBlob, showErrors) ||
-        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSTransmittance", "cs_5_0", atmosphereTransmittanceCsBlob, showErrors) ||
-        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSMultiScattering", "cs_5_0", atmosphereMultiScatteringCsBlob, showErrors) ||
-        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSSkyView", "cs_5_0", atmosphereSkyViewCsBlob, showErrors) ||
-        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSSkyIrradiance", "cs_5_0", atmosphereSkyIrradianceCsBlob, showErrors) ||
-        !CompileShaderFromFile(m_atmosphereLutShaderPath, "CSAerialPerspective", "cs_5_0", atmosphereAerialCsBlob, showErrors) ||
-        (m_noiseVolumesEnabled &&
-         (!CompileShaderFromFile(m_noiseVolumeShaderPath, "CSBase", "cs_5_0", noiseBaseCsBlob, showErrors) ||
-          !CompileShaderFromFile(m_noiseVolumeShaderPath, "CSDetail", "cs_5_0", noiseDetailCsBlob, showErrors))))
-    {
-        m_shaderStatus = "Reload failed; previous generation kept";
+    if (!InitializeShaderManifest())
         return false;
-    }
-
-    ComPtr<ID3D11VertexShader> fullscreenVs;
-    ComPtr<ID3D11PixelShader> cloudReferencePs;
-    ComPtr<ID3D11PixelShader> cloudOptimizedPs;
-    ComPtr<ID3D11PixelShader> cloudReferenceDataPs;
-    ComPtr<ID3D11PixelShader> cloudOptimizedDataPs;
-    ComPtr<ID3D11PixelShader> cloudUpsamplePs;
-    ComPtr<ID3D11PixelShader> cloudTemporalResolvePs;
-    ComPtr<ID3D11PixelShader> noiseLabPs;
-    ComPtr<ID3D11VertexShader> sceneVs;
-    ComPtr<ID3D11PixelShader> scenePs;
-    ComPtr<ID3D11PixelShader> toneMapPs;
-    ComPtr<ID3D11ComputeShader> noiseBaseCs;
-    ComPtr<ID3D11ComputeShader> noiseDetailCs;
-    ComPtr<ID3D11ComputeShader> deepShadowCs;
-    ComPtr<ID3D11ComputeShader> atmosphereTransmittanceCs;
-    ComPtr<ID3D11ComputeShader> atmosphereMultiScatteringCs;
-    ComPtr<ID3D11ComputeShader> atmosphereSkyViewCs;
-    ComPtr<ID3D11ComputeShader> atmosphereSkyIrradianceCs;
-    ComPtr<ID3D11ComputeShader> atmosphereAerialCs;
-    ComPtr<ID3D11InputLayout> inputLayout;
-
-    if (FAILED(m_device->CreateVertexShader(
-            fullscreenVsBlob->GetBufferPointer(), fullscreenVsBlob->GetBufferSize(),
-            nullptr, &fullscreenVs)) ||
-        FAILED(m_device->CreatePixelShader(
-            cloudReferencePsBlob->GetBufferPointer(), cloudReferencePsBlob->GetBufferSize(),
-            nullptr, &cloudReferencePs)) ||
-        FAILED(m_device->CreatePixelShader(
-            cloudOptimizedPsBlob->GetBufferPointer(), cloudOptimizedPsBlob->GetBufferSize(),
-            nullptr, &cloudOptimizedPs)) ||
-        FAILED(m_device->CreatePixelShader(
-            cloudReferenceDataPsBlob->GetBufferPointer(), cloudReferenceDataPsBlob->GetBufferSize(),
-            nullptr, &cloudReferenceDataPs)) ||
-        FAILED(m_device->CreatePixelShader(
-            cloudOptimizedDataPsBlob->GetBufferPointer(), cloudOptimizedDataPsBlob->GetBufferSize(),
-            nullptr, &cloudOptimizedDataPs)) ||
-        FAILED(m_device->CreatePixelShader(
-            cloudUpsamplePsBlob->GetBufferPointer(), cloudUpsamplePsBlob->GetBufferSize(),
-            nullptr, &cloudUpsamplePs)) ||
-        FAILED(m_device->CreatePixelShader(
-            cloudTemporalResolvePsBlob->GetBufferPointer(),
-            cloudTemporalResolvePsBlob->GetBufferSize(), nullptr,
-            &cloudTemporalResolvePs)) ||
-        FAILED(m_device->CreatePixelShader(
-            noiseLabPsBlob->GetBufferPointer(), noiseLabPsBlob->GetBufferSize(),
-            nullptr, &noiseLabPs)) ||
-        FAILED(m_device->CreateVertexShader(
-            sceneVsBlob->GetBufferPointer(), sceneVsBlob->GetBufferSize(),
-            nullptr, &sceneVs)) ||
-        FAILED(m_device->CreatePixelShader(
-            scenePsBlob->GetBufferPointer(), scenePsBlob->GetBufferSize(),
-            nullptr, &scenePs)) ||
-        FAILED(m_device->CreatePixelShader(
-            toneMapPsBlob->GetBufferPointer(), toneMapPsBlob->GetBufferSize(),
-            nullptr, &toneMapPs)) ||
-        FAILED(m_device->CreateComputeShader(
-            deepShadowCsBlob->GetBufferPointer(), deepShadowCsBlob->GetBufferSize(),
-            nullptr, &deepShadowCs)) ||
-        FAILED(m_device->CreateComputeShader(
-            atmosphereTransmittanceCsBlob->GetBufferPointer(),
-            atmosphereTransmittanceCsBlob->GetBufferSize(), nullptr,
-            &atmosphereTransmittanceCs)) ||
-        FAILED(m_device->CreateComputeShader(
-            atmosphereMultiScatteringCsBlob->GetBufferPointer(),
-            atmosphereMultiScatteringCsBlob->GetBufferSize(), nullptr,
-            &atmosphereMultiScatteringCs)) ||
-        FAILED(m_device->CreateComputeShader(
-            atmosphereSkyViewCsBlob->GetBufferPointer(),
-            atmosphereSkyViewCsBlob->GetBufferSize(), nullptr,
-            &atmosphereSkyViewCs)) ||
-        FAILED(m_device->CreateComputeShader(
-            atmosphereSkyIrradianceCsBlob->GetBufferPointer(),
-            atmosphereSkyIrradianceCsBlob->GetBufferSize(), nullptr,
-            &atmosphereSkyIrradianceCs)) ||
-        FAILED(m_device->CreateComputeShader(
-            atmosphereAerialCsBlob->GetBufferPointer(),
-            atmosphereAerialCsBlob->GetBufferSize(), nullptr,
-            &atmosphereAerialCs)) ||
-        (m_noiseVolumesEnabled &&
-         (FAILED(m_device->CreateComputeShader(
-              noiseBaseCsBlob->GetBufferPointer(), noiseBaseCsBlob->GetBufferSize(),
-              nullptr, &noiseBaseCs)) ||
-          FAILED(m_device->CreateComputeShader(
-              noiseDetailCsBlob->GetBufferPointer(), noiseDetailCsBlob->GetBufferSize(),
-              nullptr, &noiseDetailCs)))))
-    {
-        m_shaderError = "D3D11 shader object creation failed";
-        m_shaderStatus = "Reload failed; previous generation kept";
-        return false;
-    }
-
-    const D3D11_INPUT_ELEMENT_DESC elements[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
-          D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
-          D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 24,
-          D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "MATERIALID", 0, DXGI_FORMAT_R32_UINT, 0, 36,
-          D3D11_INPUT_PER_VERTEX_DATA, 0 },
-    };
-    if (FAILED(m_device->CreateInputLayout(
-            elements, static_cast<UINT>(std::size(elements)),
-            sceneVsBlob->GetBufferPointer(), sceneVsBlob->GetBufferSize(),
-            &inputLayout)))
-    {
-        m_shaderError = "Diagnostic scene input layout creation failed";
-        m_shaderStatus = "Reload failed; previous generation kept";
-        return false;
-    }
-
-    ComPtr<ID3D11Texture3D> baseTexture;
-    ComPtr<ID3D11ShaderResourceView> baseSrv;
-    ComPtr<ID3D11Texture3D> detailTexture;
-    ComPtr<ID3D11ShaderResourceView> detailSrv;
-    std::uint64_t baseHash = 0;
-    std::uint64_t detailHash = 0;
-    float detailNeutralValue = 0.5f;
-    double generationMilliseconds = 0.0;
-    if (m_noiseVolumesEnabled && !GenerateNoiseVolumes(
-            noiseBaseCs.Get(), noiseDetailCs.Get(), baseTexture, baseSrv,
-            detailTexture, detailSrv, baseHash, detailHash,
-            detailNeutralValue,
-            generationMilliseconds))
-    {
-        m_shaderError = "Texture3D noise generation failed";
-        m_shaderStatus = "Reload failed; previous generation kept";
-        return false;
-    }
-
-    m_fullscreenVs = fullscreenVs;
-    m_cloudReferencePs = cloudReferencePs;
-    m_cloudOptimizedPs = cloudOptimizedPs;
-    m_cloudReferenceDataPs = cloudReferenceDataPs;
-    m_cloudOptimizedDataPs = cloudOptimizedDataPs;
-    m_cloudUpsamplePs = cloudUpsamplePs;
-    m_cloudTemporalResolvePs = cloudTemporalResolvePs;
-    m_noiseLabPs = noiseLabPs;
-    m_sceneVs = sceneVs;
-    m_scenePs = scenePs;
-    m_toneMapPs = toneMapPs;
-    m_deepShadowCs = deepShadowCs;
-    m_atmosphereTransmittanceCs = atmosphereTransmittanceCs;
-    m_atmosphereMultiScatteringCs = atmosphereMultiScatteringCs;
-    m_atmosphereSkyViewCs = atmosphereSkyViewCs;
-    m_atmosphereSkyIrradianceCs = atmosphereSkyIrradianceCs;
-    m_atmosphereAerialCs = atmosphereAerialCs;
-    // 새 shader 세대는 기존 정상 LUT를 보존하되 다음 프레임에 원자 재생성한다.
-    std::fill(std::begin(m_atmosphereLutHashes),
-              std::end(m_atmosphereLutHashes), 0ull);
-    if (m_noiseVolumesEnabled)
-    {
-        m_noiseBaseCs = noiseBaseCs;
-        m_noiseDetailCs = noiseDetailCs;
-    }
-    m_sceneInputLayout = inputLayout;
-    m_baseNoiseVolume = baseTexture;
-    m_baseNoiseVolumeSrv = baseSrv;
-    m_detailNoiseVolume = detailTexture;
-    m_detailNoiseVolumeSrv = detailSrv;
-    m_baseNoiseVolumeHash = baseHash;
-    m_detailNoiseVolumeHash = detailHash;
-    m_cloudLodParameters.detailNeutralValue = detailNeutralValue;
-    m_noiseVolumeGenerationMilliseconds = generationMilliseconds;
-    ++m_shaderGeneration;
-    m_shaderStatus = "Reload succeeded @ " + CurrentLocalTimeText();
-    m_shaderError.clear();
-    return true;
+    std::vector<std::size_t> allPrograms(m_shaderManifest.size());
+    for (std::size_t index = 0; index < allPrograms.size(); ++index)
+        allPrograms[index] = index;
+    return ReloadShaderPrograms(allPrograms, { "startup" }, showErrors);
 }
 
 bool Renderer::CreateDiagnosticScene()
@@ -917,24 +1348,18 @@ bool Renderer::CreatePipelineStates()
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    return SUCCEEDED(m_device->CreateSamplerState(
-        &samplerDesc, &m_weatherLinearWrapSampler));
+    if (FAILED(m_device->CreateSamplerState(
+            &samplerDesc, &m_weatherLinearWrapSampler)))
+        return false;
+
+    return true;
 }
 
 bool Renderer::CreateWeatherMapTexture(Stage5WeatherPreset preset)
 {
-    const WeatherMapGeneratorSettings safeSettings =
-        SanitizeWeatherMapGeneratorSettings(m_weatherGeneratorSettings);
-    const WeatherMapData map = BuildWeatherMap(preset, safeSettings);
-    if (!IsValidWeatherMapData(map))
-    {
-        m_weatherMapStatus = "Initial weather map validation failed";
-        return false;
-    }
-
     D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = map.width;
-    desc.Height = map.height;
+    desc.Width = kWeatherMapSize;
+    desc.Height = kWeatherMapSize;
     desc.MipLevels = 1;
     desc.ArraySize = 1;
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -943,13 +1368,9 @@ bool Renderer::CreateWeatherMapTexture(Stage5WeatherPreset preset)
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     desc.CPUAccessFlags = 0;
 
-    D3D11_SUBRESOURCE_DATA data = {};
-    data.pSysMem = map.rgba.data();
-    data.SysMemPitch = map.width * 4u;
-
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11ShaderResourceView> srv;
-    if (FAILED(m_device->CreateTexture2D(&desc, &data, &texture)) ||
+    if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &texture)) ||
         FAILED(m_device->CreateShaderResourceView(texture.Get(), nullptr, &srv)))
     {
         m_weatherMapStatus = "Failed to create DEFAULT weather texture/SRV";
@@ -958,19 +1379,14 @@ bool Renderer::CreateWeatherMapTexture(Stage5WeatherPreset preset)
 
     m_weatherMapTexture = texture;
     m_weatherMapSrv = srv;
-    m_weatherGeneratorSettings = safeSettings;
-    m_cloudTypeMode = safeSettings.cloudTypeMode;
-    m_weatherMapHash = HashWeatherMap(map);
-    m_weatherPreset = preset;
-    m_weatherMapStatus = "DEFAULT texture created";
-    return true;
+    return UpdateWeatherMapTexture(preset, m_weatherDefinition.generator);
 }
 
 bool Renderer::UpdateWeatherMapTexture(
     Stage5WeatherPreset preset,
     const WeatherMapGeneratorSettings& settings)
 {
-    if (!m_weatherMapTexture || !m_weatherMapSrv || !m_context)
+    if (!m_weatherMapTexture || !m_weatherMapSrv || !m_context || !m_weatherMapCs)
     {
         m_weatherMapStatus = "Weather texture is not initialized";
         return false;
@@ -978,36 +1394,168 @@ bool Renderer::UpdateWeatherMapTexture(
 
     const WeatherMapGeneratorSettings safeSettings =
         SanitizeWeatherMapGeneratorSettings(settings);
-    const WeatherMapData map = BuildWeatherMap(preset, safeSettings);
-    if (!IsValidWeatherMapData(map))
+    const WeatherMapComputeParameters keyParameters =
+        BuildWeatherMapComputeParameters(preset, safeSettings);
+    const std::uint64_t generationKey = fnv1a64::Hash(
+        &keyParameters, sizeof(keyParameters));
+    if (generationKey == m_weatherGenerationKey && m_weatherMapHash != 0u)
     {
-        m_weatherMapStatus = "Weather map validation failed; previous map retained";
+        m_weatherDefinition.generator = safeSettings;
+        m_weatherPreset = preset;
+        m_weatherMapStatus = "Weather generation skipped; generator key unchanged";
+        return true;
+    }
+    ComPtr<ID3D11Texture2D> scratch;
+    ComPtr<ID3D11UnorderedAccessView> scratchUav;
+    WeatherMapData generated;
+    std::uint64_t requestedHash = 0;
+    double generationMilliseconds = 0.0;
+    if (!GenerateWeatherMapTexture(m_weatherMapCs.Get(), preset, safeSettings,
+            scratch, scratchUav, generated, requestedHash,
+            generationMilliseconds))
+    {
+        m_weatherMapStatus = "Weather compute failed; previous map retained";
         return false;
     }
+    if (requestedHash == m_weatherMapHash)
+    {
+        m_currentWeatherMapData = generated;
+        m_weatherMapScratchTexture = scratch;
+        m_weatherMapScratchUav = scratchUav;
+        m_weatherDefinition.generator = safeSettings;
+        m_weatherPreset = preset;
+        m_weatherGenerationKey = generationKey;
+        m_weatherMapGenerationMilliseconds = generationMilliseconds;
+        ++m_weatherMapGeneration;
+        std::ostringstream status;
+        status << "Weather upload skipped; hash unchanged " << std::hex
+               << requestedHash;
+        m_weatherMapStatus = status.str();
+        return true;
+    }
 
-    // 이전 frame의 t2 바인딩을 명시적으로 해제한 뒤 같은 DEFAULT texture에
-    // 새 CPU RGBA를 복사한다. texture/SRV 객체는 생성 이후 바뀌지 않는다.
+    // 성공한 임시 UAV만 공개 texture로 복사해 texture/SRV identity를 보존한다.
     ID3D11ShaderResourceView* nullWeatherSrv = nullptr;
     m_context->PSSetShaderResources(2, 1, &nullWeatherSrv);
-    m_context->UpdateSubresource(
-        m_weatherMapTexture.Get(), 0, nullptr, map.rgba.data(), map.width * 4u, 0);
+    m_context->CopyResource(m_weatherMapTexture.Get(), scratch.Get());
+    ++m_weatherUploadCount;
     const HRESULT deviceState = m_device->GetDeviceRemovedReason();
     if (FAILED(deviceState))
     {
         std::ostringstream failure;
-        failure << "UpdateSubresource device failure 0x" << std::hex
+        failure << "Weather CopyResource device failure 0x" << std::hex
                 << static_cast<unsigned long>(deviceState);
         m_weatherMapStatus = failure.str();
         return false;
     }
 
-    m_weatherGeneratorSettings = safeSettings;
-    m_cloudTypeMode = safeSettings.cloudTypeMode;
-    m_weatherMapHash = HashWeatherMap(map);
+    m_weatherDefinition.generator = safeSettings;
+    m_currentWeatherMapData = generated;
+    m_weatherMapScratchTexture = scratch;
+    m_weatherMapScratchUav = scratchUav;
+    m_weatherMapHash = requestedHash;
+    m_weatherGenerationKey = generationKey;
     m_weatherPreset = preset;
+    m_weatherMapGenerationMilliseconds = generationMilliseconds;
+    ++m_weatherMapGeneration;
     std::ostringstream status;
-    status << "UpdateSubresource OK, hash " << std::hex << m_weatherMapHash;
+    status << "GPU compute OK, hash " << std::hex << m_weatherMapHash;
     m_weatherMapStatus = status.str();
+    return true;
+}
+
+bool Renderer::GenerateWeatherMapTexture(
+    ID3D11ComputeShader* shader, Stage5WeatherPreset preset,
+    const WeatherMapGeneratorSettings& settings,
+    ComPtr<ID3D11Texture2D>& generatedTexture,
+    ComPtr<ID3D11UnorderedAccessView>& generatedUav,
+    WeatherMapData& generatedData, std::uint64_t& generatedHash,
+    double& generationMilliseconds)
+{
+    if (!shader || !m_device || !m_context) return false;
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = kWeatherMapSize; desc.Height = kWeatherMapSize;
+    desc.MipLevels = 1; desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1; desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &texture)) ||
+        FAILED(m_device->CreateUnorderedAccessView(texture.Get(), nullptr, &uav)))
+        return false;
+
+    D3D11_BUFFER_DESC bufferDesc = {};
+    bufferDesc.ByteWidth = sizeof(WeatherMapComputeParameters);
+    bufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    const WeatherMapComputeParameters parameters =
+        BuildWeatherMapComputeParameters(preset, settings);
+    D3D11_SUBRESOURCE_DATA bufferData = {};
+    bufferData.pSysMem = &parameters;
+    ComPtr<ID3D11Buffer> buffer;
+    if (FAILED(m_device->CreateBuffer(&bufferDesc, &bufferData, &buffer)))
+        return false;
+
+    const auto start = std::chrono::steady_clock::now();
+    ID3D11Buffer* rawBuffer = buffer.Get();
+    ID3D11UnorderedAccessView* rawUav = uav.Get();
+    m_context->CSSetConstantBuffers(0, 1, &rawBuffer);
+    m_context->CSSetUnorderedAccessViews(0, 1, &rawUav, nullptr);
+    m_context->CSSetShader(shader, nullptr, 0);
+    m_context->Dispatch(kWeatherMapSize / 8u, kWeatherMapSize / 8u, 1u);
+    ID3D11UnorderedAccessView* nullUav = nullptr;
+    m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+    m_context->CSSetShader(nullptr, nullptr, 0);
+
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &staging)))
+        return false;
+    m_context->CopyResource(staging.Get(), texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return false;
+    generatedData.width = kWeatherMapSize;
+    generatedData.height = kWeatherMapSize;
+    generatedData.rgba.resize(kWeatherMapSize * kWeatherMapSize * 4u);
+    for (std::uint32_t y = 0; y < kWeatherMapSize; ++y)
+        std::memcpy(generatedData.rgba.data() + y * kWeatherMapSize * 4u,
+                    static_cast<const std::uint8_t*>(mapped.pData) +
+                        y * mapped.RowPitch, kWeatherMapSize * 4u);
+    m_context->Unmap(staging.Get(), 0);
+    generationMilliseconds = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+    generatedHash = HashWeatherMap(generatedData);
+    generatedTexture = texture;
+    generatedUav = uav;
+    return true;
+}
+
+bool Renderer::InitializeStage15Presets()
+{
+    for (std::uint32_t index = 0; index < 3u; ++index)
+    {
+        const auto preset = static_cast<Stage15ConceptPreset>(index);
+        const Stage15SceneDescriptor descriptor =
+            stage15::ResolveSceneConcept(preset);
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+        WeatherMapData data;
+        std::uint64_t hash = 0;
+        double milliseconds = 0.0;
+        if (!GenerateWeatherMapTexture(m_weatherMapCs.Get(),
+                descriptor.formation.weatherPreset,
+                descriptor.formation.weather.generator, texture, uav,
+                data, hash, milliseconds) || !IsValidWeatherMapData(data))
+        {
+            m_weatherMapStatus = "Stage 15 Weather cache generation failed";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1018,15 +1566,7 @@ bool Renderer::HashNoiseVolume(ID3D11Texture3D* texture,
     std::vector<std::uint8_t> bytes;
     if (!ReadNoiseVolumeBytesFromTexture(texture, bytes))
         return false;
-    constexpr std::uint64_t offset = 1469598103934665603ull;
-    constexpr std::uint64_t prime = 1099511628211ull;
-    std::uint64_t value = offset;
-    for (std::uint8_t byte : bytes)
-    {
-        value ^= byte;
-        value *= prime;
-    }
-    hash = value;
+    hash = fnv1a64::Hash(bytes.data(), bytes.size());
     return true;
 }
 
@@ -1036,6 +1576,61 @@ bool Renderer::ReadNoiseVolumeBytes(
     ID3D11Texture3D* texture = base ? m_baseNoiseVolume.Get() :
         m_detailNoiseVolume.Get();
     return ReadNoiseVolumeBytesFromTexture(texture, bytes);
+}
+
+bool Renderer::ValidateWeatherMapCpuParity() const
+{
+    const WeatherMapData cpu = BuildWeatherMap(
+        m_weatherPreset, m_weatherDefinition.generator);
+    if (!IsValidWeatherMapData(cpu) ||
+        cpu.rgba.size() != m_currentWeatherMapData.rgba.size())
+        return false;
+    // CPU/HLSL의 Perlin 부동소수점 연산 순서는 다를 수 있으나 RGBA8에서 허용하는
+    // 양자화 오차는 1 LSB뿐이다. 2 LSB 이상이면 생성 계약 불일치로 판정한다.
+    for (std::size_t index = 0; index < cpu.rgba.size(); ++index)
+        if (std::abs(static_cast<int>(cpu.rgba[index]) -
+                     static_cast<int>(m_currentWeatherMapData.rgba[index])) > 1)
+            return false;
+    return true;
+}
+
+std::size_t Renderer::WeatherMapCpuMismatchCount() const
+{
+    const WeatherMapData cpu = BuildWeatherMap(
+        m_weatherPreset, m_weatherDefinition.generator);
+    if (!IsValidWeatherMapData(cpu) ||
+        cpu.rgba.size() != m_currentWeatherMapData.rgba.size())
+        return static_cast<std::size_t>(-1);
+    std::size_t count = 0;
+    for (std::size_t index = 0; index < cpu.rgba.size(); ++index)
+        if (cpu.rgba[index] != m_currentWeatherMapData.rgba[index]) ++count;
+    return count;
+}
+
+std::string Renderer::WeatherMapCpuParitySummary() const
+{
+    const WeatherMapData cpu = BuildWeatherMap(
+        m_weatherPreset, m_weatherDefinition.generator);
+    if (!IsValidWeatherMapData(cpu) ||
+        cpu.rgba.size() != m_currentWeatherMapData.rgba.size())
+        return "invalid";
+    std::size_t counts[4] = {};
+    unsigned maximum[4] = {};
+    for (std::size_t index = 0; index < cpu.rgba.size(); ++index)
+    {
+        const unsigned channel = static_cast<unsigned>(index & 3u);
+        const unsigned difference = static_cast<unsigned>(std::abs(
+            static_cast<int>(cpu.rgba[index]) -
+            static_cast<int>(m_currentWeatherMapData.rgba[index])));
+        if (difference > 0u) ++counts[channel];
+        maximum[channel] = std::max(maximum[channel], difference);
+    }
+    std::ostringstream summary;
+    summary << "R=" << counts[0] << '/' << maximum[0]
+            << ",G=" << counts[1] << '/' << maximum[1]
+            << ",B=" << counts[2] << '/' << maximum[2]
+            << ",A=" << counts[3] << '/' << maximum[3];
+    return summary.str();
 }
 
 bool Renderer::ReadNoiseVolumeBytesFromTexture(
@@ -1154,7 +1749,7 @@ bool Renderer::GenerateNoiseVolumes(
         return false;
     const auto& weights = m_noiseVolumeParameters.detailWeights;
     detailNeutralValue = static_cast<float>(
-        stage13optics::WeightedDetailMean(
+        stage13noise::WeightedDetailMean(
             detailBytes, { weights.x, weights.y, weights.z, weights.w }));
     generationMilliseconds = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - begin).count();
@@ -1184,18 +1779,8 @@ bool Renderer::RegenerateNoiseVolumes()
     m_detailNoiseVolumeSrv = detailSrv;
     m_baseNoiseVolumeHash = baseHash;
     m_detailNoiseVolumeHash = detailHash;
-    m_cloudLodParameters.detailNeutralValue = detailNeutralValue;
     m_noiseVolumeGenerationMilliseconds = milliseconds;
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
     return true;
-}
-
-void Renderer::SetNoiseSource(NoiseSource source)
-{
-    if (source != CurrentNoiseSource())
-        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    m_noiseVolumeParameters.noiseSource = static_cast<std::uint32_t>(source);
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
 }
 
 bool Renderer::CreateConstantBuffers()
@@ -1217,12 +1802,8 @@ bool Renderer::CreateConstantBuffers()
            createDynamicBuffer(sizeof(CloudDomainParameters), &m_cloudDomainCb) &&
            createDynamicBuffer(sizeof(NoiseVolumeParameters), &m_noiseVolumeCb) &&
            createDynamicBuffer(sizeof(CloudShapeParameters), &m_cloudShapeCb) &&
-           createDynamicBuffer(sizeof(CloudLodParameters), &m_cloudLodCb) &&
-           createDynamicBuffer(sizeof(OptimizationParameters), &m_optimizationCb) &&
-           createDynamicBuffer(sizeof(Stage10UpsamplingParameters),
-                               &m_upsamplingCb) &&
-           createDynamicBuffer(sizeof(Stage11TemporalParameters),
-                               &m_temporalCb) &&
+           createDynamicBuffer(sizeof(WeatherColumnParameters),
+                               &m_weatherColumnCb) &&
            createDynamicBuffer(sizeof(Stage12ShadowParameters),
                                &m_shadowCb) &&
            createDynamicBuffer(sizeof(stage14::GpuParameters),
@@ -1334,8 +1915,8 @@ stage14::GpuParameters Renderer::BuildStage14GpuParameters(
         tone.exposureEv, tone.whiteBalanceKelvin,
         atmosphere.timeOfDayHours, atmosphere.sunElevationDegrees
     };
-    gpu.modeFlags = {
-        static_cast<std::uint32_t>(atmosphere.mode),
+    gpu.renderFlags = {
+        0u,
         static_cast<std::uint32_t>(tone.mode),
         static_cast<std::uint32_t>(atmosphere.debugView),
         static_cast<std::uint32_t>(atmosphere.debugChannel)
@@ -1371,25 +1952,10 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
         m_groundLightingParameters);
     m_toneMappingParameters = stage14tone::Sanitize(
         m_toneMappingParameters);
-    // schema 34 자동 회귀처럼 첫 프레임부터 Manual Reference인 경우에는
-    // Stage 14가 생기기 전 LightParameters 방향을 Angle 원본으로 승격한다.
-    // Physical을 한 번이라도 사용한 일반 실행은 이미 Angle이 원본이므로
-    // 이후 Manual 전환에서도 같은 방향을 그대로 유지한다.
-    if (!m_stage14SunDirectionInitialized &&
-        m_atmosphereParameters.mode == AtmosphereMode::ManualReference)
-    {
-        stage6light::AnglesFromDirection(
-            m_lightParameters.directionToSun,
-            m_atmosphereParameters.sunAzimuthDegrees,
-            m_atmosphereParameters.sunElevationDegrees);
-    }
     const stage14math::Float3 sun = stage14math::DirectionFromAngles(
         m_atmosphereParameters.sunAzimuthDegrees,
         m_atmosphereParameters.sunElevationDegrees);
-    // Physical/Manual 모두 같은 각도를 사용해야 방향 도식과 실제 그림자가
-    // 서로 다른 원본을 참조하지 않는다.
     m_lightParameters.directionToSun = { sun.x, sun.y, sun.z };
-    m_stage14SunDirectionInitialized = true;
     m_stage14GpuParameters = BuildStage14GpuParameters(camera);
 
     D3D11_MAPPED_SUBRESOURCE mapped = {};
@@ -1401,15 +1967,11 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
         m_context->Unmap(m_stage14Cb.Get(), 0);
     }
 
-    if (m_atmosphereParameters.mode != AtmosphereMode::Physical)
-        return m_atmosphereLutsValid;
     if (!m_atmosphereTransmittanceCs || !m_atmosphereMultiScatteringCs ||
         !m_atmosphereSkyViewCs || !m_atmosphereSkyIrradianceCs ||
         !m_atmosphereAerialCs)
     {
-        if (!m_atmosphereLutsValid)
-            m_atmosphereParameters.mode = AtmosphereMode::ManualReference;
-        m_atmosphereStatus = "Physical disabled: LUT shaders unavailable";
+        m_atmosphereStatus = "LUT shaders unavailable; last good set kept";
         return false;
     }
 
@@ -1487,8 +2049,6 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
                                 candidate.aerialTransmittance)));
     if (!resourcesCreated)
     {
-        if (!m_atmosphereLutsValid)
-            m_atmosphereParameters.mode = AtmosphereMode::ManualReference;
         m_atmosphereStatus = "LUT allocation failed; last good set kept";
         return false;
     }
@@ -1517,7 +2077,7 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
     ID3D11Buffer* stage14Buffer = m_stage14Cb.Get();
     ID3D11Buffer* cameraBuffer = m_cameraCb.Get();
     m_context->CSSetConstantBuffers(0, 1, &cameraBuffer);
-    m_context->CSSetConstantBuffers(13, 1, &stage14Buffer);
+    m_context->CSSetConstantBuffers(9, 1, &stage14Buffer);
     ID3D11SamplerState* atmosphereSampler = m_linearClampSampler.Get();
     m_context->CSSetSamplers(3, 1, &atmosphereSampler);
 
@@ -1601,7 +2161,7 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
 void Renderer::BindAtmosphereResources()
 {
     ID3D11Buffer* stage14Buffer = m_stage14Cb.Get();
-    m_context->PSSetConstantBuffers(13, 1, &stage14Buffer);
+    m_context->PSSetConstantBuffers(9, 1, &stage14Buffer);
     ID3D11ShaderResourceView* resources[6] = {
         m_atmosphereLuts.transmittance.srv.Get(),
         m_atmosphereLuts.multiScattering.srv.Get(),
@@ -1748,6 +2308,7 @@ bool Renderer::ValidateStage14Luts(Stage14LutValidationResult& result)
 
 void Renderer::ReleaseSizeDependentResources()
 {
+    m_sizeDependentResourcesValid = false;
     m_backBufferRtv.Reset();
     m_sceneColorSrv.Reset();
     m_sceneColorRtv.Reset();
@@ -1755,32 +2316,17 @@ void Renderer::ReleaseSizeDependentResources()
     m_sceneDepthSrv.Reset();
     m_sceneDepthDsv.Reset();
     m_sceneDepth.Reset();
-    m_hdrCompositeSrv.Reset();
-    m_hdrCompositeRtv.Reset();
-    m_hdrComposite.Reset();
-    m_cloudScatteringTransmittanceSrv.Reset();
-    m_cloudScatteringTransmittanceRtv.Reset();
-    m_cloudScatteringTransmittance.Reset();
-    m_cloudDepthSceneLimitSrv.Reset();
-    m_cloudDepthSceneLimitRtv.Reset();
-    m_cloudDepthSceneLimit.Reset();
-    for (int index = 0; index < 2; ++index)
-    {
-        m_temporalHistoryCloudSrv[index].Reset();
-        m_temporalHistoryCloudRtv[index].Reset();
-        m_temporalHistoryCloud[index].Reset();
-        m_temporalHistoryAuxSrv[index].Reset();
-        m_temporalHistoryAuxRtv[index].Reset();
-        m_temporalHistoryAux[index].Reset();
-    }
-    m_cloudRenderWidth = 0;
-    m_cloudRenderHeight = 0;
-    ResetTemporalHistory(Stage11HistoryResetReason::Resize);
+    m_hdrCloudSrv.Reset();
+    m_hdrCloudRtv.Reset();
+    m_hdrCloud.Reset();
 }
 
 void Renderer::Resize(int width, int height)
 {
     if (!m_swapChain || width <= 0 || height <= 0)
+        return;
+    if (width == m_width && height == m_height &&
+        m_sizeDependentResourcesValid)
         return;
 
     m_width = width;
@@ -1791,19 +2337,27 @@ void Renderer::Resize(int width, int height)
     m_context->PSSetShaderResources(0, 6, nullSrvs);
     ReleaseSizeDependentResources();
 
-    if (SUCCEEDED(m_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
+    const UINT resizeFlags = m_tearingSupported
+        ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+    if (SUCCEEDED(m_swapChain->ResizeBuffers(
+            0, width, height, DXGI_FORMAT_UNKNOWN, resizeFlags)) &&
+        CreateBackBufferTarget() && CreateSceneTargets())
     {
-        CreateBackBufferTarget();
-        CreateSceneTargets();
-        CreateCloudTargets();
-        CreateTemporalHistoryTargets();
+        m_sizeDependentResourcesValid = true;
+        D3D11_VIEWPORT resizedViewport = {};
+        resizedViewport.Width = static_cast<float>(m_width);
+        resizedViewport.Height = static_cast<float>(m_height);
+        resizedViewport.MaxDepth = 1.0f;
+        m_context->RSSetViewports(1, &resizedViewport);
     }
 }
 
 void Renderer::RenderDiagnosticScene(const Camera& camera)
 {
     SceneCB scene = {};
-    XMStoreFloat4x4(&scene.viewProj, XMMatrixTranspose(camera.GetViewProj()));
+    XMStoreFloat4x4(
+        &scene.viewProj,
+        XMMatrixTranspose(camera.GetViewProj()));
     D3D11_MAPPED_SUBRESOURCE mapped = {};
     if (SUCCEEDED(m_context->Map(m_sceneCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
     {
@@ -1834,7 +2388,9 @@ void Renderer::RenderDiagnosticScene(const Camera& camera)
     m_context->VSSetConstantBuffers(0, 1, m_sceneCb.GetAddressOf());
     m_context->PSSetShader(m_scenePs.Get(), nullptr, 0);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
-    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    m_context->PSSetConstantBuffers(8, 1, &shadowBuffer);
+    ID3D11Buffer* weatherColumnBuffer = m_weatherColumnCb.Get();
+    m_context->PSSetConstantBuffers(10, 1, &weatherColumnBuffer);
     ID3D11ShaderResourceView* shadowResources[2] = {
         m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
     };
@@ -1848,93 +2404,10 @@ void Renderer::RenderDiagnosticScene(const Camera& camera)
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
-void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
-                               ID3D11RenderTargetView* targetOverride)
+void Renderer::RenderCloudPass()
 {
-    CameraCB cameraData = {};
-    XMStoreFloat4x4(&cameraData.invViewProj, XMMatrixTranspose(camera.GetInvViewProj()));
-    XMStoreFloat4x4(&cameraData.invProjection,
-                    XMMatrixTranspose(camera.GetInvProjection()));
-    XMStoreFloat4x4(&cameraData.invViewRotation,
-                    XMMatrixTranspose(camera.GetInvViewRotation()));
-    cameraData.cameraPos = camera.GetPosition();
-    cameraData.time = timeSeconds;
-    cameraData.renderSize = {
-        static_cast<float>(m_width), static_cast<float>(m_height)
-    };
-    cameraData.nearPlane = camera.GetNearPlane();
-    cameraData.farPlane = camera.GetFarPlane();
-
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    if (SUCCEEDED(m_context->Map(m_cameraCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &cameraData, sizeof(cameraData));
-        m_context->Unmap(m_cameraCb.Get(), 0);
-    }
-    if (SUCCEEDED(m_context->Map(m_cloudCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_cloudParameters, sizeof(m_cloudParameters));
-        m_context->Unmap(m_cloudCb.Get(), 0);
-    }
-    m_cloudDomainParameters = SanitizeCloudDomainParameters(
-        m_cloudDomainParameters);
-    if (SUCCEEDED(m_context->Map(
-            m_cloudDomainCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_cloudDomainParameters,
-                    sizeof(m_cloudDomainParameters));
-        m_context->Unmap(m_cloudDomainCb.Get(), 0);
-    }
-    m_lightParameters = stage6light::Sanitize(m_lightParameters);
-    if (SUCCEEDED(m_context->Map(m_lightCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_lightParameters, sizeof(m_lightParameters));
-        m_context->Unmap(m_lightCb.Get(), 0);
-    }
-    m_environmentParameters = stage8environment::Sanitize(m_environmentParameters);
-    if (SUCCEEDED(m_context->Map(m_environmentCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_environmentParameters,
-                    sizeof(m_environmentParameters));
-        m_context->Unmap(m_environmentCb.Get(), 0);
-    }
-    m_cloudShapeParameters = SanitizeCloudShapeParameters(m_cloudShapeParameters);
-    if (SUCCEEDED(m_context->Map(
-            m_cloudShapeCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_cloudShapeParameters,
-                    sizeof(m_cloudShapeParameters));
-        m_context->Unmap(m_cloudShapeCb.Get(), 0);
-    }
-    m_cloudLodParameters = stage13lod::Sanitize(m_cloudLodParameters);
-    if (SUCCEEDED(m_context->Map(
-            m_cloudLodCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_cloudLodParameters,
-                    sizeof(m_cloudLodParameters));
-        m_context->Unmap(m_cloudLodCb.Get(), 0);
-    }
-    m_optimizationParameters = stage9optimization::Sanitize(
-        m_optimizationParameters);
-    if (SUCCEEDED(m_context->Map(
-            m_optimizationCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_optimizationParameters,
-                    sizeof(m_optimizationParameters));
-        m_context->Unmap(m_optimizationCb.Get(), 0);
-    }
-    UpdateStage12ShadowParameters(camera);
-    if (SUCCEEDED(m_context->Map(
-            m_shadowCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        std::memcpy(mapped.pData, &m_shadowParameters,
-                    sizeof(m_shadowParameters));
-        m_context->Unmap(m_shadowCb.Get(), 0);
-    }
-
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
-    ID3D11RenderTargetView* cloudTarget =
-        targetOverride ? targetOverride : m_hdrCompositeRtv.Get();
+    ID3D11RenderTargetView* cloudTarget = m_hdrCloudRtv.Get();
     m_context->OMSetRenderTargets(1, &cloudTarget, nullptr);
     m_context->ClearRenderTargetView(cloudTarget, clearColor);
     m_context->OMSetDepthStencilState(nullptr, 0);
@@ -1943,10 +2416,7 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->IASetInputLayout(nullptr);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    ID3D11PixelShader* cloudShader =
-        stage9optimization::UsesReferenceShader(m_optimizationParameters)
-        ? m_cloudReferencePs.Get() : m_cloudOptimizedPs.Get();
-    m_context->PSSetShader(cloudShader, nullptr, 0);
+    m_context->PSSetShader(m_cloudPs.Get(), nullptr, 0);
     ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
     m_context->PSSetConstantBuffers(0, 2, constantBuffers);
     ID3D11Buffer* lightBuffer = m_lightCb.Get();
@@ -1955,25 +2425,14 @@ void Renderer::RenderCloudPass(const Camera& camera, float timeSeconds,
     m_context->PSSetConstantBuffers(4, 1, &environmentBuffer);
     ID3D11Buffer* domainBuffer = m_cloudDomainCb.Get();
     m_context->PSSetConstantBuffers(5, 1, &domainBuffer);
-    D3D11_MAPPED_SUBRESOURCE noiseVolumeMapped = {};
-    if (SUCCEEDED(m_context->Map(
-            m_noiseVolumeCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
-            &noiseVolumeMapped)))
-    {
-        std::memcpy(noiseVolumeMapped.pData, &m_noiseVolumeParameters,
-                    sizeof(m_noiseVolumeParameters));
-        m_context->Unmap(m_noiseVolumeCb.Get(), 0);
-    }
     ID3D11Buffer* noiseVolumeBuffer = m_noiseVolumeCb.Get();
     m_context->PSSetConstantBuffers(6, 1, &noiseVolumeBuffer);
     ID3D11Buffer* cloudShapeBuffer = m_cloudShapeCb.Get();
     m_context->PSSetConstantBuffers(7, 1, &cloudShapeBuffer);
-    ID3D11Buffer* cloudLodBuffer = m_cloudLodCb.Get();
-    m_context->PSSetConstantBuffers(8, 1, &cloudLodBuffer);
-    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
-    m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
-    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
+    ID3D11Buffer* weatherColumnBuffer = m_weatherColumnCb.Get();
+    m_context->PSSetConstantBuffers(8, 1, &shadowBuffer);
+    m_context->PSSetConstantBuffers(10, 1, &weatherColumnBuffer);
     BindAtmosphereResources();
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
@@ -2023,19 +2482,15 @@ void Renderer::UpdateStage12ShadowParameters(const Camera& camera)
         m_shadowParameters.farResolution);
     const bool resourcesReady = m_deepShadowCs && m_shadowNearSrv &&
         m_shadowNearUav && m_shadowFarSrv && m_shadowFarUav;
-    const bool supportedDomain = m_cloudDomainParameters.domainType ==
-        static_cast<std::uint32_t>(CloudDomainType::PlanarLayer);
-    m_shadowParameters.cacheReady = resourcesReady && supportedDomain &&
+    m_shadowParameters.cacheReady = resourcesReady &&
         basis.valid && basis.forward.y >= m_shadowParameters.minimumSunY
         ? 1u : 0u;
 }
 
 void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
 {
-    UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
-    if (m_shadowParameters.shadowMode !=
-            static_cast<std::uint32_t>(Stage12ShadowMode::DeepCache) ||
-        m_shadowParameters.cacheReady == 0u)
+    UpdateCloudConstantBuffers(camera, timeSeconds);
+    if (m_shadowParameters.cacheReady == 0u)
         return;
 
     ID3D11Buffer* cameraBuffer = m_cameraCb.Get();
@@ -2043,17 +2498,15 @@ void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
     ID3D11Buffer* domainBuffer = m_cloudDomainCb.Get();
     ID3D11Buffer* noiseBuffer = m_noiseVolumeCb.Get();
     ID3D11Buffer* shapeBuffer = m_cloudShapeCb.Get();
-    ID3D11Buffer* lodBuffer = m_cloudLodCb.Get();
-    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    ID3D11Buffer* weatherColumnBuffer = m_weatherColumnCb.Get();
     m_context->CSSetConstantBuffers(0, 1, &cameraBuffer);
     m_context->CSSetConstantBuffers(1, 1, &cloudBuffer);
     m_context->CSSetConstantBuffers(5, 1, &domainBuffer);
     m_context->CSSetConstantBuffers(6, 1, &noiseBuffer);
     m_context->CSSetConstantBuffers(7, 1, &shapeBuffer);
-    m_context->CSSetConstantBuffers(8, 1, &lodBuffer);
-    m_context->CSSetConstantBuffers(9, 1, &optimizationBuffer);
-    m_context->CSSetConstantBuffers(12, 1, &shadowBuffer);
+    m_context->CSSetConstantBuffers(8, 1, &shadowBuffer);
+    m_context->CSSetConstantBuffers(10, 1, &weatherColumnBuffer);
     ID3D11ShaderResourceView* densityResources[3] = {
         m_weatherMapSrv.Get(), m_baseNoiseVolumeSrv.Get(),
         m_detailNoiseVolumeSrv.Get()
@@ -2103,9 +2556,7 @@ void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
 }
 
 void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
-                                          float timeSeconds,
-                                          int renderWidth,
-                                          int renderHeight)
+                                          float timeSeconds)
 {
     CameraCB cameraData = {};
     XMStoreFloat4x4(&cameraData.invViewProj,
@@ -2117,8 +2568,8 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
     cameraData.cameraPos = camera.GetPosition();
     cameraData.time = timeSeconds;
     cameraData.renderSize = {
-        static_cast<float>(std::max(renderWidth, 1)),
-        static_cast<float>(std::max(renderHeight, 1))
+        static_cast<float>(std::max(m_width, 1)),
+        static_cast<float>(std::max(m_height, 1))
     };
     cameraData.nearPlane = camera.GetNearPlane();
     cameraData.farPlane = camera.GetFarPlane();
@@ -2130,91 +2581,52 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
         m_environmentParameters);
     m_cloudShapeParameters = SanitizeCloudShapeParameters(
         m_cloudShapeParameters);
-    m_cloudLodParameters = stage13lod::Sanitize(m_cloudLodParameters);
-    m_optimizationParameters = stage9optimization::Sanitize(
-        m_optimizationParameters);
-    m_upsamplingParameters = stage10upsampling::Sanitize(
-        m_upsamplingParameters);
-    m_temporalParameters = stage11temporal::Sanitize(
-        m_temporalParameters);
+    m_cloudMotion = SanitizeCloudMotionParameters(m_cloudMotion);
+    // CloudCB ABI는 유지하되 타입/프리셋과 독립된 세션 전역 motion을 매 프레임 패킹한다.
+    m_cloudParameters.windDirection = m_cloudMotion.direction;
+    m_cloudParameters.windSpeed = m_cloudMotion.speedMetersPerSecond;
+    m_weatherColumnParameters = ResolveWeatherColumnParameters(
+        m_weatherDefinition.column, m_cloudTypeSelection);
     UpdateStage12ShadowParameters(camera);
 
-    const auto update = [&](ID3D11Buffer* buffer, const void* data,
-                            std::size_t size)
+    const auto update = [&](std::size_t index, ID3D11Buffer* buffer,
+                            const void* data, std::size_t size)
     {
+        std::uint64_t contentHash = fnv1a64::kOffsetBasis;
+        HashBytes(contentHash, data, size);
+        if (index < m_constantBufferUploadHashes.size() &&
+            m_constantBufferUploadValid[index] &&
+            m_constantBufferUploadHashes[index] == contentHash)
+            return;
         D3D11_MAPPED_SUBRESOURCE mapped = {};
         if (buffer && SUCCEEDED(m_context->Map(
                 buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
         {
             std::memcpy(mapped.pData, data, size);
             m_context->Unmap(buffer, 0);
+            if (index < m_constantBufferUploadHashes.size())
+            {
+                m_constantBufferUploadHashes[index] = contentHash;
+                m_constantBufferUploadValid[index] = true;
+            }
+            ++m_constantBufferUploadCount;
         }
     };
-    update(m_cameraCb.Get(), &cameraData, sizeof(cameraData));
-    update(m_cloudCb.Get(), &m_cloudParameters, sizeof(m_cloudParameters));
-    update(m_lightCb.Get(), &m_lightParameters, sizeof(m_lightParameters));
-    update(m_environmentCb.Get(), &m_environmentParameters,
+    update(0, m_cameraCb.Get(), &cameraData, sizeof(cameraData));
+    update(1, m_cloudCb.Get(), &m_cloudParameters, sizeof(m_cloudParameters));
+    update(2, m_lightCb.Get(), &m_lightParameters, sizeof(m_lightParameters));
+    update(3, m_environmentCb.Get(), &m_environmentParameters,
            sizeof(m_environmentParameters));
-    update(m_cloudDomainCb.Get(), &m_cloudDomainParameters,
+    update(4, m_cloudDomainCb.Get(), &m_cloudDomainParameters,
            sizeof(m_cloudDomainParameters));
-    update(m_noiseVolumeCb.Get(), &m_noiseVolumeParameters,
+    update(5, m_noiseVolumeCb.Get(), &m_noiseVolumeParameters,
            sizeof(m_noiseVolumeParameters));
-    update(m_cloudShapeCb.Get(), &m_cloudShapeParameters,
+    update(6, m_cloudShapeCb.Get(), &m_cloudShapeParameters,
            sizeof(m_cloudShapeParameters));
-    update(m_cloudLodCb.Get(), &m_cloudLodParameters,
-           sizeof(m_cloudLodParameters));
-    update(m_optimizationCb.Get(), &m_optimizationParameters,
-           sizeof(m_optimizationParameters));
-    update(m_upsamplingCb.Get(), &m_upsamplingParameters,
-           sizeof(m_upsamplingParameters));
-    update(m_temporalCb.Get(), &m_temporalParameters,
-           sizeof(m_temporalParameters));
-    update(m_shadowCb.Get(), &m_shadowParameters,
+    update(7, m_shadowCb.Get(), &m_shadowParameters,
            sizeof(m_shadowParameters));
-}
-
-void Renderer::BindCloudRaymarchResources(ID3D11PixelShader* pixelShader)
-{
-    m_context->IASetInputLayout(nullptr);
-    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    m_context->PSSetShader(pixelShader, nullptr, 0);
-    ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
-    m_context->PSSetConstantBuffers(0, 2, constantBuffers);
-    ID3D11Buffer* lightBuffer = m_lightCb.Get();
-    m_context->PSSetConstantBuffers(3, 1, &lightBuffer);
-    ID3D11Buffer* environmentBuffer = m_environmentCb.Get();
-    m_context->PSSetConstantBuffers(4, 1, &environmentBuffer);
-    ID3D11Buffer* domainBuffer = m_cloudDomainCb.Get();
-    m_context->PSSetConstantBuffers(5, 1, &domainBuffer);
-    ID3D11Buffer* noiseVolumeBuffer = m_noiseVolumeCb.Get();
-    m_context->PSSetConstantBuffers(6, 1, &noiseVolumeBuffer);
-    ID3D11Buffer* shapeBuffer = m_cloudShapeCb.Get();
-    m_context->PSSetConstantBuffers(7, 1, &shapeBuffer);
-    ID3D11Buffer* lodBuffer = m_cloudLodCb.Get();
-    m_context->PSSetConstantBuffers(8, 1, &lodBuffer);
-    ID3D11Buffer* optimizationBuffer = m_optimizationCb.Get();
-    m_context->PSSetConstantBuffers(9, 1, &optimizationBuffer);
-    ID3D11Buffer* temporalBuffer = m_temporalCb.Get();
-    m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
-    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
-    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
-    BindAtmosphereResources();
-    ID3D11ShaderResourceView* resources[5] = {
-        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
-        m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get()
-    };
-    m_context->PSSetShaderResources(0, 5, resources);
-    ID3D11ShaderResourceView* shadowResources[2] = {
-        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
-    };
-    m_context->PSSetShaderResources(6, 2, shadowResources);
-    ID3D11SamplerState* samplers[2] = {
-        m_pointClampSampler.Get(), m_weatherLinearWrapSampler.Get()
-    };
-    m_context->PSSetSamplers(0, 2, samplers);
-    ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
-    m_context->PSSetSamplers(2, 1, &shadowSampler);
+    update(8, m_weatherColumnCb.Get(), &m_weatherColumnParameters,
+           sizeof(m_weatherColumnParameters));
 }
 
 void Renderer::UnbindCloudShaderResources(UINT count)
@@ -2223,404 +2635,17 @@ void Renderer::UnbindCloudShaderResources(UINT count)
     m_context->PSSetShaderResources(0, count, nullResources.data());
 }
 
-void Renderer::RenderCloudDataPass(const Camera& camera, float timeSeconds)
-{
-    if (!EnsureCloudTargets())
-        return;
-    const std::int32_t savedDebugMode = m_cloudParameters.debugMode;
-    m_cloudParameters.debugMode = static_cast<std::int32_t>(
-        CloudDebugMode::Composite);
-    UpdateCloudConstantBuffers(camera, timeSeconds,
-                               m_cloudRenderWidth, m_cloudRenderHeight);
-    m_cloudParameters.debugMode = savedDebugMode;
-
-    ID3D11RenderTargetView* targets[2] = {
-        m_cloudScatteringTransmittanceRtv.Get(),
-        m_cloudDepthSceneLimitRtv.Get()
-    };
-    const float clearCloud[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    const float clearDepth[4] = {
-        camera.GetFarPlane(), camera.GetFarPlane(), 0.0f, 0.0f
-    };
-    m_context->OMSetRenderTargets(2, targets, nullptr);
-    m_context->ClearRenderTargetView(targets[0], clearCloud);
-    m_context->ClearRenderTargetView(targets[1], clearDepth);
-    m_context->OMSetDepthStencilState(nullptr, 0);
-    m_context->RSSetState(nullptr);
-    D3D11_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_cloudRenderWidth);
-    viewport.Height = static_cast<float>(m_cloudRenderHeight);
-    viewport.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &viewport);
-
-    ID3D11PixelShader* shader =
-        stage9optimization::UsesReferenceShader(m_optimizationParameters)
-        ? m_cloudReferenceDataPs.Get() : m_cloudOptimizedDataPs.Get();
-    BindCloudRaymarchResources(shader);
-    m_context->Draw(3, 0);
-    UnbindCloudShaderResources(14);
-    m_context->OMSetRenderTargets(0, nullptr, nullptr);
-}
-
-void Renderer::RenderCloudUpsamplePass(const Camera& camera,
-                                       float timeSeconds,
-                                       ID3D11RenderTargetView* targetOverride)
-{
-    UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
-    ID3D11RenderTargetView* target = targetOverride
-        ? targetOverride : m_hdrCompositeRtv.Get();
-    const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
-    m_context->OMSetRenderTargets(1, &target, nullptr);
-    m_context->ClearRenderTargetView(target, clearColor);
-    m_context->OMSetDepthStencilState(nullptr, 0);
-    m_context->RSSetState(nullptr);
-    D3D11_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &viewport);
-    m_context->IASetInputLayout(nullptr);
-    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    m_context->PSSetShader(m_cloudUpsamplePs.Get(), nullptr, 0);
-    ID3D11Buffer* constantBuffers[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
-    m_context->PSSetConstantBuffers(0, 2, constantBuffers);
-    ID3D11Buffer* upsamplingBuffer = m_upsamplingCb.Get();
-    m_context->PSSetConstantBuffers(10, 1, &upsamplingBuffer);
-    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
-    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
-    BindAtmosphereResources();
-    ID3D11ShaderResourceView* resources[4] = {
-        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
-        m_cloudScatteringTransmittanceSrv.Get(),
-        m_cloudDepthSceneLimitSrv.Get()
-    };
-    m_context->PSSetShaderResources(0, 4, resources);
-    ID3D11ShaderResourceView* shadowResources[2] = {
-        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
-    };
-    m_context->PSSetShaderResources(6, 2, shadowResources);
-    ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
-    m_context->PSSetSamplers(2, 1, &shadowSampler);
-    m_context->Draw(3, 0);
-    UnbindCloudShaderResources(14);
-}
-
-void Renderer::PrepareTemporalFrame(const Camera& camera, float timeSeconds)
-{
-    if (m_temporalPreviousFrameValid)
-    {
-        const XMFLOAT3 currentPosition = camera.GetPosition();
-        const XMFLOAT3 delta = {
-            currentPosition.x - m_temporalParameters.previousCameraPosition.x,
-            currentPosition.y - m_temporalParameters.previousCameraPosition.y,
-            currentPosition.z - m_temporalParameters.previousCameraPosition.z
-        };
-        const float distanceSquared =
-            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-        if (distanceSquared > 5000.0f * 5000.0f ||
-            std::abs(camera.GetFovYDegrees() -
-                     m_previousTemporalFovYDegrees) > 2.0f)
-            ResetTemporalHistory(Stage11HistoryResetReason::CameraCut);
-    }
-    if (!m_temporalPreviousFrameValid)
-    {
-        XMStoreFloat4x4(&m_temporalParameters.previousViewProjection,
-                        XMMatrixTranspose(camera.GetViewProj()));
-        m_temporalParameters.previousCameraPosition = camera.GetPosition();
-        m_previousTemporalTimeSeconds = timeSeconds;
-        m_previousTemporalFovYDegrees = camera.GetFovYDegrees();
-        m_temporalParameters.deltaTimeSeconds = 0.0f;
-    }
-    else
-    {
-        const float delta = timeSeconds - m_previousTemporalTimeSeconds;
-        if (!std::isfinite(delta) || delta < 0.0f || delta > 0.25f)
-        {
-            ResetTemporalHistory(
-                Stage11HistoryResetReason::TimeDiscontinuity);
-            XMStoreFloat4x4(&m_temporalParameters.previousViewProjection,
-                            XMMatrixTranspose(camera.GetViewProj()));
-            m_temporalParameters.previousCameraPosition = camera.GetPosition();
-            m_temporalParameters.deltaTimeSeconds = 0.0f;
-        }
-        else
-        {
-            m_temporalParameters.deltaTimeSeconds = delta;
-        }
-    }
-    m_temporalParameters.historyValid = m_temporalHistoryValid ? 1u : 0u;
-    m_temporalParameters.jitterOffsetLowResTexels =
-        m_temporalParameters.jitterEnabled != 0u
-        ? stage11temporal::JitterForFrame(m_temporalParameters.frameIndex)
-        : XMFLOAT2{};
-    m_temporalParameters = stage11temporal::Sanitize(m_temporalParameters);
-}
-
-void Renderer::CommitTemporalFrame(const Camera& camera, float timeSeconds)
-{
-    m_temporalHistoryReadIndex = 1u - m_temporalHistoryReadIndex;
-    m_temporalHistoryValid = true;
-    m_temporalPreviousFrameValid = true;
-    m_temporalParameters.historyValid = 1u;
-    XMStoreFloat4x4(&m_temporalParameters.previousViewProjection,
-                    XMMatrixTranspose(camera.GetViewProj()));
-    m_temporalParameters.previousCameraPosition = camera.GetPosition();
-    m_previousTemporalTimeSeconds = timeSeconds;
-    m_previousTemporalFovYDegrees = camera.GetFovYDegrees();
-    if (m_temporalParameters.temporalEnabled != 0u)
-    {
-        ++m_temporalParameters.frameIndex;
-        ++m_temporalAccumulatedFrames;
-    }
-    else
-    {
-        m_temporalParameters.frameIndex = 0;
-        m_temporalAccumulatedFrames = 0;
-    }
-}
-
-bool Renderer::RenderCloudTemporalPass(
-    const Camera& camera, float timeSeconds,
-    ID3D11RenderTargetView* targetOverride)
-{
-    const std::uint32_t writeIndex = 1u - m_temporalHistoryReadIndex;
-    if (!m_cloudTemporalResolvePs || !m_temporalHistoryCloudRtv[writeIndex] ||
-        !m_temporalHistoryAuxRtv[writeIndex] ||
-        !m_temporalHistoryCloudSrv[m_temporalHistoryReadIndex] ||
-        !m_temporalHistoryAuxSrv[m_temporalHistoryReadIndex])
-    {
-        ResetTemporalHistory(Stage11HistoryResetReason::ResourcesRecreated);
-        return false;
-    }
-
-    UpdateCloudConstantBuffers(camera, timeSeconds, m_width, m_height);
-    ID3D11RenderTargetView* outputTarget = targetOverride
-        ? targetOverride : m_hdrCompositeRtv.Get();
-    ID3D11RenderTargetView* targets[3] = {
-        m_temporalHistoryCloudRtv[writeIndex].Get(),
-        m_temporalHistoryAuxRtv[writeIndex].Get(),
-        outputTarget
-    };
-    const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
-    m_context->OMSetRenderTargets(3, targets, nullptr);
-    m_context->ClearRenderTargetView(outputTarget, clearColor);
-    m_context->OMSetDepthStencilState(nullptr, 0);
-    m_context->RSSetState(nullptr);
-    D3D11_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &viewport);
-    m_context->IASetInputLayout(nullptr);
-    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
-    m_context->PSSetShader(m_cloudTemporalResolvePs.Get(), nullptr, 0);
-    ID3D11Buffer* cameraAndCloud[2] = { m_cameraCb.Get(), m_cloudCb.Get() };
-    m_context->PSSetConstantBuffers(0, 2, cameraAndCloud);
-    ID3D11Buffer* upsamplingBuffer = m_upsamplingCb.Get();
-    ID3D11Buffer* temporalBuffer = m_temporalCb.Get();
-    m_context->PSSetConstantBuffers(10, 1, &upsamplingBuffer);
-    m_context->PSSetConstantBuffers(11, 1, &temporalBuffer);
-    ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
-    m_context->PSSetConstantBuffers(12, 1, &shadowBuffer);
-    BindAtmosphereResources();
-    ID3D11ShaderResourceView* resources[6] = {
-        m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(),
-        m_cloudScatteringTransmittanceSrv.Get(),
-        m_cloudDepthSceneLimitSrv.Get(),
-        m_temporalHistoryCloudSrv[m_temporalHistoryReadIndex].Get(),
-        m_temporalHistoryAuxSrv[m_temporalHistoryReadIndex].Get()
-    };
-    m_context->PSSetShaderResources(0, 6, resources);
-    ID3D11ShaderResourceView* shadowResources[2] = {
-        m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
-    };
-    m_context->PSSetShaderResources(6, 2, shadowResources);
-    ID3D11SamplerState* sampler = m_linearClampSampler.Get();
-    m_context->PSSetSamplers(0, 1, &sampler);
-    m_context->PSSetSamplers(2, 1, &sampler);
-    m_context->Draw(3, 0);
-    UnbindCloudShaderResources(14);
-    m_context->OMSetRenderTargets(0, nullptr, nullptr);
-    CommitTemporalFrame(camera, timeSeconds);
-    return true;
-}
-
-bool Renderer::CaptureCloudDiagnosticFrame(
-    const Camera& camera, float timeSeconds, CloudDebugMode mode,
-    CloudDiagnosticFrame& frame, bool forceDirectComposite)
-{
-    frame = {};
-    if (!m_device || !m_context || m_width <= 0 || m_height <= 0)
-        return false;
-
-    D3D11_TEXTURE2D_DESC targetDesc = {};
-    targetDesc.Width = static_cast<UINT>(m_width);
-    targetDesc.Height = static_cast<UINT>(m_height);
-    targetDesc.MipLevels = 1;
-    targetDesc.ArraySize = 1;
-    targetDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    targetDesc.SampleDesc.Count = 1;
-    targetDesc.Usage = D3D11_USAGE_DEFAULT;
-    targetDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
-
-    ComPtr<ID3D11Texture2D> target;
-    ComPtr<ID3D11RenderTargetView> targetRtv;
-    if (FAILED(m_device->CreateTexture2D(&targetDesc, nullptr, &target)) ||
-        FAILED(m_device->CreateRenderTargetView(
-            target.Get(), nullptr, &targetRtv)))
-        return false;
-
-    D3D11_TEXTURE2D_DESC stagingDesc = targetDesc;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    ComPtr<ID3D11Texture2D> staging;
-    if (FAILED(m_device->CreateTexture2D(
-            &stagingDesc, nullptr, &staging)))
-        return false;
-
-    const CloudDebugMode previousMode = DebugMode();
-    SetDebugMode(mode);
-    D3D11_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &viewport);
-    // Offscreen 진단도 일반 Render와 같은 b13/LUT 상태를 먼저 준비해야 한다.
-    // Manual Reference에서는 LUT를 만들지 않더라도 mode flag를 업로드한다.
-    EnsureAtmosphereLuts(camera);
-    RenderDiagnosticScene(camera);
-    RenderDeepShadowCaches(camera, timeSeconds);
-    if (!forceDirectComposite && (mode == CloudDebugMode::Composite ||
-        (static_cast<std::int32_t>(mode) >= 64 &&
-         static_cast<std::int32_t>(mode) <= 73)) && EnsureCloudTargets())
-    {
-        PrepareTemporalFrame(camera, timeSeconds);
-        RenderCloudDataPass(camera, timeSeconds);
-        if (!RenderCloudTemporalPass(camera, timeSeconds, targetRtv.Get()))
-            RenderCloudUpsamplePass(camera, timeSeconds, targetRtv.Get());
-    }
-    else
-    {
-        RenderCloudPass(camera, timeSeconds, targetRtv.Get());
-    }
-    SetDebugMode(previousMode);
-
-    m_context->OMSetRenderTargets(0, nullptr, nullptr);
-    m_context->CopyResource(staging.Get(), target.Get());
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    if (FAILED(m_context->Map(
-            staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
-        return false;
-
-    frame.width = m_width;
-    frame.height = m_height;
-    frame.pixels.resize(
-        static_cast<size_t>(m_width) * static_cast<size_t>(m_height));
-    const size_t rowBytes = static_cast<size_t>(m_width) *
-        sizeof(DirectX::XMFLOAT4);
-    for (int y = 0; y < m_height; ++y)
-    {
-        const auto* source = static_cast<const unsigned char*>(mapped.pData) +
-            static_cast<size_t>(y) * mapped.RowPitch;
-        std::memcpy(frame.pixels.data() +
-                        static_cast<size_t>(y) * static_cast<size_t>(m_width),
-                    source, rowBytes);
-    }
-    m_context->Unmap(staging.Get(), 0);
-    // schema 34 이하의 회귀 fixture는 Composite가 Back Buffer에 직접 쓰이던
-    // 시절의 0.8-knee shoulder 값을 비교한다. 현재 일반 경로는 HDR을 보존하고
-    // 최종 pass에서 처리하므로 readback에만 동일 곡선을 재현한다.
-    if (mode == CloudDebugMode::Composite &&
-        m_toneMappingParameters.mode == ToneMappingMode::LegacyShoulder)
-    {
-        for (DirectX::XMFLOAT4& pixel : frame.pixels)
-        {
-            const float peak = std::max(pixel.x, std::max(pixel.y, pixel.z));
-            if (peak <= 0.8f)
-                continue;
-            const float excess = peak - 0.8f;
-            const float mappedPeak = 0.8f + excess * 0.2f /
-                (excess + 0.2f);
-            const float scale = mappedPeak / std::max(peak, 1.0e-6f);
-            pixel.x = std::max(pixel.x, 0.0f) * scale;
-            pixel.y = std::max(pixel.y, 0.0f) * scale;
-            pixel.z = std::max(pixel.z, 0.0f) * scale;
-        }
-    }
-    return true;
-}
-
-bool Renderer::CaptureSceneDepthDiagnosticFrame(
-    const Camera& camera, SceneDepthDiagnosticFrame& frame)
-{
-    frame = {};
-    if (!m_device || !m_context || !m_sceneDepth ||
-        m_width <= 0 || m_height <= 0)
-        return false;
-
-    D3D11_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &viewport);
-    EnsureAtmosphereLuts(camera);
-    RenderDiagnosticScene(camera);
-    D3D11_TEXTURE2D_DESC stagingDesc = {};
-    m_sceneDepth->GetDesc(&stagingDesc);
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    stagingDesc.MiscFlags = 0;
-    ComPtr<ID3D11Texture2D> staging;
-    if (FAILED(m_device->CreateTexture2D(
-            &stagingDesc, nullptr, &staging)))
-        return false;
-
-    m_context->CopyResource(staging.Get(), m_sceneDepth.Get());
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    if (FAILED(m_context->Map(
-            staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
-        return false;
-
-    frame.width = m_width;
-    frame.height = m_height;
-    frame.deviceDepth.resize(
-        static_cast<std::size_t>(m_width) * static_cast<std::size_t>(m_height));
-    const std::size_t rowBytes = static_cast<std::size_t>(m_width) * sizeof(float);
-    for (int y = 0; y < m_height; ++y)
-    {
-        const auto* source = static_cast<const unsigned char*>(mapped.pData) +
-            static_cast<std::size_t>(y) * mapped.RowPitch;
-        std::memcpy(frame.deviceDepth.data() +
-                        static_cast<std::size_t>(y) *
-                        static_cast<std::size_t>(m_width),
-                    source, rowBytes);
-    }
-    m_context->Unmap(staging.Get(), 0);
-    return true;
-}
-
 void Renderer::Render(Camera& camera, float timeSeconds)
 {
-    if (!m_backBufferRtv || !m_sceneColorRtv || !m_sceneDepthDsv)
+    if (!m_sizeDependentResourcesValid || !m_backBufferRtv ||
+        !m_sceneColorRtv || !m_sceneDepthDsv)
         return;
 
+    ++m_renderFrameSerial;
     m_frameProfiler.BeginCpuFrame();
     CheckShaderHotReload();
     m_frameProfiler.BeginGpuFrame(m_context.Get());
-    // Noise Lab은 CloudParameters를 직접 편집한다. 편집 전 값을 보관해
-    // Pipeline Compare가 현재 최종값인지 판정한다.
-    const CloudParameters parametersBeforeNoiseLab = m_cloudParameters;
-    const CloudShapeParameters shapeBeforeNoiseLab = m_cloudShapeParameters;
-    const CloudDomainParameters domainBeforeNoiseLab = m_cloudDomainParameters;
-    const NoiseVolumeParameters noiseVolumeBeforeNoiseLab = m_noiseVolumeParameters;
-    const LightParameters lightBeforeNoiseLab = m_lightParameters;
-    const AtmosphereParameters atmosphereBeforeNoiseLab =
-        m_atmosphereParameters;
-    const Stage12ShadowPreset shadowPresetBeforeNoiseLab = ShadowPreset();
+
     if (m_atmosphereParameters.timePlaybackEnabled)
     {
         float deltaSeconds = 0.0f;
@@ -2646,7 +2671,14 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     }
     m_previousAtmosphereTimeSeconds = timeSeconds;
     m_previousAtmosphereTimeValid = true;
-    m_noiseLab.SetOpenWorldPipelinePreset(m_openWorldPipelinePreset);
+
+    const CloudFormationSettings formationBeforeUi = CurrentCloudFormation();
+    const CloudFormationSettings rawFormationBeforeUi =
+        CaptureCloudFormationSettingsUnchecked(
+            m_cloudParameters, m_cloudShapeParameters,
+            m_cloudDomainParameters, m_weatherPreset,
+            m_weatherDefinition, m_cloudTypeSelection,
+            m_noiseVolumeParameters);
     const std::array<ID3D11ShaderResourceView*, 6> atmosphereLutSrvs = {
         m_atmosphereLuts.transmittance.srv.Get(),
         m_atmosphereLuts.multiScattering.srv.Get(),
@@ -2655,260 +2687,113 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         m_atmosphereLuts.aerialRadiance.srv.Get(),
         m_atmosphereLuts.aerialTransmittance.srv.Get()
     };
-    const std::array<std::uint64_t, 6> atmosphereLutGenerations = {
-        m_atmosphereLutGenerations[0], m_atmosphereLutGenerations[1],
-        m_atmosphereLutGenerations[2], m_atmosphereLutGenerations[3],
-        m_atmosphereLutGenerations[4], m_atmosphereLutGenerations[5]
-    };
-    const std::array<std::uint64_t, 6> atmosphereLutHashes = {
-        m_atmosphereLutHashes[0], m_atmosphereLutHashes[1],
-        m_atmosphereLutHashes[2], m_atmosphereLutHashes[3],
-        m_atmosphereLutHashes[4], m_atmosphereLutHashes[5]
-    };
-    m_noiseLab.BeginFrame(timeSeconds, camera, m_cloudParameters,
-                          m_cloudShapeParameters,
-                          m_cloudDomainParameters,
-                          m_cloudLodParameters,
-                          m_optimizationParameters, m_optimizationPreset,
-                          m_upsamplingParameters, m_resolutionPreset,
-                          m_temporalParameters, m_temporalHistoryValid,
-                          m_temporalAccumulatedFrames,
-                          m_shadowParameters,
-                          m_lightParameters, m_sunPreset, m_phasePreset,
-                          m_environmentParameters, m_environmentPreset,
-                          m_atmosphereParameters, m_groundLightingParameters,
-                          m_toneMappingParameters, atmosphereLutSrvs,
-                          atmosphereLutGenerations, atmosphereLutHashes,
-                          m_atmosphereStatus,
-                          m_weatherPreset, m_weatherGeneratorSettings,
-                          m_cloudTypeMode, m_cloudAppearancePreset,
-                          m_cloudAppearanceDirty,
-                          m_hasSavedCustomAppearance,
-                          m_cloudAppearanceStatus,
-                          m_cameraMoveSpeedMetersPerSecond,
-                           m_noiseVolumeParameters, m_baseNoiseVolumeHash,
-                          m_detailNoiseVolumeHash,
-                          m_noiseVolumeGenerationMilliseconds,
-                          m_weatherMapSrv.Get(), m_weatherMapStatus,
-                          m_frameProfiler.Snapshot(), m_vsyncEnabled,
-                          m_shaderGeneration, m_shaderStatus, m_shaderError);
-    const float sunAzimuthDelta = std::abs(
-        m_atmosphereParameters.sunAzimuthDegrees -
-        atmosphereBeforeNoiseLab.sunAzimuthDegrees);
-    const float sunElevationDelta = std::abs(
-        m_atmosphereParameters.sunElevationDegrees -
-        atmosphereBeforeNoiseLab.sunElevationDegrees);
-    if (std::max(sunAzimuthDelta, sunElevationDelta) > 0.25f)
-        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    if (ShadowPreset() != shadowPresetBeforeNoiseLab &&
-        !CreateDeepShadowResources(ShadowPreset()))
+    if (!m_automatedRenderMode)
     {
-        stage12shadow::ApplyPreset(
-            m_shadowParameters, shadowPresetBeforeNoiseLab);
-    }
-    if (m_noiseLab.ConsumeParametersChanged())
-    {
-        if (m_temporalParameters.temporalEnabled != 0u)
+        m_noiseLab.BeginFrame(
+            timeSeconds, camera, m_cloudParameters, m_cloudShapeParameters,
+            m_cloudDomainParameters, m_weatherDefinition,
+            m_cloudTypeSelection, m_cloudMotion,
+            m_shadowParameters, m_lightParameters, m_sunPreset,
+            m_phasePreset, m_environmentParameters, m_environmentPreset,
+            m_atmosphereParameters, m_groundLightingParameters,
+            m_toneMappingParameters, m_stage15ConceptPreset,
+            m_cloudFormationTarget, m_cloudFormationSource,
+            m_hasSavedCustomFormation, m_cloudFormationStatus,
+            m_cameraMoveSpeedMetersPerSecond, m_noiseVolumeParameters,
+            m_baseNoiseVolumeHash, m_detailNoiseVolumeHash,
+            m_noiseVolumeGenerationMilliseconds,
+            m_weatherMapGenerationMilliseconds, m_weatherMapGeneration,
+            m_weatherMapSrv.Get(),
+            atmosphereLutSrvs, m_frameProfiler.Snapshot(), m_vsyncEnabled,
+            m_tearingSupported,
+            m_shaderGeneration, m_shaderStatus, m_shaderError,
+            m_lastShaderReloadReport);
+
+        const CloudFormationSettings rawCandidate =
+            CaptureCloudFormationSettingsUnchecked(
+                m_cloudParameters, m_cloudShapeParameters,
+                m_cloudDomainParameters, m_weatherPreset,
+                m_weatherDefinition, m_cloudTypeSelection,
+                m_noiseVolumeParameters);
+        if (m_noiseLab.ConsumeFormationEdited() ||
+            !CloudFormationSettingsEqual(rawFormationBeforeUi, rawCandidate, 0.0f))
         {
-            stage10upsampling::ApplyResolutionPreset(
-                m_upsamplingParameters, Stage10ResolutionPreset::Half);
-            m_resolutionPreset = Stage10ResolutionPreset::Half;
+            PreparedCloudFormation previous;
+            std::string previousStatus;
+            if (PrepareCloudFormationSettings(
+                    formationBeforeUi, previous, previousStatus, 200.0f))
+            {
+                WriteCloudFormationToRuntime(
+                    previous, m_cloudParameters, m_cloudShapeParameters,
+                    m_cloudDomainParameters, m_weatherPreset,
+                    m_weatherDefinition, m_cloudTypeSelection,
+                    m_noiseVolumeParameters);
+                ApplyCloudFormationAtomic(
+                    SanitizeCloudFormationSettings(rawCandidate));
+            }
         }
-        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-        m_pipelineComparisonActive = false;
-        const bool similarityChanged =
-            domainBeforeNoiseLab.domainType !=
-                m_cloudDomainParameters.domainType ||
-            std::memcmp(&parametersBeforeNoiseLab.cloudBoundsMin,
-                        &m_cloudParameters.cloudBoundsMin,
-                        sizeof(DirectX::XMFLOAT3)) != 0 ||
-            std::memcmp(&parametersBeforeNoiseLab.cloudBoundsMax,
-                        &m_cloudParameters.cloudBoundsMax,
-                        sizeof(DirectX::XMFLOAT3)) != 0 ||
-            parametersBeforeNoiseLab.stepSize != m_cloudParameters.stepSize ||
-            parametersBeforeNoiseLab.maxViewSteps != m_cloudParameters.maxViewSteps ||
-            parametersBeforeNoiseLab.extinctionCoefficient !=
-                m_cloudParameters.extinctionCoefficient ||
-            parametersBeforeNoiseLab.coverage != m_cloudParameters.coverage ||
-            parametersBeforeNoiseLab.densityMultiplier !=
-                m_cloudParameters.densityMultiplier ||
-            parametersBeforeNoiseLab.baseNoiseScale != m_cloudParameters.baseNoiseScale ||
-            parametersBeforeNoiseLab.windSpeed != m_cloudParameters.windSpeed ||
-            parametersBeforeNoiseLab.detailNoiseScale !=
-                m_cloudParameters.detailNoiseScale ||
-            parametersBeforeNoiseLab.detailWindSpeed !=
-                m_cloudParameters.detailWindSpeed ||
-            parametersBeforeNoiseLab.detailErosionStrength !=
-                m_cloudParameters.detailErosionStrength ||
-            parametersBeforeNoiseLab.bottomFadeEnd !=
-                m_cloudParameters.bottomFadeEnd ||
-            parametersBeforeNoiseLab.topFadeStart !=
-                m_cloudParameters.topFadeStart ||
-            parametersBeforeNoiseLab.minimumLocalThicknessFraction !=
-                m_cloudParameters.minimumLocalThicknessFraction ||
-            parametersBeforeNoiseLab.localHeightVariation !=
-                m_cloudParameters.localHeightVariation ||
-            parametersBeforeNoiseLab.cumulusTopBoost !=
-                m_cloudParameters.cumulusTopBoost ||
-            parametersBeforeNoiseLab.weatherMapWorldSize !=
-                m_cloudParameters.weatherMapWorldSize ||
-            parametersBeforeNoiseLab.weatherMapWindSpeed !=
-                m_cloudParameters.weatherMapWindSpeed ||
-            domainBeforeNoiseLab.cloudBottomAltitude !=
-                m_cloudDomainParameters.cloudBottomAltitude ||
-            domainBeforeNoiseLab.cloudLayerThickness !=
-                m_cloudDomainParameters.cloudLayerThickness ||
-            domainBeforeNoiseLab.maxViewTraceDistance !=
-                m_cloudDomainParameters.maxViewTraceDistance ||
-            domainBeforeNoiseLab.viewTraceFadeStartDistance !=
-                m_cloudDomainParameters.viewTraceFadeStartDistance ||
-            domainBeforeNoiseLab.maxLightTraceDistance !=
-                m_cloudDomainParameters.maxLightTraceDistance ||
-            lightBeforeNoiseLab.maxLightSteps != m_lightParameters.maxLightSteps ||
-            lightBeforeNoiseLab.lightStepSize != m_lightParameters.lightStepSize ||
-            lightBeforeNoiseLab.lightRayBias != m_lightParameters.lightRayBias;
-        const bool shapeChanged = std::memcmp(
-            &shapeBeforeNoiseLab, &m_cloudShapeParameters,
-            sizeof(CloudShapeParameters)) != 0;
-        const bool noiseVolumeScaleChanged =
-            noiseVolumeBeforeNoiseLab.baseWorldSizeMeters !=
-                m_noiseVolumeParameters.baseWorldSizeMeters ||
-            noiseVolumeBeforeNoiseLab.baseVerticalWorldSizeMeters !=
-                m_noiseVolumeParameters.baseVerticalWorldSizeMeters;
-        const bool opticalPresetChanged =
-            lightBeforeNoiseLab.singleScatteringAlbedo !=
-                m_lightParameters.singleScatteringAlbedo;
-        if (similarityChanged || opticalPresetChanged || shapeChanged ||
-            noiseVolumeScaleChanged)
-        {
-            m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-        }
+
+        CloudFormationPresetTarget formationRequest;
+        if (m_noiseLab.ConsumeFormationPresetRequest(formationRequest))
+            ApplyCloudType(formationRequest);
+        if (m_noiseLab.ConsumeSaveCustomRequest())
+            SaveCustomFormation();
+        if (m_noiseLab.ConsumeLoadCustomRequest())
+            LoadCustomFormation();
+        Stage15ConceptPreset conceptRequest = m_stage15ConceptPreset;
+        if (m_noiseLab.ConsumeSceneConceptRequest(conceptRequest))
+            ApplySceneConcept(conceptRequest);
+        if (m_noiseLab.ConsumeNoiseVolumeRegenerateRequest())
+            RegenerateNoiseVolumes();
     }
-    if (m_noiseLab.ConsumeTemporalResetRequest())
-        ResetTemporalHistory(Stage11HistoryResetReason::Manual);
-    Stage5WeatherPreset requestedWeatherPreset = m_weatherPreset;
-    if (m_noiseLab.ConsumeWeatherPresetRequest(requestedWeatherPreset))
-        ApplyStage5WeatherPreset(requestedWeatherPreset);
-    WeatherMapGeneratorSettings requestedGeneratorSettings;
-    const bool appearanceEdited = m_noiseLab.ConsumeCloudAppearanceEdited();
-    if (m_noiseLab.ConsumeWeatherGeneratorRequest(requestedGeneratorSettings))
-    {
-        if (ApplyWeatherGeneratorSettings(requestedGeneratorSettings) &&
-            appearanceEdited)
-            MarkCloudAppearanceDirty();
-    }
-    else if (appearanceEdited)
-    {
-        MarkCloudAppearanceDirty();
-    }
-    OpenWorldPipelinePreset requestedPipelinePreset =
-        m_openWorldPipelinePreset;
-    if (m_noiseLab.ConsumeOpenWorldPipelinePresetRequest(
-            requestedPipelinePreset))
-    {
-        if (ApplyOpenWorldPipelinePreset(requestedPipelinePreset))
-            m_pipelineComparisonActive = true;
-    }
-    CloudAppearancePreset requestedAppearance = m_cloudAppearancePreset;
-    if (m_noiseLab.ConsumeCloudAppearancePresetRequest(requestedAppearance))
-        ApplyCloudAppearancePreset(requestedAppearance);
-    if (m_noiseLab.ConsumeCloudAppearanceSaveRequest())
-        SaveCurrentCloudAppearance();
-    NoiseSource requestedNoiseSource = CurrentNoiseSource();
-    if (m_noiseLab.ConsumeNoiseSourceRequest(requestedNoiseSource))
-        SetNoiseSource(requestedNoiseSource);
-    if (m_noiseLab.ConsumeNoiseVolumeRegenerateRequest())
-        RegenerateNoiseVolumes();
-    const float effectiveTime = ResolvePipelineComparisonTime(
-        m_pipelineComparisonActive, m_noiseLab.EffectiveTime());
+
+    const float effectiveTime = m_automatedRenderMode
+        ? timeSeconds : m_noiseLab.EffectiveTime();
     D3D11_VIEWPORT viewport = {};
     viewport.Width = static_cast<float>(m_width);
     viewport.Height = static_cast<float>(m_height);
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
 
-    // Stage 14 물리 대기 LUT가 Stage 12 cache와 모든 장면 조명보다 먼저 온다.
+    m_frameProfiler.MarkWeatherMapEnd(m_context.Get());
     EnsureAtmosphereLuts(camera);
     m_frameProfiler.MarkAtmosphereLutEnd(m_context.Get());
-    m_frameProfiler.BeginCloudPass(m_context.Get());
     RenderDeepShadowCaches(camera, effectiveTime);
     m_frameProfiler.MarkShadowCacheEnd(m_context.Get());
     RenderDiagnosticScene(camera);
     m_frameProfiler.MarkOpaqueSceneEnd(m_context.Get());
-    const CloudDebugMode debugMode = DebugMode();
-    if ((debugMode == CloudDebugMode::Composite ||
-        (static_cast<std::int32_t>(debugMode) >= 64 &&
-         static_cast<std::int32_t>(debugMode) <= 73)) && EnsureCloudTargets())
-    {
-        PrepareTemporalFrame(camera, effectiveTime);
-        RenderCloudDataPass(camera, effectiveTime);
-        m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
-        if (!RenderCloudTemporalPass(camera, effectiveTime))
-            RenderCloudUpsamplePass(camera, effectiveTime);
-    }
-    else
-    {
-        RenderCloudPass(camera, effectiveTime);
-        m_frameProfiler.MarkCloudRaymarchEnd(m_context.Get());
-    }
-    m_frameProfiler.EndCloudPass(m_context.Get());
+    RenderCloudPass();
+    m_frameProfiler.MarkCloudEnd(m_context.Get());
     RenderToneMapPass();
     m_frameProfiler.MarkToneMapEnd(m_context.Get());
     if (m_captureFrameHashes)
         CaptureCloudFrameHash();
-    if (m_renderNoiseLabPreviews)
+    if (!m_automatedRenderMode && m_renderNoiseLabPreviews)
     {
         m_noiseLab.RenderPreviews(
             m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get(),
-            m_noiseVolumeCb.Get(), m_cloudShapeCb.Get(), m_weatherMapSrv.Get(),
+            m_noiseVolumeCb.Get(), m_cloudShapeCb.Get(),
+            m_weatherColumnCb.Get(), m_weatherMapSrv.Get(),
             m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get(),
             m_weatherLinearWrapSampler.Get());
     }
-    if (m_noiseLab.ConsumeExportRequest())
-    {
-        std::filesystem::path shaderDirectory(m_shaderDir);
-        if (shaderDirectory.filename().empty())
-            shaderDirectory = shaderDirectory.parent_path();
-        m_noiseLab.ExportSnapshot(shaderDirectory.parent_path() / L"captures" / L"noise-lab",
-                                  m_cloudParameters,
-                                  m_cloudShapeParameters,
-                                  m_cloudDomainParameters,
-                                  m_cloudLodParameters,
-                                  m_optimizationParameters,
-                                  m_optimizationPreset,
-                                  m_upsamplingParameters,
-                                  m_resolutionPreset,
-                                  m_temporalParameters,
-                                  m_shadowParameters,
-                                  m_cloudRenderWidth,
-                                  m_cloudRenderHeight,
-                                  m_lightParameters,
-                                  m_sunPreset,
-                                  m_phasePreset,
-                                  m_environmentParameters,
-                                  m_environmentPreset, m_weatherPreset,
-                                  m_cloudTypeMode,
-                                  m_cloudAppearancePreset,
-                                  m_cloudAppearanceDirty,
-                                  m_hasSavedCustomAppearance,
-                                  m_savedCustomAppearance,
-                                  m_noiseVolumeParameters,
-                                  m_baseNoiseVolumeHash,
-                                  m_detailNoiseVolumeHash,
-                                  m_weatherGeneratorSettings,
-                                  m_weatherMapHash,
-                                  m_weatherMapTexture.Get(),
-                                  shaderDirectory / L"Noise.hlsli");
-    }
-    m_noiseLab.EndFrame(m_backBufferRtv.Get());
+    if (!m_automatedRenderMode && m_noiseLab.ConsumeExportRequest())
+        ExportNoiseLabSnapshot(DefaultCloudFormationPresetRoot());
+    if (!m_automatedRenderMode)
+        m_noiseLab.EndFrame(m_backBufferRtv.Get());
+    m_context->RSSetViewports(1, &viewport);
     m_frameProfiler.EndGpuFrame(m_context.Get());
-    m_swapChain->Present(m_vsyncEnabled ? 1u : 0u, 0);
+    const presentation::PresentParameters present =
+        presentation::ResolvePresentParameters(
+            m_vsyncEnabled, m_tearingSupported, true);
+    m_swapChain->Present(present.syncInterval, present.flags);
     m_frameProfiler.EndCpuFrame();
 }
 
 void Renderer::RenderToneMapPass()
 {
-    if (!m_toneMapPs || !m_hdrCompositeSrv || !m_backBufferRtv)
+    ID3D11ShaderResourceView* source = m_hdrCloudSrv.Get();
+    if (!m_toneMapPs || !source || !m_backBufferRtv)
         return;
     const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     m_context->OMSetRenderTargets(1, m_backBufferRtv.GetAddressOf(), nullptr);
@@ -2925,8 +2810,7 @@ void Renderer::RenderToneMapPass()
     m_context->VSSetShader(m_fullscreenVs.Get(), nullptr, 0);
     m_context->PSSetShader(m_toneMapPs.Get(), nullptr, 0);
     BindAtmosphereResources();
-    ID3D11ShaderResourceView* hdr = m_hdrCompositeSrv.Get();
-    m_context->PSSetShaderResources(0, 1, &hdr);
+    m_context->PSSetShaderResources(0, 1, &source);
     ID3D11SamplerState* sampler = m_linearClampSampler.Get();
     m_context->PSSetSamplers(0, 1, &sampler);
     m_context->Draw(3, 0);
@@ -2953,16 +2837,12 @@ void Renderer::CaptureCloudFrameHash()
     D3D11_MAPPED_SUBRESOURCE mapped = {};
     if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
         return;
-    std::uint64_t hash = 1469598103934665603ull;
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
     for (UINT y = 0; y < desc.Height; ++y)
     {
         const auto* row = static_cast<const unsigned char*>(mapped.pData) +
                           static_cast<size_t>(y) * mapped.RowPitch;
-        for (UINT x = 0; x < desc.Width * 4; ++x)
-        {
-            hash ^= row[x];
-            hash *= 1099511628211ull;
-        }
+        fnv1a64::Append(hash, row, desc.Width * 4u);
     }
     m_context->Unmap(staging.Get(), 0);
     m_lastCloudFrameHash = hash;
@@ -2980,663 +2860,256 @@ CloudDebugMode Renderer::DebugMode() const
         static_cast<CloudDebugMode>(m_cloudParameters.debugMode));
 }
 
-void Renderer::ConfigureVolumeForTest(DirectX::XMFLOAT3 boundsMin,
-                                      DirectX::XMFLOAT3 boundsMax,
-                                      float stepSize)
+bool Renderer::ApplyStage15Defaults()
 {
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    // 각 키는 다른 키의 잔여 상태가 결과를 흐리지 않도록 단계 1 기본값에서 시작한다.
-    m_cloudParameters.cloudBoundsMin = boundsMin;
-    m_cloudParameters.cloudBoundsMax = boundsMax;
-    m_cloudParameters.densityMultiplier = 1.0f;
-    m_cloudParameters.stepSize = std::max(stepSize, 0.0001f);
-    m_cloudParameters.maxViewSteps = 128;
-    m_cloudParameters.extinctionCoefficient = 1.0f;
-    m_cloudParameters.transmittanceThreshold = 0.01f;
-
-}
-
-void Renderer::ConfigureNoiseForTest(float baseScale, float coverage,
-                                     float densityMultiplier, float windSpeed,
-                                     float noiseOffset)
-{
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    // 프리셋을 누르는 순서와 무관하게 비교할 수 있도록 noise 관련 값만 기본화한다.
-    // AABB와 step 프리셋은 유지되어 두 종류의 검증을 조합할 수 있다.
-    m_cloudParameters.baseNoiseScale = std::max(baseScale, 0.0001f);
-    m_cloudParameters.coverage = std::clamp(coverage, 0.0f, 1.0f);
-    m_cloudParameters.densityMultiplier = std::max(densityMultiplier, 0.0f);
-    m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    m_cloudParameters.windSpeed = std::max(windSpeed, 0.0f);
-    m_cloudParameters.noiseOffset = noiseOffset;
-}
-
-void Renderer::SetHeightProfile(float bottomFadeEnd, float topFadeStart)
-{
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    // CPU에서도 UI와 같은 범위를 보장해 smoke test나 이후 프리셋이 잘못된
-    // smoothstep edge를 GPU로 보내지 않게 한다. 두 범위의 교차는 의도적으로 허용한다.
-    m_cloudParameters.bottomFadeEnd = std::clamp(bottomFadeEnd, 0.01f, 0.99f);
-    m_cloudParameters.topFadeStart = std::clamp(topFadeStart, 0.01f, 0.99f);
-}
-
-void Renderer::ConfigureDetailForTest(float detailScale,
-                                      float erosionStrength,
-                                      float windSpeed, float noiseOffset)
-{
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    // 프리셋 전환 순서와 무관하게 네 Detail 값만 기본화한다. Base noise, 높이와
-    // Q/Y 볼륨은 그대로 두므로 큰 형태가 변하지 않는지 직접 비교할 수 있다.
-    m_cloudParameters.detailNoiseScale = std::max(detailScale, 0.0001f);
-    m_cloudParameters.detailErosionStrength =
-        std::clamp(erosionStrength, 0.0f, 1.0f);
-    m_cloudParameters.detailWindSpeed = std::max(windSpeed, 0.0f);
-    m_cloudParameters.detailNoiseOffset = noiseOffset;
-}
-
-bool Renderer::ApplyStage5WeatherPreset(Stage5WeatherPreset preset)
-{
-    const bool changed = preset != m_weatherPreset;
-    // 프리셋 전환도 초기 texture/SRV를 재생성하지 않고 픽셀만 교체한다.
-    if (!UpdateWeatherMapTexture(preset, m_weatherGeneratorSettings))
-        return false;
-    if (changed)
-    {
-        m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    }
-    return true;
-}
-
-void Renderer::ApplyStage6SunPreset(Stage6SunPreset preset)
-{
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    if (preset == Stage6SunPreset::Custom)
-    {
-        m_sunPreset = preset;
-        return;
-    }
-    // 방향 프리셋은 사용자가 조절한 색·세기·품질 설정을 보존한다.
-    m_lightParameters.directionToSun =
-        stage6light::Preset(preset).directionToSun;
-    stage6light::AnglesFromDirection(
-        m_lightParameters.directionToSun,
-        m_atmosphereParameters.sunAzimuthDegrees,
-        m_atmosphereParameters.sunElevationDegrees);
-    m_atmosphereParameters.timePlaybackEnabled = false;
-    m_atmosphereParameters.sunControlMode = SunControlMode::Angles;
-    m_sunPreset = preset;
-}
-
-void Renderer::ApplyStage7PhasePreset(Stage7PhasePreset preset)
-{
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    if (preset == Stage7PhasePreset::Custom)
-    {
-        m_phasePreset = preset;
-        return;
-    }
-    stage6light::ApplyPhasePreset(m_lightParameters, preset);
-    m_phasePreset = preset;
-}
-
-void Renderer::ApplyStage8EnvironmentPreset(Stage8EnvironmentPreset preset)
-{
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    if (preset == Stage8EnvironmentPreset::Custom)
-    {
-        m_environmentParameters =
-            stage8environment::Sanitize(m_environmentParameters);
-        m_environmentPreset = preset;
-        return;
-    }
-    stage8environment::ApplyPreset(m_environmentParameters, preset);
-    m_environmentPreset = preset;
-}
-
-void Renderer::ApplyPortfolioHeroLighting()
-{
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    m_lightParameters.directionToSun = stage6light::Preset(
-        Stage6SunPreset::LowEast).directionToSun;
-    m_atmosphereParameters.sunAzimuthDegrees = -60.0f;
-    m_atmosphereParameters.sunElevationDegrees = 18.0f;
-    m_atmosphereParameters.timePlaybackEnabled = false;
-    m_atmosphereParameters.sunControlMode = SunControlMode::Angles;
-    m_lightParameters.sunColor = { 1.0f, 0.78f, 0.62f };
-    m_lightParameters.sunIntensity = 1.15f;
-    stage6light::ApplyPhasePreset(
-        m_lightParameters, Stage7PhasePreset::SilverLining);
-    stage8environment::ApplyPreset(
-        m_environmentParameters, Stage8EnvironmentPreset::PortfolioHero);
-    m_sunPreset = Stage6SunPreset::LowEast;
-    m_phasePreset = Stage7PhasePreset::SilverLining;
-    m_environmentPreset = Stage8EnvironmentPreset::PortfolioHero;
-}
-
-void Renderer::SetLightSampling(std::uint32_t maxSteps, float stepSize)
-{
-    m_lightParameters.maxLightSteps = maxSteps;
-    m_lightParameters.lightStepSize = stepSize;
-    m_lightParameters = stage6light::Sanitize(m_lightParameters);
-    m_sunPreset = Stage6SunPreset::Custom;
-}
-
-void Renderer::SetCloudLodForValidation(bool enabled, float startMeters,
-                                        float endMeters)
-{
-    m_cloudLodParameters.detailLodEnabled = enabled ? 1u : 0u;
-    m_cloudLodParameters.detailLodStartMeters = startMeters;
-    m_cloudLodParameters.detailLodEndMeters = endMeters;
-    m_cloudLodParameters = stage13lod::Sanitize(m_cloudLodParameters);
-}
-
-void Renderer::SetViewSamplingForSmoke(std::uint32_t maxSteps, float stepSize)
-{
-    m_cloudParameters.maxViewSteps = std::max(maxSteps, 1u);
-    m_cloudParameters.stepSize = std::max(stepSize, 1e-4f);
-}
-
-void Renderer::ApplyStage9OptimizationPreset(Stage9OptimizationPreset preset)
-{
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    stage9optimization::ApplyPreset(
-        m_optimizationParameters, preset,
-        m_cloudParameters.maxViewSteps, m_cloudParameters.stepSize,
-        m_lightParameters.maxLightSteps, m_lightParameters.lightStepSize,
-        m_cloudParameters.transmittanceThreshold);
-    m_optimizationPreset = preset;
-}
-
-void Renderer::ApplyStage10ResolutionPreset(
-    Stage10ResolutionPreset preset)
-{
-    if (preset == Stage10ResolutionPreset::Custom)
-        return;
-    stage10upsampling::ApplyResolutionPreset(
-        m_upsamplingParameters, preset);
-    m_upsamplingParameters = stage10upsampling::Sanitize(
-        m_upsamplingParameters);
-    m_resolutionPreset = preset;
-    m_frameProfiler.ResetMeasurements();
-    ResetTemporalHistory(Stage11HistoryResetReason::ResolutionOrFilter);
-}
-
-void Renderer::SetStage10UpsampleFilter(Stage10UpsampleFilter filter)
-{
-    m_upsamplingParameters.filterMode = static_cast<std::uint32_t>(filter);
-    m_upsamplingParameters = stage10upsampling::Sanitize(
-        m_upsamplingParameters);
-    m_frameProfiler.ResetMeasurements();
-    ResetTemporalHistory(Stage11HistoryResetReason::ResolutionOrFilter);
-}
-
-void Renderer::SetStage11TemporalMode(Stage11TemporalMode mode)
-{
-    const Stage11TemporalMode previous = TemporalMode();
-    stage11temporal::ApplyMode(m_temporalParameters, mode);
-    if (mode == Stage11TemporalMode::Stable4Phase)
-    {
-        stage10upsampling::ApplyResolutionPreset(
-            m_upsamplingParameters, Stage10ResolutionPreset::Half);
-        m_resolutionPreset = Stage10ResolutionPreset::Half;
-    }
-    m_temporalParameters = stage11temporal::Sanitize(m_temporalParameters);
-    if (previous != mode)
-    {
-        ResetTemporalHistory(Stage11HistoryResetReason::TemporalToggle);
-        m_frameProfiler.ResetMeasurements();
-    }
-}
-
-void Renderer::SetStage12ShadowMode(Stage12ShadowMode mode)
-{
-    const Stage12ShadowMode previous = ShadowMode();
-    m_shadowParameters.shadowMode = static_cast<std::uint32_t>(mode);
+    m_shadowParameters = Stage12ShadowParameters{};
     m_shadowParameters = stage12shadow::Sanitize(m_shadowParameters);
-    if (previous != mode)
-    {
-        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-        m_frameProfiler.ResetMeasurements();
-    }
-}
-
-bool Renderer::SetStage12ShadowPreset(Stage12ShadowPreset preset)
-{
-    if (preset == ShadowPreset())
-        return true;
-    if (!CreateDeepShadowResources(preset))
+    if (!CreateDeepShadowResources())
         return false;
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    m_frameProfiler.ResetMeasurements();
-    return true;
-}
-
-void Renderer::ResetTemporalHistory(Stage11HistoryResetReason reason)
-{
-    m_temporalHistoryValid = false;
-    m_temporalPreviousFrameValid = false;
-    m_temporalHistoryReadIndex = 0;
-    m_temporalAccumulatedFrames = 0;
-    m_temporalParameters.frameIndex = 0;
-    m_temporalParameters.historyValid = 0;
-    m_temporalParameters.deltaTimeSeconds = 0.0f;
-    m_temporalParameters.jitterOffsetLowResTexels = {};
-    m_temporalParameters.resetReason = static_cast<std::uint32_t>(reason);
-}
-
-void Renderer::ConfigureStage9ConeForValidation(std::uint32_t taps,
-                                                float angleDegrees,
-                                                float farSampleFraction)
-{
-    m_optimizationParameters.lightSamplingMode = static_cast<std::uint32_t>(
-        Stage9LightSamplingMode::DeterministicCone);
-    m_optimizationParameters.coneSampleCount = taps;
-    m_optimizationParameters.coneAngleDegrees = angleDegrees;
-    m_optimizationParameters.lightFarSampleFraction = farSampleFraction;
-    m_optimizationParameters = stage9optimization::Sanitize(
-        m_optimizationParameters);
-    m_optimizationPreset = Stage9OptimizationPreset::Custom;
-}
-
-void Renderer::SetCloudWindSpeedsForValidation(float bulkSpeed,
-                                               float weatherSpeed,
-                                               float detailSpeed)
-{
-    const auto safeSpeed = [](float value)
-    {
-        return std::isfinite(value) ? std::max(value, 0.0f) : 0.0f;
-    };
-    m_cloudParameters.windSpeed = safeSpeed(bulkSpeed);
-    m_cloudParameters.weatherMapWindSpeed = safeSpeed(weatherSpeed);
-    m_cloudParameters.detailWindSpeed = safeSpeed(detailSpeed);
-}
-
-void Renderer::SetCloudDomainType(CloudDomainType type)
-{
-    if (type != DomainType())
-    {
-        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    }
-    m_cloudDomainParameters.domainType = static_cast<std::uint32_t>(type);
-    m_cloudDomainParameters = SanitizeCloudDomainParameters(
-        m_cloudDomainParameters);
-}
-
-bool Renderer::ApplyStage13SimilarityScale(float scale)
-{
-    if (scale != 1.0f && scale != 10.0f &&
-        scale != 100.0f && scale != 1000.0f)
-        return false;
-
-    const stage13scale::SimilarityParameters scaled =
-        stage13scale::ScaleSimilarity({}, static_cast<double>(scale));
-    const float horizontalHalf =
-        static_cast<float>(scaled.horizontalSizeMeters * 0.5);
-    const float bottom =
-        static_cast<float>(scaled.layerBottomAltitudeMeters);
-    const float top = bottom + static_cast<float>(scaled.verticalSizeMeters);
-
-    // 어떤 순서로 버튼을 눌러도 같은 Stage 8 기준에서 정확히 S배가 되도록
-    // 형태·광학·이동 파라미터를 모두 기준값에서 다시 계산한다.
-    m_cloudParameters.cloudBoundsMin = { -horizontalHalf, bottom,
-                                         -horizontalHalf };
-    m_cloudParameters.cloudBoundsMax = { horizontalHalf, top,
-                                         horizontalHalf };
-    m_cloudParameters.stepSize = static_cast<float>(scaled.viewStepMeters);
-    m_cloudParameters.maxViewSteps = scaled.maxViewSteps;
-    m_cloudParameters.extinctionCoefficient =
-        static_cast<float>(scaled.extinctionPerMeter);
-    m_cloudParameters.transmittanceThreshold = 0.01f;
-    m_cloudParameters.baseNoiseScale =
-        static_cast<float>(scaled.baseNoiseCyclesPerMeter);
-    m_cloudParameters.coverage = 0.55f;
-    m_cloudParameters.densityMultiplier =
-        static_cast<float>(scaled.densityMultiplier);
-    m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    m_cloudParameters.windSpeed =
-        static_cast<float>(scaled.baseWindMetersPerSecond);
-    m_cloudParameters.noiseOffset = 0.0f;
-    m_cloudParameters.bottomFadeEnd = 0.20f;
-    m_cloudParameters.topFadeStart = 0.80f;
-    m_cloudParameters.minimumLocalThicknessFraction = 0.40f;
-    m_cloudParameters.localHeightVariation = 0.0f;
-    m_cloudParameters.cumulusTopBoost = 0.35f;
-    m_cloudParameters.detailNoiseScale =
-        static_cast<float>(scaled.detailNoiseCyclesPerMeter);
-    m_cloudParameters.detailErosionStrength = 0.25f;
-    m_cloudParameters.detailWindSpeed =
-        static_cast<float>(scaled.detailWindMetersPerSecond);
-    m_cloudParameters.detailNoiseOffset = 17.3f;
-    m_cloudParameters.weatherMapWorldSize =
-        static_cast<float>(scaled.weatherWorldSizeMeters);
-    m_cloudParameters.weatherMapWindSpeed =
-        static_cast<float>(scaled.weatherWindMetersPerSecond);
-    m_cloudParameters.weatherMapOffset = { 0.0f, 0.0f };
-
-    m_cloudDomainParameters.cloudBottomAltitude = bottom;
-    m_cloudDomainParameters.cloudLayerThickness =
-        static_cast<float>(scaled.verticalSizeMeters);
-    m_cloudDomainParameters.maxViewTraceDistance =
-        static_cast<float>(scaled.maxViewTraceDistanceMeters);
-    m_cloudDomainParameters.viewTraceFadeStartDistance =
-        static_cast<float>(scaled.viewFadeStartDistanceMeters);
-    m_cloudDomainParameters.maxLightTraceDistance =
-        static_cast<float>(scaled.maxLightTraceDistanceMeters);
-    m_cloudDomainParameters = SanitizeCloudDomainParameters(
-        m_cloudDomainParameters);
-
-    m_lightParameters.maxLightSteps = scaled.maxLightSteps;
-    m_lightParameters.lightStepSize =
-        static_cast<float>(scaled.lightStepMeters);
-    m_lightParameters.lightRayBias =
-        static_cast<float>(scaled.lightRayBiasMeters);
-    m_lightParameters.singleScatteringAlbedo =
-        static_cast<float>(scaled.singleScatteringAlbedo);
-    m_lightParameters = stage6light::Sanitize(m_lightParameters);
-    m_cloudLodParameters.detailLodEnabled = 0u;
-
-    m_noiseVolumeParameters.noiseSource =
-        static_cast<std::uint32_t>(NoiseSource::ProceduralLegacy);
-    m_cloudShapeParameters.shapeMode =
-        static_cast<std::uint32_t>(CloudShapeMode::LegacyNormalizedLayer);
-    if (!ApplyStage5WeatherPreset(Stage5WeatherPreset::UniformLegacy))
+    if (!ApplySceneConcept(Stage15ConceptPreset::UrbanFairWeather))
         return false;
     return true;
 }
 
-bool Renderer::SetCloudTypeMode(CloudTypeMode type)
+bool Renderer::ApplySceneConcept(Stage15ConceptPreset preset)
 {
-    const CloudTypeMode safe = static_cast<std::uint32_t>(type) <=
-        static_cast<std::uint32_t>(CloudTypeMode::WeatherMap)
-        ? type : CloudTypeMode::Mixed;
-    WeatherMapGeneratorSettings settings = m_weatherGeneratorSettings;
-    settings.cloudTypeMode = safe;
-    if (!UpdateWeatherMapTexture(m_weatherPreset, settings))
+    const std::uint32_t index = static_cast<std::uint32_t>(preset);
+    if (index > static_cast<std::uint32_t>(
+            Stage15ConceptPreset::SnowOvercast))
         return false;
-    m_cloudTypeMode = safe;
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
+
+    const Stage15SceneDescriptor descriptor =
+        stage15::ResolveSceneConcept(preset);
+    if (!ApplyCloudFormationPresetTarget(
+            ConceptFormationTarget(stage15::FormationConcept(preset)),
+            false))
+        return false;
+
+    LightParameters light = descriptor.light;
+    light.directionToSun = stage6light::DirectionFromAngles(
+        descriptor.atmosphere.sunAzimuthDegrees,
+        descriptor.atmosphere.sunElevationDegrees);
+    m_lightParameters = stage6light::Sanitize(light);
+    m_environmentParameters = descriptor.environment;
+    m_atmosphereParameters = descriptor.atmosphere;
+    m_groundLightingParameters = descriptor.ground;
+    m_shadowParameters.surfaceShadowEnabled =
+        descriptor.surfaceShadowEnabled;
+    m_shadowParameters.surfaceShadowStrength =
+        descriptor.surfaceShadowStrength;
+    m_shadowParameters.surfaceAmbientFloor =
+        descriptor.surfaceAmbientFloor;
+    m_shadowParameters = stage12shadow::Sanitize(m_shadowParameters);
+    m_sunPreset = descriptor.sunPreset;
+    m_phasePreset = descriptor.phasePreset;
+    m_environmentPreset = descriptor.environmentPreset;
+
+    const float half = stage13scene::kGroundHalfSizeMeters;
+    m_cloudParameters.cloudBoundsMin.x = -half;
+    m_cloudParameters.cloudBoundsMin.z = -half;
+    m_cloudParameters.cloudBoundsMax.x = half;
+    m_cloudParameters.cloudBoundsMax.z = half;
+    m_stage15ConceptPreset = preset;
+    m_cloudFormationStatus = std::string(stage15::ConceptName(preset)) +
+        " scene concept applied";
     return true;
 }
 
-bool Renderer::ApplyStage13OpenWorldPreset()
+bool Renderer::ApplyCloudType(const CloudFormationPresetTarget& target)
 {
-    const stage13openworld::Parameters value;
-    m_weatherGeneratorSettings = WeatherMapGeneratorSettings{};
-
-    const float half = static_cast<float>(value.previewHalfSizeMeters);
-    const float bottom = static_cast<float>(value.layerBottomMeters);
-    const float top = bottom + static_cast<float>(value.layerThicknessMeters);
-    m_cloudParameters.cloudBoundsMin = { -half, bottom, -half };
-    m_cloudParameters.cloudBoundsMax = { half, top, half };
-    m_cloudParameters.densityMultiplier =
-        static_cast<float>(value.densityMultiplier);
-    m_cloudParameters.stepSize = static_cast<float>(value.viewStepMeters);
-    m_cloudParameters.maxViewSteps = value.maxViewSteps;
-    m_cloudParameters.extinctionCoefficient =
-        static_cast<float>(value.extinctionPerMeter);
-    m_cloudParameters.transmittanceThreshold = 0.01f;
-    m_cloudParameters.baseNoiseScale =
-        static_cast<float>(value.baseNoiseCyclesPerMeter);
-    m_cloudParameters.coverage = static_cast<float>(value.coverage);
-    m_cloudParameters.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    m_cloudParameters.windSpeed =
-        static_cast<float>(value.baseWindMetersPerSecond);
-    m_cloudParameters.noiseOffset = 0.0f;
-    m_cloudParameters.bottomFadeEnd = static_cast<float>(value.bottomFadeEnd);
-    m_cloudParameters.topFadeStart = static_cast<float>(value.topFadeStart);
-    // 13-4B Open World는 b7 CloudShapeCB를 사용한다. b1의 세 필드는
-    // Similarity/구형 회귀 전용 legacy 값으로만 유지한다.
-    m_cloudParameters.minimumLocalThicknessFraction = 0.40f;
-    m_cloudParameters.localHeightVariation = 0.0f;
-    m_cloudParameters.cumulusTopBoost = 0.35f;
-    m_cloudParameters.detailNoiseScale =
-        static_cast<float>(value.detailNoiseCyclesPerMeter);
-    m_cloudParameters.detailErosionStrength =
-        static_cast<float>(value.detailErosionStrength);
-    m_cloudParameters.detailWindSpeed =
-        static_cast<float>(value.detailWindMetersPerSecond);
-    m_cloudParameters.detailNoiseOffset = 17.3f;
-    m_cloudParameters.weatherMapWorldSize =
-        static_cast<float>(value.weatherWorldSizeMeters);
-    m_cloudParameters.weatherMapWindSpeed =
-        static_cast<float>(value.weatherWindMetersPerSecond);
-    m_cloudParameters.weatherMapOffset = { 0.0f, 0.0f };
-
-    m_cloudDomainParameters.domainType =
-        static_cast<std::uint32_t>(CloudDomainType::PlanarLayer);
-    m_cloudDomainParameters.cloudBottomAltitude = bottom;
-    m_cloudDomainParameters.cloudLayerThickness =
-        static_cast<float>(value.layerThicknessMeters);
-    m_cloudDomainParameters.maxViewTraceDistance =
-        static_cast<float>(value.maxViewTraceMeters);
-    m_cloudDomainParameters.viewTraceFadeStartDistance =
-        static_cast<float>(value.viewFadeStartMeters);
-    m_cloudDomainParameters.maxLightTraceDistance =
-        static_cast<float>(value.maxLightTraceMeters);
-    m_cloudDomainParameters = SanitizeCloudDomainParameters(
-        m_cloudDomainParameters);
-
-    m_lightParameters.maxLightSteps = value.maxLightSteps;
-    m_lightParameters.lightStepSize =
-        static_cast<float>(value.lightStepMeters);
-    m_lightParameters.lightRayBias =
-        static_cast<float>(value.lightRayBiasMeters);
-    m_lightParameters.singleScatteringAlbedo =
-        static_cast<float>(value.singleScatteringAlbedo);
-    m_lightParameters = stage6light::Sanitize(m_lightParameters);
-    m_cloudLodParameters.detailLodEnabled = 1u;
-    m_cloudLodParameters.detailLodStartMeters = 32000.0f;
-    m_cloudLodParameters.detailLodEndMeters = 48000.0f;
-
-    m_noiseVolumeParameters = NoiseVolumeParameters{};
-    m_noiseVolumeParameters.noiseSource =
-        static_cast<std::uint32_t>(NoiseSource::Texture3D);
-    m_cloudShapeParameters = CloudShapeParameters{};
-    m_cloudShapeParameters.shapeMode =
-        static_cast<std::uint32_t>(CloudShapeMode::WeatherPhysicalThickness);
-    const CloudAppearanceSettings denseMixed = DenseMixedAppearance();
-    ApplyCloudAppearance(denseMixed, m_cloudParameters,
-                         m_cloudShapeParameters, m_weatherGeneratorSettings);
-    m_cloudShapeParameters = SanitizeCloudShapeParameters(
-        m_cloudShapeParameters);
-    if (!UpdateWeatherMapTexture(Stage5WeatherPreset::PeriodicPerlin,
-                                 m_weatherGeneratorSettings))
+    if (target.group != CloudFormationPresetGroup::Type)
         return false;
-    m_noiseLab.SynchronizeWeatherGeneratorSettings(m_weatherGeneratorSettings);
-    m_cloudTypeMode = CloudTypeMode::WeatherMap;
-    m_cameraMoveSpeedMetersPerSecond =
-        stage13scene::kMoveSpeedMetersPerSecond;
-    m_cloudAppearancePreset = CloudAppearancePreset::DenseMixedDefault;
-    m_cloudAppearanceDirty = false;
-    m_cloudAppearanceStatus =
-        "Deterministic Dense Mixed default applied (saved Custom not auto-applied)";
-    m_pipelineComparisonActive = false;
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::FullOpenWorld;
-    // 2026-08-19 승인한 단계 9의 가장 싼 화질·성능 합격 후보를 기본으로 쓴다.
-    ApplyStage9OptimizationPreset(Stage9OptimizationPreset::Balanced);
-    return true;
+    const bool applied = ApplyCloudFormationPresetTarget(
+        target, false);
+    return applied;
 }
 
-CloudAppearanceSettings Renderer::CaptureCurrentCloudAppearance() const
+bool Renderer::SaveCustomFormation()
 {
-    return CaptureCloudAppearance(m_cloudParameters, m_cloudShapeParameters,
-                                  m_weatherGeneratorSettings);
+    return SaveCurrentCloudFormationToTarget(
+        CustomFormationTarget(), true);
 }
 
-bool Renderer::ApplyCloudAppearanceSettings(
-    const CloudAppearanceSettings& settings, CloudAppearancePreset preset)
+bool Renderer::LoadCustomFormation()
 {
-    if (!IsValidCloudAppearanceSettings(settings))
+    return ApplyCloudFormationPresetTarget(
+        CustomFormationTarget(), true);
+}
+
+CloudFormationSettings Renderer::CurrentCloudFormation() const
+{
+    return CaptureCloudFormationSettings(
+        m_cloudParameters, m_cloudShapeParameters, m_cloudDomainParameters,
+        m_weatherPreset, m_weatherDefinition, m_cloudTypeSelection,
+        m_noiseVolumeParameters);
+}
+
+bool Renderer::ApplyCloudFormationAtomic(
+    const CloudFormationSettings& settings)
+{
+    PreparedCloudFormation prepared;
+    std::string status;
+    if (!PrepareCloudFormationSettings(settings, prepared, status, 200.0f))
     {
-        m_cloudAppearanceStatus =
-            "Appearance rejected: invalid or out-of-range value";
+        m_cloudFormationStatus = status;
         return false;
     }
+    if (m_failNextCloudFormationApplyForValidation)
+    {
+        m_failNextCloudFormationApplyForValidation = false;
+        m_cloudFormationStatus =
+            "Injected formation apply failure; runtime state retained";
+        return false;
+    }
+
     CloudParameters cloud = m_cloudParameters;
     CloudShapeParameters shape = m_cloudShapeParameters;
-    WeatherMapGeneratorSettings weather = m_weatherGeneratorSettings;
-    ApplyCloudAppearance(settings, cloud, shape, weather);
-    shape.shapeMode = static_cast<std::uint32_t>(
-        CloudShapeMode::WeatherPhysicalThickness);
-    shape = SanitizeCloudShapeParameters(shape);
-    weather = SanitizeWeatherMapGeneratorSettings(weather);
-    if (!UpdateWeatherMapTexture(Stage5WeatherPreset::PeriodicPerlin, weather))
+    CloudDomainParameters domain = m_cloudDomainParameters;
+    Stage5WeatherPreset weatherPreset = m_weatherPreset;
+    WeatherMapDefinition weather = m_weatherDefinition;
+    CloudTypeSelection typeSelection = m_cloudTypeSelection;
+    NoiseVolumeParameters noise = m_noiseVolumeParameters;
+    WriteCloudFormationToRuntime(
+        prepared, cloud, shape, domain, weatherPreset, weather,
+        typeSelection, noise);
+
+    // XZ의 오픈 월드 footprint는 formation 슬롯이 아니라 공통 Stage 13 장면이
+    // 소유한다. Y만 검증된 PlanarLayer domain과 함께 원자적으로 갱신한다.
+    cloud.cloudBoundsMin.y = domain.cloudBottomAltitude;
+    cloud.cloudBoundsMax.y =
+        domain.cloudBottomAltitude + domain.cloudLayerThickness;
+
+    if (!UpdateWeatherMapTexture(weatherPreset, weather.generator))
     {
-        m_cloudAppearanceStatus =
-            "Appearance Weather update failed; current renderer values retained";
+        m_cloudFormationStatus =
+            "Formation Weather upload failed; runtime state retained";
         return false;
     }
+
     m_cloudParameters = cloud;
     m_cloudShapeParameters = shape;
-    m_cloudTypeMode = weather.cloudTypeMode;
-    m_noiseLab.SynchronizeWeatherGeneratorSettings(weather);
-    m_cloudAppearancePreset = preset;
-    m_cloudAppearanceDirty = preset == CloudAppearancePreset::CustomUnsaved;
-    m_pipelineComparisonActive = false;
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    return true;
-}
-
-bool Renderer::ApplyCloudAppearancePreset(CloudAppearancePreset preset)
-{
-    CloudAppearanceSettings settings;
-    switch (preset)
-    {
-    case CloudAppearancePreset::DenseMixedDefault:
-        settings = DenseMixedAppearance();
-        break;
-    case CloudAppearancePreset::Stratus:
-        settings = StratusAppearance();
-        break;
-    case CloudAppearancePreset::Cumulus:
-        settings = CumulusAppearance();
-        break;
-    case CloudAppearancePreset::Custom:
-        if (!m_hasSavedCustomAppearance)
-        {
-            const bool fallbackApplied = ApplyCloudAppearanceSettings(
-                DenseMixedAppearance(),
-                CloudAppearancePreset::DenseMixedDefault);
-            m_cloudAppearanceStatus =
-                "No saved Custom appearance; Dense Mixed default applied";
-            return fallbackApplied;
-        }
-        settings = m_savedCustomAppearance;
-        break;
-    case CloudAppearancePreset::CustomUnsaved:
-    default:
-        return false;
-    }
-    if (!ApplyCloudAppearanceSettings(settings, preset))
-        return false;
-    m_cloudAppearanceStatus = std::string(CloudAppearancePresetName(preset)) +
-        " appearance applied; camera, weather placement, wind, lighting, and sampling preserved";
-    return true;
-}
-
-void Renderer::MarkCloudAppearanceDirty()
-{
-    m_cloudAppearancePreset = CloudAppearancePreset::CustomUnsaved;
-    m_cloudAppearanceDirty = true;
-    m_pipelineComparisonActive = false;
-    m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-    m_cloudAppearanceStatus =
-        "Unsaved changes: Save Current as Custom to persist them";
-}
-
-bool Renderer::SaveCurrentCloudAppearance()
-{
-    const CloudAppearanceSettings current = CaptureCurrentCloudAppearance();
-    std::string status;
-    if (!SaveCustomCloudAppearanceAtomic(
-            m_customAppearancePath, current, status))
-    {
-        m_cloudAppearanceStatus = status;
-        return false;
-    }
-    m_savedCustomAppearance = current;
-    m_hasSavedCustomAppearance = true;
-    m_cloudAppearancePreset = CloudAppearancePreset::Custom;
-    m_cloudAppearanceDirty = false;
-    m_cloudAppearanceStatus = status;
-    return true;
-}
-
-bool Renderer::ApplyOpenWorldPipelinePreset(OpenWorldPipelinePreset preset)
-{
-    if (preset == OpenWorldPipelinePreset::Custom)
-        return false;
-
-    const DirectX::XMFLOAT3 boundsMin = m_cloudParameters.cloudBoundsMin;
-    const DirectX::XMFLOAT3 boundsMax = m_cloudParameters.cloudBoundsMax;
-    const CloudDomainParameters domain = m_cloudDomainParameters;
-    const float moveSpeed = m_cameraMoveSpeedMetersPerSecond;
-
-    bool succeeded = false;
-    if (preset == OpenWorldPipelinePreset::FullOpenWorld)
-    {
-        succeeded = ApplyStage13OpenWorldPreset();
-    }
-    else
-    {
-        succeeded = ApplyStage13SimilarityScale(1000.0f);
-        if (succeeded)
-        {
-            m_cloudTypeMode = CloudTypeMode::Mixed;
-            if (preset >= OpenWorldPipelinePreset::Texture3D)
-            {
-                m_noiseVolumeParameters = NoiseVolumeParameters{};
-                m_noiseVolumeParameters.noiseSource =
-                    static_cast<std::uint32_t>(NoiseSource::Texture3D);
-            }
-            if (preset >= OpenWorldPipelinePreset::PeriodicWeather)
-            {
-                const stage13openworld::Parameters openWorld;
-                WeatherMapGeneratorSettings defaultWeatherSettings;
-                CloudParameters unusedCloud;
-                CloudShapeParameters unusedShape;
-                ApplyCloudAppearance(DenseMixedAppearance(), unusedCloud,
-                                     unusedShape, defaultWeatherSettings);
-                succeeded = UpdateWeatherMapTexture(
-                    Stage5WeatherPreset::PeriodicPerlin,
-                    defaultWeatherSettings);
-                if (succeeded)
-                {
-                    m_noiseLab.SynchronizeWeatherGeneratorSettings(
-                        m_weatherGeneratorSettings);
-                    m_cloudParameters.weatherMapWorldSize =
-                        static_cast<float>(openWorld.weatherWorldSizeMeters);
-                    m_cloudParameters.weatherMapWindSpeed =
-                        static_cast<float>(openWorld.weatherWindMetersPerSecond);
-                    m_cloudParameters.weatherMapOffset = { 0.0f, 0.0f };
-                    m_cloudTypeMode = CloudTypeMode::WeatherMap;
-                }
-            }
-            if (succeeded && preset >= OpenWorldPipelinePreset::PhysicalShape)
-            {
-                m_cloudShapeParameters = CloudShapeParameters{};
-                m_cloudShapeParameters.shapeMode = static_cast<std::uint32_t>(
-                    CloudShapeMode::WeatherPhysicalThickness);
-                CloudParameters unusedCloud;
-                WeatherMapGeneratorSettings unusedWeather;
-                ApplyCloudAppearance(DenseMixedAppearance(), unusedCloud,
-                                     m_cloudShapeParameters, unusedWeather);
-            }
-        }
-    }
-
-    m_cloudParameters.cloudBoundsMin = boundsMin;
-    m_cloudParameters.cloudBoundsMax = boundsMax;
     m_cloudDomainParameters = domain;
-    m_cameraMoveSpeedMetersPerSecond = moveSpeed;
-    if (!succeeded)
+    m_noiseVolumeParameters = noise;
+    m_weatherPreset = weatherPreset;
+    m_weatherDefinition = weather;
+    m_cloudTypeSelection = typeSelection;
+    m_noiseLab.SynchronizeWeatherGeneratorSettings(weather.generator);
+    m_cloudFormationStatus = "Formation applied atomically";
+    return true;
+}
+
+bool Renderer::ApplyCloudFormationPresetTarget(
+    const CloudFormationPresetTarget& target, bool allowUserOverrides)
+{
+    CloudFormationSettings settings;
+    CloudFormationPresetSource source = CloudFormationPresetSource::BuiltIn;
+    std::string status;
+    if (!ResolveCloudFormationPreset(
+            m_cloudFormationPresetRoot, target, allowUserOverrides,
+            settings, source, status))
+    {
+        m_cloudFormationStatus = status;
+        return false;
+    }
+    if (!ApplyCloudFormationAtomic(settings))
         return false;
 
-    m_openWorldPipelinePreset = preset;
+    m_cloudFormationTarget = target;
+    m_cloudFormationTargetValid = true;
+    m_cloudFormationSource = source;
+    m_cloudFormationStatus = status;
+    m_hasSavedCustomFormation = m_hasSavedCustomFormation ||
+        target.group == CloudFormationPresetGroup::Custom;
     return true;
+}
+
+bool Renderer::ApplyCloudFormationPresetForValidation(
+    const CloudFormationPresetTarget& target, bool allowUserOverrides)
+{
+    return ApplyCloudFormationPresetTarget(
+        target, allowUserOverrides);
+}
+
+bool Renderer::ApplyCloudFormationSettingsForValidation(
+    const CloudFormationSettings& settings)
+{
+    if (!ApplyCloudFormationAtomic(settings))
+        return false;
+    MarkCloudFormationDirty();
+    return true;
+}
+
+bool Renderer::SaveCurrentCloudFormationAsCustomForValidation()
+{
+    return SaveCurrentCloudFormationToTarget(
+        CustomFormationTarget(), true);
+}
+
+void Renderer::SetCloudFormationPresetRootForValidation(
+    const std::filesystem::path& root)
+{
+    m_cloudFormationPresetRoot = root;
+    RefreshSavedCustomFormationState();
+}
+
+void Renderer::RefreshSavedCustomFormationState()
+{
+    CloudFormationSettings custom;
+    std::string status;
+    m_hasSavedCustomFormation = LoadCloudFormationPreset(
+        CloudFormationPresetPath(
+            m_cloudFormationPresetRoot, CustomFormationTarget()),
+        CustomFormationTarget(), custom, status);
+}
+
+bool Renderer::SaveCurrentCloudFormationToTarget(
+    const CloudFormationPresetTarget& target, bool switchTargetAfterSave)
+{
+    if (target.group != CloudFormationPresetGroup::Custom)
+    {
+        m_cloudFormationStatus =
+            "Formation save rejected: built-in presets are immutable";
+        return false;
+    }
+
+    const CloudFormationSettings current = CurrentCloudFormation();
+    PreparedCloudFormation prepared;
+    std::string validationStatus;
+    if (!PrepareCloudFormationSettings(
+            current, prepared, validationStatus, 200.0f))
+    {
+        m_cloudFormationStatus = validationStatus;
+        return false;
+    }
+
+    const std::filesystem::path path = CloudFormationPresetPath(
+        m_cloudFormationPresetRoot, target);
+    std::string status;
+    if (!SaveCloudFormationPresetAtomic(path, target, current, status))
+    {
+        m_cloudFormationStatus = status;
+        return false;
+    }
+
+    if (switchTargetAfterSave)
+    {
+        m_cloudFormationTarget = target;
+        m_cloudFormationTargetValid = true;
+    }
+    m_cloudFormationSource = CloudFormationPresetSource::UserOverride;
+    if (target.group == CloudFormationPresetGroup::Custom)
+        m_hasSavedCustomFormation = true;
+    m_cloudFormationStatus = status;
+    return true;
+}
+
+void Renderer::MarkCloudFormationDirty()
+{
+    m_cloudFormationSource = CloudFormationPresetSource::Unsaved;
+    m_cloudFormationStatus = m_cloudFormationTargetValid
+        ? std::string("Unsaved formation changes for ") +
+            CloudFormationPresetTargetName(m_cloudFormationTarget)
+        : "Unsaved formation changes (no preset target)";
 }
 
 bool Renderer::ApplyWeatherGeneratorSettings(
@@ -3645,15 +3118,85 @@ bool Renderer::ApplyWeatherGeneratorSettings(
     const WeatherMapGeneratorSettings safeSettings =
         SanitizeWeatherMapGeneratorSettings(settings);
     const bool changed = !WeatherMapGeneratorSettingsEqual(
-        safeSettings, m_weatherGeneratorSettings);
-    if (!UpdateWeatherMapTexture(m_weatherPreset, safeSettings))
-        return false;
-    if (changed)
+        safeSettings, m_weatherDefinition.generator);
+    if (!changed)
+        return true;
+
+    CloudFormationSettings formation = CurrentCloudFormation();
+    formation.weather.generator = safeSettings;
+    const bool applied = ApplyCloudFormationAtomic(formation);
+    if (applied)
+        MarkCloudFormationDirty();
+    return applied;
+}
+
+std::uint64_t Renderer::RuntimeStateHash() const
+{
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
+    HashBytes(hash, &m_cloudParameters, sizeof(m_cloudParameters));
+    HashBytes(hash, &m_cloudDomainParameters, sizeof(m_cloudDomainParameters));
+    HashBytes(hash, &m_cloudShapeParameters, sizeof(m_cloudShapeParameters));
+    HashBytes(hash, &m_shadowParameters, sizeof(m_shadowParameters));
+    HashBytes(hash, &m_lightParameters, sizeof(m_lightParameters));
+    HashBytes(hash, &m_environmentParameters, sizeof(m_environmentParameters));
+    HashBytes(hash, &m_atmosphereParameters, sizeof(m_atmosphereParameters));
+    HashBytes(hash, &m_groundLightingParameters,
+              sizeof(m_groundLightingParameters));
+    HashBytes(hash, &m_toneMappingParameters, sizeof(m_toneMappingParameters));
+    HashValue(hash, m_stage15ConceptPreset);
+    HashValue(hash, m_weatherMapHash);
+    HashValue(hash, m_baseNoiseVolumeHash);
+    HashValue(hash, m_detailNoiseVolumeHash);
+    HashValue(hash, m_cloudShaderHash);
+    HashValue(hash, m_deepShadowShaderHash);
+    return hash;
+}
+
+std::uint64_t Renderer::GpuResourceIdentityHash() const
+{
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
+    const auto append = [&](const void* pointer)
     {
-        m_openWorldPipelinePreset = OpenWorldPipelinePreset::Custom;
-        ResetTemporalHistory(Stage11HistoryResetReason::ParametersChanged);
-    }
-    return true;
+        const std::uintptr_t identity =
+            reinterpret_cast<std::uintptr_t>(pointer);
+        HashValue(hash, identity);
+    };
+    append(m_weatherMapTexture.Get());
+    append(m_weatherMapSrv.Get());
+    append(m_shadowNearTexture.Get());
+    append(m_shadowNearSrv.Get());
+    append(m_shadowNearUav.Get());
+    append(m_shadowFarTexture.Get());
+    append(m_shadowFarSrv.Get());
+    append(m_shadowFarUav.Get());
+    return hash;
+}
+
+std::uint64_t Renderer::ShaderObjectIdentityHash() const
+{
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
+    const auto append = [&](const void* pointer)
+    {
+        const std::uintptr_t identity =
+            reinterpret_cast<std::uintptr_t>(pointer);
+        HashValue(hash, identity);
+    };
+    append(m_fullscreenVs.Get());
+    append(m_cloudPs.Get());
+    append(m_noiseLabPs.Get());
+    append(m_sceneVs.Get());
+    append(m_scenePs.Get());
+    append(m_toneMapPs.Get());
+    append(m_weatherMapCs.Get());
+    append(m_noiseBaseCs.Get());
+    append(m_noiseDetailCs.Get());
+    append(m_deepShadowCs.Get());
+    append(m_atmosphereTransmittanceCs.Get());
+    append(m_atmosphereMultiScatteringCs.Get());
+    append(m_atmosphereSkyViewCs.Get());
+    append(m_atmosphereSkyIrradianceCs.Get());
+    append(m_atmosphereAerialCs.Get());
+    return hash;
 }
 
 bool Renderer::HasDebugLayerErrors() const
@@ -3671,13 +3214,55 @@ bool Renderer::HasDebugLayerErrors() const
             continue;
         std::vector<unsigned char> storage(messageSize);
         D3D11_MESSAGE* message = reinterpret_cast<D3D11_MESSAGE*>(storage.data());
-        if (SUCCEEDED(infoQueue->GetMessage(i, message, &messageSize)) &&
-            (message->Severity == D3D11_MESSAGE_SEVERITY_ERROR ||
-             message->Severity == D3D11_MESSAGE_SEVERITY_CORRUPTION))
-            return true;
+        if (SUCCEEDED(infoQueue->GetMessage(i, message, &messageSize)))
+        {
+            const bool resourceHazard =
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_PSSETSHADERRESOURCES_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_CSSETSHADERRESOURCES_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_CSSETUNORDEREDACCESSVIEWS_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_OMSETRENDERTARGETS_HAZARD ||
+                message->ID ==
+                    D3D11_MESSAGE_ID_DEVICE_OMSETRENDERTARGETSANDUNORDEREDACCESSVIEWS_HAZARD;
+            // SRV/RTV/UAV 중복 바인딩은 debug layer에서 WARNING으로 보고한 뒤
+            // 해당 input을 자동 NULL 처리한다. ERROR만 검사하면 화면 손상을
+            // 일으키는 이 경고를 모든 GPU smoke가 놓치므로 hazard ID도 실패다.
+            if (resourceHazard ||
+                message->Severity == D3D11_MESSAGE_SEVERITY_ERROR ||
+                message->Severity == D3D11_MESSAGE_SEVERITY_CORRUPTION)
+                return true;
+        }
     }
 #endif
     return false;
+}
+
+bool Renderer::ValidateWarmShaderCache()
+{
+    const std::uint64_t cloudHash = m_cloudShaderHash;
+    const std::uint64_t shadowHash = m_deepShadowShaderHash;
+    m_shaderCompileCallCount = 0;
+    m_shaderCacheHitCount = 0;
+    if (!CreateShaders(false))
+        return false;
+    return m_shaderCompileCallCount == 0u && m_shaderCacheHitCount > 0u &&
+        cloudHash == m_cloudShaderHash &&
+        shadowHash == m_deepShadowShaderHash;
+}
+
+bool Renderer::ValidateNoiseSamplerContract() const
+{
+    if (!m_weatherLinearWrapSampler)
+        return false;
+    D3D11_SAMPLER_DESC desc = {};
+    m_weatherLinearWrapSampler->GetDesc(&desc);
+    return desc.Filter == D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT &&
+        desc.AddressU == D3D11_TEXTURE_ADDRESS_WRAP &&
+        desc.AddressV == D3D11_TEXTURE_ADDRESS_WRAP &&
+        desc.AddressW == D3D11_TEXTURE_ADDRESS_WRAP;
 }
 
 bool Renderer::GetShaderWriteTimes(
@@ -3710,46 +3295,64 @@ bool Renderer::GetShaderWriteTimes(
 void Renderer::UpdateShaderWriteTimes()
 {
     GetShaderWriteTimes(m_shaderWriteTimes);
+    m_lastShaderScanTime = std::chrono::steady_clock::now();
 }
 
-void Renderer::CheckShaderHotReload()
+bool Renderer::ScanShaderChanges(bool forced)
 {
     std::map<std::wstring, std::filesystem::file_time_type> currentTimes;
     if (!GetShaderWriteTimes(currentTimes) || currentTimes == m_shaderWriteTimes)
-        return;
+        return false;
 
-    std::ostringstream changed;
-    bool first = true;
+    const std::filesystem::path root(m_shaderDir);
+    std::set<std::string> changedSet;
+    std::vector<std::string> changedFiles;
+    const auto recordChanged = [&](const std::wstring& path)
+    {
+        const std::filesystem::path relative =
+            std::filesystem::path(path).lexically_relative(root);
+        const std::string normalized =
+            shaderreload::NormalizeRelativePath(relative);
+        if (!normalized.empty() && changedSet.insert(normalized).second)
+            changedFiles.push_back(normalized);
+    };
     for (const auto& [path, time] : currentTimes)
     {
         const auto previous = m_shaderWriteTimes.find(path);
         if (previous == m_shaderWriteTimes.end() || previous->second != time)
-        {
-            if (!first)
-                changed << ", ";
-            changed << std::filesystem::path(path).filename().string();
-            first = false;
-        }
+            recordChanged(path);
     }
     for (const auto& [path, time] : m_shaderWriteTimes)
     {
         if (currentTimes.find(path) == currentTimes.end())
-        {
-            if (!first)
-                changed << ", ";
-            changed << std::filesystem::path(path).filename().string() << " (removed)";
-            first = false;
-        }
+            recordChanged(path);
     }
-    const bool succeeded = CreateShaders(false);
-    if (succeeded)
-    {
-        ResetTemporalHistory(Stage11HistoryResetReason::ShaderReload);
-        m_shaderStatus = "Reloaded: " + changed.str() + " @ " + CurrentLocalTimeText();
-    }
-    else
-        m_shaderStatus = "Reload failed: " + changed.str();
+
+    const std::vector<std::size_t> affected =
+        shaderreload::SelectAffectedPrograms(m_shaderManifest, changedSet);
+    const bool succeeded = ReloadShaderPrograms(
+        affected, changedFiles, false);
+    // 실패한 세대의 객체·dependency closure는 유지하되 관찰 시각은 갱신한다.
+    // 파일을 다시 고치거나 복원하면 새 write-time 차이로 정확히 한 번 재시도한다.
     m_shaderWriteTimes = currentTimes;
+    (void)forced;
+    return succeeded;
+}
+
+bool Renderer::ForceShaderReloadScan()
+{
+    m_lastShaderScanTime = std::chrono::steady_clock::now();
+    return ScanShaderChanges(true);
+}
+
+void Renderer::CheckShaderHotReload()
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (m_lastShaderScanTime.time_since_epoch().count() != 0 &&
+        now - m_lastShaderScanTime < std::chrono::milliseconds(250))
+        return;
+    m_lastShaderScanTime = now;
+    ScanShaderChanges(false);
 }
 
 bool Renderer::HandleWindowMessage(
@@ -3771,22 +3374,12 @@ bool Renderer::ValidateNoiseLabPreviews()
 bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
-        root, m_cloudParameters, m_cloudShapeParameters, m_cloudDomainParameters,
-        m_cloudLodParameters,
-        m_optimizationParameters, m_optimizationPreset,
-        m_upsamplingParameters, m_resolutionPreset,
-        m_temporalParameters,
-        m_shadowParameters,
-        m_cloudRenderWidth, m_cloudRenderHeight,
-        m_lightParameters, m_sunPreset, m_phasePreset,
-        m_environmentParameters, m_environmentPreset, m_weatherPreset,
-        m_cloudTypeMode,
-        m_cloudAppearancePreset, m_cloudAppearanceDirty,
-        m_hasSavedCustomAppearance, m_savedCustomAppearance,
+        root, CurrentCloudFormation(), m_cloudMotion, m_shadowParameters,
+        m_lightParameters, m_environmentParameters,
+        m_atmosphereParameters, m_groundLightingParameters,
+        m_toneMappingParameters, m_stage15ConceptPreset,
         m_noiseVolumeParameters, m_baseNoiseVolumeHash,
-        m_detailNoiseVolumeHash,
-        m_weatherGeneratorSettings, m_weatherMapHash, m_weatherMapTexture.Get(),
-        std::filesystem::path(m_shaderDir) / L"Noise.hlsli");
+        m_detailNoiseVolumeHash, m_weatherMapHash, m_shaderGeneration);
 }
 
 std::uint64_t Renderer::NoiseLabPreviewHash(std::size_t targetIndex)

@@ -53,6 +53,14 @@ inline int DebugDigitFromVirtualKey(std::uint32_t virtualKey)
     return -1;
 }
 
+inline int DeveloperUiPanelFromVirtualKey(std::uint32_t virtualKey)
+{
+    constexpr std::uint32_t kF1 = 0x70u;
+    constexpr std::uint32_t kF4 = 0x73u;
+    return virtualKey >= kF1 && virtualKey <= kF4
+        ? static_cast<int>(virtualKey - kF1) : -1;
+}
+
 inline bool IsPortfolioGlobalKey(std::uint32_t virtualKey)
 {
     constexpr std::uint32_t kF1 = 0x70u;
@@ -83,7 +91,10 @@ inline CloudDebugMode DebugModeFromDigit(int digit)
 inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
 {
     const std::int32_t value = static_cast<std::int32_t>(mode);
-    return value == 0 || (value >= 8 && value <= 78)
+    const bool regularDiagnostic = (value >= 8 && value <= 25) ||
+        (value >= 27 && value <= 33) || (value >= 35 && value <= 59);
+    return value == 0 || regularDiagnostic ||
+        (value >= 74 && value <= 77) || value == 81
         ? mode : CloudDebugMode::Composite;
 }
 
@@ -110,7 +121,6 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::TypedShapeProfile: return L"Typed Shape Profile";
     case CloudDebugMode::LightTransmittance: return L"Light Transmittance";
     case CloudDebugMode::LightOpticalDepth: return L"Light Optical Depth";
-    case CloudDebugMode::TotalLightSamples: return L"Total Light Samples";
     case CloudDebugMode::DirectSingleScattering: return L"Direct Scattering";
     case CloudDebugMode::PhaseCosTheta: return L"Phase cosTheta";
     case CloudDebugMode::ForwardPhaseLobe: return L"Forward Phase";
@@ -118,7 +128,6 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::DualPhaseFactor: return L"Dual Phase Factor";
     case CloudDebugMode::AccumulatedDirectLighting: return L"Accumulated Direct";
     case CloudDebugMode::CloudSegmentLength: return L"Cloud Segment Length";
-    case CloudDebugMode::ActualViewStepLength: return L"Actual View Step";
     case CloudDebugMode::CloudHitMask: return L"Cloud Hit Mask";
     case CloudDebugMode::BaseVolumeR: return L"Base Volume R";
     case CloudDebugMode::BaseVolumeG: return L"Base Volume G";
@@ -134,35 +143,21 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::WeatherThicknessPotential: return L"Thickness Potential";
     case CloudDebugMode::LocalThickness: return L"Local Thickness";
     case CloudDebugMode::LocalHeightFraction: return L"Local Height";
+    case CloudDebugMode::LocalBaseOffset: return L"Local Base Offset";
     case CloudDebugMode::EffectiveShapeCoverage: return L"Shape Coverage";
     case CloudDebugMode::BaseSupportBeforeDensity: return L"Base Support";
     case CloudDebugMode::ViewOpticalDepth: return L"View Optical Depth";
     case CloudDebugMode::AccumulatedSkyAmbient: return L"Sky Ambient";
     case CloudDebugMode::AccumulatedGroundBounce: return L"Ground Bounce";
     case CloudDebugMode::AccumulatedMultipleScattering: return L"Multiple Scattering";
-    case CloudDebugMode::DetailLodFactor: return L"Detail LOD Factor";
+    case CloudDebugMode::CloudDepth: return L"Cloud Depth";
     case CloudDebugMode::SilverLiningContribution: return L"Silver Lining Contribution";
     case CloudDebugMode::ShapedSunVisibility: return L"Shaped Sun Visibility";
     case CloudDebugMode::AmbientVisibility: return L"Ambient Visibility";
-    case CloudDebugMode::LowResolutionGrid: return L"Low-resolution Grid";
-    case CloudDebugMode::UpsampleSceneRejection: return L"Scene Rejection";
-    case CloudDebugMode::UpsampleCloudDepthWeight: return L"Cloud Depth Weight";
-    case CloudDebugMode::UpsampleTransmittanceWeight: return L"Transmittance Weight";
-    case CloudDebugMode::TemporalJitterPhase: return L"Temporal Jitter Phase";
-    case CloudDebugMode::TemporalReprojectionMotion: return L"Temporal Motion";
-    case CloudDebugMode::TemporalHistoryValidity: return L"Temporal Validity";
-    case CloudDebugMode::TemporalHistoryWeight: return L"Temporal Weight";
-    case CloudDebugMode::TemporalCurrentHistoryDifference: return L"Current/History Difference";
-    case CloudDebugMode::TemporalCurrentSourceValidity: return L"Current Source Validity";
     case CloudDebugMode::Stage12NearOpticalDepth: return L"Stage 12 Near Cache Texture";
     case CloudDebugMode::Stage12FarOpticalDepth: return L"Stage 12 Far Cache Texture";
     case CloudDebugMode::Stage12CascadeSelection: return L"Stage 12 Cascade World Lookup";
     case CloudDebugMode::Stage12SurfaceTransmittance: return L"Stage 12 Surface T";
-    case CloudDebugMode::Stage12DirectCacheError: return L"Stage 12 Direct/Cache Error";
-    case CloudDebugMode::ExecutedViewSamples: return L"Executed View Samples";
-    case CloudDebugMode::SkippedDistance: return L"Skipped Distance";
-    case CloudDebugMode::EarlyExitSavings: return L"Early Exit Savings";
-    case CloudDebugMode::SupportPrecheckSkip: return L"Support Precheck Skip";
     default: return L"Composite";
     }
 }

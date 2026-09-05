@@ -17,7 +17,8 @@ class Window
 {
 public:
     Window(HINSTANCE hInstance, int width, int height, const wchar_t* title,
-           bool showWindow = true);
+           bool showWindow = true,
+           bool useInteractiveStartupPlacement = false);
     ~Window();
 
     // 입력을 받을 대상 연결
@@ -32,6 +33,14 @@ public:
     HWND GetHandle() const { return m_hwnd; }
     int  GetWidth()  const { return m_width; }
     int  GetHeight() const { return m_height; }
+    UINT GetDpi() const { return m_dpi; }
+    float GetDpiScale() const
+    {
+        return static_cast<float>(m_dpi) / 96.0f;
+    }
+    bool IsPerMonitorV2DpiAware() const;
+    bool QueryPhysicalClientExtent(int& width, int& height) const;
+
     void RefreshDebugTitle() { UpdateDebugTitle(); }
 
 private:
@@ -43,10 +52,14 @@ private:
                            const wchar_t* displayName);
     void SetCameraPresetName(const wchar_t* displayName);
     void MarkCameraManuallyAdjusted();
+    bool UpdatePhysicalClientExtent(bool notifyRenderer);
+    bool ResizeClientArea(int width, int height, UINT dpi);
+    bool ApplyInteractiveStartupPlacement();
 
     HWND      m_hwnd    = nullptr;
     int       m_width   = 0;
     int       m_height  = 0;
+    UINT      m_dpi     = 96;
 
     Camera*   m_camera   = nullptr;
     Renderer* m_renderer = nullptr;

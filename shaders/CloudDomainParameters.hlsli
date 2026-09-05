@@ -5,21 +5,20 @@
 #define VCLOUD_DOMAIN_PARAMETERS_HLSLI
 
 #include "CloudParameters.hlsli"
-#include "Ray.hlsli"
-
-static const uint kCloudDomainAabb = 0u;
-static const uint kCloudDomainPlanar = 1u;
 
 cbuffer CloudDomainCB : register(b5)
 {
-    uint cloudDomainType;
+    // 구름층 외곽의 시작 월드 Y(m). 증가하면 구름층 전체가 위로 이동한다.
     float cloudBottomAltitude;
+    // local thickness + base lift의 최대 수직 공간(m). 부족하면 top clipping이 난다.
     float cloudLayerThickness;
     float maxViewTraceDistance;
-
     float viewTraceFadeStartDistance;
+
     float maxLightTraceDistance;
-    float2 cloudDomainPadding;
+    float cloudLightingReferenceAltitudeMeters;
+    float cloudDomainPadding0;
+    float cloudDomainPadding1;
 };
 
 bool IsFiniteDomainScalar(float value)
@@ -69,62 +68,34 @@ bool IntersectCloudDomain(float3 rayOrigin, float3 rayDirection,
 {
     tStart = 0.0;
     tEnd = 0.0;
-    bool domainHit = false;
-    if (cloudDomainType == kCloudDomainAabb)
-    {
-        float tNear = 0.0;
-        float tFar = 0.0;
-        bool hit = IntersectRayAABB(
-            rayOrigin, rayDirection, cloudBoundsMin, cloudBoundsMax,
-            tNear, tFar);
-        if (hit)
-        {
-            tStart = max(tNear, 0.0);
-            tEnd = min(tFar, externalTraceLimit);
-        }
-        domainHit = hit && tEnd > tStart;
-    }
-    else
-    {
-        float domainLimit = lightRay
-            ? max(maxLightTraceDistance, 0.0)
-            : max(maxViewTraceDistance, 0.0);
-        domainHit = IntersectPlanarCloudLayer(
-            rayOrigin, rayDirection, min(externalTraceLimit, domainLimit),
-            tStart, tEnd);
-    }
-    return domainHit;
+    float domainLimit = lightRay
+        ? max(maxLightTraceDistance, 0.0)
+        : max(maxViewTraceDistance, 0.0);
+    return IntersectPlanarCloudLayer(
+        rayOrigin, rayDirection, min(externalTraceLimit, domainLimit),
+        tStart, tEnd);
 }
 
 float CloudViewDistanceFade(float rayDistance)
 {
-    float fade = 1.0;
-    if (cloudDomainType == kCloudDomainPlanar)
-    {
-        float safeEnd = max(maxViewTraceDistance, 1e-4);
-        float safeStart = clamp(viewTraceFadeStartDistance, 0.0, safeEnd);
-        fade = safeEnd - safeStart <= 1e-5
-            ? (rayDistance < safeEnd ? 1.0 : 0.0)
-            : 1.0 - smoothstep(safeStart, safeEnd, max(rayDistance, 0.0));
-    }
-    return fade;
+    float safeEnd = max(maxViewTraceDistance, 1e-4);
+    float safeStart = clamp(viewTraceFadeStartDistance, 0.0, safeEnd);
+    return safeEnd - safeStart <= 1e-5
+        ? (rayDistance < safeEnd ? 1.0 : 0.0)
+        : 1.0 - smoothstep(safeStart, safeEnd, max(rayDistance, 0.0));
 }
 
 float CloudDebugDistanceRange()
 {
-    return cloudDomainType == kCloudDomainPlanar
-        ? max(maxViewTraceDistance, 1.0)
-        : 20.0;
+    return max(maxViewTraceDistance, 1.0);
 }
 
 float CloudDebugDistanceValue(float distance)
 {
     float normalized = saturate(distance / CloudDebugDistanceRange());
     // km 범위를 선형 회색으로 표시하면 1.5~4.5km가 거의 검게 보이므로
-    // 평면층 진단만 제곱근으로 들어 올린다. AABB 회귀 출력은 선형을 유지한다.
-    return cloudDomainType == kCloudDomainPlanar
-        ? sqrt(normalized)
-        : normalized;
+    // 제곱근으로 들어 올려 가까운 구름층 거리도 읽기 쉽게 만든다.
+    return sqrt(normalized);
 }
 
 #endif

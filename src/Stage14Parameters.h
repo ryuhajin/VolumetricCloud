@@ -1,5 +1,5 @@
 // ============================================================================
-//  Stage14Parameters.h - 단계 14 정규화 GPU 상수버퍼(b13), 정확히 224바이트
+//  Stage14Parameters.h - 단계 14 정규화 GPU 상수버퍼(b9), 정확히 224바이트
 // ============================================================================
 #pragma once
 
@@ -23,7 +23,7 @@ constexpr std::uint32_t kSkyIrradianceWidth = 64u;
 constexpr std::uint32_t kSkyIrradianceHeight = 16u;
 constexpr std::uint32_t kAerialSize = 32u;
 
-// HLSL Stage14CB(b13)의 14개 16바이트 레지스터와 순서가 같다.
+// HLSL Stage14CB(b9)의 14개 16바이트 레지스터와 순서가 같다.
 struct alignas(16) GpuParameters
 {
     DirectX::XMFLOAT4 planetRadiiDensityHeights;
@@ -36,7 +36,7 @@ struct alignas(16) GpuParameters
     DirectX::XMFLOAT4 sunTintAndGroundBounce;
     DirectX::XMFLOAT4 groundAlbedoAndDebugExposure;
     DirectX::XMFLOAT4 toneAndTime;
-    DirectX::XMUINT4 modeFlags;
+    DirectX::XMUINT4 renderFlags;
     DirectX::XMFLOAT4 transmittanceMultiSize;
     DirectX::XMFLOAT4 skyViewIrradianceSize;
     DirectX::XMUINT4 aerialDebugGeneration;

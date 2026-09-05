@@ -1,26 +1,11 @@
 #include "WeatherMap.h"
+#include "Fnv1a64.h"
 
 #include <algorithm>
 #include <cmath>
 
 namespace
 {
-float CloudTypeValue(CloudTypeMode type)
-{
-    switch (type)
-    {
-    case CloudTypeMode::Stratus: return 0.0f;
-    case CloudTypeMode::Cumulus: return 1.0f;
-    default: return 0.5f;
-    }
-}
-
-CloudTypeMode SanitizeCloudType(CloudTypeMode type)
-{
-    return static_cast<std::uint32_t>(type) <=
-        static_cast<std::uint32_t>(CloudTypeMode::WeatherMap)
-        ? type : CloudTypeMode::Mixed;
-}
 float Saturate(float value)
 {
     return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f;
@@ -150,7 +135,6 @@ WeatherMapGeneratorSettings SanitizeWeatherMapGeneratorSettings(
         FiniteOr(result.densityCoverageInfluence, 0.35f), 0.0f, 1.0f);
     result.thicknessCoverageInfluence = std::clamp(
         FiniteOr(result.thicknessCoverageInfluence, 0.20f), 0.0f, 1.0f);
-    result.cloudTypeMode = SanitizeCloudType(result.cloudTypeMode);
     return result;
 }
 
@@ -164,8 +148,43 @@ bool WeatherMapGeneratorSettingsEqual(const WeatherMapGeneratorSettings& a,
            a.coverageThreshold == b.coverageThreshold &&
            a.coverageSoftness == b.coverageSoftness &&
            a.densityCoverageInfluence == b.densityCoverageInfluence &&
-           a.thicknessCoverageInfluence == b.thicknessCoverageInfluence &&
-           a.cloudTypeMode == b.cloudTypeMode;
+           a.thicknessCoverageInfluence == b.thicknessCoverageInfluence;
+}
+
+WeatherMapDefinition SanitizeWeatherMapDefinition(
+    const WeatherMapDefinition& definition)
+{
+    WeatherMapDefinition result = definition;
+    result.generator = SanitizeWeatherMapGeneratorSettings(result.generator);
+    result.column = SanitizeWeatherColumnSettings(result.column);
+    result.worldSizeMeters = std::clamp(
+        FiniteOr(result.worldSizeMeters, 64000.0f), 1000.0f, 1000000.0f);
+    return result;
+}
+
+WeatherMapComputeParameters BuildWeatherMapComputeParameters(
+    Stage5WeatherPreset preset, const WeatherMapGeneratorSettings& settings)
+{
+    const WeatherMapGeneratorSettings safe =
+        SanitizeWeatherMapGeneratorSettings(settings);
+    WeatherMapComputeParameters result;
+    const PeriodicChannelSettings inputs[4] = {
+        safe.coverage, safe.cloudType, safe.density, safe.localThickness };
+    for (std::size_t index = 0; index < 4; ++index)
+    {
+        result.channels[index].seed = inputs[index].seed;
+        result.channels[index].macroPeriod = inputs[index].macroPeriod;
+        result.channels[index].detailPeriod = inputs[index].detailPeriod;
+        result.channels[index].detailWeight = inputs[index].detailWeight;
+        result.channels[index].bias = inputs[index].bias;
+        result.channels[index].contrast = inputs[index].contrast;
+    }
+    result.coverageThreshold = safe.coverageThreshold;
+    result.coverageSoftness = safe.coverageSoftness;
+    result.densityCoverageInfluence = safe.densityCoverageInfluence;
+    result.thicknessCoverageInfluence = safe.thicknessCoverageInfluence;
+    result.preset = static_cast<std::uint32_t>(preset);
+    return result;
 }
 
 float SamplePeriodicPerlin2D(float u, float v, std::uint32_t period,
@@ -265,11 +284,6 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
                 localThickness = coverage > 0.0f
                     ? (smallIsland > largeIsland ? 0.85f : 0.35f) : 0.0f;
             }
-            // Cloud Type은 도메인이 아니라 공통 Weather 입력이다. 고정 모드는
-            // coverage/density/thickness를 건드리지 않고 G만 교체한다.
-            if (safe.cloudTypeMode != CloudTypeMode::WeatherMap)
-                cloudType = CloudTypeValue(safe.cloudTypeMode);
-
             const std::size_t index =
                 (static_cast<std::size_t>(y) * map.width + x) * 4u;
             map.rgba[index + 0] = ToUnorm(coverage);
@@ -290,11 +304,5 @@ bool IsValidWeatherMapData(const WeatherMapData& map)
 
 std::uint64_t HashWeatherMap(const WeatherMapData& map)
 {
-    std::uint64_t hash = 1469598103934665603ull;
-    for (std::uint8_t value : map.rgba)
-    {
-        hash ^= value;
-        hash *= 1099511628211ull;
-    }
-    return hash;
+    return fnv1a64::Hash(map.rgba.data(), map.rgba.size());
 }

@@ -47,6 +47,7 @@ public:
     bool WasManuallyAdjusted() const { return m_manuallyAdjusted; }
 
 private:
+    DirectX::XMMATRIX GetProjection() const;
     DirectX::XMFLOAT3 m_position; // 실제 카메라 위치
     float m_yaw;                  // 월드 +Z 기준 좌우 시선 (라디안)
     float m_pitch;                // 수평 기준 상하 시선 (라디안)

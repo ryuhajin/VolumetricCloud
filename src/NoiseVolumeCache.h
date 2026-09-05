@@ -3,6 +3,8 @@
 // ============================================================================
 #pragma once
 
+#include "Fnv1a64.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -33,14 +35,7 @@ static_assert(sizeof(Header) == 48, "Noise volume cache header is stable");
 
 inline std::uint64_t HashBytes(const void* data, std::size_t size)
 {
-    std::uint64_t hash = 1469598103934665603ull;
-    const auto* bytes = static_cast<const std::uint8_t*>(data);
-    for (std::size_t index = 0; index < size; ++index)
-    {
-        hash ^= bytes[index];
-        hash *= 1099511628211ull;
-    }
-    return hash;
+    return fnv1a64::Hash(data, size);
 }
 
 inline bool Save(const std::filesystem::path& path, Kind kind,

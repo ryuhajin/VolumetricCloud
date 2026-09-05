@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudParameters.h - 단계 5 Weather Map/Cloud Type CPU/GPU 공유 설정
+//  CloudParameters.h - High 물리 구름 CPU/GPU 공유 설정
 // ============================================================================
 #pragma once
 
@@ -27,7 +27,6 @@ enum class CloudDebugMode : std::int32_t
     TypedShapeProfile = 23,
     LightTransmittance = 24,
     LightOpticalDepth = 25,
-    TotalLightSamples = 26,
     DirectSingleScattering = 27,
     PhaseCosTheta = 28,
     ForwardPhaseLobe = 29,
@@ -35,7 +34,6 @@ enum class CloudDebugMode : std::int32_t
     DualPhaseFactor = 31,
     AccumulatedDirectLighting = 32,
     CloudSegmentLength = 33,
-    ActualViewStepLength = 34,
     CloudHitMask = 35,
     BaseVolumeR = 36,
     BaseVolumeG = 37,
@@ -57,29 +55,16 @@ enum class CloudDebugMode : std::int32_t
     AccumulatedSkyAmbient = 53,
     AccumulatedGroundBounce = 54,
     AccumulatedMultipleScattering = 55,
-    DetailLodFactor = 56,
+    CloudDepth = 56,
     SilverLiningContribution = 57,
     ShapedSunVisibility = 58,
     AmbientVisibility = 59,
-    ExecutedViewSamples = 60,
-    SkippedDistance = 61,
-    EarlyExitSavings = 62,
-    SupportPrecheckSkip = 63,
-    LowResolutionGrid = 64,
-    UpsampleSceneRejection = 65,
-    UpsampleCloudDepthWeight = 66,
-    UpsampleTransmittanceWeight = 67,
-    TemporalJitterPhase = 68,
-    TemporalReprojectionMotion = 69,
-    TemporalHistoryValidity = 70,
-    TemporalHistoryWeight = 71,
-    TemporalCurrentHistoryDifference = 72,
-    TemporalCurrentSourceValidity = 73,
     Stage12NearOpticalDepth = 74,
     Stage12FarOpticalDepth = 75,
     Stage12CascadeSelection = 76,
     Stage12SurfaceTransmittance = 77,
-    Stage12DirectCacheError = 78,
+    // Weather A/G가 전역 바닥에서 올린 로컬 컬럼 바닥 높이다.
+    LocalBaseOffset = 81,
 };
 
 enum class Stage5WeatherPreset : std::int32_t
@@ -96,34 +81,20 @@ struct alignas(16) CloudParameters
     float densityMultiplier = 1.0f;
 
     DirectX::XMFLOAT3 cloudBoundsMax = { 8.0f, 2.0f, 8.0f };
-    float stepSize = 0.1f;
-
-    std::uint32_t maxViewSteps = 128;
     float extinctionCoefficient = 1.0f;
-    float transmittanceThreshold = 0.01f;
-    std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
 
-    float baseNoiseScale = 0.35f;
+    std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
     float coverage = 0.55f;
-    float windSpeed = 0.25f;
+    // ABI mirror only. Renderer가 세션 전역 CloudMotionParameters(기본 12m/s)로 패킹한다.
+    float windSpeed = 12.0f;
     float noiseOffset = 0.0f;
 
     DirectX::XMFLOAT3 windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    float bottomFadeEnd = 0.20f;
-
-    float topFadeStart = 0.80f;
-    float minimumLocalThicknessFraction = 0.40f;
-    float localHeightVariation = 0.0f;
-    float cumulusTopBoost = 0.35f;
-
-    float detailNoiseScale = 2.5f;
     float detailErosionStrength = 0.25f;
-    float detailWindSpeed = 0.45f; // Legacy 전용. Physical은 windSpeed를 공유한다.
-    float detailNoiseOffset = 17.3f;
 
+    float detailNoiseOffset = 17.3f;
     float weatherMapWorldSize = 16.0f;
-    float weatherMapWindSpeed = 0.10f; // Legacy 전용. Physical은 windSpeed를 공유한다.
     DirectX::XMFLOAT2 weatherMapOffset = { 0.0f, 0.0f };
 };
 
-static_assert(sizeof(CloudParameters) == 128, "CloudParameters must match CloudCB");
+static_assert(sizeof(CloudParameters) == 80, "CloudParameters must match CloudCB");

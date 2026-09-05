@@ -38,24 +38,19 @@ struct alignas(16) LightParameters
     DirectX::XMFLOAT3 sunColor = { 1.0f, 0.95f, 0.85f };
     float singleScatteringAlbedo = 1.0f;
 
-    std::uint32_t maxLightSteps = 16;
-    float lightStepSize = 0.25f;
-    float lightRayBias = 0.01f;
     float phaseEnabled = 0.0f;
-
     float forwardScatteringG = 0.65f;
     float backwardScatteringG = -0.25f;
     float phaseBlend = 0.80f;
-    float phaseIntensity = 0.25f;
 
+    float phaseIntensity = 0.25f;
     // 13-5 외곽광 보완. 중립값(0, 1, 1)은 승인된 단계 8/13-5 직접광을 보존한다.
     float edgeInfluence = 0.0f;
     float edgeOpticalDepthScale = 1.0f;
     float shadowExponent = 1.0f;
-    float lightPadding = 0.0f;
 };
 
-static_assert(sizeof(LightParameters) == 80, "LightParameters must match LightCB");
+static_assert(sizeof(LightParameters) == 64, "LightParameters must match LightCB");
 
 namespace stage6light
 {
@@ -107,13 +102,6 @@ inline LightParameters Sanitize(LightParameters value)
             ? value.singleScatteringAlbedo
             : 1.0f,
         0.0f, 1.0f);
-    value.maxLightSteps = std::clamp(value.maxLightSteps, 1u, 512u);
-    value.lightStepSize = std::clamp(
-        std::isfinite(value.lightStepSize) ? value.lightStepSize : 0.25f,
-        1e-4f, 1000.0f);
-    value.lightRayBias = std::clamp(
-        std::isfinite(value.lightRayBias) ? value.lightRayBias : 0.01f,
-        0.0f, 100.0f);
     value.phaseEnabled = std::isfinite(value.phaseEnabled) &&
                          value.phaseEnabled >= 0.5f ? 1.0f : 0.0f;
     value.forwardScatteringG = std::clamp(
@@ -138,7 +126,6 @@ inline LightParameters Sanitize(LightParameters value)
     value.shadowExponent = std::clamp(
         std::isfinite(value.shadowExponent) ? value.shadowExponent : 1.0f,
         0.5f, 4.0f);
-    value.lightPadding = 0.0f;
     return value;
 }
 

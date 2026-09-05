@@ -2,7 +2,7 @@
 //  DiagnosticScene.hlsl - 구름보다 먼저 그리는 단계 1 불투명 진단 장면
 // ----------------------------------------------------------------------------
 //  렌더링 순서
-//  1. CPU가 지면과 두 박스의 정점/인덱스, 카메라 viewProj를 준비한다.
+//  1. CPU가 10km 지면과 한 건물 박스의 정점/인덱스, 카메라 viewProj를 준비한다.
 //  2. VSMain이 월드 위치(m)를 clip 공간으로 투영한다.
 //  3. rasterizer가 가장 가까운 표면 깊이를 D32_FLOAT에 자동 기록한다.
 //  4. PSMain이 대기 태양·하늘광으로 Lambert 조명한 HDR 색을 기록한다.
@@ -59,9 +59,6 @@ VSOutput VSMain(VSInput input)
 // 깊이는 반환하지 않아도 고정 기능 rasterizer가 SV_POSITION에서 D32에 기록한다.
 float4 PSMain(VSOutput input) : SV_TARGET
 {
-    if (modeFlags.x != kAtmosphereModePhysical)
-        return float4(input.color, 1.0);
-
     float3 normal = normalize(input.normal);
     float3 sunDirection = AtmosphereSunDirection();
     float altitudeKm = max(input.worldPosition.y, 0.0) * 0.001;
@@ -79,9 +76,9 @@ float4 PSMain(VSOutput input) : SV_TARGET
         atmosphereLinearClampSampler, skyUv, 0).rgb;
     float skyNormalWeight = saturate(normal.y * 0.5 + 0.5);
     float3 surfaceSky = skyIrradiance * skyNormalWeight;
-    if (modeFlags.z == 10u)
+    if (renderFlags.z == 10u)
         return float4(surfaceDirect, 1.0);
-    if (modeFlags.z == 11u)
+    if (renderFlags.z == 11u)
         return float4(surfaceSky, 1.0);
 
     float3 albedo = input.materialId == 0u
