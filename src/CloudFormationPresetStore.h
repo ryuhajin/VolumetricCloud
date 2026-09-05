@@ -87,7 +87,7 @@ bool LoadCloudFormationPreset(
     CloudFormationSettings& outSettings,
     std::string& status);
 
-// Concept/Type은 항상 내장값을 적용한다. Custom만 schema 1 파일을 읽는다.
+// Concept/Type은 항상 내장값을 적용한다. Custom은 schema 2를 쓰고 schema 1을 이관한다.
 bool ResolveCloudFormationPreset(
     const std::filesystem::path& root,
     const CloudFormationPresetTarget& target,

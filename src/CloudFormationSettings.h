@@ -9,6 +9,7 @@
 
 #include "CloudDomainParameters.h"
 #include "CloudParameters.h"
+#include "CloudTypeSelection.h"
 #include "CloudShapeDomainContract.h"
 #include "CloudShapeParameters.h"
 #include "Stage13NoiseVolumeMath.h"
@@ -25,8 +26,8 @@ struct CloudFormationSettings
     float detailErosion = 0.24f;
 
     Stage5WeatherPreset weatherPreset = Stage5WeatherPreset::PeriodicPerlin;
-    WeatherMapGeneratorSettings weather = {};
-    float weatherWorldSizeMeters = 64000.0f;
+    WeatherMapDefinition weather = {};
+    CloudTypeSelection typeSelection = {};
 
     CloudShapeParameters shape = {};
 
@@ -43,15 +44,12 @@ struct CloudFormationSettings
         stage13noise::kBaseVerticalWorldSizeMeters;
     float detailNoiseWorldSizeMeters = 2000.0f;
 
-    DirectX::XMFLOAT3 windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    float windSpeedMetersPerSecond = 12.0f;
 };
 
 struct PreparedCloudFormation
 {
     CloudFormationSettings settings = {};
     CloudDomainParameters domain = {};
-    WeatherMapData weatherMap = {};
     cloudshapedomain::FitResult fit = {};
 };
 
@@ -71,7 +69,8 @@ CloudFormationSettings CaptureCloudFormationSettings(
     const CloudShapeParameters& shape,
     const CloudDomainParameters& domain,
     Stage5WeatherPreset weatherPreset,
-    const WeatherMapGeneratorSettings& weather,
+    const WeatherMapDefinition& weather,
+    const CloudTypeSelection& typeSelection,
     const NoiseVolumeParameters& noise);
 
 // ImGui가 runtime 구조체에 먼저 쓴 raw 후보를 감지할 때 사용한다. sanitize로
@@ -81,7 +80,8 @@ CloudFormationSettings CaptureCloudFormationSettingsUnchecked(
     const CloudShapeParameters& shape,
     const CloudDomainParameters& domain,
     Stage5WeatherPreset weatherPreset,
-    const WeatherMapGeneratorSettings& weather,
+    const WeatherMapDefinition& weather,
+    const CloudTypeSelection& typeSelection,
     const NoiseVolumeParameters& noise);
 
 // 이미 Prepare를 통과한 값을 현재 CPU 상태의 formation 소유 필드에만 쓴다.
@@ -92,7 +92,8 @@ void WriteCloudFormationToRuntime(
     CloudShapeParameters& shape,
     CloudDomainParameters& domain,
     Stage5WeatherPreset& weatherPreset,
-    WeatherMapGeneratorSettings& weather,
+    WeatherMapDefinition& weather,
+    CloudTypeSelection& typeSelection,
     NoiseVolumeParameters& noise);
 
 bool CloudFormationSettingsEqual(

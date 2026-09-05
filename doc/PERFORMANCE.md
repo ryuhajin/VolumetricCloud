@@ -8,7 +8,8 @@
 
 | 항목 | 범위 |
 |---|---|
-| `Atmosphere` | 이번 프레임에 필요한 LUT compute. hash가 같으면 거의 0ms |
+| `Weather Map` | generator key가 바뀐 프레임의 256² Compute/검증 구간. overlay는 마지막 실제 generation 시간·번호도 유지 |
+| `Atmosphere LUT` | 이번 프레임에 필요한 LUT compute. hash가 같으면 거의 0ms |
 | `Shadow` | Near/Far Balanced512 Deep Optical-Depth Cache compute |
 | `Opaque` | HDR 지면·건물과 D32 depth raster |
 | `Cloud` | Full-resolution raymarch와 scene/atmosphere HDR 합성 |
@@ -80,6 +81,7 @@ HIGH_PERFORMANCE=PASS samples=... cloud_p95_ms=... frame_p95_ms=...
 |---|---|---:|---:|
 | Tone Map | 영향 프로그램 1, 성공 교체, 오류 rollback, 원본 cache hit 1 | 15초 이하 | `0.024s`, 통과 |
 | `Noise.hlsli` | Cloud PS + Deep Shadow CS + NoiseLab PS 정확히 3 | 30초 이하 | warm `0.224s`, 통과 |
+| Weather Map CS | 성공 시 안정된 texture/SRV에 교체, 오류 시 shader/hash/generation/identity 보존 | 15초 이하 | changed `0.166s`, invalid rollback·restore cache hit 통과 |
 
 ```powershell
 ctest --test-dir build -C Debug -R "HotReloadSmoke$" -V
@@ -92,14 +94,18 @@ CTest script는 source shader를 build 하위 임시 폴더에 복사하고 표�
 
 - `Cloud p95`가 높고 Shadow는 안정적이면 View density/lighting 비용을 먼저 본다.
 - `Shadow p95`만 높으면 cache invalidation이 매 프레임 잘못 발생하는지 확인한다.
-- `Atmosphere`가 정지 상태에서도 지속적으로 높으면 LUT hash나 카메라 의존 aerial invalidation을 확인한다.
-- `Frame - (Atmosphere+Shadow+Opaque+Cloud+Tone)`은 query 사이의 명령·UI와 driver scheduling 여유다.
+- `Weather Map`이 motion/type selection 변경에도 높으면 generator key 소유권을 확인한다.
+- `Atmosphere LUT`가 정지 상태에서도 지속적으로 높으면 LUT hash나 카메라 의존 aerial invalidation을 확인한다.
+- `Frame - (Weather+Atmosphere+Shadow+Opaque+Cloud+Tone)`은 query 사이의 명령·UI와 driver scheduling 여유다.
 - 자동 gate 통과는 최종 외형 승인이 아니다. shimmer, 구름 절단, 산란과 색은 사용자가 Release 화면에서 확인한다.
 
 ## 최신 결과
 
 | 날짜 | GPU/driver | Cloud p95 | Frame p95 | 결과 |
 |---|---|---:|---:|---|
+| 2026-09-04 | NVIDIA GeForce RTX 4080 SUPER / 32.0.15.9186 | `6.036ms` | `6.866ms` | 최종 Weather CS·b10 적용 후 1,440표본 자동 gate 통과, 2026-09-05 사용자 화면 승인 |
 | 2026-09-01 | NVIDIA GeForce RTX 4080 SUPER / 32.0.15.9186 | `5.153ms` | `5.984ms` | 3회 반복 최악값, 자동 gate 통과, 사용자 화면 승인 전 |
 
-한 번의 실행마다 유효 표본은 12 case × 120개 = 1,440개이며 3회 연속 통과했다. 세 반복에서 가장 무거운 case는 `Meadow Broken Clouds / InsideLayer`로 Cloud p95 `8.888ms`, Frame p95 `9.788ms`였으며 case별 gate도 모두 통과했다. 표의 전체값 역시 세 실행에서 각각 관찰한 p95 중 가장 큰 값이다. GPU timestamp는 실행 환경과 온도에 따라 달라질 수 있으므로 이후 하드웨어에서는 같은 명령으로 다시 측정한다.
+2026-09-04 최종 실행의 가장 무거운 case는 `Meadow Broken Clouds / InsideLayer`였고 Cloud p95 `8.324ms`, Frame p95 `9.299ms`로 case별 gate를 통과했다. Weather 생성 smoke는 실제 generator 변경을 정확히 한 generation으로 기록했고 CPU 기준과 GPU RGBA8 결과의 최대 차이는 채널별 1 LSB였다. 2 LSB 이상 차이는 자동 실패다.
+
+한 번의 실행마다 유효 표본은 12 case × 120개 = 1,440개다. 2026-09-01 수치는 3회 반복 중 최악값이며 가장 무거운 case는 `Meadow Broken Clouds / InsideLayer`로 Cloud p95 `8.888ms`, Frame p95 `9.788ms`였다. GPU timestamp는 실행 환경과 온도에 따라 달라질 수 있으므로 이후 하드웨어에서는 같은 명령으로 다시 측정한다.

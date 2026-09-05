@@ -33,6 +33,7 @@ void FrameTimingAccumulator::RecordCpuMilliseconds(double milliseconds)
 
 void FrameTimingAccumulator::RecordGpuMilliseconds(
     double frameMilliseconds,
+    double weatherMilliseconds,
     double atmosphereMilliseconds,
     double shadowMilliseconds,
     double opaqueMilliseconds,
@@ -40,7 +41,7 @@ void FrameTimingAccumulator::RecordGpuMilliseconds(
     double toneMilliseconds)
 {
     const double values[] = {
-        frameMilliseconds, atmosphereMilliseconds, shadowMilliseconds,
+        frameMilliseconds, weatherMilliseconds, atmosphereMilliseconds, shadowMilliseconds,
         opaqueMilliseconds, cloudMilliseconds, toneMilliseconds
     };
     if (!std::all_of(std::begin(values), std::end(values),
@@ -49,13 +50,14 @@ void FrameTimingAccumulator::RecordGpuMilliseconds(
                          return std::isfinite(value) && value >= 0.0;
                      }) ||
         frameMilliseconds <= 0.0 ||
-        atmosphereMilliseconds + shadowMilliseconds + opaqueMilliseconds +
+        weatherMilliseconds + atmosphereMilliseconds + shadowMilliseconds + opaqueMilliseconds +
             cloudMilliseconds + toneMilliseconds > frameMilliseconds + 1.0e-6)
     {
         return;
     }
 
     m_snapshot.rawGpuFrameMs = frameMilliseconds;
+    m_snapshot.rawGpuWeatherMapMs = weatherMilliseconds;
     m_snapshot.rawGpuAtmosphereLutMs = atmosphereMilliseconds;
     m_snapshot.rawGpuShadowCacheMs = shadowMilliseconds;
     m_snapshot.rawGpuOpaqueSceneMs = opaqueMilliseconds;
@@ -67,6 +69,8 @@ void FrameTimingAccumulator::RecordGpuMilliseconds(
     {
         m_snapshot.gpuFrameMs = Ema(
             m_snapshot.gpuFrameMs, frameMilliseconds);
+        m_snapshot.gpuWeatherMapMs = Ema(
+            m_snapshot.gpuWeatherMapMs, weatherMilliseconds);
         m_snapshot.gpuAtmosphereLutMs = Ema(
             m_snapshot.gpuAtmosphereLutMs, atmosphereMilliseconds);
         m_snapshot.gpuShadowCacheMs = Ema(
@@ -81,6 +85,7 @@ void FrameTimingAccumulator::RecordGpuMilliseconds(
     else
     {
         m_snapshot.gpuFrameMs = frameMilliseconds;
+        m_snapshot.gpuWeatherMapMs = weatherMilliseconds;
         m_snapshot.gpuAtmosphereLutMs = atmosphereMilliseconds;
         m_snapshot.gpuShadowCacheMs = shadowMilliseconds;
         m_snapshot.gpuOpaqueSceneMs = opaqueMilliseconds;
@@ -98,6 +103,7 @@ bool FrameProfiler::CreateSlot(ID3D11Device* device, QuerySlot& slot)
         return false;
     desc.Query = D3D11_QUERY_TIMESTAMP;
     return SUCCEEDED(device->CreateQuery(&desc, &slot.frameStart)) &&
+        SUCCEEDED(device->CreateQuery(&desc, &slot.weatherEnd)) &&
         SUCCEEDED(device->CreateQuery(&desc, &slot.atmosphereEnd)) &&
         SUCCEEDED(device->CreateQuery(&desc, &slot.shadowEnd)) &&
         SUCCEEDED(device->CreateQuery(&desc, &slot.opaqueEnd)) &&
@@ -160,11 +166,13 @@ void FrameProfiler::ResolveCompleted(ID3D11DeviceContext* context)
         if (context->GetData(slot.disjoint.Get(), &disjoint, sizeof(disjoint),
                              D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
             continue;
-        UINT64 frameStart = 0, atmosphereEnd = 0, shadowEnd = 0;
+        UINT64 frameStart = 0, weatherEnd = 0, atmosphereEnd = 0, shadowEnd = 0;
         UINT64 opaqueEnd = 0, cloudEnd = 0, toneEnd = 0, frameEnd = 0;
         const bool ready =
             context->GetData(slot.frameStart.Get(), &frameStart,
                 sizeof(frameStart), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+            context->GetData(slot.weatherEnd.Get(), &weatherEnd,
+                sizeof(weatherEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
             context->GetData(slot.atmosphereEnd.Get(), &atmosphereEnd,
                 sizeof(atmosphereEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
             context->GetData(slot.shadowEnd.Get(), &shadowEnd,
@@ -182,14 +190,15 @@ void FrameProfiler::ResolveCompleted(ID3D11DeviceContext* context)
         slot.inFlight = false;
         if (slot.generation != m_generation || disjoint.Disjoint ||
             disjoint.Frequency == 0 ||
-            !(frameStart <= atmosphereEnd && atmosphereEnd <= shadowEnd &&
+            !(frameStart <= weatherEnd && weatherEnd <= atmosphereEnd && atmosphereEnd <= shadowEnd &&
               shadowEnd <= opaqueEnd && opaqueEnd <= cloudEnd &&
               cloudEnd <= toneEnd && toneEnd <= frameEnd))
             continue;
         const double scale = 1000.0 / static_cast<double>(disjoint.Frequency);
         m_accumulator.RecordGpuMilliseconds(
             (frameEnd - frameStart) * scale,
-            (atmosphereEnd - frameStart) * scale,
+            (weatherEnd - frameStart) * scale,
+            (atmosphereEnd - weatherEnd) * scale,
             (shadowEnd - atmosphereEnd) * scale,
             (opaqueEnd - shadowEnd) * scale,
             (cloudEnd - opaqueEnd) * scale,
@@ -226,6 +235,7 @@ void FrameProfiler::methodName(ID3D11DeviceContext* context)                 \
                      fieldName.Get());                                        \
 }
 
+VCLOUD_MARK_QUERY(MarkWeatherMapEnd, weatherEnd)
 VCLOUD_MARK_QUERY(MarkAtmosphereLutEnd, atmosphereEnd)
 VCLOUD_MARK_QUERY(MarkShadowCacheEnd, shadowEnd)
 VCLOUD_MARK_QUERY(MarkOpaqueSceneEnd, opaqueEnd)

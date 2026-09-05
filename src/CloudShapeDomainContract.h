@@ -5,7 +5,8 @@
 
 #include "CloudDomainParameters.h"
 #include "CloudShapeParameters.h"
-#include "WeatherMap.h"
+#include "CloudTypeSelection.h"
+#include "WeatherColumnParameters.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,42 +24,45 @@ struct FitResult
 };
 
 inline float ActiveMaximumThicknessMeters(
-    const CloudShapeParameters& input, CloudTypeMode cloudTypeMode)
+    const WeatherColumnSettings& input,
+    const CloudTypeSelection& inputSelection)
 {
-    const CloudShapeParameters shape = SanitizeCloudShapeParameters(input);
-    switch (cloudTypeMode)
+    const WeatherColumnSettings column = SanitizeWeatherColumnSettings(input);
+    switch (SanitizeCloudTypeSelection(inputSelection).mode)
     {
-    case CloudTypeMode::Stratus:
-        return shape.stratusMaximumThicknessMeters;
-    case CloudTypeMode::Mixed:
-        return 0.5f * (shape.stratusMaximumThicknessMeters +
-                       shape.cumulusMaximumThicknessMeters);
-    case CloudTypeMode::Cumulus:
-        return shape.cumulusMaximumThicknessMeters;
-    case CloudTypeMode::WeatherMap:
+    case CloudTypeSelectionMode::FixedStratus:
+        return column.stratusMaximumThicknessMeters;
+    case CloudTypeSelectionMode::FixedMixed:
+        return 0.5f * (column.stratusMaximumThicknessMeters +
+                       column.cumulusMaximumThicknessMeters);
+    case CloudTypeSelectionMode::FixedCumulus:
+        return column.cumulusMaximumThicknessMeters;
+    case CloudTypeSelectionMode::RegionalBlend:
     default:
-        return std::max(shape.stratusMaximumThicknessMeters,
-                        shape.cumulusMaximumThicknessMeters);
+        return std::max(column.stratusMaximumThicknessMeters,
+                        column.cumulusMaximumThicknessMeters);
     }
 }
 
 inline FitResult EvaluateFit(
-    const CloudShapeParameters& inputShape, CloudTypeMode cloudTypeMode,
+    const WeatherColumnSettings& inputColumn,
+    const CloudTypeSelection& typeSelection,
     const CloudDomainParameters& inputDomain,
     float requiredHeadroomMeters = 0.0f)
 {
-    const CloudShapeParameters shape = SanitizeCloudShapeParameters(inputShape);
+    const WeatherColumnSettings column =
+        SanitizeWeatherColumnSettings(inputColumn);
     const CloudDomainParameters domain =
         SanitizeCloudDomainParameters(inputDomain);
     FitResult result;
     result.activeMaximumThicknessMeters =
-        ActiveMaximumThicknessMeters(shape, cloudTypeMode);
+        ActiveMaximumThicknessMeters(column, typeSelection);
     result.availableLayerThicknessMeters = domain.cloudLayerThickness;
     const float safeHeadroom = std::max(
         std::isfinite(requiredHeadroomMeters) ? requiredHeadroomMeters : 0.0f,
         0.0f);
 
-    result.maximumBaseLiftMeters = shape.localBaseLiftMaxMeters;
+    result.maximumBaseLiftMeters = column.maximumBaseLiftMeters;
     result.requiredLayerThicknessMeters =
         result.activeMaximumThicknessMeters +
         result.maximumBaseLiftMeters + safeHeadroom;
@@ -70,15 +74,17 @@ inline FitResult EvaluateFit(
 }
 
 inline float LightingReferenceAltitudeMeters(
-    const CloudShapeParameters& inputShape, CloudTypeMode cloudTypeMode,
+    const WeatherColumnSettings& inputColumn,
+    const CloudTypeSelection& typeSelection,
     const CloudDomainParameters& inputDomain)
 {
-    const CloudShapeParameters shape = SanitizeCloudShapeParameters(inputShape);
+    const WeatherColumnSettings column =
+        SanitizeWeatherColumnSettings(inputColumn);
     const CloudDomainParameters domain =
         SanitizeCloudDomainParameters(inputDomain);
     return std::clamp(
         domain.cloudBottomAltitude + 0.5f *
-            ActiveMaximumThicknessMeters(shape, cloudTypeMode),
+            ActiveMaximumThicknessMeters(column, typeSelection),
         domain.cloudBottomAltitude,
         domain.cloudBottomAltitude + domain.cloudLayerThickness);
 }

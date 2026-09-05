@@ -2,6 +2,7 @@
 #include "Camera.h"
 #include "CloudShapeDomainContract.h"
 #include "HighCloudQuality.h"
+#include "Fnv1a64.h"
 #include "Stage13CameraPresets.h"
 #include "Stage13SceneMath.h"
 #include "Stage14AtmosphereMath.h"
@@ -128,12 +129,7 @@ std::string CurrentLocalTimeText()
 
 void HashBytes(std::uint64_t& hash, const void* data, std::size_t size)
 {
-    const auto* bytes = static_cast<const std::uint8_t*>(data);
-    for (std::size_t index = 0; index < size; ++index)
-    {
-        hash ^= bytes[index];
-        hash *= 1099511628211ull;
-    }
+    fnv1a64::Append(hash, data, size);
 }
 
 template <typename T>
@@ -144,7 +140,7 @@ void HashValue(std::uint64_t& hash, const T& value)
 
 std::uint64_t BeginStage14Hash()
 {
-    return 1469598103934665603ull;
+    return fnv1a64::kOffsetBasis;
 }
 
 void AppendCacheBytes(std::vector<std::uint8_t>& bytes,
@@ -577,6 +573,7 @@ bool Renderer::Init(HWND hwnd, int width, int height,
     m_noiseLabShaderPath = m_shaderDir + L"NoiseLab.hlsl";
     m_sceneShaderPath = m_shaderDir + L"DiagnosticScene.hlsl";
     m_noiseVolumeShaderPath = m_shaderDir + L"NoiseVolume.hlsl";
+    m_weatherMapShaderPath = m_shaderDir + L"WeatherMapCompute.hlsl";
     m_deepShadowShaderPath = m_shaderDir + L"CloudDeepShadow.hlsl";
     m_atmosphereLutShaderPath = m_shaderDir + L"Stage14AtmosphereLut.hlsl";
     m_toneMapShaderPath = m_shaderDir + L"Stage14ToneMap.hlsl";
@@ -841,6 +838,8 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
                                      const D3D_SHADER_MACRO* defines)
 {
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+    if (path == m_weatherMapShaderPath)
+        compileFlags |= D3DCOMPILE_IEEE_STRICTNESS;
 #ifdef _DEBUG
     compileFlags |= D3DCOMPILE_DEBUG;
     // High cloud와 compute 경로는 /Od에서 하드웨어 instruction 한도를 넘길 수
@@ -993,18 +992,23 @@ bool Renderer::ReloadShaderPrograms(
                 hasContract(blob, "EnvironmentCB", 80u, 4u) &&
                 hasContract(blob, "CloudDomainCB", 32u, 5u) &&
                 hasContract(blob, "NoiseVolumeCB", 96u, 6u) &&
-                hasContract(blob, "CloudShapeCB", 64u, 7u) &&
+                hasContract(blob, "CloudShapeCB", 48u, 7u) &&
                 hasContract(blob, "ShadowCB", 160u, 8u) &&
-                hasContract(blob, "Stage14CB", 224u, 9u);
+                hasContract(blob, "Stage14CB", 224u, 9u) &&
+                hasContract(blob, "WeatherColumnCB", 32u, 10u);
         case ProgramId::NoiseLabPs:
             return hasContract(blob, "CloudCB", 80u, 1u) &&
                 hasContract(blob, "NoiseVolumeCB", 96u, 6u) &&
-                hasContract(blob, "CloudShapeCB", 64u, 7u);
+                hasContract(blob, "CloudShapeCB", 48u, 7u) &&
+                hasContract(blob, "WeatherColumnCB", 32u, 10u);
         case ProgramId::DeepShadowCs:
             return hasContract(blob, "CloudCB", 80u, 1u) &&
                 hasContract(blob, "NoiseVolumeCB", 96u, 6u) &&
-                hasContract(blob, "CloudShapeCB", 64u, 7u) &&
-                hasContract(blob, "ShadowCB", 160u, 8u);
+                hasContract(blob, "CloudShapeCB", 48u, 7u) &&
+                hasContract(blob, "ShadowCB", 160u, 8u) &&
+                hasContract(blob, "WeatherColumnCB", 32u, 10u);
+        case ProgramId::WeatherMapCs:
+            return hasContract(blob, "WeatherMapBuildCB", 160u, 0u);
         case ProgramId::ScenePs:
             return hasContract(blob, "ShadowCB", 160u, 8u) &&
                 hasContract(blob, "Stage14CB", 224u, 9u);
@@ -1145,6 +1149,27 @@ bool Renderer::ReloadShaderPrograms(
         }
     }
 
+    ComPtr<ID3D11Texture2D> generatedWeatherTexture;
+    ComPtr<ID3D11UnorderedAccessView> generatedWeatherUav;
+    WeatherMapData generatedWeatherData;
+    std::uint64_t generatedWeatherHash = 0;
+    double generatedWeatherMilliseconds = 0.0;
+    if ((invalidation & shaderreload::InvalidateWeatherMap) != 0u)
+    {
+        ID3D11ComputeShader* weatherShader = m_weatherMapCs.Get();
+        for (const auto& item : pending)
+            if (m_shaderManifest[item.manifestIndex].id == ProgramId::WeatherMapCs)
+                weatherShader = item.computeShader.Get();
+        if (!GenerateWeatherMapTexture(weatherShader, m_weatherPreset,
+                m_weatherDefinition.generator, generatedWeatherTexture,
+                generatedWeatherUav, generatedWeatherData,
+                generatedWeatherHash, generatedWeatherMilliseconds))
+        {
+            m_shaderError = "Weather Map regeneration failed";
+            return finish(false);
+        }
+    }
+
     for (const auto& item : pending)
     {
         const ProgramId id = m_shaderManifest[item.manifestIndex].id;
@@ -1155,7 +1180,7 @@ bool Renderer::ReloadShaderPrograms(
             break;
         case ProgramId::CloudPs:
             m_cloudPs = item.pixelShader;
-            m_cloudShaderHash = 1469598103934665603ull;
+            m_cloudShaderHash = fnv1a64::kOffsetBasis;
             HashBytes(m_cloudShaderHash, item.blob->GetBufferPointer(),
                       item.blob->GetBufferSize());
             break;
@@ -1172,6 +1197,9 @@ bool Renderer::ReloadShaderPrograms(
         case ProgramId::ToneMapPs:
             m_toneMapPs = item.pixelShader;
             break;
+        case ProgramId::WeatherMapCs:
+            m_weatherMapCs = item.computeShader;
+            break;
         case ProgramId::NoiseBaseCs:
             m_noiseBaseCs = item.computeShader;
             break;
@@ -1180,7 +1208,7 @@ bool Renderer::ReloadShaderPrograms(
             break;
         case ProgramId::DeepShadowCs:
             m_deepShadowCs = item.computeShader;
-            m_deepShadowShaderHash = 1469598103934665603ull;
+            m_deepShadowShaderHash = fnv1a64::kOffsetBasis;
             HashBytes(m_deepShadowShaderHash,
                       item.blob->GetBufferPointer(),
                       item.blob->GetBufferSize());
@@ -1219,6 +1247,23 @@ bool Renderer::ReloadShaderPrograms(
         m_detailNoiseVolumeHash = generatedDetailHash;
         m_noiseVolumeGenerationMilliseconds = generatedMilliseconds;
         (void)generatedDetailNeutral;
+    }
+    if ((invalidation & shaderreload::InvalidateWeatherMap) != 0u)
+    {
+        if (m_weatherMapTexture)
+        {
+            ID3D11ShaderResourceView* nullWeatherSrv = nullptr;
+            m_context->PSSetShaderResources(2, 1, &nullWeatherSrv);
+            m_context->CopyResource(m_weatherMapTexture.Get(),
+                                    generatedWeatherTexture.Get());
+            ++m_weatherUploadCount;
+            ++m_weatherMapGeneration;
+            m_weatherMapScratchTexture = generatedWeatherTexture;
+            m_weatherMapScratchUav = generatedWeatherUav;
+            m_currentWeatherMapData = std::move(generatedWeatherData);
+            m_weatherMapHash = generatedWeatherHash;
+            m_weatherMapGenerationMilliseconds = generatedWeatherMilliseconds;
+        }
     }
     ++m_shaderGeneration;
     m_shaderError.clear();
@@ -1312,18 +1357,9 @@ bool Renderer::CreatePipelineStates()
 
 bool Renderer::CreateWeatherMapTexture(Stage5WeatherPreset preset)
 {
-    const WeatherMapGeneratorSettings safeSettings =
-        SanitizeWeatherMapGeneratorSettings(m_weatherGeneratorSettings);
-    const WeatherMapData map = BuildWeatherMap(preset, safeSettings);
-    if (!IsValidWeatherMapData(map))
-    {
-        m_weatherMapStatus = "Initial weather map validation failed";
-        return false;
-    }
-
     D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = map.width;
-    desc.Height = map.height;
+    desc.Width = kWeatherMapSize;
+    desc.Height = kWeatherMapSize;
     desc.MipLevels = 1;
     desc.ArraySize = 1;
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1332,13 +1368,9 @@ bool Renderer::CreateWeatherMapTexture(Stage5WeatherPreset preset)
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     desc.CPUAccessFlags = 0;
 
-    D3D11_SUBRESOURCE_DATA data = {};
-    data.pSysMem = map.rgba.data();
-    data.SysMemPitch = map.width * 4u;
-
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11ShaderResourceView> srv;
-    if (FAILED(m_device->CreateTexture2D(&desc, &data, &texture)) ||
+    if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &texture)) ||
         FAILED(m_device->CreateShaderResourceView(texture.Get(), nullptr, &srv)))
     {
         m_weatherMapStatus = "Failed to create DEFAULT weather texture/SRV";
@@ -1347,21 +1379,14 @@ bool Renderer::CreateWeatherMapTexture(Stage5WeatherPreset preset)
 
     m_weatherMapTexture = texture;
     m_weatherMapSrv = srv;
-    m_currentWeatherMapData = map;
-    m_weatherGeneratorSettings = safeSettings;
-    m_cloudTypeMode = safeSettings.cloudTypeMode;
-    m_weatherMapHash = HashWeatherMap(map);
-    m_weatherPreset = preset;
-    m_weatherMapStatus = "DEFAULT texture created";
-    return true;
+    return UpdateWeatherMapTexture(preset, m_weatherDefinition.generator);
 }
 
 bool Renderer::UpdateWeatherMapTexture(
     Stage5WeatherPreset preset,
-    const WeatherMapGeneratorSettings& settings,
-    const WeatherMapData* prebuiltMap)
+    const WeatherMapGeneratorSettings& settings)
 {
-    if (!m_weatherMapTexture || !m_weatherMapSrv || !m_context)
+    if (!m_weatherMapTexture || !m_weatherMapSrv || !m_context || !m_weatherMapCs)
     {
         m_weatherMapStatus = "Weather texture is not initialized";
         return false;
@@ -1369,22 +1394,39 @@ bool Renderer::UpdateWeatherMapTexture(
 
     const WeatherMapGeneratorSettings safeSettings =
         SanitizeWeatherMapGeneratorSettings(settings);
-    const WeatherMapData generated = prebuiltMap
-        ? WeatherMapData{} : BuildWeatherMap(preset, safeSettings);
-    const WeatherMapData& map = prebuiltMap ? *prebuiltMap : generated;
-    if (!IsValidWeatherMapData(map))
+    const WeatherMapComputeParameters keyParameters =
+        BuildWeatherMapComputeParameters(preset, safeSettings);
+    const std::uint64_t generationKey = fnv1a64::Hash(
+        &keyParameters, sizeof(keyParameters));
+    if (generationKey == m_weatherGenerationKey && m_weatherMapHash != 0u)
     {
-        m_weatherMapStatus = "Weather map validation failed; previous map retained";
+        m_weatherDefinition.generator = safeSettings;
+        m_weatherPreset = preset;
+        m_weatherMapStatus = "Weather generation skipped; generator key unchanged";
+        return true;
+    }
+    ComPtr<ID3D11Texture2D> scratch;
+    ComPtr<ID3D11UnorderedAccessView> scratchUav;
+    WeatherMapData generated;
+    std::uint64_t requestedHash = 0;
+    double generationMilliseconds = 0.0;
+    if (!GenerateWeatherMapTexture(m_weatherMapCs.Get(), preset, safeSettings,
+            scratch, scratchUav, generated, requestedHash,
+            generationMilliseconds))
+    {
+        m_weatherMapStatus = "Weather compute failed; previous map retained";
         return false;
     }
-
-    const std::uint64_t requestedHash = HashWeatherMap(map);
     if (requestedHash == m_weatherMapHash)
     {
-        m_currentWeatherMapData = map;
-        m_weatherGeneratorSettings = safeSettings;
-        m_cloudTypeMode = safeSettings.cloudTypeMode;
+        m_currentWeatherMapData = generated;
+        m_weatherMapScratchTexture = scratch;
+        m_weatherMapScratchUav = scratchUav;
+        m_weatherDefinition.generator = safeSettings;
         m_weatherPreset = preset;
+        m_weatherGenerationKey = generationKey;
+        m_weatherMapGenerationMilliseconds = generationMilliseconds;
+        ++m_weatherMapGeneration;
         std::ostringstream status;
         status << "Weather upload skipped; hash unchanged " << std::hex
                << requestedHash;
@@ -1392,31 +1434,104 @@ bool Renderer::UpdateWeatherMapTexture(
         return true;
     }
 
-    // 이전 frame의 t2 바인딩을 명시적으로 해제한 뒤 같은 DEFAULT texture에
-    // 새 CPU RGBA를 복사한다. texture/SRV 객체는 생성 이후 바뀌지 않는다.
+    // 성공한 임시 UAV만 공개 texture로 복사해 texture/SRV identity를 보존한다.
     ID3D11ShaderResourceView* nullWeatherSrv = nullptr;
     m_context->PSSetShaderResources(2, 1, &nullWeatherSrv);
-    m_context->UpdateSubresource(
-        m_weatherMapTexture.Get(), 0, nullptr, map.rgba.data(), map.width * 4u, 0);
+    m_context->CopyResource(m_weatherMapTexture.Get(), scratch.Get());
     ++m_weatherUploadCount;
     const HRESULT deviceState = m_device->GetDeviceRemovedReason();
     if (FAILED(deviceState))
     {
         std::ostringstream failure;
-        failure << "UpdateSubresource device failure 0x" << std::hex
+        failure << "Weather CopyResource device failure 0x" << std::hex
                 << static_cast<unsigned long>(deviceState);
         m_weatherMapStatus = failure.str();
         return false;
     }
 
-    m_weatherGeneratorSettings = safeSettings;
-    m_cloudTypeMode = safeSettings.cloudTypeMode;
-    m_currentWeatherMapData = map;
+    m_weatherDefinition.generator = safeSettings;
+    m_currentWeatherMapData = generated;
+    m_weatherMapScratchTexture = scratch;
+    m_weatherMapScratchUav = scratchUav;
     m_weatherMapHash = requestedHash;
+    m_weatherGenerationKey = generationKey;
     m_weatherPreset = preset;
+    m_weatherMapGenerationMilliseconds = generationMilliseconds;
+    ++m_weatherMapGeneration;
     std::ostringstream status;
-    status << "UpdateSubresource OK, hash " << std::hex << m_weatherMapHash;
+    status << "GPU compute OK, hash " << std::hex << m_weatherMapHash;
     m_weatherMapStatus = status.str();
+    return true;
+}
+
+bool Renderer::GenerateWeatherMapTexture(
+    ID3D11ComputeShader* shader, Stage5WeatherPreset preset,
+    const WeatherMapGeneratorSettings& settings,
+    ComPtr<ID3D11Texture2D>& generatedTexture,
+    ComPtr<ID3D11UnorderedAccessView>& generatedUav,
+    WeatherMapData& generatedData, std::uint64_t& generatedHash,
+    double& generationMilliseconds)
+{
+    if (!shader || !m_device || !m_context) return false;
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = kWeatherMapSize; desc.Height = kWeatherMapSize;
+    desc.MipLevels = 1; desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1; desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &texture)) ||
+        FAILED(m_device->CreateUnorderedAccessView(texture.Get(), nullptr, &uav)))
+        return false;
+
+    D3D11_BUFFER_DESC bufferDesc = {};
+    bufferDesc.ByteWidth = sizeof(WeatherMapComputeParameters);
+    bufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    const WeatherMapComputeParameters parameters =
+        BuildWeatherMapComputeParameters(preset, settings);
+    D3D11_SUBRESOURCE_DATA bufferData = {};
+    bufferData.pSysMem = &parameters;
+    ComPtr<ID3D11Buffer> buffer;
+    if (FAILED(m_device->CreateBuffer(&bufferDesc, &bufferData, &buffer)))
+        return false;
+
+    const auto start = std::chrono::steady_clock::now();
+    ID3D11Buffer* rawBuffer = buffer.Get();
+    ID3D11UnorderedAccessView* rawUav = uav.Get();
+    m_context->CSSetConstantBuffers(0, 1, &rawBuffer);
+    m_context->CSSetUnorderedAccessViews(0, 1, &rawUav, nullptr);
+    m_context->CSSetShader(shader, nullptr, 0);
+    m_context->Dispatch(kWeatherMapSize / 8u, kWeatherMapSize / 8u, 1u);
+    ID3D11UnorderedAccessView* nullUav = nullptr;
+    m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+    m_context->CSSetShader(nullptr, nullptr, 0);
+
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &staging)))
+        return false;
+    m_context->CopyResource(staging.Get(), texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return false;
+    generatedData.width = kWeatherMapSize;
+    generatedData.height = kWeatherMapSize;
+    generatedData.rgba.resize(kWeatherMapSize * kWeatherMapSize * 4u);
+    for (std::uint32_t y = 0; y < kWeatherMapSize; ++y)
+        std::memcpy(generatedData.rgba.data() + y * kWeatherMapSize * 4u,
+                    static_cast<const std::uint8_t*>(mapped.pData) +
+                        y * mapped.RowPitch, kWeatherMapSize * 4u);
+    m_context->Unmap(staging.Get(), 0);
+    generationMilliseconds = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+    generatedHash = HashWeatherMap(generatedData);
+    generatedTexture = texture;
+    generatedUav = uav;
     return true;
 }
 
@@ -1427,10 +1542,15 @@ bool Renderer::InitializeStage15Presets()
         const auto preset = static_cast<Stage15ConceptPreset>(index);
         const Stage15SceneDescriptor descriptor =
             stage15::ResolveSceneConcept(preset);
-        WeatherMapData map = BuildWeatherMap(
-            descriptor.formation.weatherPreset,
-            descriptor.formation.weather);
-        if (!IsValidWeatherMapData(map))
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+        WeatherMapData data;
+        std::uint64_t hash = 0;
+        double milliseconds = 0.0;
+        if (!GenerateWeatherMapTexture(m_weatherMapCs.Get(),
+                descriptor.formation.weatherPreset,
+                descriptor.formation.weather.generator, texture, uav,
+                data, hash, milliseconds) || !IsValidWeatherMapData(data))
         {
             m_weatherMapStatus = "Stage 15 Weather cache generation failed";
             return false;
@@ -1446,15 +1566,7 @@ bool Renderer::HashNoiseVolume(ID3D11Texture3D* texture,
     std::vector<std::uint8_t> bytes;
     if (!ReadNoiseVolumeBytesFromTexture(texture, bytes))
         return false;
-    constexpr std::uint64_t offset = 1469598103934665603ull;
-    constexpr std::uint64_t prime = 1099511628211ull;
-    std::uint64_t value = offset;
-    for (std::uint8_t byte : bytes)
-    {
-        value ^= byte;
-        value *= prime;
-    }
-    hash = value;
+    hash = fnv1a64::Hash(bytes.data(), bytes.size());
     return true;
 }
 
@@ -1464,6 +1576,61 @@ bool Renderer::ReadNoiseVolumeBytes(
     ID3D11Texture3D* texture = base ? m_baseNoiseVolume.Get() :
         m_detailNoiseVolume.Get();
     return ReadNoiseVolumeBytesFromTexture(texture, bytes);
+}
+
+bool Renderer::ValidateWeatherMapCpuParity() const
+{
+    const WeatherMapData cpu = BuildWeatherMap(
+        m_weatherPreset, m_weatherDefinition.generator);
+    if (!IsValidWeatherMapData(cpu) ||
+        cpu.rgba.size() != m_currentWeatherMapData.rgba.size())
+        return false;
+    // CPU/HLSL의 Perlin 부동소수점 연산 순서는 다를 수 있으나 RGBA8에서 허용하는
+    // 양자화 오차는 1 LSB뿐이다. 2 LSB 이상이면 생성 계약 불일치로 판정한다.
+    for (std::size_t index = 0; index < cpu.rgba.size(); ++index)
+        if (std::abs(static_cast<int>(cpu.rgba[index]) -
+                     static_cast<int>(m_currentWeatherMapData.rgba[index])) > 1)
+            return false;
+    return true;
+}
+
+std::size_t Renderer::WeatherMapCpuMismatchCount() const
+{
+    const WeatherMapData cpu = BuildWeatherMap(
+        m_weatherPreset, m_weatherDefinition.generator);
+    if (!IsValidWeatherMapData(cpu) ||
+        cpu.rgba.size() != m_currentWeatherMapData.rgba.size())
+        return static_cast<std::size_t>(-1);
+    std::size_t count = 0;
+    for (std::size_t index = 0; index < cpu.rgba.size(); ++index)
+        if (cpu.rgba[index] != m_currentWeatherMapData.rgba[index]) ++count;
+    return count;
+}
+
+std::string Renderer::WeatherMapCpuParitySummary() const
+{
+    const WeatherMapData cpu = BuildWeatherMap(
+        m_weatherPreset, m_weatherDefinition.generator);
+    if (!IsValidWeatherMapData(cpu) ||
+        cpu.rgba.size() != m_currentWeatherMapData.rgba.size())
+        return "invalid";
+    std::size_t counts[4] = {};
+    unsigned maximum[4] = {};
+    for (std::size_t index = 0; index < cpu.rgba.size(); ++index)
+    {
+        const unsigned channel = static_cast<unsigned>(index & 3u);
+        const unsigned difference = static_cast<unsigned>(std::abs(
+            static_cast<int>(cpu.rgba[index]) -
+            static_cast<int>(m_currentWeatherMapData.rgba[index])));
+        if (difference > 0u) ++counts[channel];
+        maximum[channel] = std::max(maximum[channel], difference);
+    }
+    std::ostringstream summary;
+    summary << "R=" << counts[0] << '/' << maximum[0]
+            << ",G=" << counts[1] << '/' << maximum[1]
+            << ",B=" << counts[2] << '/' << maximum[2]
+            << ",A=" << counts[3] << '/' << maximum[3];
+    return summary.str();
 }
 
 bool Renderer::ReadNoiseVolumeBytesFromTexture(
@@ -1635,6 +1802,8 @@ bool Renderer::CreateConstantBuffers()
            createDynamicBuffer(sizeof(CloudDomainParameters), &m_cloudDomainCb) &&
            createDynamicBuffer(sizeof(NoiseVolumeParameters), &m_noiseVolumeCb) &&
            createDynamicBuffer(sizeof(CloudShapeParameters), &m_cloudShapeCb) &&
+           createDynamicBuffer(sizeof(WeatherColumnParameters),
+                               &m_weatherColumnCb) &&
            createDynamicBuffer(sizeof(Stage12ShadowParameters),
                                &m_shadowCb) &&
            createDynamicBuffer(sizeof(stage14::GpuParameters),
@@ -2220,6 +2389,8 @@ void Renderer::RenderDiagnosticScene(const Camera& camera)
     m_context->PSSetShader(m_scenePs.Get(), nullptr, 0);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
     m_context->PSSetConstantBuffers(8, 1, &shadowBuffer);
+    ID3D11Buffer* weatherColumnBuffer = m_weatherColumnCb.Get();
+    m_context->PSSetConstantBuffers(10, 1, &weatherColumnBuffer);
     ID3D11ShaderResourceView* shadowResources[2] = {
         m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
     };
@@ -2259,7 +2430,9 @@ void Renderer::RenderCloudPass()
     ID3D11Buffer* cloudShapeBuffer = m_cloudShapeCb.Get();
     m_context->PSSetConstantBuffers(7, 1, &cloudShapeBuffer);
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    ID3D11Buffer* weatherColumnBuffer = m_weatherColumnCb.Get();
     m_context->PSSetConstantBuffers(8, 1, &shadowBuffer);
+    m_context->PSSetConstantBuffers(10, 1, &weatherColumnBuffer);
     BindAtmosphereResources();
     ID3D11ShaderResourceView* resources[5] = {
         m_sceneColorSrv.Get(), m_sceneDepthSrv.Get(), m_weatherMapSrv.Get(),
@@ -2326,12 +2499,14 @@ void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
     ID3D11Buffer* noiseBuffer = m_noiseVolumeCb.Get();
     ID3D11Buffer* shapeBuffer = m_cloudShapeCb.Get();
     ID3D11Buffer* shadowBuffer = m_shadowCb.Get();
+    ID3D11Buffer* weatherColumnBuffer = m_weatherColumnCb.Get();
     m_context->CSSetConstantBuffers(0, 1, &cameraBuffer);
     m_context->CSSetConstantBuffers(1, 1, &cloudBuffer);
     m_context->CSSetConstantBuffers(5, 1, &domainBuffer);
     m_context->CSSetConstantBuffers(6, 1, &noiseBuffer);
     m_context->CSSetConstantBuffers(7, 1, &shapeBuffer);
     m_context->CSSetConstantBuffers(8, 1, &shadowBuffer);
+    m_context->CSSetConstantBuffers(10, 1, &weatherColumnBuffer);
     ID3D11ShaderResourceView* densityResources[3] = {
         m_weatherMapSrv.Get(), m_baseNoiseVolumeSrv.Get(),
         m_detailNoiseVolumeSrv.Get()
@@ -2406,12 +2581,18 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
         m_environmentParameters);
     m_cloudShapeParameters = SanitizeCloudShapeParameters(
         m_cloudShapeParameters);
+    m_cloudMotion = SanitizeCloudMotionParameters(m_cloudMotion);
+    // CloudCB ABI는 유지하되 타입/프리셋과 독립된 세션 전역 motion을 매 프레임 패킹한다.
+    m_cloudParameters.windDirection = m_cloudMotion.direction;
+    m_cloudParameters.windSpeed = m_cloudMotion.speedMetersPerSecond;
+    m_weatherColumnParameters = ResolveWeatherColumnParameters(
+        m_weatherDefinition.column, m_cloudTypeSelection);
     UpdateStage12ShadowParameters(camera);
 
     const auto update = [&](std::size_t index, ID3D11Buffer* buffer,
                             const void* data, std::size_t size)
     {
-        std::uint64_t contentHash = 1469598103934665603ull;
+        std::uint64_t contentHash = fnv1a64::kOffsetBasis;
         HashBytes(contentHash, data, size);
         if (index < m_constantBufferUploadHashes.size() &&
             m_constantBufferUploadValid[index] &&
@@ -2444,6 +2625,8 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
            sizeof(m_cloudShapeParameters));
     update(7, m_shadowCb.Get(), &m_shadowParameters,
            sizeof(m_shadowParameters));
+    update(8, m_weatherColumnCb.Get(), &m_weatherColumnParameters,
+           sizeof(m_weatherColumnParameters));
 }
 
 void Renderer::UnbindCloudShaderResources(UINT count)
@@ -2494,7 +2677,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         CaptureCloudFormationSettingsUnchecked(
             m_cloudParameters, m_cloudShapeParameters,
             m_cloudDomainParameters, m_weatherPreset,
-            m_weatherGeneratorSettings, m_noiseVolumeParameters);
+            m_weatherDefinition, m_cloudTypeSelection,
+            m_noiseVolumeParameters);
     const std::array<ID3D11ShaderResourceView*, 6> atmosphereLutSrvs = {
         m_atmosphereLuts.transmittance.srv.Get(),
         m_atmosphereLuts.multiScattering.srv.Get(),
@@ -2507,7 +2691,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     {
         m_noiseLab.BeginFrame(
             timeSeconds, camera, m_cloudParameters, m_cloudShapeParameters,
-            m_cloudDomainParameters, m_weatherGeneratorSettings,
+            m_cloudDomainParameters, m_weatherDefinition,
+            m_cloudTypeSelection, m_cloudMotion,
             m_shadowParameters, m_lightParameters, m_sunPreset,
             m_phasePreset, m_environmentParameters, m_environmentPreset,
             m_atmosphereParameters, m_groundLightingParameters,
@@ -2516,7 +2701,9 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             m_hasSavedCustomFormation, m_cloudFormationStatus,
             m_cameraMoveSpeedMetersPerSecond, m_noiseVolumeParameters,
             m_baseNoiseVolumeHash, m_detailNoiseVolumeHash,
-            m_noiseVolumeGenerationMilliseconds, m_weatherMapSrv.Get(),
+            m_noiseVolumeGenerationMilliseconds,
+            m_weatherMapGenerationMilliseconds, m_weatherMapGeneration,
+            m_weatherMapSrv.Get(),
             atmosphereLutSrvs, m_frameProfiler.Snapshot(), m_vsyncEnabled,
             m_tearingSupported,
             m_shaderGeneration, m_shaderStatus, m_shaderError,
@@ -2526,7 +2713,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             CaptureCloudFormationSettingsUnchecked(
                 m_cloudParameters, m_cloudShapeParameters,
                 m_cloudDomainParameters, m_weatherPreset,
-                m_weatherGeneratorSettings, m_noiseVolumeParameters);
+                m_weatherDefinition, m_cloudTypeSelection,
+                m_noiseVolumeParameters);
         if (m_noiseLab.ConsumeFormationEdited() ||
             !CloudFormationSettingsEqual(rawFormationBeforeUi, rawCandidate, 0.0f))
         {
@@ -2538,8 +2726,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                 WriteCloudFormationToRuntime(
                     previous, m_cloudParameters, m_cloudShapeParameters,
                     m_cloudDomainParameters, m_weatherPreset,
-                    m_weatherGeneratorSettings, m_noiseVolumeParameters);
-                m_cloudTypeMode = m_weatherGeneratorSettings.cloudTypeMode;
+                    m_weatherDefinition, m_cloudTypeSelection,
+                    m_noiseVolumeParameters);
                 ApplyCloudFormationAtomic(
                     SanitizeCloudFormationSettings(rawCandidate));
             }
@@ -2567,6 +2755,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
 
+    m_frameProfiler.MarkWeatherMapEnd(m_context.Get());
     EnsureAtmosphereLuts(camera);
     m_frameProfiler.MarkAtmosphereLutEnd(m_context.Get());
     RenderDeepShadowCaches(camera, effectiveTime);
@@ -2583,7 +2772,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     {
         m_noiseLab.RenderPreviews(
             m_fullscreenVs.Get(), m_noiseLabPs.Get(), m_cloudCb.Get(),
-            m_noiseVolumeCb.Get(), m_cloudShapeCb.Get(), m_weatherMapSrv.Get(),
+            m_noiseVolumeCb.Get(), m_cloudShapeCb.Get(),
+            m_weatherColumnCb.Get(), m_weatherMapSrv.Get(),
             m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get(),
             m_weatherLinearWrapSampler.Get());
     }
@@ -2647,16 +2837,12 @@ void Renderer::CaptureCloudFrameHash()
     D3D11_MAPPED_SUBRESOURCE mapped = {};
     if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
         return;
-    std::uint64_t hash = 1469598103934665603ull;
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
     for (UINT y = 0; y < desc.Height; ++y)
     {
         const auto* row = static_cast<const unsigned char*>(mapped.pData) +
                           static_cast<size_t>(y) * mapped.RowPitch;
-        for (UINT x = 0; x < desc.Width * 4; ++x)
-        {
-            hash ^= row[x];
-            hash *= 1099511628211ull;
-        }
+        fnv1a64::Append(hash, row, desc.Width * 4u);
     }
     m_context->Unmap(staging.Get(), 0);
     m_lastCloudFrameHash = hash;
@@ -2682,7 +2868,6 @@ bool Renderer::ApplyStage15Defaults()
         return false;
     if (!ApplySceneConcept(Stage15ConceptPreset::UrbanFairWeather))
         return false;
-    m_frameProfiler.ResetMeasurements();
     return true;
 }
 
@@ -2727,7 +2912,6 @@ bool Renderer::ApplySceneConcept(Stage15ConceptPreset preset)
     m_stage15ConceptPreset = preset;
     m_cloudFormationStatus = std::string(stage15::ConceptName(preset)) +
         " scene concept applied";
-    m_frameProfiler.ResetMeasurements();
     return true;
 }
 
@@ -2737,8 +2921,6 @@ bool Renderer::ApplyCloudType(const CloudFormationPresetTarget& target)
         return false;
     const bool applied = ApplyCloudFormationPresetTarget(
         target, false);
-    if (applied)
-        m_frameProfiler.ResetMeasurements();
     return applied;
 }
 
@@ -2758,7 +2940,7 @@ CloudFormationSettings Renderer::CurrentCloudFormation() const
 {
     return CaptureCloudFormationSettings(
         m_cloudParameters, m_cloudShapeParameters, m_cloudDomainParameters,
-        m_weatherPreset, m_weatherGeneratorSettings,
+        m_weatherPreset, m_weatherDefinition, m_cloudTypeSelection,
         m_noiseVolumeParameters);
 }
 
@@ -2784,10 +2966,12 @@ bool Renderer::ApplyCloudFormationAtomic(
     CloudShapeParameters shape = m_cloudShapeParameters;
     CloudDomainParameters domain = m_cloudDomainParameters;
     Stage5WeatherPreset weatherPreset = m_weatherPreset;
-    WeatherMapGeneratorSettings weather = m_weatherGeneratorSettings;
+    WeatherMapDefinition weather = m_weatherDefinition;
+    CloudTypeSelection typeSelection = m_cloudTypeSelection;
     NoiseVolumeParameters noise = m_noiseVolumeParameters;
     WriteCloudFormationToRuntime(
-        prepared, cloud, shape, domain, weatherPreset, weather, noise);
+        prepared, cloud, shape, domain, weatherPreset, weather,
+        typeSelection, noise);
 
     // XZ의 오픈 월드 footprint는 formation 슬롯이 아니라 공통 Stage 13 장면이
     // 소유한다. Y만 검증된 PlanarLayer domain과 함께 원자적으로 갱신한다.
@@ -2795,8 +2979,7 @@ bool Renderer::ApplyCloudFormationAtomic(
     cloud.cloudBoundsMax.y =
         domain.cloudBottomAltitude + domain.cloudLayerThickness;
 
-    if (!UpdateWeatherMapTexture(
-            weatherPreset, weather, &prepared.weatherMap))
+    if (!UpdateWeatherMapTexture(weatherPreset, weather.generator))
     {
         m_cloudFormationStatus =
             "Formation Weather upload failed; runtime state retained";
@@ -2808,9 +2991,9 @@ bool Renderer::ApplyCloudFormationAtomic(
     m_cloudDomainParameters = domain;
     m_noiseVolumeParameters = noise;
     m_weatherPreset = weatherPreset;
-    m_weatherGeneratorSettings = weather;
-    m_cloudTypeMode = weather.cloudTypeMode;
-    m_noiseLab.SynchronizeWeatherGeneratorSettings(weather);
+    m_weatherDefinition = weather;
+    m_cloudTypeSelection = typeSelection;
+    m_noiseLab.SynchronizeWeatherGeneratorSettings(weather.generator);
     m_cloudFormationStatus = "Formation applied atomically";
     return true;
 }
@@ -2935,12 +3118,12 @@ bool Renderer::ApplyWeatherGeneratorSettings(
     const WeatherMapGeneratorSettings safeSettings =
         SanitizeWeatherMapGeneratorSettings(settings);
     const bool changed = !WeatherMapGeneratorSettingsEqual(
-        safeSettings, m_weatherGeneratorSettings);
+        safeSettings, m_weatherDefinition.generator);
     if (!changed)
         return true;
 
     CloudFormationSettings formation = CurrentCloudFormation();
-    formation.weather = safeSettings;
+    formation.weather.generator = safeSettings;
     const bool applied = ApplyCloudFormationAtomic(formation);
     if (applied)
         MarkCloudFormationDirty();
@@ -2949,7 +3132,7 @@ bool Renderer::ApplyWeatherGeneratorSettings(
 
 std::uint64_t Renderer::RuntimeStateHash() const
 {
-    std::uint64_t hash = 1469598103934665603ull;
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
     HashBytes(hash, &m_cloudParameters, sizeof(m_cloudParameters));
     HashBytes(hash, &m_cloudDomainParameters, sizeof(m_cloudDomainParameters));
     HashBytes(hash, &m_cloudShapeParameters, sizeof(m_cloudShapeParameters));
@@ -2971,7 +3154,7 @@ std::uint64_t Renderer::RuntimeStateHash() const
 
 std::uint64_t Renderer::GpuResourceIdentityHash() const
 {
-    std::uint64_t hash = 1469598103934665603ull;
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
     const auto append = [&](const void* pointer)
     {
         const std::uintptr_t identity =
@@ -2991,7 +3174,7 @@ std::uint64_t Renderer::GpuResourceIdentityHash() const
 
 std::uint64_t Renderer::ShaderObjectIdentityHash() const
 {
-    std::uint64_t hash = 1469598103934665603ull;
+    std::uint64_t hash = fnv1a64::kOffsetBasis;
     const auto append = [&](const void* pointer)
     {
         const std::uintptr_t identity =
@@ -3004,6 +3187,7 @@ std::uint64_t Renderer::ShaderObjectIdentityHash() const
     append(m_sceneVs.Get());
     append(m_scenePs.Get());
     append(m_toneMapPs.Get());
+    append(m_weatherMapCs.Get());
     append(m_noiseBaseCs.Get());
     append(m_noiseDetailCs.Get());
     append(m_deepShadowCs.Get());
@@ -3190,7 +3374,7 @@ bool Renderer::ValidateNoiseLabPreviews()
 bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
     return m_noiseLab.ExportSnapshot(
-        root, CurrentCloudFormation(), m_shadowParameters,
+        root, CurrentCloudFormation(), m_cloudMotion, m_shadowParameters,
         m_lightParameters, m_environmentParameters,
         m_atmosphereParameters, m_groundLightingParameters,
         m_toneMappingParameters, m_stage15ConceptPreset,

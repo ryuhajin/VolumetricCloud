@@ -107,6 +107,8 @@ add_vcloud_cpu_test(VolumetricCloud.Stage13SceneMathTests
 add_vcloud_cpu_test(VolumetricCloud.HighCloudQualityTests
     VolumetricCloud.HighCloudQuality
     tests/HighCloudQualityTests.cpp)
+add_vcloud_cpu_test(VolumetricCloud.Fnv1a64Tests
+    VolumetricCloud.Fnv1a64 tests/Fnv1a64Tests.cpp)
 target_compile_definitions(VolumetricCloud.HighCloudQualityTests PRIVATE
     VCLOUD_HIGH_QUALITY_HLSL="${CMAKE_SOURCE_DIR}/shaders/HighCloudQuality.hlsli")
 add_vcloud_cpu_test(VolumetricCloud.ShaderManifestTests
@@ -139,6 +141,8 @@ add_test(NAME VolumetricCloud.HighCloudSmoke
          COMMAND VolumetricCloud --high-cloud-smoke-test)
 add_test(NAME VolumetricCloud.FormationSmoke
          COMMAND VolumetricCloud --formation-smoke-test)
+add_test(NAME VolumetricCloud.WeatherGpuSmoke
+         COMMAND VolumetricCloud --formation-smoke-test)
 add_test(NAME VolumetricCloud.AtmosphereSmoke
          COMMAND VolumetricCloud --atmosphere-smoke-test)
 add_test(NAME VolumetricCloud.NoiseLabSmoke
@@ -159,9 +163,17 @@ add_test(NAME VolumetricCloud.HotReloadDependencySmoke
         -DVCLOUD_WORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/shader-reload-smoke/noise
         -DVCLOUD_MODE=noise
         -P ${CMAKE_SOURCE_DIR}/cmake/RunShaderReloadSmoke.cmake)
+add_test(NAME VolumetricCloud.WeatherHotReloadSmoke
+    COMMAND ${CMAKE_COMMAND}
+        -DVCLOUD_EXE=$<TARGET_FILE:VolumetricCloud>
+        -DVCLOUD_SHADER_SOURCE=${CMAKE_SOURCE_DIR}/shaders
+        -DVCLOUD_WORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/shader-reload-smoke/weather
+        -DVCLOUD_MODE=weather
+        -P ${CMAKE_SOURCE_DIR}/cmake/RunShaderReloadSmoke.cmake)
 set_tests_properties(
     VolumetricCloud.HighCloudSmoke
     VolumetricCloud.FormationSmoke
+    VolumetricCloud.WeatherGpuSmoke
     VolumetricCloud.AtmosphereSmoke
     VolumetricCloud.NoiseLabSmoke
     VolumetricCloud.ShaderCacheSmoke
@@ -170,6 +182,8 @@ set_tests_properties(VolumetricCloud.HotReloadSmoke PROPERTIES
     TIMEOUT 45 LABELS "gpu;reload")
 set_tests_properties(VolumetricCloud.HotReloadDependencySmoke PROPERTIES
     TIMEOUT 90 LABELS "gpu;reload;heavy")
+set_tests_properties(VolumetricCloud.WeatherHotReloadSmoke PROPERTIES
+    TIMEOUT 45 LABELS "gpu;reload")
 
 add_test(NAME VolumetricCloud.HighPerformance
          COMMAND VolumetricCloud --high-performance-test)

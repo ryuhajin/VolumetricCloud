@@ -14,6 +14,7 @@
 
 #include "CloudParameters.hlsli"
 #include "CloudShapeParameters.hlsli"
+#include "WeatherColumnParameters.hlsli"
 #include "CloudAdvection.hlsli"
 
 Texture2D<float4> weatherMapTexture : register(t2);
@@ -23,6 +24,7 @@ struct WeatherSample
 {
     float coverage;          // R: 이 위치에 구름이 생길 수 있는 비율(0~1).
     float cloudType;         // G: 0 층운, 0.5 기존 혼합형, 1 적운.
+    float storedRegionalType;// texture G 원본. Fixed 모드에서도 보존/preview한다.
     float densityModifier;   // B를 0.5~1.5로 바꾼 최종 밀도 배율.
     float localThicknessPotential;// A: 타입별 물리 두께 범위 안의 보간값(0~1).
     float2 uv;               // 실제 조회한 반복 Weather UV(0~1).
@@ -72,7 +74,9 @@ WeatherSample SampleWeatherMap(float3 worldPosition, float timeSeconds)
     float4 channels = saturate(
         weatherMapTexture.SampleLevel(weatherMapSampler, result.uv, 0.0));
     result.coverage = channels.r;
-    result.cloudType = DecodeCanonicalWeatherChannel(channels.g);
+    // G에는 항상 지역별 원본을 저장하고 b10 선택 정책으로 유효 타입을 계산한다.
+    result.storedRegionalType = DecodeCanonicalWeatherChannel(channels.g);
+    result.cloudType = ResolveEffectiveCloudType(result.storedRegionalType);
     result.densityModifier = 0.5 + DecodeCanonicalWeatherChannel(channels.b);
     result.localThicknessPotential = DecodeCanonicalWeatherChannel(channels.a);
     return result;
@@ -104,7 +108,7 @@ float EvaluatePhysicalLocalBaseLift(float thicknessPotential,
                                     float typeScale)
 {
     float weakColumn = 1.0 - saturate(thicknessPotential);
-    float desiredLift = max(localBaseLiftMaxMeters, 0.0) *
+    float desiredLift = max(maximumBaseLiftMeters, 0.0) *
         saturate(typeScale) * pow(weakColumn, 1.5);
     return min(desiredLift, max(localThicknessMeters, 0.0) * 0.25);
 }

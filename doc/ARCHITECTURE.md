@@ -2,6 +2,10 @@
 
 이 문서는 High 단일화 이후의 현재 런타임만 설명한다. Stage 10 저해상도 복원, Stage 11 Temporal, Cirrus, Detail LOD, NTE Rim, Capture/Reference는 과거 실험이며 현재 객체·셰이더·상수버퍼 계약에 존재하지 않는다.
 
+처음 코드를 추적한다면 [렌더링 파이프라인 가이드](RENDERING_PIPELINE_GUIDE.md)를 먼저 읽고,
+필드 단위 ABI는 [상수버퍼 참조](CBUFFER_REFERENCE.md), 실제 수치 조절은
+[구름·빛 튜닝 가이드](CLOUD_LIGHTING_TUNING_GUIDE.md)를 사용한다.
+
 ## 프레임 흐름
 
 ```text
@@ -30,9 +34,9 @@ Cloud PS는 구름 scattering과 transmittance를 적분한 뒤 같은 픽셀에
 | `main.cpp` | 일반 실행과 formation/대기/핫 리로드/성능 GPU smoke 진입점 |
 | `Window`, `Camera` | Win32 입력, resize, FPS 카메라와 F5~F8 고정 시점 |
 | `Renderer` | D3D11 자원, 프레임 순서, formation 원자 적용, 셰이더 세대 교체 |
-| `NoiseLab` | 재개방 가능한 F1~F4 UI, 독립 profiler, Texture3D/Weather preview, schema 39 snapshot |
+| `NoiseLab` | 재개방 가능한 F1~F4 UI, 독립 profiler, Texture3D/Weather preview, schema 40 snapshot |
 | `CloudFormationSettings` | formation 소유 필드의 strict 검증, domain-fit 준비와 런타임 변환 |
-| `CloudFormationPresetStore` | 여섯 내장 formation과 Custom schema 1 원자 저장 |
+| `CloudFormationPresetStore` | 여섯 내장 formation과 Custom schema 2 원자 저장, schema 1 읽기 이관 |
 | `ShaderManifest` | 프로그램별 source/entry/target/defines/object/dependency/invalidation |
 | `FrameProfiler` | 여섯 최종 GPU 구간 timestamp와 CPU frame EMA |
 | `WeatherMap` | 256² RGBA8 periodic Weather 생성과 hash |
@@ -57,19 +61,17 @@ Cloud PS는 구름 scattering과 transmittance를 적분한 뒤 같은 픽셀에
 
 `ApplyCloudType`은 formation만 바꾼다. 태양·대기·지면·Tone·카메라는 건드리지 않는다.
 
-F2의 Weather G 생성기는 `CloudTypeMode::WeatherMap`에서만 실제 G를 소유한다.
-Stratus/Mixed/Cumulus 고정 소스는 생성된 G를 각각 0/0.5/1로 덮어쓰므로 UI가 해당
-채널 편집을 비활성화한다. 이 구분 덕분에 움직였지만 렌더링에는 반영되지 않는
-슬라이더 상태가 없다. 공통 wind는 Weather/Base/Detail의 sample position에서 같은
-`direction × speed × time`을 빼며 별도 Weather 속도는 존재하지 않는다.
+Weather Compute는 타입 선택과 무관하게 G에 지역별 타입 원본을 항상 생성한다.
+`CloudTypeSelection`은 b10의 `fixedType/regionalInfluence`로 분리되며 shader는
+`lerp(fixedType, sampledG, regionalInfluence)`로 유효 타입을 계산한다. Fixed Stratus,
+Mixed, Cumulus는 각각 0/0.5/1을 쓰지만 저장된 G와 F2 편집 상태는 그대로 보존한다.
 
 공통 effective time은 `NoiseLab::UpdateEffectiveTime`이 매 frame 실제 delta time으로
-누적한다. F1 구름 파라미터 하단의 `Cloud movement speed`는 `CloudCB.windSpeed`를
-0~400m/s 범위에서 직접 편집하며, F2는 수평 wind direction만 편집한다. Cloud PS,
+누적한다. F1 `Cloud Motion`의 방향과 속도는 세션 전역 `CloudMotionParameters`다. Cloud PS,
 Deep Cache, NoiseLab preview는 모두
 `wind direction × movement speed(m/s) × effective time(s)`을 사용하므로 외곽과 내부
-무늬가 함께 움직인다. effective time은 저장하지 않지만 speed/direction은 formation과
-Custom schema 1의 wind에 저장한다.
+무늬가 함께 움직인다. motion은 formation/Custom/Weather 생성 key에 포함되지 않아 타입과
+콘셉트를 바꿔도 유지되며 앱 시작 때 기존 방향과 12m/s로 초기화한다.
 
 VSync도 F1의 presentation 상태이며 일반 실행 기본은 On이다. 초기화 시
 `DXGI_FEATURE_PRESENT_ALLOW_TEARING`을 조회하고 지원되면 swap chain에
@@ -88,15 +90,17 @@ CPU 테스트 가능한 계약으로 고정한다.
 
 ### Custom formation
 
-`captures/noise-lab/custom-cloud.json` 하나만 파일 기반이다. schema 1은 다음 범위만 저장한다.
+`captures/noise-lab/custom-cloud.json` 하나만 파일 기반이다. schema 2는 다음 범위만 저장한다.
 
 - coverage, density, extinction, detail erosion
 - Weather channel과 제작 설정
 - 물리 shape와 Planar domain
 - Base/Detail noise 월드 크기
-- wind 방향과 속도
+- `CloudTypeSelection` (세션 전역 motion은 저장하지 않음)
 
-품질, 최적화, 조명, 대기, 지면, Tone, 카메라, debug 상태는 저장하지 않는다. 임시 파일 쓰기가 완료된 뒤 `MoveFileEx(...REPLACE_EXISTING|WRITE_THROUGH)`로 원자 교체한다. schema 29/30과 구형 `cloud-presets`는 탐색하거나 변환하지 않는다.
+품질, 최적화, 조명, 대기, 지면, Tone, 카메라, debug 상태는 저장하지 않는다. schema 1은
+기존 타입 모드를 새 selection으로 이관하고 legacy wind를 무시해 현재 세션 motion을 보존한다.
+임시 파일 쓰기가 완료된 뒤 `MoveFileEx(...REPLACE_EXISTING|WRITE_THROUGH)`로 원자 교체한다.
 
 ## GPU 자원
 
@@ -105,7 +109,7 @@ CPU 테스트 가능한 계약으로 고정한다.
 | Scene Color | 창 크기 `RGBA16_FLOAT` | Opaque PS | Cloud PS |
 | Scene Depth | 창 크기 `D32_FLOAT` + SRV | Opaque raster | Cloud PS |
 | HDR Cloud | 창 크기 `RGBA16_FLOAT` | Cloud PS | Tone Map PS |
-| Weather Map | 256² `RGBA8_UNORM` | CPU | Cloud/Deep Shadow/NoiseLab |
+| Weather Map | 256² `RGBA8_UNORM` | 8×8 Weather Map CS → 임시 UAV → `CopyResource` | Cloud/Deep Shadow/NoiseLab |
 | Base Noise | 128³ `RGBA8_UNORM` | Noise Volume CS | Cloud/Deep Shadow/NoiseLab |
 | Detail Noise | 32³ `RGBA8_UNORM` | Noise Volume CS | Cloud/NoiseLab |
 | Near Deep Cache | 512²×80 `R32_FLOAT` | Deep Shadow CS | Cloud/Scene |
@@ -129,11 +133,12 @@ C++ 구조체, HLSL cbuffer, 이 표는 함께 변경한다.
 | b4 | `EnvironmentParameters` / `EnvironmentCB` | 80B | sky/ground fill, AO, 다중 산란 |
 | b5 | `CloudDomainParameters` / `CloudDomainCB` | 32B | Planar bottom/thickness와 View/Light 유한 거리 |
 | b6 | `NoiseVolumeParameters` / `NoiseVolumeCB` | 96B | Texture3D 규격, 월드 크기와 조합 weight |
-| b7 | `CloudShapeParameters` / `CloudShapeCB` | 64B | Stratus/Cumulus 두께와 profile, lift, footprint |
+| b7 | `CloudShapeParameters` / `CloudShapeCB` | 48B | 타입별 vertical profile, upper mass, footprint |
 | b8 | `Stage12ShadowParameters` / `ShadowCB` | 160B | Balanced512 basis, cascade, surface shadow, debug |
 | b9 | `stage14::GpuParameters` / `Stage14CB` | 224B | 물리 대기, 태양, Tone, LUT 크기와 debug |
+| b10 | `WeatherColumnParameters` / `WeatherColumnCB` | 32B | 타입별 두께, 최대 lift, fixed/regional type selection |
 
-Cloud PS 핫 리로드 시 reflection으로 b1, b3~b9의 이름·크기·register를 검사한다. Deep Shadow, Scene, Tone, LUT shader도 각자 실제로 사용하는 부분 계약을 검사한다.
+Cloud PS 핫 리로드 시 reflection으로 b1, b3~b10의 이름·크기·register를 검사한다. Deep Shadow, Scene, Tone, LUT, Weather shader도 각자 실제로 사용하는 부분 계약을 검사한다.
 
 ## High 알고리즘
 

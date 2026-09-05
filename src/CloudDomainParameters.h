@@ -10,7 +10,10 @@
 
 struct alignas(16) CloudDomainParameters
 {
+    // 구름층 외곽 AABB가 시작하는 월드 Y(m). 올리면 구름층 전체가 함께 상승한다.
     float cloudBottomAltitude = 1500.0f;
+    // local thickness와 base lift를 모두 담는 최대 수직 공간(m). Weather column의
+    // max thickness + max lift + headroom보다 작으면 위쪽 구름이 잘린다.
     float cloudLayerThickness = 3000.0f;
     float maxViewTraceDistance = 50000.0f;
     float viewTraceFadeStartDistance = 40000.0f;

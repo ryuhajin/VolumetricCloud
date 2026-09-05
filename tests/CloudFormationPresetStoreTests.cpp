@@ -1,6 +1,7 @@
 #include "CloudFormationPresetStore.h"
 
 #include <chrono>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -96,7 +97,6 @@ int main()
                 CloudFormationType::Mixed, original),
             "resolve Mixed fixture");
     original.coverage = 0.63f;
-    original.windSpeedMetersPerSecond = 18.0f;
     std::string status;
     Require(SaveCloudFormationPresetAtomic(
                 customPath, custom, original, status),
@@ -105,11 +105,12 @@ int main()
             !std::filesystem::exists(customPath.wstring() + L".tmp"),
             "atomic save leaves only final file");
     const std::string savedText = ReadText(customPath);
-    Require(savedText.find("\"schemaVersion\": 1") != std::string::npos &&
+    Require(savedText.find("\"schemaVersion\": 2") != std::string::npos &&
+            savedText.find("windSpeedMetersPerSecond") == std::string::npos &&
             savedText.find("quality") == std::string::npos &&
             savedText.find("lighting") == std::string::npos &&
             savedText.find("debug") == std::string::npos,
-            "schema 1 stores formation only");
+            "schema 2 stores formation without session motion");
 
     CloudFormationSettings loaded;
     Require(LoadCloudFormationPreset(
@@ -117,6 +118,19 @@ int main()
             CloudFormationSettingsEqual(
                 SanitizeCloudFormationSettings(original), loaded),
             "Custom schema round-trip");
+
+    std::string schema1 = savedText;
+    Require(ReplaceJsonNumber(schema1, "schemaVersion", "1"),
+            "schema 1 migration fixture version");
+    const std::size_t selectionKey = schema1.find("\"cloudTypeSelection\"");
+    Require(selectionKey != std::string::npos,
+            "schema 1 migration fixture selection");
+    schema1.replace(selectionKey, std::strlen("\"cloudTypeSelection\""),
+                    "\"weatherCloudTypeMode\"");
+    WriteText(customPath, schema1);
+    Require(LoadCloudFormationPreset(customPath, custom, loaded, status) &&
+            loaded.typeSelection.mode == CloudTypeSelectionMode::RegionalBlend,
+            "schema 1 type mode migrates while legacy wind is ignored");
 
     std::string malformed = savedText;
     const std::size_t coverageKey = malformed.find("\"coverage\"");

@@ -35,7 +35,7 @@ Stage 10과 11은 구현·검증 이력만 남으며 실행 경로에는 포함�
 - [x] High 수치 고정과 OptimizationCB 삭제
 - [x] ShadowCB b8, Stage14CB b9로 register 압축
 - [x] Cirrus/Desert 제거, Stratus/Cumulus/Mixed와 세 scene concept 정리
-- [x] formation-only Custom schema 1과 schema 39 snapshot
+- [x] motion을 제외한 formation Custom schema 2와 schema 40 snapshot, schema 1 읽기 이관
 - [x] manifest 기반 영향 셰이더 원자적 핫 리로드
 - [x] Debug/Release 전체 자동 검증 및 1080p 성능 gate 기록 — 2026-09-01
 - [ ] 사용자 Release 1920×1080 렌더 검증

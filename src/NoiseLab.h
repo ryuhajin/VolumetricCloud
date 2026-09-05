@@ -18,6 +18,7 @@
 #include "AtmosphereParameters.h"
 #include "CloudDomainParameters.h"
 #include "CloudFormationPresetStore.h"
+#include "CloudMotionParameters.h"
 #include "CloudParameters.h"
 #include "CloudShapeParameters.h"
 #include "DeveloperUiSettings.h"
@@ -118,7 +119,9 @@ public:
         CloudParameters& cloud,
         CloudShapeParameters& shape,
         CloudDomainParameters& domain,
-        WeatherMapGeneratorSettings& weather,
+        WeatherMapDefinition& weather,
+        CloudTypeSelection& typeSelection,
+        CloudMotionParameters& motion,
         Stage12ShadowParameters& shadow,
         LightParameters& light,
         Stage6SunPreset& sunPreset,
@@ -138,6 +141,8 @@ public:
         std::uint64_t baseNoiseVolumeHash,
         std::uint64_t detailNoiseVolumeHash,
         double noiseVolumeGenerationMilliseconds,
+        double weatherMapGenerationMilliseconds,
+        std::uint64_t weatherMapGeneration,
         ID3D11ShaderResourceView* weatherMapSrv,
         const std::array<ID3D11ShaderResourceView*, 6>& atmosphereLutSrvs,
         const FrameTimingSnapshot& timing,
@@ -153,6 +158,7 @@ public:
                         ID3D11Buffer* cloudCb,
                         ID3D11Buffer* noiseVolumeCb,
                         ID3D11Buffer* cloudShapeCb,
+                        ID3D11Buffer* weatherColumnCb,
                         ID3D11ShaderResourceView* weatherMapSrv,
                         ID3D11ShaderResourceView* baseNoiseVolumeSrv,
                         ID3D11ShaderResourceView* detailNoiseVolumeSrv,
@@ -185,6 +191,7 @@ public:
     bool ExportSnapshot(
         const std::filesystem::path& root,
         const CloudFormationSettings& formation,
+        const CloudMotionParameters& motion,
         const Stage12ShadowParameters& shadow,
         const LightParameters& light,
         const EnvironmentParameters& environment,
@@ -229,7 +236,9 @@ private:
     void DrawFormationPanel(CloudParameters& cloud,
                             CloudShapeParameters& shape,
                             CloudDomainParameters& domain,
-                            WeatherMapGeneratorSettings& weather,
+                            WeatherMapDefinition& weather,
+                            CloudTypeSelection& typeSelection,
+                            CloudMotionParameters& motion,
                             const CloudFormationPresetTarget& target,
                             CloudFormationPresetSource source,
                             bool hasCustom,
@@ -238,10 +247,13 @@ private:
                             bool tearingSupported);
     void DrawWeatherMapPanel(CloudParameters& cloud,
                              WeatherMapGeneratorSettings& weather,
+                             const CloudTypeSelection& typeSelection,
                              NoiseVolumeParameters& noiseVolume,
                              std::uint64_t baseHash,
                              std::uint64_t detailHash,
                              double generationMilliseconds,
+                             double weatherGenerationMilliseconds,
+                             std::uint64_t weatherGeneration,
                              ID3D11ShaderResourceView* weatherMapSrv);
     void DrawLightingPanel(Stage12ShadowParameters& shadow,
                            LightParameters& light,
@@ -263,7 +275,9 @@ private:
         const std::string& shaderStatus,
         const std::string& shaderError,
         const shaderreload::ReloadReport& reloadReport);
-    void DrawProfilerOverlay(const FrameTimingSnapshot& timing);
+    void DrawProfilerOverlay(const FrameTimingSnapshot& timing,
+        double weatherGenerationMilliseconds,
+        std::uint64_t weatherGeneration);
     void DrawSlice(const char* label, NoiseSliceAxis axis,
                    SliceTarget& target);
     bool DrawPeriodicChannelFields(const char* label,
@@ -271,6 +285,7 @@ private:
     bool WriteMetadata(
         const std::filesystem::path& path,
         const CloudFormationSettings& formation,
+        const CloudMotionParameters& motion,
         const Stage12ShadowParameters& shadow,
         const LightParameters& light,
         const EnvironmentParameters& environment,

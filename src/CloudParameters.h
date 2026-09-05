@@ -85,7 +85,8 @@ struct alignas(16) CloudParameters
 
     std::int32_t debugMode = static_cast<std::int32_t>(CloudDebugMode::Composite);
     float coverage = 0.55f;
-    float windSpeed = 0.25f;
+    // ABI mirror only. Renderer가 세션 전역 CloudMotionParameters(기본 12m/s)로 패킹한다.
+    float windSpeed = 12.0f;
     float noiseOffset = 0.0f;
 
     DirectX::XMFLOAT3 windDirection = { 0.9701425f, 0.0f, 0.2425356f };

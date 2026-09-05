@@ -127,22 +127,25 @@ int main()
         stage13shape::AdvanceEffectiveTime(NAN, INFINITY, NAN, false) != 0.0)
         Fail("effective time must pause exactly and resume continuously");
 
+    WeatherColumnSettings invalidColumn;
+    invalidColumn.stratusMinimumThicknessMeters = NAN;
+    invalidColumn.stratusMaximumThicknessMeters = -100.0f;
+    invalidColumn.cumulusMinimumThicknessMeters = INFINITY;
+    invalidColumn.cumulusMaximumThicknessMeters = 100000.0f;
+    invalidColumn.maximumBaseLiftMeters = NAN;
+    const WeatherColumnSettings sanitizedColumn =
+        SanitizeWeatherColumnSettings(invalidColumn);
     CloudShapeParameters invalidShape;
-    invalidShape.stratusMinimumThicknessMeters = NAN;
-    invalidShape.stratusMaximumThicknessMeters = -100.0f;
-    invalidShape.cumulusMinimumThicknessMeters = INFINITY;
-    invalidShape.cumulusMaximumThicknessMeters = 100000.0f;
-    invalidShape.localBaseLiftMaxMeters = NAN;
     invalidShape.footprintCoverageInfluence = 2.0f;
     const CloudShapeParameters sanitizedShape =
         SanitizeCloudShapeParameters(invalidShape);
-    if (sanitizedShape.stratusMinimumThicknessMeters < 1.0f ||
-        sanitizedShape.stratusMaximumThicknessMeters <
-            sanitizedShape.stratusMinimumThicknessMeters ||
-        sanitizedShape.cumulusMaximumThicknessMeters > 6000.0f ||
-        sanitizedShape.localBaseLiftMaxMeters != 200.0f ||
+    if (sanitizedColumn.stratusMinimumThicknessMeters < 1.0f ||
+        sanitizedColumn.stratusMaximumThicknessMeters <
+            sanitizedColumn.stratusMinimumThicknessMeters ||
+        sanitizedColumn.cumulusMaximumThicknessMeters > 6000.0f ||
+        sanitizedColumn.maximumBaseLiftMeters != 200.0f ||
         sanitizedShape.footprintCoverageInfluence != 1.0f)
-        Fail("CloudShapeCB sanitize must preserve ordered finite bounds");
+        Fail("Weather column and CloudShapeCB sanitize must preserve bounds");
 
     const auto weakCumulus = stage13shape::EvaluatePhysicalColumnGeometry(
         1800.0, 0.0, 1.0, 300.0, 1500.0);

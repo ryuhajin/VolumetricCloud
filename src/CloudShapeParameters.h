@@ -1,5 +1,5 @@
 // ============================================================================
-//  CloudShapeParameters.h - 물리 컬럼 형상 전용 64바이트 b7 계약
+//  CloudShapeParameters.h - 타입별 수직 프로필 전용 48바이트 b7 계약
 // ============================================================================
 #pragma once
 
@@ -9,11 +9,7 @@
 
 struct alignas(16) CloudShapeParameters
 {
-    float stratusMinimumThicknessMeters = 1500.0f;
-    float stratusMaximumThicknessMeters = 2500.0f;
-    float cumulusMinimumThicknessMeters = 3000.0f;
-    float cumulusMaximumThicknessMeters = 4600.0f;
-
+    // bottom은 기저가 차오르는 높이, top은 상단 소멸 시작 높이(모두 local 0~1).
     float stratusBottomFadeEnd = 0.06f;
     float stratusTopFadeStart = 0.65f;
     float mixedBottomFadeEnd = 0.10f;
@@ -24,17 +20,17 @@ struct alignas(16) CloudShapeParameters
     float cumulusUpperMassBottom = 0.65f;
     float cumulusUpperMassStart = 0.08f;
 
+    // 적운 upper mass 구간이 넓어지면 둥근 상부 질량과 세로 발달이 강해진다.
     float cumulusUpperMassEnd = 0.70f;
-    float localBaseLiftMaxMeters = 200.0f;
+    // 타입별 footprint가 coverage에 미치는 비율. 높이면 수평 윤곽 차이가 커진다.
     float footprintCoverageInfluence = 0.40f;
     float padding0 = 0.0f;
+    float padding1 = 0.0f;
 };
 
-static_assert(sizeof(CloudShapeParameters) == 64,
+static_assert(sizeof(CloudShapeParameters) == 48,
               "CloudShapeParameters must match CloudShapeCB");
-static_assert(offsetof(CloudShapeParameters, localBaseLiftMaxMeters) == 52,
-              "CloudShapeParameters local base lift ABI changed");
-static_assert(offsetof(CloudShapeParameters, footprintCoverageInfluence) == 56,
+static_assert(offsetof(CloudShapeParameters, footprintCoverageInfluence) == 36,
               "CloudShapeParameters footprint influence ABI changed");
 
 inline CloudShapeParameters SanitizeCloudShapeParameters(
@@ -45,19 +41,6 @@ inline CloudShapeParameters SanitizeCloudShapeParameters(
     {
         return std::isfinite(input) ? input : fallback;
     };
-    result.stratusMinimumThicknessMeters = std::clamp(
-        finiteOr(result.stratusMinimumThicknessMeters, 1500.0f),
-        1.0f, 6000.0f);
-    result.stratusMaximumThicknessMeters = std::clamp(
-        finiteOr(result.stratusMaximumThicknessMeters, 2500.0f),
-        result.stratusMinimumThicknessMeters, 6000.0f);
-    result.cumulusMinimumThicknessMeters = std::clamp(
-        finiteOr(result.cumulusMinimumThicknessMeters, 3000.0f),
-        result.stratusMinimumThicknessMeters, 6000.0f);
-    result.cumulusMaximumThicknessMeters = std::clamp(
-        finiteOr(result.cumulusMaximumThicknessMeters, 4600.0f),
-        std::max(result.stratusMaximumThicknessMeters,
-                 result.cumulusMinimumThicknessMeters), 6000.0f);
     result.stratusBottomFadeEnd = std::clamp(
         finiteOr(result.stratusBottomFadeEnd, 0.06f), 0.01f, 0.99f);
     result.stratusTopFadeStart = std::clamp(
@@ -80,10 +63,9 @@ inline CloudShapeParameters SanitizeCloudShapeParameters(
     result.cumulusUpperMassEnd = std::clamp(
         finiteOr(result.cumulusUpperMassEnd, 0.70f),
         result.cumulusUpperMassStart + 0.01f, 1.0f);
-    result.localBaseLiftMaxMeters = std::clamp(
-        finiteOr(result.localBaseLiftMaxMeters, 200.0f), 0.0f, 2000.0f);
     result.footprintCoverageInfluence = std::clamp(
         finiteOr(result.footprintCoverageInfluence, 0.40f), 0.0f, 1.0f);
     result.padding0 = 0.0f;
+    result.padding1 = 0.0f;
     return result;
 }

@@ -226,28 +226,21 @@ int main()
         HashWeatherMap(uniformA) != HashWeatherMap(uniformB))
         return Fail("weather presets must be deterministic 256x256 RGBA maps");
 
-    WeatherMapGeneratorSettings globalStratusSettings = defaults;
-    globalStratusSettings.cloudTypeMode = CloudTypeMode::Stratus;
-    const WeatherMapData perlinStratus = BuildWeatherMap(
-        Stage5WeatherPreset::PeriodicPerlin, globalStratusSettings);
-    WeatherMapGeneratorSettings changedFixedStratus = globalStratusSettings;
-    ++changedFixedStratus.cloudType.seed;
-    if (HashWeatherMap(BuildWeatherMap(
-            Stage5WeatherPreset::PeriodicPerlin, changedFixedStratus)) !=
-        HashWeatherMap(perlinStratus))
-    {
-        return Fail(
-            "fixed Cloud Type source must ignore disabled G generator fields");
-    }
-    for (std::uint32_t y = 0; y < perlinA.height; ++y)
-        for (std::uint32_t x = 0; x < perlinA.width; ++x)
-        {
-            if (Channel(perlinStratus, x, y, 0) != Channel(perlinA, x, y, 0) ||
-                Channel(perlinStratus, x, y, 2) != Channel(perlinA, x, y, 2) ||
-                Channel(perlinStratus, x, y, 3) != Channel(perlinA, x, y, 3) ||
-                !NearlyEqual(Channel(perlinStratus, x, y, 1), 0.0f))
-                return Fail("global Cloud Type mode must replace only Weather G for Open World maps");
-        }
+    CloudTypeSelection fixedStratus{ CloudTypeSelectionMode::FixedStratus };
+    CloudTypeSelection fixedMixed{ CloudTypeSelectionMode::FixedMixed };
+    CloudTypeSelection fixedCumulus{ CloudTypeSelectionMode::FixedCumulus };
+    CloudTypeSelection regional{ CloudTypeSelectionMode::RegionalBlend };
+    if (!NearlyEqual(ResolveEffectiveCloudType(fixedStratus, 0.83f), 0.0f) ||
+        !NearlyEqual(ResolveEffectiveCloudType(fixedMixed, 0.83f), 0.5f) ||
+        !NearlyEqual(ResolveEffectiveCloudType(fixedCumulus, 0.17f), 1.0f) ||
+        !NearlyEqual(ResolveEffectiveCloudType(regional, 0.37f), 0.37f))
+        return Fail("effective type selection must resolve fixed and regional modes");
+
+    WeatherMapGeneratorSettings changedTypeGenerator = defaults;
+    ++changedTypeGenerator.cloudType.seed;
+    if (HashWeatherMap(BuildWeatherMap(Stage5WeatherPreset::PeriodicPerlin,
+            changedTypeGenerator)) == HashWeatherMap(perlinA))
+        return Fail("stored regional G generator must remain active in every selection");
 
     if (!NearlyEqual(Channel(uniformA, 0, 0, 0), 1.0f) ||
         !NearlyEqual(stage5::DecodeCanonicalWeatherChannel(

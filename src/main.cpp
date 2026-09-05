@@ -167,11 +167,31 @@ int RunFormationSmoke(Renderer& renderer, Camera& camera)
     renderer.SetVSyncEnabled(false);
     float timeSeconds = 31.0f;
     bool passed = true;
+    bool parityPassed = true;
+    bool motionPassed = true;
+    const CloudMotionParameters appDefault = SanitizeCloudMotionParameters({});
+    const bool defaultMotion =
+        std::abs(renderer.CloudMotion().speedMetersPerSecond - 12.0f) < 1.0e-6f &&
+        std::abs(renderer.CloudMotion().direction.x - appDefault.direction.x) < 1.0e-6f &&
+        std::abs(renderer.CloudMotion().direction.z - appDefault.direction.z) < 1.0e-6f;
+    CloudMotionParameters expectedMotion;
+    expectedMotion.direction = { 0.6f, 0.0f, 0.8f };
+    expectedMotion.speedMetersPerSecond = 77.0f;
+    expectedMotion = SanitizeCloudMotionParameters(expectedMotion);
+    renderer.SetCloudMotionForValidation(expectedMotion);
+    const auto motionMatches = [&]()
+    {
+        const CloudMotionParameters& actual = renderer.CloudMotion();
+        return std::abs(actual.speedMetersPerSecond - expectedMotion.speedMetersPerSecond) < 1.0e-6f &&
+            std::abs(actual.direction.x - expectedMotion.direction.x) < 1.0e-6f &&
+            std::abs(actual.direction.z - expectedMotion.direction.z) < 1.0e-6f;
+    };
     for (std::uint32_t index = 0; index < 3u; ++index)
     {
         const CloudFormationPresetTarget target = TypeFormationTarget(
             static_cast<CloudFormationType>(index));
         passed = renderer.ApplyCloudType(target) && passed;
+        motionPassed = motionMatches() && motionPassed;
         const CloudFormationSettings formation =
             renderer.CurrentCloudFormation();
         PreparedCloudFormation prepared;
@@ -179,7 +199,26 @@ int RunFormationSmoke(Renderer& renderer, Camera& camera)
         passed = PrepareCloudFormationSettings(
             formation, prepared, status, 200.0f) && passed;
         RenderFrames(renderer, camera, 2u, timeSeconds);
+        parityPassed = renderer.ValidateWeatherMapCpuParity() && parityPassed;
     }
+
+    const std::uint64_t fixedHash = renderer.WeatherMapHash();
+    const std::uint64_t fixedGeneration = renderer.WeatherGenerationCount();
+    CloudFormationSettings selectionOnly = renderer.CurrentCloudFormation();
+    selectionOnly.typeSelection.mode = CloudTypeSelectionMode::FixedStratus;
+    const bool selectionSkip =
+        renderer.ApplyCloudFormationSettingsForValidation(selectionOnly) &&
+        renderer.WeatherMapHash() == fixedHash &&
+        renderer.WeatherGenerationCount() == fixedGeneration;
+    CloudFormationSettings generatorChange = renderer.CurrentCloudFormation();
+    ++generatorChange.weather.generator.cloudType.seed;
+    const bool generatorOnce =
+        renderer.ApplyCloudFormationSettingsForValidation(generatorChange) &&
+        renderer.WeatherGenerationCount() == fixedGeneration + 1u &&
+        renderer.WeatherMapHash() != fixedHash;
+    const std::uint64_t generatorCountAfter = renderer.WeatherGenerationCount();
+    const std::uint64_t generatorHashAfter = renderer.WeatherMapHash();
+    passed = parityPassed && motionPassed && selectionSkip && generatorOnce && passed;
 
     const std::filesystem::path customRoot =
         std::filesystem::temp_directory_path() /
@@ -192,6 +231,7 @@ int RunFormationSmoke(Renderer& renderer, Camera& camera)
     passed = !fileError && renderer.SaveCustomFormation() && passed;
     passed = renderer.ApplySceneConcept(
         Stage15ConceptPreset::SnowOvercast) && passed;
+    motionPassed = motionMatches() && motionPassed;
     const LightParameters sceneLight = renderer.LightSettings();
     const EnvironmentParameters sceneEnvironment =
         renderer.EnvironmentSettings();
@@ -216,10 +256,21 @@ int RunFormationSmoke(Renderer& renderer, Camera& camera)
             renderer.ShadowSettings().surfaceShadowStrength &&
         sceneShadow.surfaceAmbientFloor ==
             renderer.ShadowSettings().surfaceAmbientFloor && passed;
+    motionPassed = motionMatches() && motionPassed;
     std::filesystem::remove_all(customRoot, fileError);
     passed = !fileError && passed;
-    WriteDiagnosticLine(std::string("FORMATION_SMOKE=") +
-                        (passed ? "PASS" : "FAIL"));
+    passed = defaultMotion && motionPassed && passed;
+    std::ostringstream formationLine;
+    formationLine << "FORMATION_SMOKE=" << (passed ? "PASS" : "FAIL")
+        << " parity=" << (parityPassed ? "pass" : "fail")
+        << " motion=" << (motionPassed ? "pass" : "fail")
+        << " selection_skip=" << (selectionSkip ? "pass" : "fail")
+        << " generator_once=" << (generatorOnce ? "pass" : "fail")
+        << " cpu_gpu_mismatch=" << renderer.WeatherMapCpuMismatchCount()
+        << "[" << renderer.WeatherMapCpuParitySummary() << "]"
+        << " generation=" << fixedGeneration << "->" << generatorCountAfter
+        << " hash_changed=" << (fixedHash != generatorHashAfter ? "yes" : "no");
+    WriteDiagnosticLine(formationLine.str());
     return passed ? 0 : 1;
 }
 
@@ -309,8 +360,8 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
         metadata.assign(std::istreambuf_iterator<char>(input),
                         std::istreambuf_iterator<char>());
     }
-    const bool schema39 = exported && !fileError &&
-        metadata.find("\"schemaVersion\": 39") != std::string::npos &&
+    const bool schema40 = exported && !fileError &&
+        metadata.find("\"schemaVersion\": 40") != std::string::npos &&
         metadata.find("HighFullResolutionDirect") != std::string::npos &&
         metadata.find("\"weather\"") != std::string::npos &&
         metadata.find("\"shape\"") != std::string::npos &&
@@ -320,7 +371,7 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
         metadata.find(std::string("upsam") + "pling") == std::string::npos;
     fileError.clear();
     std::filesystem::remove_all(snapshotRoot, fileError);
-    passed = schema39 && !fileError && passed;
+    passed = schema40 && !fileError && passed;
     std::ostringstream line;
     line << "NOISE_LAB_SMOKE=" << (passed ? "PASS" : "FAIL")
          << " default_vsync=" << (defaultVSyncEnabled ? "on" : "off")
@@ -508,6 +559,88 @@ int RunToneReloadSmoke(Renderer& renderer)
     return passed ? 0 : 1;
 }
 
+int RunWeatherReloadSmoke(Renderer& renderer)
+{
+    const std::filesystem::path root = renderer.ShaderDirectoryForValidation();
+    const std::filesystem::path shader = root / "WeatherMapCompute.hlsl";
+    if (!IsMarkedReloadSmokeRoot(root))
+    {
+        WriteDiagnosticLine("HOT_RELOAD_WEATHER=FAIL unmarked shader override directory");
+        return 1;
+    }
+
+    std::string original;
+    std::error_code timeError;
+    const auto originalTime = std::filesystem::last_write_time(shader, timeError);
+    if (timeError || !ReadTextFile(shader, original))
+    {
+        WriteDiagnosticLine("HOT_RELOAD_WEATHER=FAIL unable to read shader");
+        return 1;
+    }
+    std::string changed = original;
+    if (!ReplaceExactlyOnce(changed,
+            "#define VCLOUD_WEATHER_TEST_BIAS 0.0",
+            "#define VCLOUD_WEATHER_TEST_BIAS 0.03125"))
+    {
+        WriteDiagnosticLine("HOT_RELOAD_WEATHER=FAIL test hook missing");
+        return 1;
+    }
+
+    bool passed = true;
+    const std::uint64_t initialShaderGeneration = renderer.ShaderGeneration();
+    const std::uint64_t initialObjects = renderer.ShaderObjectIdentityHash();
+    const std::uint64_t initialResources = renderer.GpuResourceIdentityHash();
+    const std::uint64_t initialWeatherGeneration = renderer.WeatherGenerationCount();
+    const std::uint64_t initialWeatherHash = renderer.WeatherMapHash();
+    const bool changedWritten = WriteVersionedText(
+        shader, changed, originalTime + std::chrono::seconds(1));
+    const bool changedReloaded = changedWritten && renderer.ForceShaderReloadScan();
+    const shaderreload::ReloadReport changedReport = renderer.LastShaderReloadReport();
+    WriteReloadReport("[HotReload][WeatherChanged]", changedReport);
+    passed = changedReloaded && changedReport.succeeded &&
+        ReloadReportMatches(changedReport, "weathermapcompute.hlsl", 1u) &&
+        renderer.ShaderGeneration() == initialShaderGeneration + 1u &&
+        renderer.ShaderObjectIdentityHash() != initialObjects &&
+        renderer.GpuResourceIdentityHash() == initialResources &&
+        renderer.WeatherGenerationCount() == initialWeatherGeneration + 1u &&
+        renderer.WeatherMapHash() != initialWeatherHash && passed;
+
+    const std::uint64_t acceptedShaderGeneration = renderer.ShaderGeneration();
+    const std::uint64_t acceptedObjects = renderer.ShaderObjectIdentityHash();
+    const std::uint64_t acceptedWeatherGeneration = renderer.WeatherGenerationCount();
+    const std::uint64_t acceptedWeatherHash = renderer.WeatherMapHash();
+    const std::string invalid = changed + "\n#error VCLOUD_FORCED_COMPILE_ERROR\n";
+    const bool invalidWritten = WriteVersionedText(
+        shader, invalid, originalTime + std::chrono::seconds(2));
+    const bool invalidReloaded = invalidWritten && renderer.ForceShaderReloadScan();
+    const shaderreload::ReloadReport invalidReport = renderer.LastShaderReloadReport();
+    WriteReloadReport("[HotReload][WeatherInvalid]", invalidReport);
+    passed = invalidWritten && !invalidReloaded && !invalidReport.succeeded &&
+        ReloadReportMatches(invalidReport, "weathermapcompute.hlsl", 1u) &&
+        renderer.ShaderGeneration() == acceptedShaderGeneration &&
+        renderer.ShaderObjectIdentityHash() == acceptedObjects &&
+        renderer.GpuResourceIdentityHash() == initialResources &&
+        renderer.WeatherGenerationCount() == acceptedWeatherGeneration &&
+        renderer.WeatherMapHash() == acceptedWeatherHash && passed;
+
+    const bool originalWritten = WriteVersionedText(
+        shader, original, originalTime + std::chrono::seconds(3));
+    const bool originalReloaded = originalWritten && renderer.ForceShaderReloadScan();
+    const shaderreload::ReloadReport restoreReport = renderer.LastShaderReloadReport();
+    WriteReloadReport("[HotReload][WeatherRestored]", restoreReport);
+    passed = originalReloaded && restoreReport.succeeded &&
+        ReloadReportMatches(restoreReport, "weathermapcompute.hlsl", 1u) &&
+        restoreReport.compileCount == 0u && restoreReport.cacheHits == 1u &&
+        renderer.ShaderGeneration() == acceptedShaderGeneration + 1u &&
+        renderer.GpuResourceIdentityHash() == initialResources &&
+        renderer.WeatherGenerationCount() == acceptedWeatherGeneration + 1u &&
+        renderer.WeatherMapHash() == initialWeatherHash && passed;
+
+    WriteDiagnosticLine(std::string("HOT_RELOAD_WEATHER=") +
+                        (passed ? "PASS" : "FAIL"));
+    return passed ? 0 : 1;
+}
+
 int RunNoiseDependencyReloadSmoke(Renderer& renderer)
 {
     const std::filesystem::path root =
@@ -682,11 +815,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         commandLine, L"--hot-reload-smoke-test");
     const bool noiseReloadSmoke = HasArgument(
         commandLine, L"--hot-reload-dependency-smoke-test");
+    const bool weatherReloadSmoke = HasArgument(
+        commandLine, L"--weather-hot-reload-smoke-test");
     const bool performanceTest = HasArgument(
         commandLine, L"--high-performance-test");
     const bool automated = highSmoke || formationSmoke || atmosphereSmoke ||
         noiseLabSmoke || shaderCacheSmoke || toneReloadSmoke ||
-        noiseReloadSmoke || performanceTest;
+        noiseReloadSmoke || weatherReloadSmoke || performanceTest;
 
     const int initialWidth = performanceTest ? 1920 :
         (highSmoke ? 320 : (automated ? 640 : 1280));
@@ -709,7 +844,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     ApplyCameraPreset(camera, Stage13CameraPresetId::HeroDepth);
 
     Renderer renderer;
-    const bool needsNoiseVolumes = !toneReloadSmoke && !noiseReloadSmoke;
+    const bool needsNoiseVolumes = !toneReloadSmoke && !noiseReloadSmoke &&
+        !weatherReloadSmoke;
     if (!renderer.Init(
             window.GetHandle(), window.GetWidth(), window.GetHeight(),
             needsNoiseVolumes,
@@ -747,6 +883,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         result = RunToneReloadSmoke(renderer);
     else if (noiseReloadSmoke)
         result = RunNoiseDependencyReloadSmoke(renderer);
+    else if (weatherReloadSmoke)
+        result = RunWeatherReloadSmoke(renderer);
     else if (performanceTest)
         result = RunPerformanceTest(renderer, camera);
     else

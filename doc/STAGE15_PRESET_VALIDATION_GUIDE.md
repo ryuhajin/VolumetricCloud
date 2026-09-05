@@ -17,20 +17,20 @@ cmake --build build --config Release
 |---|---|---|---|---|---|
 | Urban / Meadow / Snow | `F4` 상단 | formation + 태양·환경광·대기·지면 | 세 최종 scene transaction | 한 번에 한 장면으로 전환 | 이전 장면 색/구름이 섞임, 검정 frame |
 | Stratus / Cumulus / Mixed / Custom | `F1` 상단 | formation만 | 타입 높이와 profile, Custom 복원 | 조명·대기·지면은 그대로 | F3 값도 바뀜, 상하단 칼 절단 |
-| Save Custom | `F1` | 현재 formation만 | schema 1 범위 | 저장 뒤 Custom 버튼 활성 | 파일 손상, Custom 비활성 |
-| Cloud movement speed | `F1`, 구름 파라미터 하단 | 경과 시간에 곱하는 0~400m/s 속도 | 공통 이동 시작·정지 | 0에서 정지, 100~400에서 Weather/Base/Detail과 그림자가 함께 뚜렷하게 이동 | 높은 값에서도 정지, 일부 구조만 이동 |
+| Save Custom | `F1` | motion을 제외한 formation과 타입 선택 | schema 2 범위 | 저장 뒤 Custom 버튼 활성 | 파일 손상, Custom 비활성 |
+| Cloud movement speed | `F1 > Cloud Motion` | 세션 전역 0~400m/s 속도 | 공통 이동 시작·정지와 타입 전환 보존 | 0에서 정지, 100~400에서 Weather/Base/Detail과 그림자가 함께 뚜렷하게 이동 | 높은 값에서도 정지, 일부 구조만 이동, 타입 전환 때 초기화 |
 | VSync | `F1 > Presentation` | swap-chain Present 방식 | 동기/즉시 표시 상태 | 기본 On, 지원 환경의 Off는 `immediate + tearing allowed` 표시 | 기본 Off, Off인데 interval 1, scene/preset 변경 |
 | Preview field | `F1 > Preview` combo | 세 preview의 출력 field | 진단 선택성과 ID | 목록에서 즉시 선택 | slider로 한 칸씩 이동, ID 경고 |
-| Weather Map RGBA | `F2 > Weather Generator` 최상단 | CPU 생성 R/G/B/A | 실제 texture와 채널 확인 | 편집 직후 image/hash 변경 | image가 하단에 묻힘, 이전 map 유지 |
-| Cloud type source/G | 같은 영역 | F1이 정한 고정 타입 또는 생성 G | G 채널 소유권 | F1 Mixed/Weather Map G에서만 G 편집 활성 | 고정 모드인데 무효 slider 활성 |
-| Wind direction | `F2` | Weather/Base/Detail 공통 수평 방향 | 동일한 world-space 이동 | F1 속도로 세 구조가 같은 방향으로 이동 | Weather만 미끄러짐, 별도 offset처럼 동작 |
+| Weather Map RGBA | `F2 > Weather Generator` 최상단 | GPU 생성 R/G/B/A | 실제 texture와 채널 확인 | 편집 직후 generation/image/hash 변경 | image가 하단에 묻힘, 이전 map 유지 |
+| Stored Regional Type G / Effective Cloud Type | `F2` raw G와 `F1/F4` effective 진단 | 항상 저장되는 지역 G와 실제 렌더 타입 | 생성 데이터와 선택 정책 소유권 | Fixed에서도 G 편집·preview 가능, Effective는 Stratus 0/Mixed 0.5/Cumulus 1/Regional G | Fixed 전환으로 G/hash/generation까지 바뀜 |
+| Wind direction | `F1 > Cloud Motion` | 세션 전역 Weather/Base/Detail 공통 XZ 방향 | 동일한 world-space 이동과 타입 전환 보존 | 속도와 함께 세 구조가 같은 방향으로 이동 | Weather만 미끄러짐, 별도 offset처럼 동작, 타입 전환 때 초기화 |
 | `F5`~`F8` | 키보드 | 고정 카메라 | 위/내부/수평/원경 교차 | 즉시 안정된 현재 frame | 과거 시점 잔상, 검정/타일 |
 | Density | `F4 > Cloud view` | 최종 density | NaN과 domain 절단 | 덩어리 내부가 연속 | 사각 외곽, 자홍/노랑 오류색 |
 | Transmittance | 같은 combo | View T | 적분과 early exit | 빈 하늘 1, 두꺼운 구름은 낮음 | 화면 전체 0/1, 불연속 띠 |
 | Cloud Depth | 같은 combo | opacity-weighted 거리 | scene/domain 교차 | 구름 거리 변화가 연속 | 건물 뒤 구름, 고정 거리 판 |
 | Near/Far Cache | 같은 combo | cache optical depth | Deep Cache 생성/lookup | 구조가 연속, cascade 전환 완만 | 빈 cache, 타일, 경계 seam |
 | Atmosphere LUT | `F4 > Atmosphere view` | LUT/air 결과 | Stage 14 유지 | 유한·연속적인 LUT | 자홍/빨강/노랑 오류색 |
-| Performance profiler | 화면 좌측 상단 독립 창 | FPS, Time, CPU/GPU와 GPU 구간 | 삭제 경로·frame 비용 확인 | F1~F4와 무관하게 계속 표시 | F4를 닫으면 사라짐, 폐기 항목 존재 |
+| Performance profiler | 화면 좌측 상단 독립 창 | FPS, Time, CPU/GPU와 Weather Map/Atmosphere LUT 등 GPU 구간 | 생성 pass와 frame 비용 분리 | Weather 편집은 Weather만, 대기 편집은 Atmosphere LUT만 상승 | 두 생성 비용이 섞이거나 idle 0ms로 마지막 Weather 비용이 사라짐 |
 
 F5~F8의 정확한 이름은 F4 카메라 표시에서 확인한다. 각 카메라는 카메라가 layer 아래, 지평선 쪽, layer 내부, layer 위에 있는 경우를 포함한다.
 
@@ -125,7 +125,7 @@ Urban의 태양이 보이는 시점에서 시작한다.
 좌측 상단 Performance 창의 GPU 구간에는 다음 항목만 있어야 한다.
 
 ```text
-Atmosphere / Shadow / Opaque / Cloud / Tone / Frame
+Weather Map / Atmosphere LUT / Shadow / Opaque / Cloud / Tone / Frame
 ```
 
 Release 1920×1080 자동 gate 목표는 Cloud p95 10ms 이하, Frame p95 16.67ms 이하다. 화면을 보는 동안 일시적인 LUT/cache 재생성 frame과 steady-state를 구분한다.
@@ -134,16 +134,16 @@ Release 1920×1080 자동 gate 목표는 Cloud p95 10ms 이하, Frame p95 16.67m
 
 | 날짜 | 해상도/GPU | 콘셉트·카메라 | 관찰 | 판정 |
 |---|---|---|---|---|
-| - | - | - | - | 미검증 |
+| 2026-09-05 | Release 1920×1080 / 사용자 환경 | Urban/Meadow/Snow × F5~F8, Cloud Type·Motion·Weather·대기·성능 UI | 최종 렌더 결과와 UI 동작 확인 완료 | 승인 |
 
-- [ ] Urban/Meadow/Snow × F5~F8
-- [ ] Stratus/Cumulus/Mixed 절단·네모 윤곽 없음
-- [ ] 이동·바람에서 ghost 없음, shimmer 허용 가능
-- [ ] 주 산란·Deep Cache 그림자·대기 원근·Tone 유지
-- [ ] Custom Load가 formation만 복원
-- [ ] F1 X 닫기 뒤 F1로 재개방, Preview combo 선택 정상
-- [ ] F1 Animate/Time으로 공통 구름 이동 시작·정지·scrub 정상
-- [ ] F1 VSync 기본 On, 지원 PC의 Off에서 `immediate + tearing allowed`, On/Off에서 formation과 shader generation 불변
-- [ ] F2 RGBA 최상단·Cloud Type G 소스·공통 advection 동작 정상
-- [ ] 좌측 상단 Performance 창과 F4 Cloud view ID 경고 없음
-- [ ] 사용자가 최종 승인
+- [x] Urban/Meadow/Snow × F5~F8
+- [x] Stratus/Cumulus/Mixed 절단·네모 윤곽 없음
+- [x] 이동·바람에서 ghost 없음, shimmer 허용 가능
+- [x] 주 산란·Deep Cache 그림자·대기 원근·Tone 유지
+- [x] Custom Load가 formation만 복원
+- [x] F1 X 닫기 뒤 F1로 재개방, Preview combo 선택 정상
+- [x] F1 Cloud Motion의 speed 0/100/400m/s와 XZ direction으로 공통 이동·정지 정상; 타입/콘셉트/Custom 전환에도 값 유지
+- [x] F1 VSync 기본 On, 지원 PC의 Off에서 `immediate + tearing allowed`, On/Off에서 formation과 shader generation 불변
+- [x] F2 RGBA 최상단의 Stored Regional Type G는 Fixed에서도 유지되고 F1/F4 Effective Type만 선택 정책에 따라 변경
+- [x] 좌측 상단 Performance의 Weather Map/Atmosphere LUT 분리와 F4 Cloud view ID 경고 없음
+- [x] 사용자가 최종 승인

@@ -2,6 +2,10 @@
 
 현재 셰이더는 meter 단위 Planar layer 하나를 Full resolution에서 추적한다. Stage 1의 AABB 수학은 CPU 학습 테스트로만 남고 런타임 선택지가 아니다.
 
+패스와 실제 심볼을 먼저 따라가려면 [렌더링 파이프라인 가이드](RENDERING_PIPELINE_GUIDE.md),
+수식에 들어가는 b0~b9 필드는 [상수버퍼 참조](CBUFFER_REFERENCE.md), 값을 직접 바꿀 때는
+[구름·빛 튜닝 가이드](CLOUD_LIGHTING_TUNING_GUIDE.md)를 함께 본다.
+
 ## 좌표와 단위
 
 | 값 | 단위 |

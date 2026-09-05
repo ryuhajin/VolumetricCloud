@@ -16,7 +16,7 @@ cbuffer CloudCB : register(b1)
     float extinctionCoefficient;// CPU extinctionCoefficient. meter당 빛 소멸 강도.
     int debugMode;              // CPU CloudDebugMode. 최종 합성 또는 중간값 출력 선택.
     float coverage;             // CPU coverage. noise에서 구름을 남기는 비율(0~1).
-    float windSpeed;            // CPU windSpeed. 월드 공간 이동 속도(m/s).
+    float windSpeed;            // 세션 전역 CloudMotion에서 매 frame 패킹한 이동 속도(m/s).
     float noiseOffset;          // CPU noiseOffset. 세 축에 더하는 수동 noise 좌표 이동(cycle).
     float3 windDirection;       // CPU windDirection. 정규화 전 월드 공간 바람 방향.
     float detailErosionStrength;// CPU detailErosionStrength. Base에서 뺄 최대 밀도(0~1 권장).

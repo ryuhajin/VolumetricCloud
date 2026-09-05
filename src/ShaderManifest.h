@@ -23,6 +23,7 @@ enum class ProgramId : std::uint32_t
     SceneVs,
     ScenePs,
     ToneMapPs,
+    WeatherMapCs,
     NoiseBaseCs,
     NoiseDetailCs,
     DeepShadowCs,
@@ -46,6 +47,7 @@ enum Invalidation : std::uint32_t
     InvalidateAtmosphereLuts = 1u << 0u,
     InvalidateDeepShadow = 1u << 1u,
     InvalidateNoiseVolumes = 1u << 2u,
+    InvalidateWeatherMap = 1u << 3u,
 };
 
 struct Define
@@ -302,6 +304,8 @@ inline std::vector<Program> MakeHighManifest(bool includeNoiseVolume)
           "ps_5_0", Type::PixelShader },
         { Id::ToneMapPs, "Tone Map PS", "Stage14ToneMap.hlsl", "main",
           "ps_5_0", Type::PixelShader },
+        { Id::WeatherMapCs, "Weather Map CS", "WeatherMapCompute.hlsl", "main",
+          "cs_5_0", Type::ComputeShader, {}, {}, InvalidateWeatherMap },
         { Id::DeepShadowCs, "Deep Shadow CS", "CloudDeepShadow.hlsl", "main",
           "cs_5_0", Type::ComputeShader, {}, {}, InvalidateDeepShadow },
         { Id::AtmosphereTransmittanceCs, "Atmosphere Transmittance CS",

@@ -38,13 +38,12 @@ CloudFormationSettings BasePhysicalFormation()
     result.extinctionPerMeter = 0.00035f;
     result.detailErosion = 0.18f;
     result.weatherPreset = Stage5WeatherPreset::PeriodicPerlin;
-    result.weather = WeatherMapGeneratorSettings{};
-    result.weatherWorldSizeMeters = 64000.0f;
+    result.weather = WeatherMapDefinition{};
     result.shape = CloudShapeParameters{};
-    result.shape.stratusMinimumThicknessMeters = 1500.0f;
-    result.shape.stratusMaximumThicknessMeters = 2500.0f;
-    result.shape.cumulusMinimumThicknessMeters = 3000.0f;
-    result.shape.cumulusMaximumThicknessMeters = 6000.0f;
+    result.weather.column.stratusMinimumThicknessMeters = 1500.0f;
+    result.weather.column.stratusMaximumThicknessMeters = 2500.0f;
+    result.weather.column.cumulusMinimumThicknessMeters = 3000.0f;
+    result.weather.column.cumulusMaximumThicknessMeters = 6000.0f;
     result.shape.stratusBottomFadeEnd = 0.06f;
     result.shape.stratusTopFadeStart = 0.65f;
     result.shape.mixedBottomFadeEnd = 0.10f;
@@ -54,7 +53,7 @@ CloudFormationSettings BasePhysicalFormation()
     result.shape.cumulusUpperMassBottom = 0.65f;
     result.shape.cumulusUpperMassStart = 0.08f;
     result.shape.cumulusUpperMassEnd = 0.70f;
-    result.shape.localBaseLiftMaxMeters = 0.0f;
+    result.weather.column.maximumBaseLiftMeters = 0.0f;
     result.shape.footprintCoverageInfluence = 0.20f;
     result.domainBottomMeters = 1800.0f;
     result.domainThicknessMeters = 3700.0f;
@@ -64,8 +63,6 @@ CloudFormationSettings BasePhysicalFormation()
     result.baseNoiseWorldSizeMeters = 12000.0f;
     result.baseNoiseVerticalWorldSizeMeters = 12000.0f;
     result.detailNoiseWorldSizeMeters = 2000.0f;
-    result.windDirection = { 0.9701425f, 0.0f, 0.2425356f };
-    result.windSpeedMetersPerSecond = 12.0f;
     return result;
 }
 
@@ -195,7 +192,8 @@ bool ParseChannel(const std::string& text, const char* prefix,
         ParseFloat(text, (stem + "Contrast").c_str(), value.contrast);
 }
 
-bool ParseFormation(const std::string& text, CloudFormationSettings& value)
+bool ParseFormation(const std::string& text, std::uint32_t schemaVersion,
+                    CloudFormationSettings& value)
 {
     std::uint32_t weatherPreset = 0;
     std::uint32_t cloudTypeMode = 0;
@@ -204,30 +202,29 @@ bool ParseFormation(const std::string& text, CloudFormationSettings& value)
         !ParseFloat(text, "extinctionPerMeter", value.extinctionPerMeter) ||
         !ParseFloat(text, "detailErosion", value.detailErosion) ||
         !ParseUnsigned(text, "weatherPreset", weatherPreset) ||
-        !ParseChannel(text, "weatherCoverage", value.weather.coverage) ||
-        !ParseChannel(text, "weatherCloudType", value.weather.cloudType) ||
-        !ParseChannel(text, "weatherDensity", value.weather.density) ||
+        !ParseChannel(text, "weatherCoverage", value.weather.generator.coverage) ||
+        !ParseChannel(text, "weatherCloudType", value.weather.generator.cloudType) ||
+        !ParseChannel(text, "weatherDensity", value.weather.generator.density) ||
         !ParseChannel(text, "weatherLocalThickness",
-                      value.weather.localThickness) ||
+                      value.weather.generator.localThickness) ||
         !ParseFloat(text, "weatherCoverageThreshold",
-                    value.weather.coverageThreshold) ||
+                    value.weather.generator.coverageThreshold) ||
         !ParseFloat(text, "weatherCoverageSoftness",
-                    value.weather.coverageSoftness) ||
+                    value.weather.generator.coverageSoftness) ||
         !ParseFloat(text, "weatherDensityCoverageInfluence",
-                    value.weather.densityCoverageInfluence) ||
+                    value.weather.generator.densityCoverageInfluence) ||
         !ParseFloat(text, "weatherThicknessCoverageInfluence",
-                    value.weather.thicknessCoverageInfluence) ||
-        !ParseUnsigned(text, "weatherCloudTypeMode", cloudTypeMode) ||
+                    value.weather.generator.thicknessCoverageInfluence) ||
         !ParseFloat(text, "weatherWorldSizeMeters",
-                    value.weatherWorldSizeMeters) ||
+                    value.weather.worldSizeMeters) ||
         !ParseFloat(text, "stratusMinimumThicknessMeters",
-                    value.shape.stratusMinimumThicknessMeters) ||
+                    value.weather.column.stratusMinimumThicknessMeters) ||
         !ParseFloat(text, "stratusMaximumThicknessMeters",
-                    value.shape.stratusMaximumThicknessMeters) ||
+                    value.weather.column.stratusMaximumThicknessMeters) ||
         !ParseFloat(text, "cumulusMinimumThicknessMeters",
-                    value.shape.cumulusMinimumThicknessMeters) ||
+                    value.weather.column.cumulusMinimumThicknessMeters) ||
         !ParseFloat(text, "cumulusMaximumThicknessMeters",
-                    value.shape.cumulusMaximumThicknessMeters) ||
+                    value.weather.column.cumulusMaximumThicknessMeters) ||
         !ParseFloat(text, "stratusBottomFadeEnd",
                     value.shape.stratusBottomFadeEnd) ||
         !ParseFloat(text, "stratusTopFadeStart",
@@ -247,7 +244,7 @@ bool ParseFormation(const std::string& text, CloudFormationSettings& value)
         !ParseFloat(text, "cumulusUpperMassEnd",
                     value.shape.cumulusUpperMassEnd) ||
         !ParseFloat(text, "localBaseLiftMaxMeters",
-                    value.shape.localBaseLiftMaxMeters) ||
+                    value.weather.column.maximumBaseLiftMeters) ||
         !ParseFloat(text, "footprintCoverageInfluence",
                     value.shape.footprintCoverageInfluence) ||
         !ParseFloat(text, "domainBottomMeters", value.domainBottomMeters) ||
@@ -264,17 +261,25 @@ bool ParseFormation(const std::string& text, CloudFormationSettings& value)
         !ParseFloat(text, "baseNoiseVerticalWorldSizeMeters",
                     value.baseNoiseVerticalWorldSizeMeters) ||
         !ParseFloat(text, "detailNoiseWorldSizeMeters",
-                    value.detailNoiseWorldSizeMeters) ||
-        !ParseFloat(text, "windDirectionX", value.windDirection.x) ||
-        !ParseFloat(text, "windDirectionY", value.windDirection.y) ||
-        !ParseFloat(text, "windDirectionZ", value.windDirection.z) ||
-        !ParseFloat(text, "windSpeedMetersPerSecond",
-                    value.windSpeedMetersPerSecond))
+                    value.detailNoiseWorldSizeMeters))
     {
         return false;
     }
+    if (schemaVersion == 1u)
+    {
+        // schema 1 wind는 의도적으로 읽지 않는다. 세션 전역 motion을 보존한다.
+        if (!ParseUnsigned(text, "weatherCloudTypeMode", cloudTypeMode))
+            return false;
+        value.typeSelection = MigrateLegacyCloudTypeMode(cloudTypeMode);
+    }
+    else
+    {
+        if (!ParseUnsigned(text, "cloudTypeSelection", cloudTypeMode))
+            return false;
+        value.typeSelection.mode =
+            static_cast<CloudTypeSelectionMode>(cloudTypeMode);
+    }
     value.weatherPreset = static_cast<Stage5WeatherPreset>(weatherPreset);
-    value.weather.cloudTypeMode = static_cast<CloudTypeMode>(cloudTypeMode);
     return true;
 }
 
@@ -303,31 +308,31 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << "    \"detailErosion\": " << value.detailErosion << ",\n"
            << "    \"weatherPreset\": "
            << static_cast<std::uint32_t>(value.weatherPreset) << ",\n";
-    WriteChannel(stream, "weatherCoverage", value.weather.coverage);
-    WriteChannel(stream, "weatherCloudType", value.weather.cloudType);
-    WriteChannel(stream, "weatherDensity", value.weather.density);
+    WriteChannel(stream, "weatherCoverage", value.weather.generator.coverage);
+    WriteChannel(stream, "weatherCloudType", value.weather.generator.cloudType);
+    WriteChannel(stream, "weatherDensity", value.weather.generator.density);
     WriteChannel(stream, "weatherLocalThickness",
-                 value.weather.localThickness);
+                 value.weather.generator.localThickness);
     stream << "    \"weatherCoverageThreshold\": "
-           << value.weather.coverageThreshold << ",\n"
+           << value.weather.generator.coverageThreshold << ",\n"
            << "    \"weatherCoverageSoftness\": "
-           << value.weather.coverageSoftness << ",\n"
+           << value.weather.generator.coverageSoftness << ",\n"
            << "    \"weatherDensityCoverageInfluence\": "
-           << value.weather.densityCoverageInfluence << ",\n"
+           << value.weather.generator.densityCoverageInfluence << ",\n"
            << "    \"weatherThicknessCoverageInfluence\": "
-           << value.weather.thicknessCoverageInfluence << ",\n"
-           << "    \"weatherCloudTypeMode\": "
-           << static_cast<std::uint32_t>(value.weather.cloudTypeMode) << ",\n"
+           << value.weather.generator.thicknessCoverageInfluence << ",\n"
+           << "    \"cloudTypeSelection\": "
+           << static_cast<std::uint32_t>(value.typeSelection.mode) << ",\n"
            << "    \"weatherWorldSizeMeters\": "
-           << value.weatherWorldSizeMeters << ",\n"
+           << value.weather.worldSizeMeters << ",\n"
            << "    \"stratusMinimumThicknessMeters\": "
-           << value.shape.stratusMinimumThicknessMeters << ",\n"
+           << value.weather.column.stratusMinimumThicknessMeters << ",\n"
            << "    \"stratusMaximumThicknessMeters\": "
-           << value.shape.stratusMaximumThicknessMeters << ",\n"
+           << value.weather.column.stratusMaximumThicknessMeters << ",\n"
            << "    \"cumulusMinimumThicknessMeters\": "
-           << value.shape.cumulusMinimumThicknessMeters << ",\n"
+           << value.weather.column.cumulusMinimumThicknessMeters << ",\n"
            << "    \"cumulusMaximumThicknessMeters\": "
-           << value.shape.cumulusMaximumThicknessMeters << ",\n"
+           << value.weather.column.cumulusMaximumThicknessMeters << ",\n"
            << "    \"stratusBottomFadeEnd\": "
            << value.shape.stratusBottomFadeEnd << ",\n"
            << "    \"stratusTopFadeStart\": "
@@ -347,7 +352,7 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << "    \"cumulusUpperMassEnd\": "
            << value.shape.cumulusUpperMassEnd << ",\n"
            << "    \"localBaseLiftMaxMeters\": "
-           << value.shape.localBaseLiftMaxMeters << ",\n"
+           << value.weather.column.maximumBaseLiftMeters << ",\n"
            << "    \"footprintCoverageInfluence\": "
            << value.shape.footprintCoverageInfluence << ",\n"
            << "    \"domainBottomMeters\": "
@@ -365,12 +370,7 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << "    \"baseNoiseVerticalWorldSizeMeters\": "
            << value.baseNoiseVerticalWorldSizeMeters << ",\n"
            << "    \"detailNoiseWorldSizeMeters\": "
-           << value.detailNoiseWorldSizeMeters << ",\n"
-           << "    \"windDirectionX\": " << value.windDirection.x << ",\n"
-           << "    \"windDirectionY\": " << value.windDirection.y << ",\n"
-           << "    \"windDirectionZ\": " << value.windDirection.z << ",\n"
-           << "    \"windSpeedMetersPerSecond\": "
-           << value.windSpeedMetersPerSecond << "\n";
+           << value.detailNoiseWorldSizeMeters << "\n";
 }
 }
 
@@ -512,17 +512,17 @@ bool ResolveBuiltInCloudFormation(
         value.densityMultiplier = 1.10f;
         value.extinctionPerMeter = 0.00036f;
         value.detailErosion = 0.24f;
-        value.weather.cloudTypeMode = CloudTypeMode::Cumulus;
-        value.weather.coverage = Channel(1013u, 4u, 11u, 0.42f, -0.02f, 1.15f);
-        value.weather.cloudType = Channel(2017u, 2u, 4u, 0.20f, 0.20f, 0.85f);
-        value.weather.density = Channel(3019u, 3u, 6u, 0.25f, 0.0f, 0.75f);
-        value.weather.localThickness = Channel(4021u, 2u, 5u, 0.20f, 0.0f, 0.90f);
-        value.weather.coverageThreshold = 0.53f;
-        value.weather.coverageSoftness = 0.14f;
-        value.shape.cumulusMinimumThicknessMeters = 2000.0f;
-        value.shape.cumulusMaximumThicknessMeters = 3200.0f;
+        value.typeSelection.mode = CloudTypeSelectionMode::FixedCumulus;
+        value.weather.generator.coverage = Channel(1013u, 4u, 11u, 0.42f, -0.02f, 1.15f);
+        value.weather.generator.cloudType = Channel(2017u, 2u, 4u, 0.20f, 0.20f, 0.85f);
+        value.weather.generator.density = Channel(3019u, 3u, 6u, 0.25f, 0.0f, 0.75f);
+        value.weather.generator.localThickness = Channel(4021u, 2u, 5u, 0.20f, 0.0f, 0.90f);
+        value.weather.generator.coverageThreshold = 0.53f;
+        value.weather.generator.coverageSoftness = 0.14f;
+        value.weather.column.cumulusMinimumThicknessMeters = 2000.0f;
+        value.weather.column.cumulusMaximumThicknessMeters = 3200.0f;
         value.shape.cumulusTopFadeStart = 0.94f;
-        value.shape.localBaseLiftMaxMeters = 300.0f;
+        value.weather.column.maximumBaseLiftMeters = 300.0f;
         value.shape.footprintCoverageInfluence = 0.50f;
         value.domainBottomMeters = 1800.0f;
         value.domainThicknessMeters = 3700.0f;
@@ -532,18 +532,18 @@ bool ResolveBuiltInCloudFormation(
         value.densityMultiplier = 1.20f;
         value.extinctionPerMeter = 0.00039f;
         value.detailErosion = 0.20f;
-        value.weather.cloudTypeMode = CloudTypeMode::WeatherMap;
-        value.weather.coverage = Channel(1103u, 3u, 9u, 0.38f, 0.0f, 1.05f);
-        value.weather.cloudType = Channel(2101u, 2u, 5u, 0.28f, 0.08f, 1.0f);
-        value.weather.density = Channel(3109u, 3u, 7u, 0.30f, 0.05f, 0.90f);
-        value.weather.localThickness = Channel(4103u, 2u, 6u, 0.32f, 0.05f, 1.05f);
-        value.weather.coverageThreshold = 0.485f;
-        value.weather.coverageSoftness = 0.18f;
-        value.shape.stratusMinimumThicknessMeters = 1500.0f;
-        value.shape.stratusMaximumThicknessMeters = 2500.0f;
-        value.shape.cumulusMinimumThicknessMeters = 3000.0f;
-        value.shape.cumulusMaximumThicknessMeters = 4600.0f;
-        value.shape.localBaseLiftMaxMeters = 200.0f;
+        value.typeSelection.mode = CloudTypeSelectionMode::RegionalBlend;
+        value.weather.generator.coverage = Channel(1103u, 3u, 9u, 0.38f, 0.0f, 1.05f);
+        value.weather.generator.cloudType = Channel(2101u, 2u, 5u, 0.28f, 0.08f, 1.0f);
+        value.weather.generator.density = Channel(3109u, 3u, 7u, 0.30f, 0.05f, 0.90f);
+        value.weather.generator.localThickness = Channel(4103u, 2u, 6u, 0.32f, 0.05f, 1.05f);
+        value.weather.generator.coverageThreshold = 0.485f;
+        value.weather.generator.coverageSoftness = 0.18f;
+        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
+        value.weather.column.stratusMaximumThicknessMeters = 2500.0f;
+        value.weather.column.cumulusMinimumThicknessMeters = 3000.0f;
+        value.weather.column.cumulusMaximumThicknessMeters = 4600.0f;
+        value.weather.column.maximumBaseLiftMeters = 200.0f;
         value.shape.footprintCoverageInfluence = 0.40f;
         value.domainBottomMeters = 1500.0f;
         value.domainThicknessMeters = 5000.0f;
@@ -553,18 +553,18 @@ bool ResolveBuiltInCloudFormation(
         value.densityMultiplier = 1.25f;
         value.extinctionPerMeter = 0.00046f;
         value.detailErosion = 0.10f;
-        value.weather.cloudTypeMode = CloudTypeMode::Stratus;
-        value.weather.coverage = Channel(1301u, 2u, 6u, 0.20f, 0.10f, 0.85f);
-        value.weather.cloudType = Channel(2309u, 2u, 4u, 0.15f, -0.30f, 0.60f);
-        value.weather.density = Channel(3301u, 2u, 5u, 0.18f, 0.05f, 0.75f);
-        value.weather.localThickness = Channel(4303u, 2u, 4u, 0.15f, 0.0f, 0.70f);
-        value.weather.coverageThreshold = 0.46f;
-        value.weather.coverageSoftness = 0.20f;
-        value.shape.stratusMinimumThicknessMeters = 1500.0f;
-        value.shape.stratusMaximumThicknessMeters = 2300.0f;
+        value.typeSelection.mode = CloudTypeSelectionMode::FixedStratus;
+        value.weather.generator.coverage = Channel(1301u, 2u, 6u, 0.20f, 0.10f, 0.85f);
+        value.weather.generator.cloudType = Channel(2309u, 2u, 4u, 0.15f, -0.30f, 0.60f);
+        value.weather.generator.density = Channel(3301u, 2u, 5u, 0.18f, 0.05f, 0.75f);
+        value.weather.generator.localThickness = Channel(4303u, 2u, 4u, 0.15f, 0.0f, 0.70f);
+        value.weather.generator.coverageThreshold = 0.46f;
+        value.weather.generator.coverageSoftness = 0.20f;
+        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
+        value.weather.column.stratusMaximumThicknessMeters = 2300.0f;
         value.shape.stratusBottomFadeEnd = 0.05f;
         value.shape.stratusTopFadeStart = 0.72f;
-        value.shape.localBaseLiftMaxMeters = 0.0f;
+        value.weather.column.maximumBaseLiftMeters = 0.0f;
         value.shape.footprintCoverageInfluence = 0.20f;
         value.domainBottomMeters = 1500.0f;
         value.domainThicknessMeters = 2500.0f;
@@ -587,19 +587,19 @@ bool ResolveBuiltInCloudFormation(
         value.densityMultiplier = 1.20f;
         value.extinctionPerMeter = 0.00042f;
         value.detailErosion = 0.12f;
-        value.weather.cloudTypeMode = CloudTypeMode::Stratus;
-        value.weather.coverageThreshold = 0.49f;
-        value.weather.coverageSoftness = 0.22f;
-        value.weather.coverage.bias = 0.01f;
-        value.weather.coverage.contrast = 1.03f;
-        value.weather.densityCoverageInfluence = 0.50f;
-        value.weather.thicknessCoverageInfluence = 0.65f;
-        value.weather.cloudType.bias = 0.0f;
-        value.shape.stratusMinimumThicknessMeters = 1500.0f;
-        value.shape.stratusMaximumThicknessMeters = 2300.0f;
+        value.typeSelection.mode = CloudTypeSelectionMode::FixedStratus;
+        value.weather.generator.coverageThreshold = 0.49f;
+        value.weather.generator.coverageSoftness = 0.22f;
+        value.weather.generator.coverage.bias = 0.01f;
+        value.weather.generator.coverage.contrast = 1.03f;
+        value.weather.generator.densityCoverageInfluence = 0.50f;
+        value.weather.generator.thicknessCoverageInfluence = 0.65f;
+        value.weather.generator.cloudType.bias = 0.0f;
+        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
+        value.weather.column.stratusMaximumThicknessMeters = 2300.0f;
         value.shape.stratusBottomFadeEnd = 0.05f;
         value.shape.stratusTopFadeStart = 0.72f;
-        value.shape.localBaseLiftMaxMeters = 0.0f;
+        value.weather.column.maximumBaseLiftMeters = 0.0f;
         value.shape.footprintCoverageInfluence = 0.20f;
         value.domainBottomMeters = 1500.0f;
         value.domainThicknessMeters = 2500.0f;
@@ -609,22 +609,22 @@ bool ResolveBuiltInCloudFormation(
         value.densityMultiplier = 1.25f;
         value.extinctionPerMeter = 0.00038f;
         value.detailErosion = 0.18f;
-        value.weather.cloudTypeMode = CloudTypeMode::Cumulus;
-        value.weather.coverageThreshold = 0.52f;
-        value.weather.coverageSoftness = 0.20f;
-        value.weather.coverage.bias = 0.0f;
-        value.weather.coverage.contrast = 1.05f;
-        value.weather.densityCoverageInfluence = 0.45f;
-        value.weather.thicknessCoverageInfluence = 0.70f;
-        value.weather.cloudType.bias = 0.0f;
-        value.shape.cumulusMinimumThicknessMeters = 2000.0f;
-        value.shape.cumulusMaximumThicknessMeters = 3200.0f;
+        value.typeSelection.mode = CloudTypeSelectionMode::FixedCumulus;
+        value.weather.generator.coverageThreshold = 0.52f;
+        value.weather.generator.coverageSoftness = 0.20f;
+        value.weather.generator.coverage.bias = 0.0f;
+        value.weather.generator.coverage.contrast = 1.05f;
+        value.weather.generator.densityCoverageInfluence = 0.45f;
+        value.weather.generator.thicknessCoverageInfluence = 0.70f;
+        value.weather.generator.cloudType.bias = 0.0f;
+        value.weather.column.cumulusMinimumThicknessMeters = 2000.0f;
+        value.weather.column.cumulusMaximumThicknessMeters = 3200.0f;
         value.shape.cumulusBottomFadeEnd = 0.08f;
         value.shape.cumulusTopFadeStart = 0.94f;
         value.shape.cumulusUpperMassBottom = 0.65f;
         value.shape.cumulusUpperMassStart = 0.08f;
         value.shape.cumulusUpperMassEnd = 0.70f;
-        value.shape.localBaseLiftMaxMeters = 300.0f;
+        value.weather.column.maximumBaseLiftMeters = 300.0f;
         value.shape.footprintCoverageInfluence = 0.50f;
         value.domainBottomMeters = 1800.0f;
         value.domainThicknessMeters = 3700.0f;
@@ -634,18 +634,18 @@ bool ResolveBuiltInCloudFormation(
         value.densityMultiplier = 1.15f;
         value.extinctionPerMeter = 0.00035f;
         value.detailErosion = 0.18f;
-        value.weather.cloudTypeMode = CloudTypeMode::WeatherMap;
-        value.weather.coverageThreshold = 0.50f;
-        value.weather.coverageSoftness = 0.20f;
-        value.weather.coverage.bias = 0.0f;
-        value.weather.coverage.contrast = 1.05f;
-        value.weather.densityCoverageInfluence = 0.45f;
-        value.weather.thicknessCoverageInfluence = 0.60f;
-        value.weather.cloudType.bias = 0.08f;
-        value.shape.stratusMinimumThicknessMeters = 1500.0f;
-        value.shape.stratusMaximumThicknessMeters = 2500.0f;
-        value.shape.cumulusMinimumThicknessMeters = 3000.0f;
-        value.shape.cumulusMaximumThicknessMeters = 4600.0f;
+        value.typeSelection.mode = CloudTypeSelectionMode::RegionalBlend;
+        value.weather.generator.coverageThreshold = 0.50f;
+        value.weather.generator.coverageSoftness = 0.20f;
+        value.weather.generator.coverage.bias = 0.0f;
+        value.weather.generator.coverage.contrast = 1.05f;
+        value.weather.generator.densityCoverageInfluence = 0.45f;
+        value.weather.generator.thicknessCoverageInfluence = 0.60f;
+        value.weather.generator.cloudType.bias = 0.08f;
+        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
+        value.weather.column.stratusMaximumThicknessMeters = 2500.0f;
+        value.weather.column.cumulusMinimumThicknessMeters = 3000.0f;
+        value.weather.column.cumulusMaximumThicknessMeters = 4600.0f;
         value.shape.stratusBottomFadeEnd = 0.06f;
         value.shape.stratusTopFadeStart = 0.65f;
         value.shape.mixedBottomFadeEnd = 0.10f;
@@ -655,7 +655,7 @@ bool ResolveBuiltInCloudFormation(
         value.shape.cumulusUpperMassBottom = 0.65f;
         value.shape.cumulusUpperMassStart = 0.08f;
         value.shape.cumulusUpperMassEnd = 0.70f;
-        value.shape.localBaseLiftMaxMeters = 200.0f;
+        value.weather.column.maximumBaseLiftMeters = 200.0f;
         value.shape.footprintCoverageInfluence = 0.40f;
         value.domainBottomMeters = 1500.0f;
         value.domainThicknessMeters = 5000.0f;
@@ -716,7 +716,7 @@ bool SaveCloudFormationPresetAtomic(
             return false;
         }
         file << "{\n"
-             << "  \"schemaVersion\": 1,\n"
+             << "  \"schemaVersion\": 2,\n"
              << "  \"cloudFormation\": {\n";
         WriteFormation(file, prepared.settings);
         file << "  }\n}\n";
@@ -786,14 +786,14 @@ bool LoadCloudFormationPreset(
     const std::string text = buffer.str();
     std::uint32_t schemaVersion = 0;
     if (!ParseUnsigned(text, "schemaVersion", schemaVersion) ||
-        schemaVersion != 1u)
+        (schemaVersion != 1u && schemaVersion != 2u))
     {
         status = "Formation override rejected: schema or slot mismatch";
         return false;
     }
 
     CloudFormationSettings parsed;
-    if (!ParseFormation(text, parsed))
+    if (!ParseFormation(text, schemaVersion, parsed))
     {
         status = "Formation override rejected: missing or malformed field";
         return false;

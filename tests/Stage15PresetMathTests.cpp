@@ -1,5 +1,6 @@
 #include "CloudShapeDomainContract.h"
 #include "HighCloudQuality.h"
+#include "CloudMotionParameters.h"
 #include "Stage15Parameters.h"
 
 #include <cmath>
@@ -36,19 +37,19 @@ void RequireFit(const CloudFormationSettings& formation,
 }
 
 void RequireLegacyNonHeight(
-    const CloudFormationSettings& formation, CloudTypeMode mode,
+    const CloudFormationSettings& formation, CloudTypeSelectionMode mode,
     float threshold, float softness, float coverageBias,
     float coverageContrast, float densityLink, float thicknessLink,
     float cloudTypeBias)
 {
-    Require(formation.weather.cloudTypeMode == mode &&
-            Near(formation.weather.coverageThreshold, threshold) &&
-            Near(formation.weather.coverageSoftness, softness) &&
-            Near(formation.weather.coverage.bias, coverageBias) &&
-            Near(formation.weather.coverage.contrast, coverageContrast) &&
-            Near(formation.weather.densityCoverageInfluence, densityLink) &&
-            Near(formation.weather.thicknessCoverageInfluence, thicknessLink) &&
-            Near(formation.weather.cloudType.bias, cloudTypeBias),
+    Require(formation.typeSelection.mode == mode &&
+            Near(formation.weather.generator.coverageThreshold, threshold) &&
+            Near(formation.weather.generator.coverageSoftness, softness) &&
+            Near(formation.weather.generator.coverage.bias, coverageBias) &&
+            Near(formation.weather.generator.coverage.contrast, coverageContrast) &&
+            Near(formation.weather.generator.densityCoverageInfluence, densityLink) &&
+            Near(formation.weather.generator.thicknessCoverageInfluence, thicknessLink) &&
+            Near(formation.weather.generator.cloudType.bias, cloudTypeBias),
             "legacy Stage 14 Weather appearance values");
 }
 
@@ -75,11 +76,20 @@ void RequireLegacyProfiles(
 
 int main()
 {
-    Require(sizeof(CloudShapeParameters) == 64u,
-            "physical-only CloudShapeCB must be 64 bytes");
+    Require(sizeof(CloudShapeParameters) == 48u &&
+            sizeof(WeatherColumnParameters) == 32u,
+            "Shape b7 and Weather Column b10 ABI");
     Require(highcloud::kMaximumViewSteps == 512u &&
             highcloud::kViewStepMeters == 100.0f,
             "Stage 15 uses the fixed High contract");
+    CloudMotionParameters invalidMotion;
+    invalidMotion.direction = { 0.0f, 7.0f, 0.0f };
+    invalidMotion.speedMetersPerSecond = NAN;
+    const CloudMotionParameters safeMotion =
+        SanitizeCloudMotionParameters(invalidMotion);
+    Require(Near(safeMotion.speedMetersPerSecond, 12.0f) &&
+            Near(safeMotion.direction.y, 0.0f),
+            "session motion sanitizes to the app default");
 
     CloudFormationSettings stratus;
     Require(ResolveBuiltInCloudFormation(
@@ -91,14 +101,14 @@ int main()
             Near(stratus.detailErosion, 0.12f),
             "Stratus legacy appearance values");
     RequireLegacyNonHeight(
-        stratus, CloudTypeMode::Stratus,
+        stratus, CloudTypeSelectionMode::FixedStratus,
         0.49f, 0.22f, 0.01f, 1.03f, 0.50f, 0.65f, 0.0f);
     RequireLegacyProfiles(
         stratus, 0.05f, 0.72f, 0.10f, 0.86f,
         0.08f, 0.93f, 0.65f, 0.08f, 0.70f);
-    Require(Near(stratus.shape.stratusMinimumThicknessMeters, 1500.0f) &&
-            Near(stratus.shape.stratusMaximumThicknessMeters, 2300.0f) &&
-            Near(stratus.shape.localBaseLiftMaxMeters, 0.0f) &&
+    Require(Near(stratus.weather.column.stratusMinimumThicknessMeters, 1500.0f) &&
+            Near(stratus.weather.column.stratusMaximumThicknessMeters, 2300.0f) &&
+            Near(stratus.weather.column.maximumBaseLiftMeters, 0.0f) &&
             Near(stratus.shape.footprintCoverageInfluence, 0.20f) &&
             Near(stratus.domainBottomMeters, 1500.0f) &&
             Near(stratus.domainThicknessMeters, 2500.0f),
@@ -115,14 +125,14 @@ int main()
             Near(cumulus.detailErosion, 0.18f),
             "Cumulus legacy appearance values");
     RequireLegacyNonHeight(
-        cumulus, CloudTypeMode::Cumulus,
+        cumulus, CloudTypeSelectionMode::FixedCumulus,
         0.52f, 0.20f, 0.0f, 1.05f, 0.45f, 0.70f, 0.0f);
     RequireLegacyProfiles(
         cumulus, 0.06f, 0.65f, 0.10f, 0.86f,
         0.08f, 0.94f, 0.65f, 0.08f, 0.70f);
-    Require(Near(cumulus.shape.cumulusMinimumThicknessMeters, 2000.0f) &&
-            Near(cumulus.shape.cumulusMaximumThicknessMeters, 3200.0f) &&
-            Near(cumulus.shape.localBaseLiftMaxMeters, 300.0f) &&
+    Require(Near(cumulus.weather.column.cumulusMinimumThicknessMeters, 2000.0f) &&
+            Near(cumulus.weather.column.cumulusMaximumThicknessMeters, 3200.0f) &&
+            Near(cumulus.weather.column.maximumBaseLiftMeters, 300.0f) &&
             Near(cumulus.shape.footprintCoverageInfluence, 0.50f) &&
             Near(cumulus.domainBottomMeters, 1800.0f) &&
             Near(cumulus.domainThicknessMeters, 3700.0f),
@@ -139,16 +149,16 @@ int main()
             Near(mixed.detailErosion, 0.18f),
             "Mixed legacy appearance values");
     RequireLegacyNonHeight(
-        mixed, CloudTypeMode::WeatherMap,
+        mixed, CloudTypeSelectionMode::RegionalBlend,
         0.50f, 0.20f, 0.0f, 1.05f, 0.45f, 0.60f, 0.08f);
     RequireLegacyProfiles(
         mixed, 0.06f, 0.65f, 0.10f, 0.86f,
         0.08f, 0.93f, 0.65f, 0.08f, 0.70f);
-    Require(Near(mixed.shape.stratusMinimumThicknessMeters, 1500.0f) &&
-            Near(mixed.shape.stratusMaximumThicknessMeters, 2500.0f) &&
-            Near(mixed.shape.cumulusMinimumThicknessMeters, 3000.0f) &&
-            Near(mixed.shape.cumulusMaximumThicknessMeters, 4600.0f) &&
-            Near(mixed.shape.localBaseLiftMaxMeters, 200.0f) &&
+    Require(Near(mixed.weather.column.stratusMinimumThicknessMeters, 1500.0f) &&
+            Near(mixed.weather.column.stratusMaximumThicknessMeters, 2500.0f) &&
+            Near(mixed.weather.column.cumulusMinimumThicknessMeters, 3000.0f) &&
+            Near(mixed.weather.column.cumulusMaximumThicknessMeters, 4600.0f) &&
+            Near(mixed.weather.column.maximumBaseLiftMeters, 200.0f) &&
             Near(mixed.shape.footprintCoverageInfluence, 0.40f) &&
             Near(mixed.domainBottomMeters, 1500.0f) &&
             Near(mixed.domainThicknessMeters, 5000.0f),

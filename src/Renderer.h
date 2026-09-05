@@ -24,6 +24,7 @@
 #include "CloudDomainParameters.h"
 #include "CloudFormationPresetStore.h"
 #include "CloudFormationSettings.h"
+#include "CloudMotionParameters.h"
 #include "CloudParameters.h"
 #include "CloudShapeParameters.h"
 #include "EnvironmentParameters.h"
@@ -41,6 +42,7 @@
 #include "Stage15Parameters.h"
 #include "ToneMappingParameters.h"
 #include "WeatherMap.h"
+#include "WeatherColumnParameters.h"
 
 class Camera;
 
@@ -115,10 +117,19 @@ public:
     Stage5WeatherPreset WeatherPreset() const { return m_weatherPreset; }
     const WeatherMapGeneratorSettings& WeatherGeneratorSettings() const
     {
-        return m_weatherGeneratorSettings;
+        return m_weatherDefinition.generator;
     }
     std::uint64_t WeatherMapHash() const { return m_weatherMapHash; }
     std::uint64_t WeatherUploadCount() const { return m_weatherUploadCount; }
+    std::uint64_t WeatherGenerationCount() const { return m_weatherMapGeneration; }
+    double WeatherGenerationMilliseconds() const
+    { return m_weatherMapGenerationMilliseconds; }
+    const CloudMotionParameters& CloudMotion() const { return m_cloudMotion; }
+    const CloudTypeSelection& CloudTypeSelectionState() const
+    { return m_cloudTypeSelection; }
+    bool ValidateWeatherMapCpuParity() const;
+    std::size_t WeatherMapCpuMismatchCount() const;
+    std::string WeatherMapCpuParitySummary() const;
     std::uintptr_t WeatherTextureIdentity() const
     {
         return reinterpret_cast<std::uintptr_t>(m_weatherMapTexture.Get());
@@ -259,13 +270,17 @@ public:
     }
     float CloudMovementSpeedForValidation() const
     {
-        return m_cloudParameters.windSpeed;
+        return m_cloudMotion.speedMetersPerSecond;
     }
     void SetCloudMovementSpeedForValidation(float metersPerSecond)
     {
-        m_cloudParameters.windSpeed = std::clamp(
+        m_cloudMotion.speedMetersPerSecond = std::clamp(
             std::isfinite(metersPerSecond) ? metersPerSecond : 0.0f,
             0.0f, 400.0f);
+    }
+    void SetCloudMotionForValidation(const CloudMotionParameters& motion)
+    {
+        m_cloudMotion = SanitizeCloudMotionParameters(motion);
     }
     bool ValidateNoiseLabPreviews();
     bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
@@ -429,8 +444,14 @@ private:
     bool CreateWeatherMapTexture(Stage5WeatherPreset preset);
     bool UpdateWeatherMapTexture(
         Stage5WeatherPreset preset,
+        const WeatherMapGeneratorSettings& settings);
+    bool GenerateWeatherMapTexture(
+        ID3D11ComputeShader* shader, Stage5WeatherPreset preset,
         const WeatherMapGeneratorSettings& settings,
-        const WeatherMapData* prebuiltMap = nullptr);
+        ComPtr<ID3D11Texture2D>& generatedTexture,
+        ComPtr<ID3D11UnorderedAccessView>& generatedUav,
+        WeatherMapData& generatedData, std::uint64_t& generatedHash,
+        double& generationMilliseconds);
     bool GenerateNoiseVolumes(
         ID3D11ComputeShader* baseShader,
         ID3D11ComputeShader* detailShader,
@@ -510,6 +531,7 @@ private:
     ComPtr<ID3D11VertexShader> m_sceneVs;
     ComPtr<ID3D11PixelShader> m_scenePs;
     ComPtr<ID3D11PixelShader> m_toneMapPs;
+    ComPtr<ID3D11ComputeShader> m_weatherMapCs;
     ComPtr<ID3D11ComputeShader> m_noiseBaseCs;
     ComPtr<ID3D11ComputeShader> m_noiseDetailCs;
     ComPtr<ID3D11ComputeShader> m_deepShadowCs;
@@ -527,14 +549,15 @@ private:
     ComPtr<ID3D11Buffer> m_cloudDomainCb;
     ComPtr<ID3D11Buffer> m_noiseVolumeCb;
     ComPtr<ID3D11Buffer> m_cloudShapeCb;
+    ComPtr<ID3D11Buffer> m_weatherColumnCb;
     ComPtr<ID3D11Buffer> m_shadowCb;
     ComPtr<ID3D11Buffer> m_stage14Cb;
     ComPtr<ID3D11Buffer> m_sceneCb;
     ComPtr<ID3D11Buffer> m_sceneVertexBuffer;
     ComPtr<ID3D11Buffer> m_sceneIndexBuffer;
     std::uint32_t m_sceneIndexCount = 0;
-    std::array<std::uint64_t, 8> m_constantBufferUploadHashes = {};
-    std::array<bool, 8> m_constantBufferUploadValid = {};
+    std::array<std::uint64_t, 9> m_constantBufferUploadHashes = {};
+    std::array<bool, 9> m_constantBufferUploadValid = {};
     std::uint64_t m_constantBufferUploadCount = 0;
 
     ComPtr<ID3D11DepthStencilState> m_depthState;
@@ -545,6 +568,8 @@ private:
 
     ComPtr<ID3D11Texture2D> m_weatherMapTexture;
     ComPtr<ID3D11ShaderResourceView> m_weatherMapSrv;
+    ComPtr<ID3D11Texture2D> m_weatherMapScratchTexture;
+    ComPtr<ID3D11UnorderedAccessView> m_weatherMapScratchUav;
     ComPtr<ID3D11Texture3D> m_baseNoiseVolume;
     ComPtr<ID3D11ShaderResourceView> m_baseNoiseVolumeSrv;
     ComPtr<ID3D11Texture3D> m_detailNoiseVolume;
@@ -569,7 +594,8 @@ private:
     Stage7PhasePreset m_phasePreset = Stage7PhasePreset::Off;
     Stage8EnvironmentPreset m_environmentPreset =
         Stage8EnvironmentPreset::Balanced;
-    CloudTypeMode m_cloudTypeMode = CloudTypeMode::WeatherMap;
+    CloudTypeSelection m_cloudTypeSelection = {};
+    CloudMotionParameters m_cloudMotion = {};
     std::filesystem::path m_cloudFormationPresetRoot;
     CloudFormationPresetTarget m_cloudFormationTarget =
         ConceptFormationTarget(CloudFormationConcept::UrbanFairWeather);
@@ -584,14 +610,18 @@ private:
     NoiseVolumeParameters m_noiseVolumeParameters;
     CloudShapeParameters m_cloudShapeParameters;
     Stage12ShadowParameters m_shadowParameters;
-    WeatherMapGeneratorSettings m_weatherGeneratorSettings;
+    WeatherMapDefinition m_weatherDefinition;
+    WeatherColumnParameters m_weatherColumnParameters;
     WeatherMapData m_currentWeatherMapData;
     float m_previousAtmosphereTimeSeconds = 0.0f;
     bool m_previousAtmosphereTimeValid = false;
     std::uint64_t m_baseNoiseVolumeHash = 0;
     std::uint64_t m_detailNoiseVolumeHash = 0;
     double m_noiseVolumeGenerationMilliseconds = 0.0;
+    double m_weatherMapGenerationMilliseconds = 0.0;
+    std::uint64_t m_weatherMapGeneration = 0;
     std::uint64_t m_weatherMapHash = 0;
+    std::uint64_t m_weatherGenerationKey = 0;
     std::uint64_t m_weatherUploadCount = 0;
     std::string m_weatherMapStatus = "Not generated";
     Stage15ConceptPreset m_stage15ConceptPreset =
@@ -603,6 +633,7 @@ private:
     std::wstring m_noiseLabShaderPath;
     std::wstring m_sceneShaderPath;
     std::wstring m_noiseVolumeShaderPath;
+    std::wstring m_weatherMapShaderPath;
     std::wstring m_deepShadowShaderPath;
     std::wstring m_atmosphereLutShaderPath;
     std::wstring m_toneMapShaderPath;

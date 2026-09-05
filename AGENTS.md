@@ -15,7 +15,7 @@ DirectX11 + HLSL로 **레이마칭을 학습**하고, 최종적으로 **볼류�
 Stage 11 Temporal, Cirrus/Desert, Detail LOD, NTE Rim, Capture/Reference와 런타임 최적화
 프리셋은 최종 런타임에서 폐기했습니다. Stage 9의 검증된 support precheck, empty-space
 skipping, 거리 step, early exit와 cone fallback은 변경 불가능한 High 상수로 유지합니다.
-기본 상태는 `Urban Fair Weather + High`이며 최종 화면 승인은 아직 사용자 검증 전입니다.
+기본 상태는 `Urban Fair Weather + High`이며 2026-09-05 사용자 최종 화면 승인을 완료했습니다.
 구름 도메인은 PlanarLayer 하나입니다.
 
 ## 빠른 사실 (Quick Facts)
@@ -37,20 +37,20 @@ skipping, 거리 step, early exit와 cone fallback은 변경 불가능한 High �
 | 윈도우/입력 | `src/Window.*` | Win32 창, 마우스/WASD → Camera, 리사이즈 → Renderer |
 | 카메라 | `src/Camera.*` | position+yaw/pitch FPS 자유 시점과 프리셋 호환 → view/proj/invViewProj |
 | 렌더러 | `src/Renderer.*` | D3D11 초기화, 대기/Shadow compute, HDR 장면·구름·Aerial 합성과 Tone Map |
-| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 단일 ImGui 패널, 최종 프리셋/진단 UI와 schema 39 내보내기 |
+| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 단일 ImGui 패널, 최종 프리셋/진단 UI와 schema 40 내보내기 |
 | High 계약 | `src/HighCloudQuality.h`, `shaders/HighCloudQuality.hlsli` | 100m/512, early exit, empty skip, 거리 step과 8-tap cone 고정값 |
 | 구름 설정 | `src/CloudParameters.h` | 80바이트 CloudCB(b1)와 최종 진단 모드 |
 | Shadow 설정 | `src/Stage12ShadowParameters.h` | 160바이트 ShadowCB(b8), Balanced512 Deep Cache |
 | 대기 통합 설정 | `src/AtmosphereParameters.h`, `src/GroundLightingParameters.h`, `src/ToneMappingParameters.h`, `src/Stage14Parameters.h` | CPU 분리 설정과 224바이트 Stage14CB(b9)/LUT 규격 |
 | 도메인 설정 | `src/CloudDomainParameters.h` | 32바이트 PlanarLayer 도메인과 meter 단위 추적 범위 |
-| Weather Map | `src/WeatherMap.*` | 256² CPU RGBA(coverage/type/density/local thickness) 프리셋 생성과 해시 |
-| 형성/Custom 저장 | `src/CloudFormationSettings.*`, `src/CloudFormationPresetStore.*` | 세 타입·세 scene formation과 schema 1 Custom 하나의 strict 원자 저장 |
-| 형상 설정 | `src/CloudShapeParameters.h` | 64바이트 ShapeCB(b7), 물리 두께·타입별 profile·lift·footprint |
+| Weather Map | `src/WeatherMap.*`, `shaders/WeatherMapCompute.hlsl` | 256² GPU RGBA(coverage/regional type/density/thickness potential) 생성과 CPU 검증 기준 |
+| 형성/Custom 저장 | `src/CloudFormationSettings.*`, `src/CloudFormationPresetStore.*` | 세 타입·세 scene formation과 schema 2 Custom 하나의 strict 원자 저장, schema 1 읽기 이관 |
+| 형상 설정 | `src/CloudShapeParameters.h`, `src/WeatherColumnParameters.h` | 48바이트 ShapeCB(b7) profile/upper mass/footprint와 32바이트 WeatherColumnCB(b10) 두께·lift·타입 선택 |
 | 최종 scene 프리셋 | `src/Stage15Parameters.h` | Urban/Meadow/Snow scene의 formation·조명·대기 resolver |
 | 조명 설정 | `src/LightParameters.h` | 64바이트 LightCB(b3), 태양·albedo·dual-lobe phase |
 | 환경광 설정 | `src/EnvironmentParameters.h` | 80바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
 | 핫 리로드 | `src/ShaderManifest.h` | 프로그램 manifest, literal include closure, reload report와 후속 무효화 |
-| 성능 계측 | `src/FrameProfiler.*` | Atmosphere/Shadow/Opaque/Cloud/Tone/Frame GPU timestamp와 EMA |
+| 성능 계측 | `src/FrameProfiler.*` | Weather/Atmosphere/Shadow/Opaque/Cloud/Tone/Frame GPU timestamp와 EMA |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
 | Scene | `shaders/DiagnosticScene.hlsl` | 깊이 검증용 불투명 평면·박스 |
 | Cloud PS | `shaders/VolumetricClouds.hlsl` | Full-resolution High 적분과 scene/atmosphere 직접 합성 |
@@ -114,6 +114,10 @@ skipping, 거리 step, early exit와 cone fallback은 변경 불가능한 High �
 
 ## 더 읽을 문서
 
+- **첫 투입 권장 순서:** [렌더링 파이프라인](doc/RENDERING_PIPELINE_GUIDE.md) → [상수버퍼 참조](doc/CBUFFER_REFERENCE.md) → [구름·빛 튜닝](doc/CLOUD_LIGHTING_TUNING_GUIDE.md)
+- [doc/RENDERING_PIPELINE_GUIDE.md](doc/RENDERING_PIPELINE_GUIDE.md) — 실제 Stage 15 프레임·밀도·조명·대기 흐름
+- [doc/CBUFFER_REFERENCE.md](doc/CBUFFER_REFERENCE.md) — b0~b10 CPU/HLSL ABI와 필드 상태
+- [doc/CLOUD_LIGHTING_TUNING_GUIDE.md](doc/CLOUD_LIGHTING_TUNING_GUIDE.md) — F1~F4 파라미터 연결과 실전 튜닝
 - [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — 모듈 구조 · 파이프라인 · 상수버퍼
 - [doc/RAYMARCHING.md](doc/RAYMARCHING.md) — 레이마칭 수식 (레이 생성 · 교차 · Beer-Lambert)
 - [doc/FOLDER_STRUCTURE.md](doc/FOLDER_STRUCTURE.md) — 폴더/파일 역할

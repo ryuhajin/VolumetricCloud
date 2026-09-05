@@ -1,5 +1,5 @@
 // ============================================================================
-//  Stage14Atmosphere.hlsli - 단계 14 b13, LUT 계약과 공통 대기 함수
+//  Stage14Atmosphere.hlsli - 단계 14 b9, LUT 계약과 공통 대기 함수
 // ============================================================================
 #ifndef VCLOUD_STAGE14_ATMOSPHERE_HLSLI
 #define VCLOUD_STAGE14_ATMOSPHERE_HLSLI

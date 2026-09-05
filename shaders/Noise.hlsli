@@ -3,15 +3,14 @@
 // ----------------------------------------------------------------------------
 //  데이터 흐름
 //  1. 월드 위치(m)를 바람이 이동시킨 noise 좌표로 바꾼다.
-//  2. value noise와 coverage로 단계 2의 기본 덩어리 밀도를 만든다.
-//  3. AABB 바닥/천장 사이의 높이 비율과 부드러운 높이 마스크를 계산한다.
+//  2. Base Texture3D와 coverage로 기본 덩어리 밀도를 만든다.
+//  3. PlanarLayer 안의 로컬 컬럼 높이와 부드러운 타입 profile을 계산한다.
 //  4. Weather R/G/B로 threshold, 구름 종류 높이와 밀도 배율을 조절한다.
 //  5. Weather가 적용된 큰 구름 형태를 Base Density로 확정한다.
 //  6. Base가 존재할 때만 별도 고주파 Detail Noise를 샘플링해 밀도를 깎는다.
 //
-//  이번 단계는 단일 Value Noise만 사용한다. 이후 fBm/Worley는
-//  SampleDetailErosionNoise 내부만 교체하고 레이마칭 인터페이스는 유지한다.
-//  단계 6 Light는 아직 적용하지 않는다.
+//  Base는 Perlin-Worley RGBA Texture3D, Detail은 Worley RGBA Texture3D다.
+//  Light 경로는 비용을 제한하기 위해 Detail이 아닌 Base Density를 적분한다.
 // ============================================================================
 #ifndef VCLOUD_NOISE_HLSLI
 #define VCLOUD_NOISE_HLSLI
@@ -30,10 +29,10 @@ Texture3D<float4> detailNoiseVolumeTexture : register(t4);
 
 struct CloudDensitySample
 {
-    float rawNoise;          // threshold 전 원본 value noise(0~1).
+    float rawNoise;          // threshold 전 Base Texture3D 조합값(0~1).
     float thresholdDensity; // coverage만 적용한 단계 2 기본 밀도(0~1).
     float weatherThresholdDensity; // Weather R까지 적용한 threshold 밀도.
-    float heightFraction;    // AABB 바닥=0, 천장=1인 정규화 월드 Y 높이.
+    float heightFraction;    // PlanarLayer 바닥=0, 천장=1인 정규화 월드 Y 높이.
     float localThicknessMeters;// Weather A/G가 정한 이 XZ 기둥의 물리 두께(m).
     float localBaseLiftMeters;// Weather A가 전역 바닥에서 올린 로컬 바닥(m).
     float localHeightFraction;// 로컬 바닥=0, 로컬 상단=1인 정규화 높이.
@@ -43,6 +42,7 @@ struct CloudDensitySample
     float baseSupport;       // Detail/밀도 배율 전 Base shape가 존재하면 1.
     float weatherCoverage;   // Weather Map R 채널(0~1).
     float cloudType;         // Weather Map G 채널(0~1).
+    float storedRegionalType;// 선택 정책 적용 전 Weather Map G 원본.
     float weatherDensityModifier; // Weather B를 0.5~1.5로 바꾼 배율.
     float weatherThicknessPotential;// Weather A 로컬 두께 보간값(0~1).
     float baseDensity;       // 단계 3까지의 큰 구름 형태(0~1).
@@ -50,11 +50,11 @@ struct CloudDensitySample
     float erosion;           // detailNoise × detailErosionStrength.
     float finalDensity;      // saturate(baseDensity - erosion), 적분 입력.
     float detailSampled;     // Detail 함수를 호출했으면 1, 생략했으면 0.
-    float3 noiseUvw;         // Base value noise의 연속 좌표(cycle).
-    float3 detailNoiseUvw;   // Detail value noise의 연속 좌표(cycle), 생략 시 0.
+    float3 noiseUvw;         // Base Texture3D의 연속 좌표(cycle).
+    float3 detailNoiseUvw;   // Detail Texture3D의 연속 좌표(cycle), 생략 시 0.
     float2 weatherUv;        // 반복되는 2D Weather Map 조회 좌표(0~1).
-    float4 baseNoiseChannels;// Texture3D Base RGBA 또는 legacy value 복제.
-    float4 detailNoiseChannels;// Texture3D Detail RGBA 또는 legacy value 복제.
+    float4 baseNoiseChannels;// Base Texture3D RGBA.
+    float4 detailNoiseChannels;// Detail Texture3D RGBA.
 };
 
 // 서로 다른 노이즈 알고리즘도 동일한 값+좌표 인터페이스로 연결하기 위한 표본이다.
@@ -66,8 +66,8 @@ struct NoiseFieldSample
     float4 channels;
 };
 
-// 월드 Y 위치(m)를 구름층 안의 0~1 높이로 바꾼다.
-// cloudBoundsMax.y <= cloudBoundsMin.y인 잘못된 AABB는 두께가 없으므로 0을 반환한다.
+// 월드 Y 위치(m)를 PlanarLayer의 전역 0~1 높이로 바꾼다.
+// cloudBounds Y는 b5 Planar bottom/top의 mirror다. 두께가 없으면 0을 반환한다.
 // 이 분기는 0 나눗셈과 NaN이 검정 화면이나 번쩍임으로 번지는 것을 막는다.
 float EvaluateHeightFraction(float worldY)
 {
@@ -135,6 +135,7 @@ CloudDensitySample ComposeBaseCloudDensity(
     sample.weatherUv = weather.uv;
     sample.weatherCoverage = weather.coverage;
     sample.cloudType = weather.cloudType;
+    sample.storedRegionalType = weather.storedRegionalType;
     sample.weatherDensityModifier = weather.densityModifier;
     sample.weatherThicknessPotential = weather.localThicknessPotential;
     sample.heightFraction = EvaluateHeightFraction(worldPosition.y);
@@ -145,7 +146,7 @@ CloudDensitySample ComposeBaseCloudDensity(
     sample.localHeightFraction = geometry.localHeightFraction;
     float insideLocalColumn = sample.localHeightFraction >= 0.0 &&
         sample.localHeightFraction <= 1.0 ? 1.0 : 0.0;
-    // 높이 마스크가 없으면 AABB 바닥과 천장이 칼로 자른 듯 보인다. 단계 3은
+    // 높이 마스크가 없으면 local column 바닥과 천장이 칼로 자른 듯 보인다.
     // X/Z 덩어리 위치를 바꾸지 않고 Y 경계에서만 밀도를 0으로 부드럽게 줄인다.
     sample.heightProfile = EvaluateProfileEnvelope(
         sample.localHeightFraction, mixedBottomFadeEnd, mixedTopFadeStart);
@@ -206,6 +207,7 @@ CloudDensitySample EvaluateBaseCloudDensity(
         result.weatherUv = weather.uv;
         result.weatherCoverage = weather.coverage;
         result.cloudType = weather.cloudType;
+        result.storedRegionalType = weather.storedRegionalType;
         result.weatherDensityModifier = weather.densityModifier;
         result.weatherThicknessPotential = weather.localThicknessPotential;
         result.localThicknessMeters = localThickness;

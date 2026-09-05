@@ -5,7 +5,7 @@
 //  1. CPU가 Camera/Cloud/Light/Environment를 b0/b1/b3/b4에 복사한다.
 //  2. 앞선 DiagnosticScene 패스가 불투명 Scene Color와 Scene Depth를 만든다.
 //  3. 이 풀스크린 PS가 UV → 월드 레이 → 깊이 거리 순으로 복원한다.
-//  4. 레이와 AABB의 교차 구간을 구하고 Scene Depth보다 뒤를 잘라 낸다.
+//  4. 레이와 PlanarLayer의 교차 구간을 구하고 Scene Depth보다 뒤를 잘라 낸다.
 //  5. 월드 XZ Weather R/G/B로 배치·종류·밀도를 결정해 Base Shape를 만든다.
 //  6. Base가 비어 있지 않을 때만 Detail로 깎는다.
 //  7. 밀도가 있는 View 표본에서 태양 방향 Light Ray로 광학 깊이를 잰다.
@@ -66,9 +66,9 @@ struct CloudMarchDebug
     float segmentLength;   // 실제 적분 구간 길이(m).
     float sampledDensity;  // 대표 중간 위치의 최종 noise 밀도. hit가 없으면 0.
     float hit;             // 유효 적분 구간이면 1, 아니면 0.
-    float rawNoise;        // 대표 중간 위치의 threshold 전 value noise(0~1).
+    float rawNoise;        // 대표 중간 위치의 threshold 전 Base 조합값(0~1).
     float thresholdDensity;// coverage threshold와 remap만 적용한 밀도(0~1).
-    float heightFraction;  // 대표 위치의 AABB 정규화 높이. 바닥 0, 천장 1.
+    float heightFraction;  // 대표 위치의 PlanarLayer 정규화 높이. 바닥 0, 천장 1.
     float heightProfile;   // 대표 위치의 상·하단 fade 곱(0~1).
     float baseDensity;     // 대표 위치의 Detail 적용 전 큰 구름 밀도.
     float detailNoise;     // 대표 위치에서 실제로 샘플한 고주파 noise.
@@ -186,7 +186,7 @@ bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
         rayOrigin, rayDirection, sceneDistance, false, tStart, tEnd);
 }
 
-// AABB의 유효 구간을 noise × 높이 프로파일 밀도로 레이 마칭한다.
+// PlanarLayer의 유효 구간을 Texture3D × 로컬 프로파일 밀도로 레이 마칭한다.
 // 입력은 월드 위치(m), 정규화 월드 방향, 장면 거리(m)이고 출력은 합성 가능한
 // CloudResult와 관찰용 CloudMarchDebug다. 모든 실패 경로는 산란 0, 투과율 1의
 // 중립 결과를 반환해 배경을 바꾸지 않는다.
@@ -602,7 +602,7 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
     if (debugMode == 81)
     {
         float normalizedLift = marchDebug.localBaseLiftMeters /
-            max(localBaseLiftMaxMeters, 1.0);
+            max(maximumBaseLiftMeters, 1.0);
         return float4((saturate(normalizedLift) * marchDebug.hit).xxx, 1.0);
     }
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.

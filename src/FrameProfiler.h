@@ -18,6 +18,7 @@ struct FrameTimingSnapshot
     double fps = 0.0;
     double cpuFrameMs = 0.0;
     double gpuFrameMs = 0.0;
+    double gpuWeatherMapMs = 0.0;
     double gpuAtmosphereLutMs = 0.0;
     double gpuShadowCacheMs = 0.0;
     double gpuOpaqueSceneMs = 0.0;
@@ -25,6 +26,7 @@ struct FrameTimingSnapshot
     double gpuToneMapMs = 0.0;
     double rawCpuFrameMs = 0.0;
     double rawGpuFrameMs = 0.0;
+    double rawGpuWeatherMapMs = 0.0;
     double rawGpuAtmosphereLutMs = 0.0;
     double rawGpuShadowCacheMs = 0.0;
     double rawGpuOpaqueSceneMs = 0.0;
@@ -44,6 +46,7 @@ public:
     void RecordCpuMilliseconds(double milliseconds);
     void RecordGpuMilliseconds(
         double frameMilliseconds,
+        double weatherMilliseconds,
         double atmosphereMilliseconds,
         double shadowMilliseconds,
         double opaqueMilliseconds,
@@ -65,6 +68,7 @@ public:
     void BeginCpuFrame();
     void EndCpuFrame();
     void BeginGpuFrame(ID3D11DeviceContext* context);
+    void MarkWeatherMapEnd(ID3D11DeviceContext* context);
     void MarkAtmosphereLutEnd(ID3D11DeviceContext* context);
     void MarkShadowCacheEnd(ID3D11DeviceContext* context);
     void MarkOpaqueSceneEnd(ID3D11DeviceContext* context);
@@ -86,6 +90,7 @@ private:
     {
         ComPtr<ID3D11Query> disjoint;
         ComPtr<ID3D11Query> frameStart;
+        ComPtr<ID3D11Query> weatherEnd;
         ComPtr<ID3D11Query> atmosphereEnd;
         ComPtr<ID3D11Query> shadowEnd;
         ComPtr<ID3D11Query> opaqueEnd;

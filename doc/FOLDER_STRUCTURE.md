@@ -24,11 +24,11 @@ VolumetricCloud/
 | `Window.*` | Win32 창, DPI, 키보드·마우스 입력, resize 전달 |
 | `Camera.*` | FPS 카메라와 view/projection 역행렬 |
 | `Renderer.*` | D3D11 자원, 단일 High 프레임, 프리셋 적용, 핫 리로드 |
-| `NoiseLab.*` | F1~F4 ImGui, noise/weather preview, schema 39 export |
+| `NoiseLab.*` | F1~F4 ImGui, noise/weather preview, schema 40 export |
 | `DeveloperUiSettings.*` | `developer-ui.json`의 Zoom schema 1 원자 저장 |
-| `FrameProfiler.*` | Atmosphere/Shadow/Opaque/Cloud/Tone/Frame timestamp |
+| `FrameProfiler.*` | Weather/Atmosphere/Shadow/Opaque/Cloud/Tone/Frame timestamp |
 | `PresentationMath.h` | VSync와 tearing 지원 상태에 따른 Present 인수 계약 |
-| `WeatherMap.*` | 256² periodic Weather RGBA 생성과 hash |
+| `WeatherMap.*` | 256² periodic Weather RGBA CPU 기준·GPU build 계약과 hash |
 
 ## 현재 설정과 계약 `src/`
 
@@ -40,7 +40,11 @@ VolumetricCloud/
 | `EnvironmentParameters.h` | 80B EnvironmentCB(b4) |
 | `CloudDomainParameters.h` | 32B Planar-only DomainCB(b5) |
 | `Stage13NoiseVolumeMath.h` | 96B NoiseVolumeCB(b6)와 Texture3D CPU 기준 |
-| `CloudShapeParameters.h` | 64B non-Cirrus ShapeCB(b7) |
+| `CloudShapeParameters.h` | 48B vertical profile ShapeCB(b7) |
+| `WeatherColumnParameters.h` | 32B 두께·lift·타입 선택 WeatherColumnCB(b10) |
+| `CloudMotionParameters.h` | 세션 전역 XZ 방향과 m/s 속도 |
+| `CloudTypeSelection.h` | Fixed/Regional 유효 타입 resolver |
+| `Fnv1a64.h` | 표준 FNV-1a 64-bit 공통 구현 |
 | `CloudShapeDomainContract.h` | local top + lift + headroom domain fit |
 | `Stage12ShadowParameters.h` | 160B Balanced512 ShadowCB(b8) |
 | `AtmosphereParameters.h` | 물리 대기 CPU 설정 |
@@ -54,7 +58,7 @@ VolumetricCloud/
 | 파일 | 책임 |
 |---|---|
 | `CloudFormationSettings.*` | formation snapshot, strict range/domain-fit 검증, runtime 변환 |
-| `CloudFormationPresetStore.*` | 세 type·세 concept 내장 resolver와 Custom schema 1 |
+| `CloudFormationPresetStore.*` | 세 type·세 concept 내장 resolver와 Custom schema 2, schema 1 읽기 이관 |
 
 Custom 파일은 `captures/noise-lab/custom-cloud.json` 하나다. 구형 `cloud-presets` 디렉터리는 코드가 읽거나 삭제하지 않는다.
 
@@ -86,6 +90,7 @@ Custom 파일은 `captures/noise-lab/custom-cloud.json` 하나다. 구형 `cloud
 | `Stage14AtmosphereLut.hlsl` | 여섯 LUT compute entry |
 | `Stage14ToneMap.hlsl` | HDR → display 출력 |
 | `NoiseVolume.hlsl` | Base/Detail Texture3D 생성 CS |
+| `WeatherMapCompute.hlsl` | 8×8 thread group Weather RGBA8 생성 CS |
 | `NoiseLab.hlsl` | F1/F2 slice preview PS |
 | `*Parameters.hlsli` | 해당 C++ 구조체와 일치하는 cbuffer |
 
@@ -107,6 +112,9 @@ Stage10/11, Cirrus, LOD, Reference 전용 테스트는 삭제했다.
 
 | 파일 | 내용 |
 |---|---|
+| `RENDERING_PIPELINE_GUIDE.md` | 초기화·프레임·밀도·레이마칭·조명·대기 코드 흐름 |
+| `CBUFFER_REFERENCE.md` | b0~b9 CPU/HLSL 필드와 재패킹·파생·비활성 상태 |
+| `CLOUD_LIGHTING_TUNING_GUIDE.md` | F1~F4 파라미터, 기본값, 저장 범위와 증상별 튜닝 |
 | `ARCHITECTURE.md` | 현재 파이프라인, 자원, CB, 핫 리로드 |
 | `RAYMARCHING.md` | 현재 Planar High 수식 |
 | `PERFORMANCE.md` | 1080p gate와 profiler |
@@ -116,3 +124,7 @@ Stage10/11, Cirrus, LOD, Reference 전용 테스트는 삭제했다.
 | `changes/` | 구현 당시의 짧은 변경 이력 |
 
 `notes/`는 로컬 작업 일지이며 gitignore 대상이다. 공식 구조는 항상 `doc/`가 기준이다.
+
+첫 투입자는 `RENDERING_PIPELINE_GUIDE.md` → `CBUFFER_REFERENCE.md` →
+`CLOUD_LIGHTING_TUNING_GUIDE.md` 순서로 읽은 뒤, 수식이 필요할 때
+`RAYMARCHING.md`를 참조한다.

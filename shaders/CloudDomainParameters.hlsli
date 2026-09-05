@@ -8,7 +8,9 @@
 
 cbuffer CloudDomainCB : register(b5)
 {
+    // 구름층 외곽의 시작 월드 Y(m). 증가하면 구름층 전체가 위로 이동한다.
     float cloudBottomAltitude;
+    // local thickness + base lift의 최대 수직 공간(m). 부족하면 top clipping이 난다.
     float cloudLayerThickness;
     float maxViewTraceDistance;
     float viewTraceFadeStartDistance;

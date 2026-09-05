@@ -2,7 +2,7 @@
 
 ## 목적
 
-Stage 15B 실험 상태를 복구 가능한 commit으로 보존한 뒤, 사용자가 이해하고 유지할 수 있는 Full-resolution High 단일 렌더러로 축소한다. 화면 최종 승인은 아직 사용자 검증 전이다.
+Stage 15B 실험 상태를 복구 가능한 commit으로 보존한 뒤, 사용자가 이해하고 유지할 수 있는 Full-resolution High 단일 렌더러로 축소한다. 2026-09-05 사용자 최종 화면 승인을 완료했다.
 
 ## 최종 구조
 
@@ -147,3 +147,27 @@ Stratus/Cumulus/Mixed의 coverage, density, extinction, detail, Weather threshol
   확인됐다. Present CPU 테스트는 VSync/tearing/fallback 세 조합을 고정한다.
 - 보완 후 Debug/Release 빌드, Debug CPU `25/25`, Release 전체 CTest `33/33`을 통과했다.
 - 사용자 화면 재검증과 최종 승인은 아직 미완료다.
+## 2026-09-04 Weather GPU·소유권 후속 정리
+
+- Weather Map RGBA 생성을 8×8 Compute Shader로 이전하고, 임시 UAV 성공 결과만
+  안정된 공개 texture/SRV에 복사한다.
+- G는 모든 타입에서 지역별 원본을 저장하며 Fixed/Regional 선택은 새 b10에서 해석한다.
+- b7을 48B profile 전용으로 줄이고 두께·lift·selection을 32B b10으로 분리했다.
+- 구름 방향/속도를 세션 전역 Motion으로 분리해 타입·콘셉트·Custom 전환 시 보존한다.
+- Custom schema 2는 motion을 저장하지 않고 selection을 저장하며 schema 1을 이관한다.
+- 표준 FNV-1a 64-bit offset basis로 공통화하고 Weather/Atmosphere LUT GPU timing을
+  별도 표시한다. F3 표시명은 `Sun altitude`이며 내부 elevation 키는 유지한다.
+- CPU/GPU Weather RGBA8는 최대 1 LSB 차이만 허용하고, selection/motion 변경은
+  generation을 건너뛰며 generator 변경은 정확히 한 번 생성하는 smoke로 고정했다.
+- Weather shader의 정상 hot reload는 공개 texture/SRV identity를 유지하고, 강제 컴파일
+  오류는 shader object·texture hash·generation·resource identity를 모두 보존한다.
+- Debug/Release 빌드와 Release 전체 CTest `36/36`을 통과했다. RTX 4080 SUPER의
+  최종 1080p High 1,440표본은 Cloud/Frame p95 `6.036/6.866ms`였다.
+
+## 2026-09-05 사용자 최종 승인
+
+- 사용자가 최종 렌더 결과와 Stage 15 Weather GPU·파라미터 소유권 정리를 승인했다.
+- 자동 검증은 Debug/Release 빌드, Release 전체 CTest `36/36`, Weather hot-reload
+  rollback, D3D11 오류 0과 1080p High 성능 gate 통과 상태다.
+- 이 커밋을 원격 `feature/stage15-final-quality`에 게시한 뒤 PR merge commit으로만
+  `main`에 병합하고, 병합된 main에 annotated `stage15-approved` 태그를 붙인다.

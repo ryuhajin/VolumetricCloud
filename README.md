@@ -2,7 +2,7 @@
 
 DirectX 11과 HLSL로 대규모 볼류메트릭 클라우드의 형성, 조명, 대기 합성을 학습하는 Windows 프로젝트입니다. 현재 작업 브랜치는 실험용 선택지를 걷어 내고 **Full-resolution High 한 경로**만 유지합니다.
 
-사용자 최종 화면 승인은 아직 진행 전입니다. 단계 0~8, 13, 9, 12, 14의 승인 이력은 보존하지만 Stage 10 저해상도 복원, Stage 11 Temporal, Cirrus 실험은 최종 런타임에서 폐기했습니다.
+2026-09-05 사용자 최종 화면 승인을 완료했습니다. 단계 0~8, 13, 9, 12, 14의 승인 이력은 보존하며 Stage 10 저해상도 복원, Stage 11 Temporal, Cirrus 실험은 최종 런타임에서 폐기했습니다.
 
 ## 최종 렌더링 경로
 
@@ -22,15 +22,15 @@ Tone Mapping → Back Buffer
 
 - 10km × 10km 지면과 20m × 60m × 20m 건물로 된 단일 진단 장면
 - meter 단위 Planar cloud layer와 최대 50km View 추적
-- 256² Weather Map RGBA와 Base 128³/Detail 32³ Texture3D
+- 8×8 Compute로 생성하는 256² Weather Map RGBA와 Base 128³/Detail 32³ Texture3D
 - Weather 기반 물리 두께, local base lift, footprint와 200m 상단 여유 검증
 - Stratus, Cumulus, Mixed 타입 formation
 - Urban Fair Weather, Meadow Broken Clouds, Snow Overcast 장면 콘셉트
 - Rayleigh·Mie·오존 대기 LUT, HDR 지면/구름 조명, ACES tone mapping
 - Near/Far Balanced512 Deep Optical-Depth Cache
 - include 의존성 단위의 동기·원자적 셰이더 핫 리로드
-- formation만 저장하는 `captures/noise-lab/custom-cloud.json` schema 1
-- 현재 런타임 상태만 내보내는 Noise Lab snapshot schema 39
+- motion을 제외한 formation과 타입 선택을 저장하는 `captures/noise-lab/custom-cloud.json` schema 2
+- 현재 런타임 상태만 내보내는 Noise Lab snapshot schema 40
 
 ## High 고정 계약
 
@@ -121,6 +121,10 @@ Hot reload smoke는 build 아래의 표식 있는 shader 복사본만 수정합�
 
 ## 문서
 
+- 처음 투입됐다면 [렌더링 파이프라인 가이드](doc/RENDERING_PIPELINE_GUIDE.md) → [상수버퍼 참조](doc/CBUFFER_REFERENCE.md) → [구름·빛 튜닝 가이드](doc/CLOUD_LIGHTING_TUNING_GUIDE.md) 순서로 읽습니다.
+- [렌더링 파이프라인 가이드](doc/RENDERING_PIPELINE_GUIDE.md) — 초기화부터 밀도·조명·대기·Tone까지 실제 코드 흐름
+- [상수버퍼 참조](doc/CBUFFER_REFERENCE.md) — b0~b9 CPU/HLSL 필드, 단위, 재패킹과 비활성 상태
+- [구름·빛 튜닝 가이드](doc/CLOUD_LIGHTING_TUNING_GUIDE.md) — F1~F4/UI/HLSL 연결, 프리셋 기본값과 증상별 레시피
 - [아키텍처](doc/ARCHITECTURE.md)
 - [레이마칭 수식](doc/RAYMARCHING.md)
 - [성능 기준](doc/PERFORMANCE.md)
