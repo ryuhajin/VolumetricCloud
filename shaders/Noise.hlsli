@@ -1,3 +1,6 @@
+// [학습 지도] t2 Weather/t3 Base/t4 Detail + b1/b6/b7/b10 → 밀도 표본 → View/Light/Deep Shadow. 좌표 m→cycle, rho 무차원.
+// [수정 안내] [직접 조절]의 CPU/UI 원본을 수정한다. 강제 범위는 입력 계약이며 화질 보장이 아니다.
+// 별도 권장 구간이 없는 값은 표시된 기본값을 비교 출발점으로 삼는다. b/t/u/s는 버퍼/읽기/쓰기/샘플러 슬롯.
 // ============================================================================
 //  Noise.hlsli - 구름 렌더와 Noise Lab이 함께 사용하는 단계 5 밀도 함수
 // ----------------------------------------------------------------------------
@@ -38,17 +41,16 @@ struct CloudDensitySample
     float localHeightFraction;// 로컬 바닥=0, 로컬 상단=1인 정규화 높이.
     float heightProfile;     // 위·아래 경계를 부드럽게 지우는 마스크(0~1).
     float typedShapeProfile; // 높이/Type이 정한 shape threshold 마스크(0~1).
-    float effectiveShapeCoverage;// global R × Weather R × shape profile.
+    float effectiveShapeCoverage;// coverage × lerp(0.70,1,R) × footprintFactor, [0,1].
     float baseSupport;       // Detail/밀도 배율 전 Base shape가 존재하면 1.
     float weatherCoverage;   // Weather Map R 채널(0~1).
-    float cloudType;         // Weather Map G 채널(0~1).
-    float storedRegionalType;// 선택 정책 적용 전 Weather Map G 원본.
+    float cloudType;         // b10 선택을 적용한 유효 타입(0~1); 저장된 G와 다를 수 있다.
     float weatherDensityModifier; // Weather B를 0.5~1.5로 바꾼 배율.
     float weatherThicknessPotential;// Weather A 로컬 두께 보간값(0~1).
-    float baseDensity;       // 단계 3까지의 큰 구름 형태(0~1).
+    float baseDensity;       // 배율까지 적용한 큰 형태. 비음수이며 1을 넘을 수 있다.
     float detailNoise;       // 실제 샘플한 고주파 침식 noise(0~1).
-    float erosion;           // detailNoise × detailErosionStrength.
-    float finalDensity;      // saturate(baseDensity - erosion), 적분 입력.
+    float erosion;           // detailNoise × strength × boundary, [0,1].
+    float finalDensity;      // Detail 적용 시 saturate(base-erosion); 생략 시 Base 그대로(1 초과 가능).
     float detailSampled;     // Detail 함수를 호출했으면 1, 생략했으면 0.
     float3 noiseUvw;         // Base Texture3D의 연속 좌표(cycle).
     float3 detailNoiseUvw;   // Detail Texture3D의 연속 좌표(cycle), 생략 시 0.
@@ -61,8 +63,11 @@ struct CloudDensitySample
 // 단계 4는 value만 사용하지만 이후 fBm/Worley도 이 구조를 반환하게 한다.
 struct NoiseFieldSample
 {
+    // [파생 값] RGBA 조합 뒤 [0,1] noise scalar. 아직 최종 밀도가 아니다.
     float value;
+    // [파생 값] xyz 반복 texture 좌표 cycle; 현재 조회 함수에서는 frac된 [0,1).
     float3 uvw;
+    // [파생 값] x/y/z/w=샘플한 R/G/B/A [0,1]; 생성 규격과 weights를 함께 해석.
     float4 channels;
 };
 
@@ -80,6 +85,8 @@ float EvaluateHeightFraction(float worldY)
 // Weather와 물리 컬럼 형상 함수를 가져온다.
 #include "Weather.hlsli"
 
+// [문턱 재매핑] coverage=0.4이면 noise 0.6 이하를 비우고 나머지를 0~1로 펼친다.
+// coverage가 커질수록 더 많은 noise가 살아남는다. 0 근처는 나눗셈을 막고 0을 반환한다.
 float RemapCoverage(float rawNoise, float coverageValue)
 {
     float safeCoverage = saturate(coverageValue);
@@ -123,6 +130,11 @@ NoiseFieldSample SampleDetailErosionNoise(float3 worldPosition, float timeSecond
     return result;
 }
 
+// [밀도 조립] 입력은 월드 m, Base [0,1], Weather RGBA 해석값이다.
+// 1. 기둥의 두께/lift/정규화 높이를 계산한다.
+// 2. Weather support로 없는 지역을 지우고 footprint로 수평 문턱을 조절한다.
+// 3. 문턱 통과 밀도*수직 profile*densityMultiplier*Weather B 배율을 만든다.
+// Base는 1을 넘을 수 있다. Detail 생략 경로에 무조건 [0,1]이라고 가정하지 않는다.
 CloudDensitySample ComposeBaseCloudDensity(
     float3 worldPosition, NoiseFieldSample baseNoise, WeatherSample weather)
 {
@@ -135,7 +147,6 @@ CloudDensitySample ComposeBaseCloudDensity(
     sample.weatherUv = weather.uv;
     sample.weatherCoverage = weather.coverage;
     sample.cloudType = weather.cloudType;
-    sample.storedRegionalType = weather.storedRegionalType;
     sample.weatherDensityModifier = weather.densityModifier;
     sample.weatherThicknessPotential = weather.localThicknessPotential;
     sample.heightFraction = EvaluateHeightFraction(worldPosition.y);
@@ -149,10 +160,9 @@ CloudDensitySample ComposeBaseCloudDensity(
     // 높이 마스크가 없으면 local column 바닥과 천장이 칼로 자른 듯 보인다.
     // X/Z 덩어리 위치를 바꾸지 않고 Y 경계에서만 밀도를 0으로 부드럽게 줄인다.
     sample.heightProfile = EvaluateProfileEnvelope(
-        sample.localHeightFraction, mixedBottomFadeEnd, mixedTopFadeStart);
+        sample.localHeightFraction, bottomFadeEnd, topFadeStart);
     {
-        float typedVerticalProfile = EvaluatePhysicalTypedVerticalProfile(
-            sample.localHeightFraction, sample.cloudType);
+        float typedVerticalProfile = EvaluateCommonVerticalProfile(sample.localHeightFraction);
         float typedFootprintScale = EvaluatePhysicalTypedFootprintScale(
             sample.localHeightFraction, sample.cloudType);
         sample.typedShapeProfile = typedVerticalProfile * typedFootprintScale;
@@ -181,6 +191,9 @@ CloudDensitySample ComposeBaseCloudDensity(
 }
 
 // Weather와 로컬 형상만으로 확실히 빈 표본이면 Base Texture3D를 읽지 않는다.
+// [support precheck] Texture3D를 읽기 전에 Weather와 높이만으로 확실한 빈 공간을 찾는다.
+// 이 판정은 빛/밀도를 새로 만드는 것이 아니라 비싼 fetch를 생략한다.
+// 진단 필드는 빈 곳에서도 Weather/기둥 정보를 남겨 어떤 단계에서 사라졌는지 보여 준다.
 CloudDensitySample EvaluateBaseCloudDensity(
     float3 worldPosition, float timeSeconds)
 {
@@ -190,8 +203,7 @@ CloudDensitySample EvaluateBaseCloudDensity(
         worldPosition.y, weather);
     float localThickness = geometry.localThicknessMeters;
     float localHeight = geometry.localHeightFraction;
-    float verticalProfile = EvaluatePhysicalTypedVerticalProfile(
-        localHeight, weather.cloudType);
+    float verticalProfile = EvaluateCommonVerticalProfile(localHeight);
     float weatherSupport = smoothstep(0.02, 0.20, weather.coverage);
     bool definitelyEmpty = localHeight < 0.0 || localHeight > 1.0 ||
         verticalProfile <= 0.0 || weatherSupport <= 0.0 ||
@@ -207,7 +219,6 @@ CloudDensitySample EvaluateBaseCloudDensity(
         result.weatherUv = weather.uv;
         result.weatherCoverage = weather.coverage;
         result.cloudType = weather.cloudType;
-        result.storedRegionalType = weather.storedRegionalType;
         result.weatherDensityModifier = weather.densityModifier;
         result.weatherThicknessPotential = weather.localThicknessPotential;
         result.localThicknessMeters = localThickness;
@@ -230,8 +241,7 @@ float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
     float localHeightFraction = geometry.localHeightFraction;
     if (localHeightFraction >= 0.0 && localHeightFraction <= 1.0)
     {
-        float typedVerticalProfile = EvaluatePhysicalTypedVerticalProfile(
-            localHeightFraction, weather.cloudType);
+        float typedVerticalProfile = EvaluateCommonVerticalProfile(localHeightFraction);
         float weatherSupport = smoothstep(0.02, 0.20, weather.coverage);
         if (typedVerticalProfile > 0.0 && weatherSupport > 0.0)
         {
@@ -251,12 +261,16 @@ float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
                 weather.densityModifier;
         }
     }
-    return lightDensity;
+    return ShapeCloudDensity(lightDensity);
 }
 
 // Base Shape 뒤에 선택적으로 Detail Erosion을 적용한다.
 // sampleDetail=false, 빈 Base, strength=0 경로는 Detail 함수 자체를 호출하지 않는다.
 // 이 조기 반환은 단계 4의 기능 요구이며 단계 9의 레이 스텝 최적화와는 별개다.
+// [Detail 순서] 1. Base를 평가. 2. 필요하고 Base>0/strength>0일 때만 Detail fetch.
+// 3. boundary=1-smoothstep(0.45,0.90,Base): 약한 경계는 크게, 조밀한 내부는 적게 깎는다.
+// 4. saturate(Base-Detail*strength*boundary). 침식이 과하면 작은 구름이 사라진다.
+// sampleDetail=false는 Base 그대로 반환하므로 Shadow 경로와 View 최종 표면은 의도적으로 다르다.
 CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
                                       bool sampleDetail)
 {
@@ -278,6 +292,9 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
             boundary;
         sample.finalDensity = saturate(sample.baseDensity - sample.erosion);
     }
+    // 침식 문턱/강도는 raw Base 기준으로 유지하고 결과만 공통 변환한다.
+    sample.baseDensity = ShapeCloudDensity(sample.baseDensity);
+    sample.finalDensity = ShapeCloudDensity(sample.finalDensity);
     return sample;
 }
 

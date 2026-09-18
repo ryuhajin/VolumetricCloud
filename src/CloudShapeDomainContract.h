@@ -28,20 +28,8 @@ inline float ActiveMaximumThicknessMeters(
     const CloudTypeSelection& inputSelection)
 {
     const WeatherColumnSettings column = SanitizeWeatherColumnSettings(input);
-    switch (SanitizeCloudTypeSelection(inputSelection).mode)
-    {
-    case CloudTypeSelectionMode::FixedStratus:
-        return column.stratusMaximumThicknessMeters;
-    case CloudTypeSelectionMode::FixedMixed:
-        return 0.5f * (column.stratusMaximumThicknessMeters +
-                       column.cumulusMaximumThicknessMeters);
-    case CloudTypeSelectionMode::FixedCumulus:
-        return column.cumulusMaximumThicknessMeters;
-    case CloudTypeSelectionMode::RegionalBlend:
-    default:
-        return std::max(column.stratusMaximumThicknessMeters,
-                        column.cumulusMaximumThicknessMeters);
-    }
+    (void)inputSelection;
+    return column.maximumThicknessMeters;
 }
 
 inline FitResult EvaluateFit(

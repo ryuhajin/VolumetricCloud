@@ -1,3 +1,6 @@
+// [학습 지도] Scene b0 + Shadow b8/Atmosphere b9와 LUT → Scene HDR RTV/D32 DSV → Cloud t0/t1. 월드 m/linear RGB.
+// [수정 안내] [직접 조절]의 CPU/UI 원본을 수정한다. 강제 범위는 입력 계약이며 화질 보장이 아니다.
+// 별도 권장 구간이 없는 값은 표시된 기본값을 비교 출발점으로 삼는다. b/t/u/s는 버퍼/읽기/쓰기/샘플러 슬롯.
 // ============================================================================
 //  DiagnosticScene.hlsl - 구름보다 먼저 그리는 단계 1 불투명 진단 장면
 // ----------------------------------------------------------------------------
@@ -24,7 +27,9 @@ struct VSInput
 {
     float3 position : POSITION; // 월드 공간 정점 위치(m).
     float3 color : COLOR;       // 조명 없는 진단용 linear RGB 색.
+    // [파생 값] xyz 월드 면 방향; 픽셀에서 normalize, 입사각 가중치 계산.
     float3 normal : NORMAL;     // 박스는 면별 flat normal, 지면은 +Y.
+    // [파생 값] 0 지면 preset/1 건물 콘크리트. nointerpolation으로 삼각형 내부에서 ID 혼합 금지.
     uint materialId : MATERIALID; // 0=지면 preset, 1=건물 콘크리트.
 };
 
@@ -33,8 +38,11 @@ struct VSOutput
 {
     float4 position : SV_POSITION; // clip 위치. rasterizer가 장치 깊이 [0,1]도 계산한다.
     float3 color : COLOR;           // 삼각형 안에서 보간할 linear RGB.
+    // [파생 값] 보간한 xyz 월드 위치 m. 대기 고도/구름 표면 그림자 lookup에 사용.
     float3 worldPosition : TEXCOORD0;
+    // [파생 값] xyz 월드 면 방향; 픽셀에서 normalize, 입사각 가중치 계산.
     float3 normal : TEXCOORD1;
+    // [파생 값] 0 지면 preset/1 건물 콘크리트. nointerpolation으로 삼각형 내부에서 ID 혼합 금지.
     nointerpolation uint materialId : TEXCOORD2;
 };
 
@@ -57,6 +65,11 @@ VSOutput VSMain(VSInput input)
 
 // 불투명 진단 표면의 색을 Scene Color에 기록한다.
 // 깊이는 반환하지 않아도 고정 기능 rasterizer가 SV_POSITION에서 D32에 기록한다.
+// [표면 조명 순서] 1. 월드 normal과 대기 태양광(km 고도)을 구한다.
+// 2. max(dot(N,L),0)로 기울어진 면의 입사량을 줄이고 cache 표면 계수를 적용한다.
+// 3. 하늘 irradiance에 normal.y 가중치를 준다. 4. albedo/pi로 Lambert 반사한다.
+// 출력 Scene HDR와 고정 기능 depth를 다음 Cloud 패스가 소비한다.
+// Surface shadow는 구름 내부 광학 두께와 별개이며 albedo를 올리면 반사광도 밝아진다.
 float4 PSMain(VSOutput input) : SV_TARGET
 {
     float3 normal = normalize(input.normal);

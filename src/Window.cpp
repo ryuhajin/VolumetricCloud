@@ -236,7 +236,7 @@ void Window::ApplyInitialPortfolioCamera()
     if (!m_camera)
         return;
     ApplyCameraPreset(
-        Stage13CameraPresetId::HeroDepth, L"포트폴리오 Hero/Depth(F5)");
+        Stage13CameraPresetId::HeroDepth, L"지상 눈높이 · 건물 앞(F5)");
     UpdateDebugTitle();
 }
 
@@ -245,10 +245,12 @@ void Window::ApplyCameraPreset(Stage13CameraPresetId id,
 {
     if (!m_camera)
         return;
-    const Stage13CameraPreset& preset = stage13camera::Get(id);
+    const Stage13CameraPreset preset = id == Stage13CameraPresetId::CloudOverview && m_renderer
+        ? stage13camera::FromSunDirection(m_renderer->LightSettings().directionToSun)
+        : stage13camera::Get(id);
     m_camera->SetClipPlanes(
         stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
-    m_camera->SetFovYDegrees(60.0f);
+    m_camera->SetFovYDegrees(stage13camera::kFovYDegrees);
     m_camera->SetLookAt(preset.position, preset.target);
     SetCameraPresetName(displayName);
 }
@@ -391,16 +393,16 @@ LRESULT Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         if (m_camera && wParam == VK_F5)
             ApplyCameraPreset(Stage13CameraPresetId::HeroDepth,
-                              L"포트폴리오 Hero/Depth(F5)");
+                              L"지상 눈높이 · 건물 앞(F5)");
         else if (m_camera && wParam == VK_F6)
             ApplyCameraPreset(Stage13CameraPresetId::GroundHorizon,
-                              L"지상 수평선(F6)");
+                              L"지상 눈높이 · 건물 반대편(F6)");
         else if (m_camera && wParam == VK_F7)
-            ApplyCameraPreset(Stage13CameraPresetId::InsideLayer,
-                              L"구름 내부(F7)");
+            ApplyCameraPreset(Stage13CameraPresetId::CloudOverview,
+                              L"태양 방향 조감(F7)");
         else if (m_camera && wParam == VK_F8)
             ApplyCameraPreset(Stage13CameraPresetId::AboveLayer,
-                              L"구름 위 하향(F8)");
+                              L"상공 완만한 하향(F8)");
         else
             return 0;
 

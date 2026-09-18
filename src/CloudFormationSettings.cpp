@@ -1,3 +1,4 @@
+#include "FormationParameterRanges.h"
 // ============================================================================
 //  CloudFormationSettings.cpp - Stage 15 Weather/Shape/Domain 소유권 계약
 // ============================================================================
@@ -17,11 +18,11 @@ bool FiniteIn(float v, float lo, float hi)
 
 bool ValidChannel(const PeriodicChannelSettings& v)
 {
-    return v.macroPeriod >= 1u && v.macroPeriod <= 8u &&
-        v.detailPeriod >= 2u && v.detailPeriod <= 16u &&
+    return v.macroPeriod >= formationrange::macroMin && v.macroPeriod <= formationrange::macroMax &&
+        v.detailPeriod >= formationrange::detailMin && v.detailPeriod <= formationrange::detailMax &&
         FiniteIn(v.detailWeight, 0.0f, 1.0f) &&
-        FiniteIn(v.bias, -0.5f, 0.5f) &&
-        FiniteIn(v.contrast, 0.25f, 3.0f);
+        FiniteIn(v.bias, formationrange::biasMin, formationrange::biasMax) &&
+        FiniteIn(v.contrast, formationrange::contrastMin, formationrange::contrastMax);
 }
 
 bool Near(float a, float b, float e = 1.0e-5f)
@@ -57,7 +58,7 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
     const auto preset = static_cast<std::uint32_t>(value.weatherPreset);
     const auto selection = static_cast<std::uint32_t>(value.typeSelection.mode);
     if (preset > static_cast<std::uint32_t>(Stage5WeatherPreset::ChannelDebug) ||
-        selection > static_cast<std::uint32_t>(CloudTypeSelectionMode::RegionalBlend))
+        selection > static_cast<std::uint32_t>(CloudTypeSelectionMode::FixedCumulus))
         return false;
 
     const auto& generator = value.weather.generator;
@@ -65,41 +66,36 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
     const CloudShapeParameters safeShape = SanitizeCloudShapeParameters(value.shape);
     const WeatherColumnSettings safeColumn = SanitizeWeatherColumnSettings(column);
     return FiniteIn(value.coverage, 0.0f, 1.0f) &&
-        FiniteIn(value.densityMultiplier, 0.0f, 5.0f) &&
-        FiniteIn(value.extinctionPerMeter, 0.000001f, 0.01f) &&
+        FiniteIn(value.densityMultiplier, 0.0f, formationrange::densityMax) &&
+        FiniteIn(value.extinctionPerMeter, formationrange::extinctionMin, formationrange::extinctionMax) &&
         FiniteIn(value.detailErosion, 0.0f, 1.0f) &&
-        ValidChannel(generator.coverage) && ValidChannel(generator.cloudType) &&
+        ValidChannel(generator.coverage) &&
         ValidChannel(generator.density) && ValidChannel(generator.localThickness) &&
         FiniteIn(generator.coverageThreshold, 0.0f, 1.0f) &&
-        FiniteIn(generator.coverageSoftness, 0.02f, 0.8f) &&
+        FiniteIn(generator.coverageSoftness, formationrange::softnessMin, formationrange::softnessMax) &&
         FiniteIn(generator.densityCoverageInfluence, 0.0f, 1.0f) &&
         FiniteIn(generator.thicknessCoverageInfluence, 0.0f, 1.0f) &&
-        FiniteIn(value.weather.worldSizeMeters, 17600.0f, 160000.0f) &&
-        Near(column.stratusMinimumThicknessMeters, safeColumn.stratusMinimumThicknessMeters) &&
-        Near(column.stratusMaximumThicknessMeters, safeColumn.stratusMaximumThicknessMeters) &&
-        Near(column.cumulusMinimumThicknessMeters, safeColumn.cumulusMinimumThicknessMeters) &&
-        Near(column.cumulusMaximumThicknessMeters, safeColumn.cumulusMaximumThicknessMeters) &&
+        FiniteIn(value.weather.worldSizeMeters, 3000.0f, 160000.0f) &&
+        Near(column.minimumThicknessMeters, safeColumn.minimumThicknessMeters) &&
+        Near(column.maximumThicknessMeters, safeColumn.maximumThicknessMeters) &&
+        Near(value.shape.bottomFadeEnd, safeShape.bottomFadeEnd) &&
+        Near(value.shape.topFadeStart, safeShape.topFadeStart) &&
+        Near(value.shape.lowerDensityScale, safeShape.lowerDensityScale) &&
+        Near(value.shape.upperTransitionStart, safeShape.upperTransitionStart) &&
+        Near(value.shape.upperTransitionEnd, safeShape.upperTransitionEnd) &&
         Near(column.maximumBaseLiftMeters, safeColumn.maximumBaseLiftMeters) &&
-        Near(value.shape.stratusBottomFadeEnd, safeShape.stratusBottomFadeEnd) &&
-        Near(value.shape.stratusTopFadeStart, safeShape.stratusTopFadeStart) &&
-        Near(value.shape.mixedBottomFadeEnd, safeShape.mixedBottomFadeEnd) &&
-        Near(value.shape.mixedTopFadeStart, safeShape.mixedTopFadeStart) &&
-        Near(value.shape.cumulusBottomFadeEnd, safeShape.cumulusBottomFadeEnd) &&
-        Near(value.shape.cumulusTopFadeStart, safeShape.cumulusTopFadeStart) &&
-        Near(value.shape.cumulusUpperMassBottom, safeShape.cumulusUpperMassBottom) &&
-        Near(value.shape.cumulusUpperMassStart, safeShape.cumulusUpperMassStart) &&
-        Near(value.shape.cumulusUpperMassEnd, safeShape.cumulusUpperMassEnd) &&
         Near(value.shape.footprintCoverageInfluence,
              safeShape.footprintCoverageInfluence) &&
-        FiniteIn(value.domainBottomMeters, -100000.0f, 100000.0f) &&
-        FiniteIn(value.domainThicknessMeters, 1.0f, 100000.0f) &&
-        FiniteIn(value.maximumViewTraceDistanceMeters, 1.0f, 200000.0f) &&
+        FiniteIn(value.shape.densityShaping, 0.0f, 1.0f) &&
+        FiniteIn(value.domainBottomMeters, formationrange::bottomMin, formationrange::bottomMax) &&
+        FiniteIn(value.domainThicknessMeters, 1.0f, formationrange::domainMax) &&
+        FiniteIn(value.maximumViewTraceDistanceMeters, 1.0f, formationrange::baseSizeMax) &&
         FiniteIn(value.viewTraceFadeStartDistanceMeters, 0.0f,
                  value.maximumViewTraceDistanceMeters) &&
-        FiniteIn(value.maximumLightTraceDistanceMeters, 1.0f, 200000.0f) &&
-        FiniteIn(value.baseNoiseWorldSizeMeters, 1.0f, 200000.0f) &&
-        FiniteIn(value.baseNoiseVerticalWorldSizeMeters, 1.0f, 200000.0f) &&
-        FiniteIn(value.detailNoiseWorldSizeMeters, 1.0f, 100000.0f);
+        FiniteIn(value.maximumLightTraceDistanceMeters, 1.0f, formationrange::baseSizeMax) &&
+        FiniteIn(value.baseNoiseWorldSizeMeters, 1.0f, formationrange::baseSizeMax) &&
+        FiniteIn(value.baseNoiseVerticalWorldSizeMeters, 1.0f, formationrange::baseSizeMax) &&
+        FiniteIn(value.detailNoiseWorldSizeMeters, 1.0f, formationrange::domainMax);
 }
 
 CloudFormationSettings SanitizeCloudFormationSettings(const CloudFormationSettings& value)
@@ -108,24 +104,24 @@ CloudFormationSettings SanitizeCloudFormationSettings(const CloudFormationSettin
     const auto finiteOr = [](float v, float fallback)
     { return std::isfinite(v) ? v : fallback; };
     result.coverage = std::clamp(finiteOr(result.coverage, 0.38f), 0.0f, 1.0f);
-    result.densityMultiplier = std::clamp(finiteOr(result.densityMultiplier, 1.10f), 0.0f, 5.0f);
-    result.extinctionPerMeter = std::clamp(finiteOr(result.extinctionPerMeter, 0.00036f), 0.000001f, 0.01f);
+    result.densityMultiplier = std::clamp(finiteOr(result.densityMultiplier, 1.10f), 0.0f, formationrange::densityMax);
+    result.extinctionPerMeter = std::clamp(finiteOr(result.extinctionPerMeter, 0.00036f), formationrange::extinctionMin, formationrange::extinctionMax);
     result.detailErosion = std::clamp(finiteOr(result.detailErosion, 0.24f), 0.0f, 1.0f);
     if (static_cast<std::uint32_t>(result.weatherPreset) >
         static_cast<std::uint32_t>(Stage5WeatherPreset::ChannelDebug))
         result.weatherPreset = Stage5WeatherPreset::PeriodicPerlin;
     result.weather = SanitizeWeatherMapDefinition(result.weather);
-    result.weather.worldSizeMeters = std::clamp(result.weather.worldSizeMeters, 17600.0f, 160000.0f);
+    result.weather.worldSizeMeters = std::clamp(result.weather.worldSizeMeters, 3000.0f, 160000.0f);
     result.typeSelection = SanitizeCloudTypeSelection(result.typeSelection);
     result.shape = SanitizeCloudShapeParameters(result.shape);
-    result.domainBottomMeters = std::clamp(finiteOr(result.domainBottomMeters, 1800.0f), -100000.0f, 100000.0f);
-    result.domainThicknessMeters = std::clamp(finiteOr(result.domainThicknessMeters, 3700.0f), 1.0f, 100000.0f);
-    result.maximumViewTraceDistanceMeters = std::clamp(finiteOr(result.maximumViewTraceDistanceMeters, 50000.0f), 1.0f, 200000.0f);
+    result.domainBottomMeters = std::clamp(finiteOr(result.domainBottomMeters, 1800.0f), formationrange::bottomMin, formationrange::bottomMax);
+    result.domainThicknessMeters = std::clamp(finiteOr(result.domainThicknessMeters, 3700.0f), 1.0f, formationrange::domainMax);
+    result.maximumViewTraceDistanceMeters = std::clamp(finiteOr(result.maximumViewTraceDistanceMeters, 50000.0f), 1.0f, formationrange::baseSizeMax);
     result.viewTraceFadeStartDistanceMeters = std::clamp(finiteOr(result.viewTraceFadeStartDistanceMeters, 40000.0f), 0.0f, result.maximumViewTraceDistanceMeters);
-    result.maximumLightTraceDistanceMeters = std::clamp(finiteOr(result.maximumLightTraceDistanceMeters, 20000.0f), 1.0f, 200000.0f);
-    result.baseNoiseWorldSizeMeters = std::clamp(finiteOr(result.baseNoiseWorldSizeMeters, 12000.0f), 1.0f, 200000.0f);
-    result.baseNoiseVerticalWorldSizeMeters = std::clamp(finiteOr(result.baseNoiseVerticalWorldSizeMeters, 12000.0f), 1.0f, 200000.0f);
-    result.detailNoiseWorldSizeMeters = std::clamp(finiteOr(result.detailNoiseWorldSizeMeters, 2000.0f), 1.0f, 100000.0f);
+    result.maximumLightTraceDistanceMeters = std::clamp(finiteOr(result.maximumLightTraceDistanceMeters, 20000.0f), 1.0f, formationrange::baseSizeMax);
+    result.baseNoiseWorldSizeMeters = std::clamp(finiteOr(result.baseNoiseWorldSizeMeters, 12000.0f), 1.0f, formationrange::baseSizeMax);
+    result.baseNoiseVerticalWorldSizeMeters = std::clamp(finiteOr(result.baseNoiseVerticalWorldSizeMeters, 12000.0f), 1.0f, formationrange::baseSizeMax);
+    result.detailNoiseWorldSizeMeters = std::clamp(finiteOr(result.detailNoiseWorldSizeMeters, 2000.0f), 1.0f, formationrange::domainMax);
     return result;
 }
 
@@ -226,7 +222,6 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
 {
     if (a.weatherPreset != b.weatherPreset || a.typeSelection.mode != b.typeSelection.mode ||
         !ChannelEqual(a.weather.generator.coverage, b.weather.generator.coverage, epsilon) ||
-        !ChannelEqual(a.weather.generator.cloudType, b.weather.generator.cloudType, epsilon) ||
         !ChannelEqual(a.weather.generator.density, b.weather.generator.density, epsilon) ||
         !ChannelEqual(a.weather.generator.localThickness, b.weather.generator.localThickness, epsilon))
         return false;
@@ -237,8 +232,7 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
     const float av[] = {a.coverage,a.densityMultiplier,a.extinctionPerMeter,a.detailErosion,
         a.weather.generator.coverageThreshold,a.weather.generator.coverageSoftness,
         a.weather.generator.densityCoverageInfluence,a.weather.generator.thicknessCoverageInfluence,
-        a.weather.column.stratusMinimumThicknessMeters,a.weather.column.stratusMaximumThicknessMeters,
-        a.weather.column.cumulusMinimumThicknessMeters,a.weather.column.cumulusMaximumThicknessMeters,
+        a.weather.column.minimumThicknessMeters,a.weather.column.maximumThicknessMeters,
         a.weather.column.maximumBaseLiftMeters,a.weather.worldSizeMeters,a.domainBottomMeters,
         a.domainThicknessMeters,a.maximumViewTraceDistanceMeters,a.viewTraceFadeStartDistanceMeters,
         a.maximumLightTraceDistanceMeters,a.baseNoiseWorldSizeMeters,a.baseNoiseVerticalWorldSizeMeters,
@@ -246,8 +240,7 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
     const float bv[] = {b.coverage,b.densityMultiplier,b.extinctionPerMeter,b.detailErosion,
         b.weather.generator.coverageThreshold,b.weather.generator.coverageSoftness,
         b.weather.generator.densityCoverageInfluence,b.weather.generator.thicknessCoverageInfluence,
-        b.weather.column.stratusMinimumThicknessMeters,b.weather.column.stratusMaximumThicknessMeters,
-        b.weather.column.cumulusMinimumThicknessMeters,b.weather.column.cumulusMaximumThicknessMeters,
+        b.weather.column.minimumThicknessMeters,b.weather.column.maximumThicknessMeters,
         b.weather.column.maximumBaseLiftMeters,b.weather.worldSizeMeters,b.domainBottomMeters,
         b.domainThicknessMeters,b.maximumViewTraceDistanceMeters,b.viewTraceFadeStartDistanceMeters,
         b.maximumLightTraceDistanceMeters,b.baseNoiseWorldSizeMeters,b.baseNoiseVerticalWorldSizeMeters,
@@ -266,7 +259,6 @@ std::uint64_t HashCloudFormationSettings(const CloudFormationSettings& input)
     HashUnsigned(hash,static_cast<std::uint32_t>(value.weatherPreset));
     HashUnsigned(hash,static_cast<std::uint32_t>(value.typeSelection.mode));
     HashChannel(hash,value.weather.generator.coverage);
-    HashChannel(hash,value.weather.generator.cloudType);
     HashChannel(hash,value.weather.generator.density);
     HashChannel(hash,value.weather.generator.localThickness);
     fnv1a64::Append(hash,&value.weather.generator.coverageThreshold,sizeof(float)*4u);

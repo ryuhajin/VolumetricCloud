@@ -461,6 +461,53 @@ bool HasReflectedConstantBufferContract(
                          __uuidof(ID3D11ShaderReflection), &reflection)))
         return false;
     D3D11_SHADER_INPUT_BIND_DESC binding = {};
+    // 필드 의미를 통합한 b7/b10은 크기뿐 아니라 실제 offset도 검증한다.
+    const auto fieldOffset = [&](const char* field, UINT offset) {
+        D3D11_SHADER_VARIABLE_DESC desc = {};
+        return SUCCEEDED(reflection->GetConstantBufferByName(name)->GetVariableByName(field)->GetDesc(&desc)) &&
+            desc.StartOffset == offset && desc.Size == 4;
+    };
+    if (std::strcmp(name,"CloudShapeCB")==0 &&
+        (!fieldOffset("bottomFadeEnd",0) || !fieldOffset("topFadeStart",4) ||
+         !fieldOffset("lowerDensityScale",8) || !fieldOffset("upperTransitionStart",12) ||
+         !fieldOffset("upperTransitionEnd",16) || !fieldOffset("footprintCoverageInfluence",36))) return false;
+    if (std::strcmp(name,"WeatherColumnCB")==0 &&
+        (!fieldOffset("minimumThicknessMeters",0) || !fieldOffset("maximumThicknessMeters",4) ||
+         !fieldOffset("maximumBaseLiftMeters",16) || !fieldOffset("fixedType",20))) return false;
+    if (std::strcmp(name, "CloudShapeCB") == 0)
+    {
+        D3D11_SHADER_VARIABLE_DESC variable = {};
+        if (FAILED(reflection->GetConstantBufferByName(name)->
+                GetVariableByName("densityShaping")->GetDesc(&variable)) ||
+            variable.StartOffset != 40u || variable.Size != 4u)
+            return false;
+    }
+    if (std::strcmp(name, "NoiseVolumeCB") == 0)
+    {
+        D3D11_SHADER_VARIABLE_DESC variable = {};
+        if (FAILED(reflection->GetConstantBufferByName(name)->
+                GetVariableByName("baseMidOctaveExtra")->GetDesc(&variable)) ||
+            variable.StartOffset != 28u || variable.Size != 4u) return false;
+    }
+    if (std::strcmp(name, "LightCB") == 0 || std::strcmp(name, "EnvironmentCB") == 0)
+    {
+        const bool light = std::strcmp(name, "LightCB") == 0;
+        const char* fields[] = {light ? "rimIntensity" : "physicalSkyFillScale",
+                               light ? "rimDepthScale" : "physicalGroundFillScale"};
+        const UINT offsets[] = {light ? 64u : 28u, light ? 68u : 44u};
+        for (unsigned i=0; i<2; ++i) {
+            D3D11_SHADER_VARIABLE_DESC variable = {};
+            if (FAILED(reflection->GetConstantBufferByName(name)->GetVariableByName(fields[i])->GetDesc(&variable)) ||
+                variable.StartOffset != offsets[i] || variable.Size != 4u) return false;
+        }
+    }
+    if (std::strcmp(name, "ShadowCB") == 0)
+    {
+        D3D11_SHADER_VARIABLE_DESC variable = {};
+        if (FAILED(reflection->GetConstantBufferByName(name)->
+                GetVariableByName("stage12Padding1")->GetDesc(&variable)) ||
+            variable.StartOffset != 152u || variable.Size != 4u) return false;
+    }
     return SUCCEEDED(reflection->GetResourceBindingDescByName(
                name, &binding)) &&
         binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == expectedSlot;
@@ -583,8 +630,7 @@ bool Renderer::Init(HWND hwnd, int width, int height,
     std::filesystem::path shaderDirectory(m_shaderDir);
     if (shaderDirectory.filename().empty())
         shaderDirectory = shaderDirectory.parent_path();
-    m_cloudFormationPresetRoot = shaderDirectory.parent_path() / L"captures" /
-        L"noise-lab";
+    m_cloudFormationPresetRoot = DefaultCloudFormationPresetRoot();
     const std::filesystem::path developerUiSettingsPath =
         shaderDirectory.parent_path() / L"captures" /
         L"noise-lab" / L"developer-ui.json";
@@ -755,6 +801,21 @@ bool Renderer::CreateSceneTargets()
     return true;
 }
 
+bool Renderer::SetShadowHeightRefinementForValidation(bool enabled, bool farOnly)
+{
+    farOnly = enabled && farOnly;
+    if (m_shadowHeightRefinementForValidation == enabled &&
+        m_shadowFarOnlyRefinementForValidation == farOnly) return true;
+    const bool previous = m_shadowHeightRefinementForValidation;
+    const bool previousFarOnly = m_shadowFarOnlyRefinementForValidation;
+    m_shadowHeightRefinementForValidation = enabled;
+    m_shadowFarOnlyRefinementForValidation = farOnly;
+    if (CreateDeepShadowResources()) return true;
+    m_shadowHeightRefinementForValidation = previous;
+    m_shadowFarOnlyRefinementForValidation = previousFarOnly;
+    return false; // 자원 생성은 두 배열이 성공한 뒤에만 교체한다.
+}
+
 bool Renderer::CreateDeepShadowResources()
 {
     if (!m_device)
@@ -813,9 +874,9 @@ bool Renderer::CreateDeepShadowResources()
     ComPtr<ID3D11Texture2D> farTexture;
     ComPtr<ID3D11ShaderResourceView> farSrv;
     ComPtr<ID3D11UnorderedAccessView> farUav;
-    if (!createArray(stage12shadow::kNearSlices,
+    if (!createArray(m_shadowHeightRefinementForValidation && !m_shadowFarOnlyRefinementForValidation ? 159u : stage12shadow::kNearSlices,
                      nearTexture, nearSrv, nearUav) ||
-        !createArray(stage12shadow::kFarSlices,
+        !createArray(m_shadowHeightRefinementForValidation ? 79u : stage12shadow::kFarSlices,
                      farTexture, farSrv, farUav))
         return false;
 
@@ -837,8 +898,22 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
                                      bool showErrors,
                                      const D3D_SHADER_MACRO* defines)
 {
+    // 비교 cap은 캐시 키/핫 리로드에도 포함한다. 명시적 테스트 define이 우선한다.
+    std::vector<D3D_SHADER_MACRO> rimDefines;
+    bool hasRimCap = false;
+    if (defines) for (auto* d=defines; d->Name; ++d) {
+        rimDefines.push_back(*d);
+        hasRimCap |= std::strcmp(d->Name,"VCLOUD_TEST_RIM_CAP")==0;
+    }
+    if (!hasRimCap) rimDefines.push_back({"VCLOUD_TEST_RIM_CAP",
+        m_rimComparisonCap == 8 ? "8" : (m_rimComparisonCap == 4 ? "4" : "2.5")});
+    rimDefines.push_back({nullptr,nullptr});
+    defines = rimDefines.data();
+    // 배포/주력 회귀는 기존 성능 우선 정책. Weather는 기존 CPU/GPU parity 계약을 유지한다.
+    // 별도 Strict Validation 빌드만 모든 패스의 IEEE 연산을 보존한다(/Od와 다름).
+    // flags가 cache key에 포함되어 두 정책의 DXBC가 혼용되지 않는다.
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
-    if (path == m_weatherMapShaderPath)
+    if (VCLOUD_STRICT_VALIDATION || path == m_weatherMapShaderPath)
         compileFlags |= D3DCOMPILE_IEEE_STRICTNESS;
 #ifdef _DEBUG
     compileFlags |= D3DCOMPILE_DEBUG;
@@ -856,8 +931,13 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     const std::string cacheKey = BuildShaderCacheKey(
         shaderRoot, std::filesystem::path(path), entryPoint, target,
         compileFlags, defines);
-    const std::filesystem::path cacheDirectory =
+    std::filesystem::path cacheDirectory =
         std::filesystem::path(GetExeDir()) / L"shader-cache";
+    // 명시적으로 선택한 자동 검증에서만 격리 캐시를 사용한다.
+    wchar_t validationCache[32768] = {};
+    if (m_determinismValidation && GetEnvironmentVariableW(
+            L"VCLOUD_TEST_SHADER_CACHE", validationCache, 32768) > 0)
+        cacheDirectory = validationCache;
     const std::filesystem::path cachePath = cacheKey.empty()
         ? std::filesystem::path{}
         : cacheDirectory / (std::filesystem::path(cacheKey).wstring() + L".cso");
@@ -865,6 +945,7 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
         SUCCEEDED(D3DReadFileToBlob(cachePath.c_str(), &outBlob)) && outBlob)
     {
         ++m_shaderCacheHitCount;
+        RecordDeterminismShader(path, entryPoint, target, compileFlags, cacheKey, outBlob.Get());
         return true;
     }
 
@@ -875,6 +956,7 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
         entryPoint, target, compileFlags, 0, &outBlob, &errors);
     if (SUCCEEDED(result))
     {
+        RecordDeterminismShader(path, entryPoint, target, compileFlags, cacheKey, outBlob.Get());
         if (!cachePath.empty())
         {
             std::error_code cacheError;
@@ -988,8 +1070,8 @@ bool Renderer::ReloadShaderPrograms(
         {
         case ProgramId::CloudPs:
             return hasContract(blob, "CloudCB", 80u, 1u) &&
-                hasContract(blob, "LightCB", 64u, 3u) &&
-                hasContract(blob, "EnvironmentCB", 80u, 4u) &&
+                hasContract(blob, "LightCB", 80u, 3u) &&
+                hasContract(blob, "EnvironmentCB", 48u, 4u) &&
                 hasContract(blob, "CloudDomainCB", 32u, 5u) &&
                 hasContract(blob, "NoiseVolumeCB", 96u, 6u) &&
                 hasContract(blob, "CloudShapeCB", 48u, 7u) &&
@@ -1285,9 +1367,10 @@ bool Renderer::CreateDiagnosticScene()
 {
     std::vector<DiagnosticSceneVertex> vertices;
     std::vector<std::uint32_t> indices;
-    // 13-4D 단일 씬은 10km 실제 평면과 3m×20층(60m) 건물 하나만 사용한다.
+    // 13-4D 단일 씬은 10km 실제 평면과 3m×10층(30m) 건물 하나만 사용한다.
     AppendGroundPlane(vertices, indices);
-    AppendBox(vertices, indices, { 0.0f, 30.0f, 0.0f }, { 10.0f, 30.0f, 10.0f },
+    AppendBox(vertices, indices, { 0.0f, stage13scene::kBuildingHeightMeters * .5f, 0.0f },
+              { stage13scene::kBuildingWidthMeters * .5f, stage13scene::kBuildingHeightMeters * .5f, stage13scene::kBuildingDepthMeters * .5f },
               { 0.50f, 0.50f, 0.50f });
 
     D3D11_BUFFER_DESC vertexDesc = {};
@@ -1464,6 +1547,8 @@ bool Renderer::UpdateWeatherMapTexture(
     return true;
 }
 
+// 생성 패스 W: 초기화/설정 변경/핫 리로드에서 호출. CPU 원본을 b0에 포장하고
+// 임시 u0에 RGBA8를 만든다. 성공 후보만 호출자가 공개 texture로 복사한다.
 bool Renderer::GenerateWeatherMapTexture(
     ID3D11ComputeShader* shader, Stage5WeatherPreset preset,
     const WeatherMapGeneratorSettings& settings,
@@ -1503,7 +1588,9 @@ bool Renderer::GenerateWeatherMapTexture(
     m_context->CSSetConstantBuffers(0, 1, &rawBuffer);
     m_context->CSSetUnorderedAccessViews(0, 1, &rawUav, nullptr);
     m_context->CSSetShader(shader, nullptr, 0);
+    // W-1. 32x32 그룹 * 8x8 thread = 256x256 texel. 그룹 수와 픽셀 수는 다르다.
     m_context->Dispatch(kWeatherMapSize / 8u, kWeatherMapSize / 8u, 1u);
+    // W-2. UAV 쓰기 바인딩 해제 후 staging으로 읽어 row pitch를 제거한 RGBA hash 검증.
     ID3D11UnorderedAccessView* nullUav = nullptr;
     m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
     m_context->CSSetShader(nullptr, nullptr, 0);
@@ -1676,6 +1763,8 @@ bool Renderer::ReadNoiseVolumeBytesFromTexture(
     return true;
 }
 
+// 생성 패스 N: b6(seed/frequency/해상도) → CSBase/CSDetail → 새 3D texture.
+// world size는 조회 좌표만 바꾸므로 그것만 바뀌면 이 생성은 필요 없다.
 bool Renderer::GenerateNoiseVolumes(
     ID3D11ComputeShader* baseShader, ID3D11ComputeShader* detailShader,
     ComPtr<ID3D11Texture3D>& baseTexture,
@@ -1688,6 +1777,8 @@ bool Renderer::GenerateNoiseVolumes(
 {
     if (!baseShader || !detailShader || !m_noiseVolumeCb)
         return false;
+    m_noiseVolumeParameters.baseMidOctaveExtra =
+        SanitizeBaseMidOctaveExtra(m_noiseVolumeParameters.baseMidOctaveExtra);
     const auto begin = std::chrono::steady_clock::now();
     D3D11_MAPPED_SUBRESOURCE mapped = {};
     if (FAILED(m_context->Map(
@@ -1726,7 +1817,9 @@ bool Renderer::GenerateNoiseVolumes(
         m_context->CSSetConstantBuffers(6, 1, &cb);
         m_context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
         const UINT groups = (resolution + 3u) / 4u;
+        // N-1. ceil(resolution/4)³ 그룹. 4³ thread가 Base/Detail voxel 중심을 쓴다.
         m_context->Dispatch(groups, groups, groups);
+        // N-2. 같은 texture를 다음 패스 SRV로 읽기 전에 UAV/생성 CB/CS를 해제한다.
         ID3D11UnorderedAccessView* nullUav = nullptr;
         ID3D11Buffer* nullCb = nullptr;
         m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
@@ -1858,6 +1951,8 @@ bool Renderer::CreateAtmosphereLut3D(UINT size,
     return true;
 }
 
+// CPU 분리 설정을 b9의 float4/uint4 칸에 패킹한다. m→km 변환은 camera height.
+// Light b3의 intensity/tint도 여기에서 b9로 옮겨 실제 Physical 조명에 전달한다.
 stage14::GpuParameters Renderer::BuildStage14GpuParameters(
     const Camera& camera) const
 {
@@ -1946,6 +2041,9 @@ stage14::GpuParameters Renderer::BuildStage14GpuParameters(
 
 bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
 {
+    // LUT 패스 A: b9는 매 frame 갱신하지만 texture는 입력 hash가 바뀐 것만 생성한다.
+    // 기본 매질 → Transmittance → Multi → Sky/Aerial로 dirty가 전파된다.
+    // 임시 candidate 세트에 성공한 결과만 commit하여 실패 시 마지막 정상 LUT를 유지.
     m_atmosphereParameters = stage14atmosphere::Sanitize(
         m_atmosphereParameters);
     m_groundLightingParameters = stage14ground::Sanitize(
@@ -2072,6 +2170,9 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
     {
         std::memcpy(mapped.pData, &cameraData, sizeof(cameraData));
         m_context->Unmap(m_cameraCb.Get(), 0);
+        // 이 직접 쓰기는 time=0인 LUT용 값이다. Cloud 업로드 캐시의 이전 time을
+        // 실제 GPU 내용으로 오인하면 같은 시각 재렌더 때 b0 업로드가 생략된다.
+        m_constantBufferUploadValid[0] = false;
     }
 
     ID3D11Buffer* stage14Buffer = m_stage14Cb.Get();
@@ -2104,10 +2205,13 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
         bindInputs(outputIndex);
         m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
         m_context->CSSetShader(shader, nullptr, 0);
+        // A-1. 현재 출력은 SRV에서 빼고 u0로 바인딩. 선행 LUT(t8~)만 읽는다.
         m_context->Dispatch((width + 7u) / 8u, (height + 7u) / 8u, 1u);
+        // A-2. 다음 CS가 이 출력을 읽도록 UAV 슬롯을 비운다(D3D11 읽기/쓰기 충돌 방지).
         ID3D11UnorderedAccessView* nullUav = nullptr;
         m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
     };
+    // A-3. 2D 생성 순서: 투과율 → 다중 산란 → 시선 하늘 → 하늘 입사량.
     if (dirty[0])
         dispatch2D(m_atmosphereTransmittanceCs.Get(),
                    candidate.transmittance.uav.Get(),
@@ -2135,6 +2239,7 @@ bool Renderer::EnsureAtmosphereLuts(const Camera& camera)
         };
         m_context->CSSetUnorderedAccessViews(0, 2, outputs, nullptr);
         m_context->CSSetShader(m_atmosphereAerialCs.Get(), nullptr, 0);
+        // A-4. Aerial CS는 두 UAV에 공기 빛/투과율을 동시에 쓴다. 32³를 4³ thread로 분할.
         m_context->Dispatch(
             (stage14::kAerialSize + 3u) / 4u,
             (stage14::kAerialSize + 3u) / 4u,
@@ -2354,6 +2459,8 @@ void Renderer::Resize(int width, int height)
 
 void Renderer::RenderDiagnosticScene(const Camera& camera)
 {
+    // 프레임 4: SceneCB b0 + Shadow b8 + Atmosphere b9 → Scene HDR/Depth.
+    // RTV는 색 출력, DSV는 가장 가까운 물체 깊이. Clear depth=1은 배경/하늘 표식.
     SceneCB scene = {};
     XMStoreFloat4x4(
         &scene.viewProj,
@@ -2398,14 +2505,19 @@ void Renderer::RenderDiagnosticScene(const Camera& camera)
     ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
     m_context->PSSetSamplers(2, 1, &shadowSampler);
     BindAtmosphereResources();
+    // 정점/인덱스가 있는 지면·건물을 그린다. 다음 Cloud가 t0/t1로 색/깊이를 읽는다.
     m_context->DrawIndexed(m_sceneIndexCount, 0, 0);
+    // 다음 패스의 출력/입력 바인딩과 겹치지 않게 이전 SRV와 RTV/DSV를 해제한다.
     UnbindCloudShaderResources(14);
 
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
-void Renderer::RenderCloudPass()
+void Renderer::RenderCloudPass(bool prepareOnlyForValidation)
 {
+    // 프레임 5: Scene t0/t1, Weather t2, Base/Detail t3/t4, Shadow t6/t7,
+    // Atmosphere t8~t13와 CPU 상수 → 전체 해상도 HDR composite.
+    // vertex buffer 없이 VS의 SV_VertexID로 삼각형 하나를 만든다. depth 검사는 PS가 수행.
     const float clearColor[4] = { 0.02f, 0.03f, 0.05f, 1.0f };
     ID3D11RenderTargetView* cloudTarget = m_hdrCloudRtv.Get();
     m_context->OMSetRenderTargets(1, &cloudTarget, nullptr);
@@ -2449,6 +2561,9 @@ void Renderer::RenderCloudPass()
     m_context->PSSetSamplers(0, 2, samplers);
     ID3D11SamplerState* shadowSampler = m_linearClampSampler.Get();
     m_context->PSSetSamplers(2, 1, &shadowSampler);
+    // 화면 전체의 각 pixel이 ray 하나를 적분한다. 3은 ray step 수가 아니라 정점 수다.
+    // 테스트는 같은 바인딩을 유지한 채 scissor 타일로 고비용 참조를 나눠 그린다.
+    if (prepareOnlyForValidation) return;
     m_context->Draw(3, 0);
 
     UnbindCloudShaderResources(14);
@@ -2457,6 +2572,11 @@ void Renderer::RenderCloudPass()
 void Renderer::UpdateStage12ShadowParameters(const Camera& camera)
 {
     m_shadowParameters = stage12shadow::Sanitize(m_shadowParameters);
+    if (m_shadowHeightRefinementForValidation)
+    {
+        m_shadowParameters.nearSliceCount = m_shadowFarOnlyRefinementForValidation ? stage12shadow::kNearSlices : 159u;
+        m_shadowParameters.farSliceCount = 79u;
+    }
     const stage12shadow::LightBasis basis =
         stage12shadow::BuildLightBasis(m_lightParameters.directionToSun);
     m_shadowParameters.lightRight = basis.right;
@@ -2476,10 +2596,12 @@ void Renderer::UpdateStage12ShadowParameters(const Camera& camera)
     };
     m_shadowParameters.nearCenter = stage12shadow::SnappedCenter(
         rawCenter, basis, m_shadowParameters.nearWidthMeters,
-        m_shadowParameters.nearResolution);
+        m_shadowParameters.nearResolution, stage12shadow::ProjectedUpWidth(
+            m_shadowParameters.nearWidthMeters, m_cloudDomainParameters.cloudLayerThickness, basis.forward.y));
     m_shadowParameters.farCenter = stage12shadow::SnappedCenter(
         rawCenter, basis, m_shadowParameters.farWidthMeters,
-        m_shadowParameters.farResolution);
+        m_shadowParameters.farResolution, stage12shadow::ProjectedUpWidth(
+            m_shadowParameters.farWidthMeters, m_cloudDomainParameters.cloudLayerThickness, basis.forward.y));
     const bool resourcesReady = m_deepShadowCs && m_shadowNearSrv &&
         m_shadowNearUav && m_shadowFarSrv && m_shadowFarUav;
     m_shadowParameters.cacheReady = resourcesReady &&
@@ -2489,7 +2611,14 @@ void Renderer::UpdateStage12ShadowParameters(const Camera& camera)
 
 void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
 {
+    // 프레임 3: 현재 시간/formation/태양 basis를 CB에 반영한 뒤 Near→Far 순서로 생성.
+    // cacheReady=0이면 중단하고 Cloud는 cone, 표면은 중립 투과율을 사용한다.
     UpdateCloudConstantBuffers(camera, timeSeconds);
+    DispatchDeepShadowCaches();
+}
+
+void Renderer::DispatchDeepShadowCaches()
+{
     if (m_shadowParameters.cacheReady == 0u)
         return;
 
@@ -2530,7 +2659,9 @@ void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
         m_context->Unmap(m_shadowCb.Get(), 0);
         m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
         const UINT groups = (resolution + 7u) / 8u;
+        // 512² 태양 평면 texel을 8² thread로 분할. 높이 slice는 CS 내부 loop가 모두 쓴다.
         m_context->Dispatch(groups, groups, 1);
+        // cascade 사이에 UAV를 비워 쓰기 대상 변경과 이후 PS 조회를 준비한다.
         ID3D11UnorderedAccessView* nullUav = nullptr;
         m_context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
         return true;
@@ -2558,6 +2689,8 @@ void Renderer::RenderDeepShadowCaches(const Camera& camera, float timeSeconds)
 void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
                                           float timeSeconds)
 {
+    // CPU→GPU 연결: 카메라/설정을 보정하고 Motion/b10/b8 파생값을 계산한다.
+    // 아래 update는 내용 hash가 같은 CB의 Map/memcpy를 생략한다(값의 의미는 불변).
     CameraCB cameraData = {};
     XMStoreFloat4x4(&cameraData.invViewProj,
                     XMMatrixTranspose(camera.GetInvViewProj()));
@@ -2637,13 +2770,20 @@ void Renderer::UnbindCloudShaderResources(UINT count)
 
 void Renderer::Render(Camera& camera, float timeSeconds)
 {
+    m_determinismCaptureValid = false;
+    m_determinismFrameReport.clear();
+    if (m_captureFrameHashes) m_lastCloudFrameHash = 0;
+    // 한 프레임 읽는 순서(초기 Noise/Weather 생성은 Init 및 변경 요청 경로에도 있다):
+    // 1 상태/UI/조건부 Weather·Noise → 2 조건부 대기 LUT → 3 Near/Far Shadow →
+    // 4 Scene HDR/Depth → 5 Cloud HDR 합성 → 6 Tone → 7 UI → 8 Present.
     if (!m_sizeDependentResourcesValid || !m_backBufferRtv ||
         !m_sceneColorRtv || !m_sceneDepthDsv)
         return;
 
+    // 1. hot reload/시간/UI 입력을 반영한다. Formation/Weather 변경은 여기서 생성될 수 있다.
     ++m_renderFrameSerial;
     m_frameProfiler.BeginCpuFrame();
-    CheckShaderHotReload();
+    if (!m_determinismValidation) CheckShaderHotReload();
     m_frameProfiler.BeginGpuFrame(m_context.Get());
 
     if (m_atmosphereParameters.timePlaybackEnabled)
@@ -2672,6 +2812,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     m_previousAtmosphereTimeSeconds = timeSeconds;
     m_previousAtmosphereTimeValid = true;
 
+    const float octaveExtraBeforeUi = m_noiseVolumeParameters.baseMidOctaveExtra;
+    const LightingPresetSettings lightingBeforeUi = CurrentLightingPreset();
     const CloudFormationSettings formationBeforeUi = CurrentCloudFormation();
     const CloudFormationSettings rawFormationBeforeUi =
         CaptureCloudFormationSettingsUnchecked(
@@ -2689,6 +2831,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     };
     if (!m_automatedRenderMode)
     {
+        m_noiseLab.SetPresetStatus(m_cloudFormationPresetRoot, m_cloudFormationTarget, m_cloudFormationSource,
+            m_lightingSource, m_lightingStatus);
         m_noiseLab.BeginFrame(
             timeSeconds, camera, m_cloudParameters, m_cloudShapeParameters,
             m_cloudDomainParameters, m_weatherDefinition,
@@ -2728,23 +2872,32 @@ void Renderer::Render(Camera& camera, float timeSeconds)
                     m_cloudDomainParameters, m_weatherPreset,
                     m_weatherDefinition, m_cloudTypeSelection,
                     m_noiseVolumeParameters);
-                ApplyCloudFormationAtomic(
-                    SanitizeCloudFormationSettings(rawCandidate));
+                if (ApplyCloudFormationAtomic(
+                    SanitizeCloudFormationSettings(rawCandidate))) MarkCloudFormationDirty();
             }
         }
 
+        if (!LightingPresetEqual(lightingBeforeUi, CurrentLightingPreset()))
+        {
+            m_lightingSource = CloudFormationPresetSource::Unsaved;
+            m_lightingStatus = "Modified lighting settings";
+        }
+        if (m_noiseLab.ConsumeSaveLightingRequest()) SaveSelectedLighting();
         CloudFormationPresetTarget formationRequest;
         if (m_noiseLab.ConsumeFormationPresetRequest(formationRequest))
             ApplyCloudType(formationRequest);
         if (m_noiseLab.ConsumeSaveCustomRequest())
-            SaveCustomFormation();
+            SaveSelectedFormation();
         if (m_noiseLab.ConsumeLoadCustomRequest())
             LoadCustomFormation();
         Stage15ConceptPreset conceptRequest = m_stage15ConceptPreset;
         if (m_noiseLab.ConsumeSceneConceptRequest(conceptRequest))
             ApplySceneConcept(conceptRequest);
         if (m_noiseLab.ConsumeNoiseVolumeRegenerateRequest())
-            RegenerateNoiseVolumes();
+        {
+            if (!RegenerateNoiseVolumes())
+                m_noiseVolumeParameters.baseMidOctaveExtra = octaveExtraBeforeUi;
+        }
     }
 
     const float effectiveTime = m_automatedRenderMode
@@ -2755,19 +2908,31 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
 
+    // Weather timing 구간 종료 표식이며 여기에서 Weather Dispatch를 호출하는 것은 아니다.
     m_frameProfiler.MarkWeatherMapEnd(m_context.Get());
+    // 2. 변경된 입력에 의존하는 LUT만 갱신한다. unchanged이면 dispatch 없이 반환.
     EnsureAtmosphereLuts(camera);
     m_frameProfiler.MarkAtmosphereLutEnd(m_context.Get());
+    // 3. 그림자는 같은 effectiveTime으로 View 밀도와 함께 이동한다.
     RenderDeepShadowCaches(camera, effectiveTime);
     m_frameProfiler.MarkShadowCacheEnd(m_context.Get());
+    // 4. 불투명 지면/건물 색과 가장 가까운 깊이를 먼저 만든다.
     RenderDiagnosticScene(camera);
     m_frameProfiler.MarkOpaqueSceneEnd(m_context.Get());
+    // 5. 물체 앞까지만 구름을 적분하고 대기/배경을 HDR로 직접 합성한다.
     RenderCloudPass();
     m_frameProfiler.MarkCloudEnd(m_context.Get());
+    // 6. HDR → 노출/WB/Tone/sRGB → back buffer. 아직 화면 제출 전이다.
     RenderToneMapPass();
     m_frameProfiler.MarkToneMapEnd(m_context.Get());
+    // 테스트가 요청한 프레임만 UI/Present 이전의 원본을 읽는다.
+    if (m_directionalCaptureTarget)
+        CaptureDirectionalLightingFrame();
     if (m_captureFrameHashes)
         CaptureCloudFrameHash();
+    if (m_determinismValidation)
+        CaptureDeterminismFrame();
+    // 7. 선택적 미리보기/진단 export/UI를 합성한다. 자동 테스트에서는 UI를 건너뛴다.
     if (!m_automatedRenderMode && m_renderNoiseLabPreviews)
     {
         m_noiseLab.RenderPreviews(
@@ -2778,7 +2943,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             m_weatherLinearWrapSampler.Get());
     }
     if (!m_automatedRenderMode && m_noiseLab.ConsumeExportRequest())
-        ExportNoiseLabSnapshot(DefaultCloudFormationPresetRoot());
+        ExportNoiseLabSnapshot(DefaultNoiseLabOutputRoot());
     if (!m_automatedRenderMode)
         m_noiseLab.EndFrame(m_backBufferRtv.Get());
     m_context->RSSetViewports(1, &viewport);
@@ -2786,12 +2951,14 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     const presentation::PresentParameters present =
         presentation::ResolvePresentParameters(
             m_vsyncEnabled, m_tearingSupported, true);
+    // 8. 완성된 back buffer 제출. VSync/tearing은 표시 타이밍이며 구름 광학값과 무관.
     m_swapChain->Present(present.syncInterval, present.flags);
     m_frameProfiler.EndCpuFrame();
 }
 
 void Renderer::RenderToneMapPass()
 {
+    // HDR t0 + b9 → back buffer RTV. Scene/Cloud와 달리 표시용 sRGB 값이 출력된다.
     ID3D11ShaderResourceView* source = m_hdrCloudSrv.Get();
     if (!m_toneMapPs || !source || !m_backBufferRtv)
         return;
@@ -2813,6 +2980,7 @@ void Renderer::RenderToneMapPass()
     m_context->PSSetShaderResources(0, 1, &source);
     ID3D11SamplerState* sampler = m_linearClampSampler.Get();
     m_context->PSSetSamplers(0, 1, &sampler);
+    // 전체 화면 삼각형의 각 pixel에서 Tone Map 한 번. 이어지는 UI 위에 추가 Tone은 없다.
     m_context->Draw(3, 0);
     // 다음 프레임의 LUT compute dispatch가 같은 리소스를 UAV로 다시 바인딩할 수
     // 있으므로 HDR뿐 아니라 단계 14의 t8~t13도 명시적으로 해제한다.
@@ -2862,17 +3030,55 @@ CloudDebugMode Renderer::DebugMode() const
 
 bool Renderer::ApplyStage15Defaults()
 {
+    // 장면 footprint는 조명 슬롯과 별개로 시작 시 한 번 설정한다.
+    const float half = stage13scene::kGroundHalfSizeMeters;
+    m_cloudParameters.cloudBoundsMin.x = m_cloudParameters.cloudBoundsMin.z = -half;
+    m_cloudParameters.cloudBoundsMax.x = m_cloudParameters.cloudBoundsMax.z = half;
     m_shadowParameters = Stage12ShadowParameters{};
     m_shadowParameters = stage12shadow::Sanitize(m_shadowParameters);
     if (!CreateDeepShadowResources())
         return false;
-    if (!ApplySceneConcept(Stage15ConceptPreset::UrbanFairWeather))
+    if (!ApplyCloudFormationPresetTarget(TypeFormationTarget(CloudFormationType::Cumulus), false) ||
+        !ApplySceneConcept(Stage15ConceptPreset::BrightNoon))
         return false;
     return true;
 }
 
 bool Renderer::ApplySceneConcept(Stage15ConceptPreset preset)
 {
+    if (IsLightingPreset(preset))
+    {
+        LightingPresetSettings v;
+        CloudFormationPresetSource source;
+        std::string status;
+        if (!ResolveLightingPreset(m_cloudFormationPresetRoot, preset, m_useSavedPresets,
+                v, source, status)) { m_lightingStatus = status; return false; }
+        const auto debug = m_atmosphereParameters;
+        m_lightParameters = v.light;
+        m_lightParameters.directionToSun = stage6light::DirectionFromAngles(
+            v.atmosphere.sunAzimuthDegrees, v.atmosphere.sunElevationDegrees);
+        m_environmentParameters = v.environment;
+        m_atmosphereParameters = v.atmosphere;
+        m_atmosphereParameters.debugView = debug.debugView;
+        m_atmosphereParameters.debugChannel = debug.debugChannel;
+        m_atmosphereParameters.debugExposure = debug.debugExposure;
+        m_atmosphereParameters.aerialSlice = debug.aerialSlice;
+        m_atmosphereParameters.timePlaybackEnabled = false;
+        m_atmosphereParameters.sunControlMode = SunControlMode::Angles;
+        m_groundLightingParameters = v.ground;
+        m_toneMappingParameters = v.tone;
+        m_shadowParameters.surfaceShadowStrength = v.surfaceShadowStrength;
+        m_shadowParameters.surfaceAmbientFloor = v.surfaceAmbientFloor;
+        m_sunPreset = Stage6SunPreset::Custom;
+        m_phasePreset = Stage7PhasePreset::Custom;
+        m_environmentPreset = Stage8EnvironmentPreset::Custom;
+        m_stage15ConceptPreset = preset;
+        m_lightingSource = source;
+        m_lightingStatus = status;
+        return true;
+    }
+    // 0~2 scene은 이전 진단 실행기의 명시적 호출에만 남긴다.
+
     const std::uint32_t index = static_cast<std::uint32_t>(preset);
     if (index > static_cast<std::uint32_t>(
             Stage15ConceptPreset::SnowOvercast))
@@ -2893,8 +3099,6 @@ bool Renderer::ApplySceneConcept(Stage15ConceptPreset preset)
     m_environmentParameters = descriptor.environment;
     m_atmosphereParameters = descriptor.atmosphere;
     m_groundLightingParameters = descriptor.ground;
-    m_shadowParameters.surfaceShadowEnabled =
-        descriptor.surfaceShadowEnabled;
     m_shadowParameters.surfaceShadowStrength =
         descriptor.surfaceShadowStrength;
     m_shadowParameters.surfaceAmbientFloor =
@@ -2920,7 +3124,7 @@ bool Renderer::ApplyCloudType(const CloudFormationPresetTarget& target)
     if (target.group != CloudFormationPresetGroup::Type)
         return false;
     const bool applied = ApplyCloudFormationPresetTarget(
-        target, false);
+        target, m_useSavedPresets);
     return applied;
 }
 
@@ -3049,6 +3253,7 @@ void Renderer::SetCloudFormationPresetRootForValidation(
     const std::filesystem::path& root)
 {
     m_cloudFormationPresetRoot = root;
+    m_useSavedPresets = true;
     RefreshSavedCustomFormationState();
 }
 
@@ -3065,10 +3270,10 @@ void Renderer::RefreshSavedCustomFormationState()
 bool Renderer::SaveCurrentCloudFormationToTarget(
     const CloudFormationPresetTarget& target, bool switchTargetAfterSave)
 {
-    if (target.group != CloudFormationPresetGroup::Custom)
+    if (!CloudFormationCanSaveToPreset(target, true))
     {
         m_cloudFormationStatus =
-            "Formation save rejected: built-in presets are immutable";
+            "Formation save rejected: no writable slot";
         return false;
     }
 
@@ -3373,6 +3578,8 @@ bool Renderer::ValidateNoiseLabPreviews()
 
 bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 {
+    m_noiseLab.SetPresetStatus(m_cloudFormationPresetRoot, m_cloudFormationTarget, m_cloudFormationSource,
+        m_lightingSource, m_lightingStatus);
     return m_noiseLab.ExportSnapshot(
         root, CurrentCloudFormation(), m_cloudMotion, m_shadowParameters,
         m_lightParameters, m_environmentParameters,
@@ -3385,4 +3592,49 @@ bool Renderer::ExportNoiseLabSnapshot(const std::filesystem::path& root)
 std::uint64_t Renderer::NoiseLabPreviewHash(std::size_t targetIndex)
 {
     return m_noiseLab.PreviewHash(targetIndex);
+}
+
+bool Renderer::SetRimPhaseCapForValidation(float cap)
+{
+    if (cap!=2.5f && cap!=4.f && cap!=8.f) return false;
+    if (cap==m_rimComparisonCap) return true;
+    const float previous=m_rimComparisonCap;
+    m_rimComparisonCap=cap;
+    std::vector<std::size_t> selected;
+    for (std::size_t i=0;i<m_shaderManifest.size();++i)
+        if (m_shaderManifest[i].id==shaderreload::ProgramId::CloudPs) selected.push_back(i);
+    if (selected.empty() || !ReloadShaderPrograms(selected,{"rim comparison cap"},false)) {
+        m_rimComparisonCap=previous; return false;
+    }
+    m_noiseLab.SetRimComparisonCap(cap);
+    return true;
+}
+
+LightingPresetSettings Renderer::CurrentLightingPreset() const
+{
+    LightingPresetSettings v;
+    v.light = m_lightParameters; v.environment = m_environmentParameters;
+    v.atmosphere = m_atmosphereParameters; v.ground = m_groundLightingParameters;
+    v.tone = m_toneMappingParameters;
+    v.surfaceShadowStrength = m_shadowParameters.surfaceShadowStrength;
+    v.surfaceAmbientFloor = m_shadowParameters.surfaceAmbientFloor;
+    return v;
+}
+bool Renderer::SaveSelectedFormation()
+{
+    return m_cloudFormationTargetValid && SaveCurrentCloudFormationToTarget(m_cloudFormationTarget, false);
+}
+bool Renderer::SaveSelectedLighting()
+{
+    if (!SaveLightingPreset(m_cloudFormationPresetRoot, m_stage15ConceptPreset,
+            CurrentLightingPreset(), m_lightingStatus)) return false;
+    m_lightingSource = CloudFormationPresetSource::UserOverride;
+    return true;
+}
+void Renderer::LoadUserPresetDefaults()
+{
+    m_useSavedPresets = true;
+    // 일반 시작은 읽기 전용이다. 추적 중인 Custom을 Snow로 교체하지 않는다.
+    ApplyCloudType(TypeFormationTarget(CloudFormationType::Cumulus));
+    ApplySceneConcept(Stage15ConceptPreset::BrightNoon);
 }

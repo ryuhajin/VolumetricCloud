@@ -22,6 +22,10 @@ skipping, 거리 step, early exit와 cone fallback은 변경 불가능한 High �
 
 - **언어/환경:** C++17, HLSL(shader model 5.0), DirectX 11, Win32, Windows
 - **빌드:** CMake (`cmake -B build -G "Visual Studio 17 2022" -A x64` → `cmake --build build --config Debug`)
+- **검증 정책:** `VCLOUD_STRICT_VALIDATION=OFF` 기본 Release가 주요 렌더 TC·성능의 주력.
+  Weather의 기존 `/Gis`만 유지한다. ON은 별도 build 디렉터리의 선택형 bit-exact 보조 검증이다.
+  Release 이미지 회귀는 tolerance 규약을 따르며 최종 HDR/Tone 전용 TC는 아직 미구현이다.
+  실행 명령·세부 계약은 `doc/CONTRIBUTING.md`를 따른다.
 - **실행:** `build/Debug/VolumetricCloud.exe` (숫자 0~9 Debug View, F1~F4 UI, F5~F8 카메라)
 - **셰이더:** 런타임 컴파일(`D3DCompileFromFile`) + 실행 중 핫-리로드.
   개발 중에는 소스 `shaders/`를 우선 읽고, 없으면 exe 옆 `shaders/`로 폴백
@@ -37,18 +41,18 @@ skipping, 거리 step, early exit와 cone fallback은 변경 불가능한 High �
 | 윈도우/입력 | `src/Window.*` | Win32 창, 마우스/WASD → Camera, 리사이즈 → Renderer |
 | 카메라 | `src/Camera.*` | position+yaw/pitch FPS 자유 시점과 프리셋 호환 → view/proj/invViewProj |
 | 렌더러 | `src/Renderer.*` | D3D11 초기화, 대기/Shadow compute, HDR 장면·구름·Aerial 합성과 Tone Map |
-| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 단일 ImGui 패널, 최종 프리셋/진단 UI와 schema 40 내보내기 |
+| 노이즈 도구 | `src/NoiseLab.*` | F1~F4 단일 ImGui 패널, 최종 프리셋/진단 UI와 schema 42 내보내기 |
 | High 계약 | `src/HighCloudQuality.h`, `shaders/HighCloudQuality.hlsli` | 100m/512, early exit, empty skip, 거리 step과 8-tap cone 고정값 |
 | 구름 설정 | `src/CloudParameters.h` | 80바이트 CloudCB(b1)와 최종 진단 모드 |
 | Shadow 설정 | `src/Stage12ShadowParameters.h` | 160바이트 ShadowCB(b8), Balanced512 Deep Cache |
 | 대기 통합 설정 | `src/AtmosphereParameters.h`, `src/GroundLightingParameters.h`, `src/ToneMappingParameters.h`, `src/Stage14Parameters.h` | CPU 분리 설정과 224바이트 Stage14CB(b9)/LUT 규격 |
 | 도메인 설정 | `src/CloudDomainParameters.h` | 32바이트 PlanarLayer 도메인과 meter 단위 추적 범위 |
 | Weather Map | `src/WeatherMap.*`, `shaders/WeatherMapCompute.hlsl` | 256² GPU RGBA(coverage/regional type/density/thickness potential) 생성과 CPU 검증 기준 |
-| 형성/Custom 저장 | `src/CloudFormationSettings.*`, `src/CloudFormationPresetStore.*` | 세 타입·세 scene formation과 schema 2 Custom 하나의 strict 원자 저장, schema 1 읽기 이관 |
+| 형성/Custom 저장 | `src/CloudFormationSettings.*`, `src/CloudFormationPresetStore.*` | 세 타입·세 scene formation과 schema 3 Custom 하나의 strict 원자 저장, schema 1/2 읽기 이관 |
 | 형상 설정 | `src/CloudShapeParameters.h`, `src/WeatherColumnParameters.h` | 48바이트 ShapeCB(b7) profile/upper mass/footprint와 32바이트 WeatherColumnCB(b10) 두께·lift·타입 선택 |
 | 최종 scene 프리셋 | `src/Stage15Parameters.h` | Urban/Meadow/Snow scene의 formation·조명·대기 resolver |
-| 조명 설정 | `src/LightParameters.h` | 64바이트 LightCB(b3), 태양·albedo·dual-lobe phase |
-| 환경광 설정 | `src/EnvironmentParameters.h` | 80바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
+| 조명 설정 | `src/LightParameters.h` | 80바이트 LightCB(b3), 태양·albedo·dual-lobe phase |
+| 환경광 설정 | `src/EnvironmentParameters.h` | 48바이트 EnvironmentCB와 태양 차폐 기반 환경광 프리셋·sanitize |
 | 핫 리로드 | `src/ShaderManifest.h` | 프로그램 manifest, literal include closure, reload report와 후속 무효화 |
 | 성능 계측 | `src/FrameProfiler.*` | Weather/Atmosphere/Shadow/Opaque/Cloud/Tone/Frame GPU timestamp와 EMA |
 | VS | `shaders/Fullscreen.hlsl` | 풀스크린 삼각형 |
@@ -67,7 +71,7 @@ skipping, 거리 step, early exit와 cone fallback은 변경 불가능한 High �
 | Weather 기준 | `src/Stage5WeatherMath.h` | 단계 5 CPU 회귀 검사용 UV·coverage·구름 종류 프로파일 |
 | 조명 기준 | `src/Stage6LightMath.h` | 단계 6 CPU 회귀 검사용 광학 깊이·단일 산란 |
 | Phase 기준 | `src/Stage7PhaseMath.h` | 단계 7 CPU 회귀 검사용 HG·방향·Dual-lobe 수학 |
-| 환경광 기준 | `src/Stage8AmbientMath.h` | 단계 8 CPU 회귀 검사용 높이·AO·octave 수학 |
+| 환경광 기준 | `tests/LegacyStage8AmbientMath.h` | 단계 8 CPU 회귀 검사용 높이·AO·octave 수학 |
 | 대기 기준 | `src/Stage14AtmosphereMath.h` | 단계 14 구면·밀도·phase·LUT UV·시간·HDR CPU 기준 |
 | 단위 기준 | `src/Stage13ScaleMath.h` | 단계 13-0 CPU 회귀와 13-2 런타임 프리셋의 meter 상사 변환 수학 |
 | 오픈 월드 기준 | `src/Stage13OpenWorldMath.h` | 단계 13-3 실제 km 시작값과 sampling budget 수학 |
@@ -124,3 +128,25 @@ skipping, 거리 step, early exit와 cone fallback은 변경 불가능한 High �
 - [doc/PERFORMANCE.md](doc/PERFORMANCE.md) — 최적화 전후 성능 측정 조건과 지표 범위
 - [doc/ROADMAP.md](doc/ROADMAP.md) — 단계별 계획
 - [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md) — 문서/브랜치/커밋 규칙
+
+
+### Stage 15 방향광 후속 상태 (2026-09-15, 06 구현)
+
+2026-09-16 후속: 사용자 승인으로 06-B 얇은 경계 진단을 우선했다. 일반 룩 값은 유지. `VCLOUD_RIM_BOUNDARY_DIR`+`--rim-lighting-test`는 기존 테스트 실행기의 N0/N1/N2/N3 및 균일 구 진단이며 `VCLOUD_RIM_BOUNDARY_DENSE_ROI=1`은 조밀한 ROI를 선택한다. 현 결과는 캐시/스텝보다 밀도 표현 차이·낮은 View tau를 우선 조사 대상으로 가리킨다. 상세 결과/한계는 공식 변경 기록과 로컬 captures/stage15-directional-lighting/06-boundary/README.md 참조. 이를 일반 실행 수정 승인이나07 승인으로 해석하지 않는다.
+
+05 사용자 승인: Density shaping Urban/세 Type .70, Base1.50, Shadow1.35, Sky/Ground .85, Multiple attenuation .15, Phase .20, Edge2. XY512/80·40, 3~5도 tau 전환 유지. 수평 줄무늬 소멸은 사용자 확인. 하부 평탄화는 후속 분석 보류다.
+06은 가장자리 조명 개선,07은 통합 검증/포트폴리오 마무리로 변경했다. Near Detail은 사용자 요청으로 코드/UI/테스트에서 제거했고 모든 그림자는 Base 경로다. 미사용 분석적 Environment 색/강도는 테스트 전용 역사 자료로 옮겼다. Light80B/Environment48B/Shadow160B/snapshot42/Custom3이다.
+F3 Rim intensity/depth 기본1/1, 림 상한2.5 유지. 비교 전용 --rim-review-cap-4/8은 림 상한만 바꾸고 Multiple은 기존 phase2.5를 쓴다. 06 시각적 후보 채택은 사용자 판정 전이다. 07은06 승인 후에만 실행한다. 기존00-baseline은 불변,06-final은 림 이전 승인 자료, 최종 촬영은07-final이다.
+baseMidOctaveExtra는 일반 UI에서 승인1.50 읽기 전용이며 과거 후보/높이2배는 테스트 실행기에만 남긴다. 자세한 채택·기각/검증/사용자 체크리스트는 doc/changes/stage15-directional-cloud-lighting.md와 notes/15단계-태양방향-구름명암개선.md를 먼저 읽는다.
+
+06 림 개선 착수 이후 공식 기록은 `doc/changes/stage15-cloud-rim-lighting.md`에 분리했다. 00~05 기록은 기존 directional 문서를 유지한다.
+
+2026-09-16 사용자 캡처 비교 승인: 일반 캐시는80/79(159MiB)로 변경했다.159/79와의 시각적 차이가 작다는 사용자 선택이다. sigma4배는 다음 림 비교의 선호 후보이며 일반 소멸계수는 아직 유지한다. 이후 기록은 stage15-cloud-rim-lighting.md를 따른다.
+
+06 후속 사용자 승인: Rim intensity 일반 기본값2(강도4는 과도하게 밝다는 피드백), depth1/cap2.5 유지.80/79 승인과 함께 현재 기준이다.
+
+2026-09-18 형상 단순화: 공통 두께 min/max, 고정 Stratus/Mixed/Cumulus만 유지. Weather G는예약128이며Regional Blend/생성기/조회/UI는제거했다. F1 공통Vertical Profile5항목+곡선, Height-based narrowing(이전Footprint) 제공. b7 48B/b10 32B 필드의미는CBUFFER_REFERENCE최신표참조. Custom4(1~3이관),snapshot43. Mixed/Meadow의Regional→고정Mixed외형변화는사용자확인대기.
+
+2026-09-18 독립 슬롯 후속: 일반 기본 Cumulus+F4 3. F1 Stratus/Cumulus/Altocumulus/Custom과 F4 1~4는 각각 Save Preset/JSON을 사용한다. Custom 첫 일반 실행은 기존 파일 백업 후 Snow 형상으로 일회 교체한다. snapshot44, formation4, lighting1. 이전 Urban/Meadow/Snow는 역사적 테스트 전용. 상세는 doc/changes/stage15-cloud-quality-followups.md. 화면 채택 사용자 대기.
+
+2026-09-18 프리셋 보존 후속: 원본 presets/8개를 Git 관리하고 빌드마다 exe 옆에 배치한다. 개발 Save Preset은 원본, 소스 없는 배포는 exe 옆을 사용한다. 일반 시작 Snow 자동 교체 제거. captures는 출력 전용. 상세 doc/changes/stage15-cloud-quality-followups.md.

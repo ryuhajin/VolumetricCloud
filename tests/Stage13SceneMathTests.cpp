@@ -23,9 +23,9 @@ int main()
             kGroundHalfSizeMeters == 5000.0f,
             "ground contract must be 10km square");
     Require(kBuildingWidthMeters == 20.0f &&
-            kBuildingHeightMeters == 60.0f &&
+            kBuildingHeightMeters == 30.0f &&
             kBuildingDepthMeters == 20.0f,
-            "building contract must be 20x60x20m");
+            "building contract must be 20x30x20m");
     Require(kSupportedSkyRadiusMeters == 50000.0f,
             "analytic sky and cloud support radius must be 50km");
     Require(SanitizeMoveSpeed(-1.0f) == kMinimumMoveSpeedMetersPerSecond &&
@@ -69,6 +69,10 @@ int main()
             SanitizeDebugMode(CloudDebugMode::CloudDepth) ==
                 CloudDebugMode::CloudDepth,
             "High-only diagnostics must be preserved");
+    Require(SanitizeDebugMode(CloudDebugMode::VisibleSunTransmittance) ==
+                CloudDebugMode::VisibleSunTransmittance &&
+            DebugModeFromDigit(9) == CloudDebugMode::LightTransmittance,
+            "opacity-weighted sun T must coexist with the unchanged midpoint key 9");
     for (std::int32_t removed = 64; removed <= 73; ++removed)
         Require(SanitizeDebugMode(static_cast<CloudDebugMode>(removed)) ==
                     CloudDebugMode::Composite,
@@ -83,6 +87,6 @@ int main()
     Require(SanitizeDebugMode(static_cast<CloudDebugMode>(83)) ==
                 CloudDebugMode::Composite,
             "removed rim diagnostics must sanitize");
-    std::cout << "[UNIFIED-SCENE][MATH] GROUND=10000 BUILDING=20x60x20 RADIUS=50000 PASS\n";
+    std::cout << "[UNIFIED-SCENE][MATH] GROUND=10000 BUILDING=20x30x20 RADIUS=50000 PASS\n";
     return 0;
 }

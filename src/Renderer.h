@@ -23,6 +23,7 @@
 #include "AtmosphereParameters.h"
 #include "CloudDomainParameters.h"
 #include "CloudFormationPresetStore.h"
+#include "LightingPresetStore.h"
 #include "CloudFormationSettings.h"
 #include "CloudMotionParameters.h"
 #include "CloudParameters.h"
@@ -45,6 +46,7 @@
 #include "WeatherColumnParameters.h"
 
 class Camera;
+struct DirectionalLightingFrame;
 
 struct DiagnosticSceneVertex
 {
@@ -76,7 +78,13 @@ public:
     bool ApplyStage15Defaults();
     bool ApplySceneConcept(Stage15ConceptPreset preset);
     bool ApplyCloudType(const CloudFormationPresetTarget& target);
-    bool SaveCustomFormation();
+    bool SaveCustomFormation(); // 역사적 검증용 Custom 복사
+    bool SaveSelectedFormation();
+    bool SaveSelectedLighting();
+    LightingPresetSettings CurrentLightingPreset() const;
+    void LoadUserPresetDefaults();
+    bool RunPresetSlotDiagnostics(Camera& camera, bool capture);
+
     bool LoadCustomFormation();
     CloudFormationSettings CurrentCloudFormation() const;
 
@@ -284,6 +292,29 @@ public:
     }
     bool ValidateNoiseLabPreviews();
     bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
+    // 명시적 테스트 실행에서만 사용. 일반 UI/렌더 preset에는 촬영 경로를 추가하지 않는다.
+    bool RunDirectionalLightingBaseline(Camera& camera,
+        const std::filesystem::path& root, bool verifyOnly, bool finalApproved = false);
+    bool RunDirectionalLightingDiagnostics(Camera& camera);
+    bool RunDensityShapingDiagnostics(Camera& camera);
+    bool RunBaseOctaveDiagnostics(Camera& camera);
+    bool RunLightingTuningDiagnostics(Camera& camera);
+    bool RunSolarOcclusionDiagnostics(Camera& camera);
+    bool RunSolarBandingDiagnostics(Camera& camera);
+    bool RunSolarTransitionDiagnostics(Camera& camera);
+    bool RunRimLightingDiagnostics(Camera& camera);
+    bool RunRimBoundaryDiagnostics(Camera& camera);
+    bool RunFarHeightStability(Camera& camera, const std::filesystem::path& root);
+    bool SetRimPhaseCapForValidation(float cap);
+    bool SetShadowHeightRefinementForValidation(bool enabled, bool farOnly = false);
+    bool SetBaseOctaveExtraForValidation(float extra)
+    {
+        const float previous = m_noiseVolumeParameters.baseMidOctaveExtra;
+        m_noiseVolumeParameters.baseMidOctaveExtra = SanitizeBaseMidOctaveExtra(extra);
+        if (RegenerateNoiseVolumes()) return true;
+        m_noiseVolumeParameters.baseMidOctaveExtra = previous;
+        return false;
+    }
     std::uint64_t NoiseLabPreviewHash(std::size_t targetIndex);
     void SetDeveloperUiScaleForValidation(unsigned int dpi, float userZoom)
     {
@@ -321,6 +352,13 @@ public:
         m_captureFrameHashes = enabled;
     }
     std::uint64_t LastCloudFrameHash() const { return m_lastCloudFrameHash; }
+    // 테스트 전용. Init 이전에 켜야 compile/cache provenance도 수집한다.
+    void EnableDeterminismValidation(bool detailed = false)
+    { m_determinismValidation = true; m_determinismDetailed = detailed; }
+    const std::string& DeterminismFrameReport() const { return m_determinismFrameReport; }
+    const std::string& DeterminismShaderReport() const { return m_determinismShaderReport; }
+    bool DeterminismCaptureValid() const { return m_determinismCaptureValid; }
+    bool ValidateDeterminismTransitions(Camera& camera);
     const std::string& AdapterName() const { return m_adapterName; }
     const std::string& DriverVersion() const { return m_driverVersion; }
     bool SizeDependentResourcesValid() const
@@ -373,18 +411,27 @@ private:
 
     struct CameraCB
     {
+        // [파생 값] CPU transpose된 역 view-projection. 화면 UV/device depth [0,1] → 월드 위치(m). 직접 수정하면 깊이와 구름 가림이 어긋난다.
         DirectX::XMFLOAT4X4 invViewProj;
+        // [파생 값] 역 투영 행렬. NDC 방향 → view ray; 큰 월드에서 translation 없이 정밀한 레이를 복원.
         DirectX::XMFLOAT4X4 invProjection;
+        // [파생 값] 역 view 회전 행렬. view 방향 → 월드 방향, w=0으로 translation 제외.
         DirectX::XMFLOAT4X4 invViewRotation;
+        // [파생 값] xyz 카메라 월드 m, ray 시작점. F5~F8/이동에서 생성.
         DirectX::XMFLOAT3 cameraPos;
+        // [파생 값] 유효 구름 시간 s. 일반 실행은 실제 delta 누적, 테스트는 고정 입력; Weather/Base/Shadow에 동일 값.
         float time;
+        // [파생 값] xy=전체 화면 가로/세로 pixel, 각각 >=1. Full-resolution ray/LUT 계약.
         DirectX::XMFLOAT2 renderSize;
+        // [파생 값] 카메라 near clip 거리 m, 양수. 깊이/투영 계약에서 생성.
         float nearPlane;
+        // [파생 값] 카메라 far clip 거리 m, near보다 큼. 하늘 ray 외부 한계; 구름 최대 거리는 b5도 제한.
         float farPlane;
     };
 
     struct SceneCB
     {
+        // [파생 값] CPU transpose된 view-projection. 월드 m → clip 좌표; 같은 b0라도 CameraCB와 다른 SceneCB 64B.
         DirectX::XMFLOAT4X4 viewProj;
     };
 
@@ -426,6 +473,7 @@ private:
         const std::vector<std::string>& changedFiles,
         bool showErrors);
     bool ScanShaderChanges(bool forced);
+    float m_rimComparisonCap = 2.5f; // 명시적인 비교 실행만 변경, 일반 기본값2.5.
     bool CreateBackBufferTarget();
     bool CreateSceneTargets();
     bool CreateDeepShadowResources();
@@ -485,11 +533,17 @@ private:
     void RenderDiagnosticScene(const Camera& camera);
     void UpdateStage12ShadowParameters(const Camera& camera);
     void RenderDeepShadowCaches(const Camera& camera, float timeSeconds);
-    void RenderCloudPass();
+    void DispatchDeepShadowCaches(); // 준비된 CB로 적분. 진단은 입력을 고정해 재사용한다.
+    // true는 테스트 타일 Draw용 binding만 준비한다. 호출자가 Draw/Unbind를 완료해야 한다.
+    void RenderCloudPass(bool prepareOnlyForValidation = false);
     void UpdateCloudConstantBuffers(
         const Camera& camera, float timeSeconds);
     void UnbindCloudShaderResources(UINT count);
     void CaptureCloudFrameHash();
+    void CaptureDirectionalLightingFrame();
+    void CaptureDeterminismFrame();
+    void RecordDeterminismShader(const std::wstring& path, const char* entry,
+        const char* target, UINT flags, const std::string& key, ID3DBlob* blob);
 
     void CheckShaderHotReload();
     void UpdateShaderWriteTimes();
@@ -602,6 +656,9 @@ private:
     bool m_cloudFormationTargetValid = false;
     CloudFormationPresetSource m_cloudFormationSource =
         CloudFormationPresetSource::BuiltIn;
+    CloudFormationPresetSource m_lightingSource = CloudFormationPresetSource::BuiltIn;
+    std::string m_lightingStatus = "Built-in";
+    bool m_useSavedPresets = false;
     bool m_hasSavedCustomFormation = false;
     std::string m_cloudFormationStatus = "No formation target";
 
@@ -610,6 +667,9 @@ private:
     NoiseVolumeParameters m_noiseVolumeParameters;
     CloudShapeParameters m_cloudShapeParameters;
     Stage12ShadowParameters m_shadowParameters;
+    // 05-B 비교 실행에서만 사용. 일반 Balanced512 기본 규격/Custom과 분리한다.
+    bool m_shadowHeightRefinementForValidation = false;
+    bool m_shadowFarOnlyRefinementForValidation = false;
     WeatherMapDefinition m_weatherDefinition;
     WeatherColumnParameters m_weatherColumnParameters;
     WeatherMapData m_currentWeatherMapData;
@@ -653,6 +713,12 @@ private:
     std::string m_shaderError;
 
     bool m_captureFrameHashes = false;
+    DirectionalLightingFrame* m_directionalCaptureTarget = nullptr;
+    bool m_determinismValidation = false;
+    bool m_determinismDetailed = false;
+    bool m_determinismCaptureValid = false;
+    std::string m_determinismFrameReport;
+    std::string m_determinismShaderReport;
     bool m_renderNoiseLabPreviews = true;
     bool m_vsyncEnabled = true;
     bool m_tearingSupported = false;

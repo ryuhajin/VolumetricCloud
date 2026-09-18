@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 
 namespace stage13noise
@@ -20,24 +21,42 @@ inline constexpr std::uint32_t kBasePerlinOctaveSeedStride = 173u;
 
 struct alignas(16) NoiseVolumeParameters
 {
+    // [고정 품질] Base 한 축 128 texel(128³ RGBA8). 텍스처 할당·검증 계약과 함께 고정.
     std::uint32_t baseResolution = 128;
+    // [고정 품질] Detail 한 축 32 texel(32³ RGBA8). world size와 달리 내용 생성 규격.
     std::uint32_t detailResolution = 32;
+    // [고정 품질] 3D Noise seed uint [0,4294967295], 기본/권장 1337. 같은 seed는 같은 무늬; 변경은 재생성이 필요하며 크기/밀도와 무관.
     std::uint32_t seed = 1337;
+    // [패딩] 16바이트 packing 예약 칸, 0 유지. 화면 효과 없음; 삭제/재배치 금지.
     std::uint32_t paddingUint0 = 0;
 
+    // [직접 조절] F2/Formation Base XZ m/반복. Formation [1,200000], 기본/권장 12000. 늘리면 덩어리가 넓어지며 재생성 불필요.
     float baseWorldSizeMeters = stage13noise::kBaseHorizontalWorldSizeMeters;
+    // [직접 조절] F2/Formation Detail XYZ m/반복. Formation [1,100000], 기본/권장 2000. 늘리면 표면 파임이 커진다.
     float detailWorldSizeMeters = 2000.0f;
+    // [직접 조절] F2/Formation Base Y m/반복. Formation [1,200000], 기본/권장 12000. 늘리면 세로 무늬가 늘어진다.
     float baseVerticalWorldSizeMeters = stage13noise::kBaseVerticalWorldSizeMeters;
-    float padding0 = 0.0f;
+    // [03 임시 실험] F2 선택; 생성에만 사용. Custom 저장 대상 아님.
+    float baseMidOctaveExtra = 0.5f; // 03 승인: 2/3번째 진폭 1.50배, offset28.
 
+    // [고정 품질] x/y/z/w={4,9,17,23} cycle/타일. R fBm의 4옥타브, G/B/A Worley는 xyz 사용. 생성 경로 최소 1, 권장 현행 유지.
     DirectX::XMUINT4 baseFrequencies = { 4, 9, 17, 23 };
+    // [고정 품질] x/y/z/w=RGBA Worley {2,3,4,5} cycle/타일. 생성 최소 1, 표본 한계는 resolution/2; 현행 유지.
     DirectX::XMUINT4 detailFrequencies = { 2, 3, 4, 5 };
+    // [직접 조절: 코드] x/y/z=Base G/B/A Worley 가중치 (0.625,0.25,0.125), w=0 미사용. 별도 CPU clamp/정규화 없음; 권장 비음수 합 1 유지.
     DirectX::XMFLOAT4 baseWeights = { 0.625f, 0.25f, 0.125f, 0.0f };
+    // [직접 조절: 코드] x/y/z/w=Detail R/G/B/A 가중치 (0.50,0.30,0.15,0.05). CPU clamp 없음, 결과 saturate. 권장 비음수 합 1; 큰 주파수 비중↑면 파임이 잘게 된다.
     DirectX::XMFLOAT4 detailWeights = { 0.50f, 0.30f, 0.15f, 0.05f };
 };
 
 static_assert(sizeof(NoiseVolumeParameters) == 96,
               "NoiseVolumeParameters must match NoiseVolumeCB");
+static_assert(offsetof(NoiseVolumeParameters, baseMidOctaveExtra) == 28);
+inline float SanitizeBaseMidOctaveExtra(float value)
+{
+    if (!std::isfinite(value)) return 0.0f;
+    return value >= 0.375f ? 0.5f : (value >= 0.125f ? 0.25f : 0.0f);
+}
 
 namespace stage13noise
 {
@@ -183,10 +202,12 @@ inline double BasePerlinWorley(Float3 uvw,
         const std::uint32_t frequency = frequencies[octave];
         const Float3 point = { uvw.x * frequency, uvw.y * frequency,
                                uvw.z * frequency };
+        const double weight = amplitude * ((octave == 1u || octave == 2u)
+            ? 1.0 + SanitizeBaseMidOctaveExtra(parameters.baseMidOctaveExtra) : 1.0);
         sum += PeriodicGradientNoise(point, static_cast<std::int32_t>(frequency),
                                      parameters.seed + octave *
-                                         kBasePerlinOctaveSeedStride) * amplitude;
-        normalization += amplitude;
+                                         kBasePerlinOctaveSeedStride) * weight;
+        normalization += weight;
         amplitude *= 0.5;
     }
     const double perlin = std::clamp(sum / std::max(normalization, 1e-6) *

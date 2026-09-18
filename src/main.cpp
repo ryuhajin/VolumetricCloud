@@ -44,12 +44,14 @@ bool HasArgument(const wchar_t* commandLine, const wchar_t* argument)
     return commandLine && argument && wcsstr(commandLine, argument) != nullptr;
 }
 
-void ApplyCameraPreset(Camera& camera, Stage13CameraPresetId id)
+void ApplyCameraPreset(Camera& camera, Stage13CameraPresetId id, const Renderer* renderer = nullptr)
 {
-    const Stage13CameraPreset& preset = stage13camera::Get(id);
+    const Stage13CameraPreset preset = id == Stage13CameraPresetId::CloudOverview && renderer
+        ? stage13camera::FromSunDirection(renderer->LightSettings().directionToSun)
+        : stage13camera::Get(id);
     camera.SetClipPlanes(
         stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
-    camera.SetFovYDegrees(60.0f);
+    camera.SetFovYDegrees(stage13camera::kFovYDegrees);
     camera.SetLookAt(preset.position, preset.target);
     camera.SetDebugName(L"자동 검증 카메라");
 }
@@ -81,6 +83,43 @@ double Percentile95(std::vector<double> values)
     return values[index];
 }
 
+int RunDeterminismSmoke(Renderer& renderer, Camera& camera)
+{
+    renderer.SetAutomatedRenderMode(true);
+    renderer.SetVSyncEnabled(false);
+    renderer.EnableNoiseLabPreviews(false);
+    WriteDiagnosticLine("[Environment] adapter=" + renderer.AdapterName() + " driver=" + renderer.DriverVersion());
+    WriteDiagnosticLine(renderer.DeterminismShaderReport());
+    WriteDiagnosticLine("[Cache] compile=" + std::to_string(renderer.ShaderCompileCallCount()) +
+        " hits=" + std::to_string(renderer.ShaderCacheHitCount()));
+    float time = 17.0f;
+    bool passed = true;
+    const Stage15ConceptPreset concepts[] = {Stage15ConceptPreset::UrbanFairWeather,
+        Stage15ConceptPreset::MeadowBrokenClouds, Stage15ConceptPreset::SnowOvercast};
+    const Stage13CameraPresetId cameras[] = {Stage13CameraPresetId::HeroDepth,
+        Stage13CameraPresetId::GroundHorizon, Stage13CameraPresetId::CloudOverview,
+        Stage13CameraPresetId::AboveLayer};
+    for (unsigned scene = 0; scene < 3; ++scene) {
+        passed = renderer.ApplySceneConcept(concepts[scene]) && passed;
+        for (unsigned view = 0; view < 4; ++view) {
+            ApplyCameraPreset(camera, cameras[view], &renderer);
+            for (unsigned frame = 0; frame < 4; ++frame) {
+                renderer.Render(camera, time);
+                std::ostringstream line;
+                line << "[Frame] case=" << scene * 4 + view << " index=" << frame
+                    << " time=" << std::hexfloat << time << " valid=" << renderer.DeterminismCaptureValid();
+                WriteDiagnosticLine(line.str());
+                WriteDiagnosticLine(renderer.DeterminismFrameReport());
+                passed = renderer.DeterminismCaptureValid() && passed;
+                time += 1.0f / 60.0f;
+            }
+        }
+    }
+    passed = !renderer.HasDebugLayerErrors() && passed;
+    WriteDiagnosticLine(std::string("DETERMINISM_SMOKE=") + (passed ? "PASS" : "FAIL"));
+    return passed ? 0 : 1;
+}
+
 int RunHighCloudSmoke(Renderer& renderer, Camera& camera)
 {
     renderer.SetAutomatedRenderMode(true);
@@ -97,7 +136,7 @@ int RunHighCloudSmoke(Renderer& renderer, Camera& camera)
     const std::array<Stage13CameraPresetId, 4> cameras = {
         Stage13CameraPresetId::HeroDepth,
         Stage13CameraPresetId::GroundHorizon,
-        Stage13CameraPresetId::InsideLayer,
+        Stage13CameraPresetId::CloudOverview,
         Stage13CameraPresetId::AboveLayer,
     };
 
@@ -107,7 +146,7 @@ int RunHighCloudSmoke(Renderer& renderer, Camera& camera)
         passed = renderer.ApplySceneConcept(concept) && passed;
         for (Stage13CameraPresetId cameraPreset : cameras)
         {
-            ApplyCameraPreset(camera, cameraPreset);
+            ApplyCameraPreset(camera, cameraPreset, &renderer);
             RenderFrames(renderer, camera, 4u, timeSeconds);
             const std::uint64_t frameHash = renderer.LastCloudFrameHash();
             std::ostringstream line;
@@ -211,7 +250,7 @@ int RunFormationSmoke(Renderer& renderer, Camera& camera)
         renderer.WeatherMapHash() == fixedHash &&
         renderer.WeatherGenerationCount() == fixedGeneration;
     CloudFormationSettings generatorChange = renderer.CurrentCloudFormation();
-    ++generatorChange.weather.generator.cloudType.seed;
+    ++generatorChange.weather.generator.density.seed;
     const bool generatorOnce =
         renderer.ApplyCloudFormationSettingsForValidation(generatorChange) &&
         renderer.WeatherGenerationCount() == fixedGeneration + 1u &&
@@ -250,8 +289,6 @@ int RunFormationSmoke(Renderer& renderer, Camera& camera)
         SameObjectBytes(sceneAtmosphere, renderer.AtmosphereSettings()) &&
         SameObjectBytes(sceneGround, renderer.GroundLightingSettings()) &&
         SameObjectBytes(sceneTone, renderer.ToneMappingSettings()) &&
-        sceneShadow.surfaceShadowEnabled ==
-            renderer.ShadowSettings().surfaceShadowEnabled &&
         sceneShadow.surfaceShadowStrength ==
             renderer.ShadowSettings().surfaceShadowStrength &&
         sceneShadow.surfaceAmbientFloor ==
@@ -298,6 +335,7 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
     renderer.SetAutomatedRenderMode(false);
     renderer.SetVSyncEnabled(false);
     renderer.SetNoiseLabVisible(true);
+    renderer.ToggleDeveloperUiPanel(DeveloperUiPanel::NoiseWeather);
     renderer.EnableNoiseLabPreviews(true);
     float timeSeconds = 59.0f;
     renderer.SetCloudTimeForValidation(12.0f);
@@ -332,7 +370,7 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
 
     const std::filesystem::path snapshotRoot =
         std::filesystem::temp_directory_path() /
-        ("vcloud-schema39-smoke-" +
+        ("vcloud-schema44-smoke-" +
          std::to_string(GetCurrentProcessId()));
     std::error_code fileError;
     std::filesystem::remove_all(snapshotRoot, fileError);
@@ -360,18 +398,20 @@ int RunNoiseLabSmoke(Renderer& renderer, Camera& camera)
         metadata.assign(std::istreambuf_iterator<char>(input),
                         std::istreambuf_iterator<char>());
     }
-    const bool schema40 = exported && !fileError &&
-        metadata.find("\"schemaVersion\": 40") != std::string::npos &&
+    const bool schema44 = exported && !fileError &&
+        metadata.find("\"schemaVersion\": 44") != std::string::npos &&
         metadata.find("HighFullResolutionDirect") != std::string::npos &&
         metadata.find("\"weather\"") != std::string::npos &&
         metadata.find("\"shape\"") != std::string::npos &&
+        metadata.find("\"densityShaping\"") != std::string::npos &&
+        metadata.find("\"rimIntensity\"") != std::string::npos &&
         metadata.find("\"noiseVolumes\"") != std::string::npos &&
         metadata.find(std::string("tempo") + "ral") == std::string::npos &&
         metadata.find(std::string("cir") + "rus") == std::string::npos &&
         metadata.find(std::string("upsam") + "pling") == std::string::npos;
     fileError.clear();
     std::filesystem::remove_all(snapshotRoot, fileError);
-    passed = schema40 && !fileError && passed;
+    passed = schema44 && !fileError && passed;
     std::ostringstream line;
     line << "NOISE_LAB_SMOKE=" << (passed ? "PASS" : "FAIL")
          << " default_vsync=" << (defaultVSyncEnabled ? "on" : "off")
@@ -717,8 +757,10 @@ int RunNoiseDependencyReloadSmoke(Renderer& renderer)
     return passed ? 0 : 1;
 }
 
-int RunPerformanceTest(Renderer& renderer, Camera& camera)
+int RunPerformanceTest(Renderer& renderer, Camera& camera, float densityShaping = -1.0f,
+    float octaveExtra = 0.5f)
 {
+    if (!renderer.SetBaseOctaveExtraForValidation(octaveExtra)) return 1;
     renderer.SetAutomatedRenderMode(true);
     renderer.SetVSyncEnabled(false);
     renderer.EnableNoiseLabPreviews(false);
@@ -735,7 +777,7 @@ int RunPerformanceTest(Renderer& renderer, Camera& camera)
     const std::array<Stage13CameraPresetId, 4> cameras = {
         Stage13CameraPresetId::HeroDepth,
         Stage13CameraPresetId::GroundHorizon,
-        Stage13CameraPresetId::InsideLayer,
+        Stage13CameraPresetId::CloudOverview,
         Stage13CameraPresetId::AboveLayer,
     };
 
@@ -743,9 +785,12 @@ int RunPerformanceTest(Renderer& renderer, Camera& camera)
     {
         if (!renderer.ApplySceneConcept(concept))
             return 1;
+        auto formation = renderer.CurrentCloudFormation();
+        if (densityShaping >= 0) formation.shape.densityShaping = densityShaping;
+        if (!renderer.ApplyCloudFormationSettingsForValidation(formation)) return 1;
         for (Stage13CameraPresetId cameraPreset : cameras)
         {
-            ApplyCameraPreset(camera, cameraPreset);
+            ApplyCameraPreset(camera, cameraPreset, &renderer);
             RenderFrames(renderer, camera, 60u, timeSeconds);
             std::vector<double> caseCloudSamples;
             std::vector<double> caseFrameSamples;
@@ -774,6 +819,8 @@ int RunPerformanceTest(Renderer& renderer, Camera& camera)
                      << stage15::ConceptName(concept) << "][camera="
                      << stage13camera::Get(cameraPreset).diagnosticName
                      << "] " << (casePassed ? "PASS" : "FAIL")
+                     << " density_shaping=" << formation.shape.densityShaping
+                     << " base_mid_octave_scale=" << 1.0f + octaveExtra
                      << " samples=" << caseCloudSamples.size()
                      << " cloud_p95_ms=" << caseCloudP95
                      << " frame_p95_ms=" << caseFrameP95;
@@ -801,6 +848,25 @@ int RunPerformanceTest(Renderer& renderer, Camera& camera)
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 {
+    const bool presetSlots = HasArgument(commandLine, L"--preset-slots-test");
+    const bool presetCapture = HasArgument(commandLine, L"--preset-slots-capture");
+    const bool directionalBaseline = HasArgument(commandLine, L"--directional-lighting-baseline");
+    const bool directionalFinal = HasArgument(commandLine, L"--directional-lighting-final");
+    const bool directionalVerify = HasArgument(commandLine, L"--directional-lighting-verify");
+    const bool directionalDiagnostics = HasArgument(commandLine, L"--directional-lighting-diagnostics");
+    const bool densityShapingTest = HasArgument(commandLine, L"--density-shaping-test");
+    const bool baseOctaveTest = HasArgument(commandLine, L"--base-octave-test");
+    const bool solarBandingTest = HasArgument(commandLine, L"--solar-banding-test");
+    const bool rimTest = HasArgument(commandLine, L"--rim-lighting-test");
+    const bool solarTransitionTest = HasArgument(commandLine, L"--solar-transition-test");
+    const bool solarOcclusionTest = HasArgument(commandLine, L"--solar-occlusion-test");
+    const bool lightingTuningTest = HasArgument(commandLine, L"--lighting-tuning-test");
+    const bool directionalTest = rimTest || directionalFinal || directionalBaseline || directionalVerify || directionalDiagnostics || densityShapingTest || baseOctaveTest || lightingTuningTest || solarOcclusionTest || solarBandingTest || solarTransitionTest;
+    const bool determinismSmoke = HasArgument(commandLine, L"--determinism-smoke-test");
+    if (determinismSmoke)
+        WriteDiagnosticLine(VCLOUD_STRICT_VALIDATION
+            ? "[BuildPolicy] strict_validation=1"
+            : "[BuildPolicy] strict_validation=0 bit_exact_required=0");
     const bool highSmoke = HasArgument(
         commandLine, L"--high-cloud-smoke-test");
     const bool formationSmoke = HasArgument(
@@ -819,14 +885,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         commandLine, L"--weather-hot-reload-smoke-test");
     const bool performanceTest = HasArgument(
         commandLine, L"--high-performance-test");
-    const bool automated = highSmoke || formationSmoke || atmosphereSmoke ||
+    const bool automated = presetSlots || presetCapture || directionalTest || determinismSmoke || highSmoke || formationSmoke || atmosphereSmoke ||
         noiseLabSmoke || shaderCacheSmoke || toneReloadSmoke ||
         noiseReloadSmoke || weatherReloadSmoke || performanceTest;
 
-    const int initialWidth = performanceTest ? 1920 :
-        (highSmoke ? 320 : (automated ? 640 : 1280));
-    const int initialHeight = performanceTest ? 1080 :
-        (highSmoke ? 180 : (automated ? 360 : 720));
+    const int initialWidth = (performanceTest || directionalTest || presetCapture) ? 1920 :
+        ((highSmoke || determinismSmoke) ? 320 : (automated ? 640 : 1280));
+    const int initialHeight = (performanceTest || directionalTest || presetCapture) ? 1080 :
+        ((highSmoke || determinismSmoke) ? 180 : (automated ? 360 : 720));
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     Window window(
@@ -844,6 +910,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     ApplyCameraPreset(camera, Stage13CameraPresetId::HeroDepth);
 
     Renderer renderer;
+    if (determinismSmoke) renderer.EnableDeterminismValidation(
+        HasArgument(commandLine, L"--determinism-detailed"));
     const bool needsNoiseVolumes = !toneReloadSmoke && !noiseReloadSmoke &&
         !weatherReloadSmoke;
     if (!renderer.Init(
@@ -863,13 +931,87 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         CoUninitialize();
         return 1;
     }
+    if (!automated) renderer.LoadUserPresetDefaults();
+    if (performanceTest && HasArgument(commandLine, L"--shadow-height-2x"))
+    {
+        if (!renderer.SetShadowHeightRefinementForValidation(true))
+        {
+            WriteDiagnosticLine("SHADOW_HEIGHT_REFINEMENT=FAIL");
+            CoUninitialize();
+            return 1;
+        }
+        WriteDiagnosticLine("SHADOW_HEIGHT_REFINEMENT=159/79 comparison_only cache_mib=238");
+    }
+    if (!renderer.SetRimPhaseCapForValidation(HasArgument(commandLine,L"--rim-review-cap-8") ? 8.f : (HasArgument(commandLine,L"--rim-review-cap-4") ? 4.f : 2.5f))) { CoUninitialize(); return 1; }
     window.SetCamera(&camera);
     window.SetRenderer(&renderer);
     if (!automated)
         window.ApplyInitialPortfolioCamera();
 
     int result = 0;
-    if (highSmoke)
+    if (presetSlots || presetCapture) { result = renderer.RunPresetSlotDiagnostics(camera, presetCapture) ? 0 : 1; }
+    else if (rimTest) { result = renderer.RunRimLightingDiagnostics(camera) ? 0 : 1; }
+    else if (solarTransitionTest)
+    {
+        result = renderer.RunSolarTransitionDiagnostics(camera) ? 0 : 1;
+    }
+    else if (solarBandingTest)
+    {
+        result = renderer.RunSolarBandingDiagnostics(camera) ? 0 : 1;
+    }
+    else if (solarOcclusionTest)
+    {
+        result = renderer.RunSolarOcclusionDiagnostics(camera) ? 0 : 1;
+    }
+    else if (lightingTuningTest)
+    {
+        const bool valid = renderer.RunLightingTuningDiagnostics(camera);
+        WriteDiagnosticLine(std::string("LIGHTING_TUNING=") + (valid ? "PASS" : "FAIL"));
+        result = valid ? 0 : 1;
+    }
+    else if (baseOctaveTest)
+    {
+        const bool valid = renderer.RunBaseOctaveDiagnostics(camera);
+        WriteDiagnosticLine(std::string("BASE_OCTAVES=") + (valid ? "PASS" : "FAIL"));
+        result = valid ? 0 : 1;
+    }
+    else if (densityShapingTest)
+    {
+        const bool valid = renderer.RunDensityShapingDiagnostics(camera);
+        WriteDiagnosticLine(std::string("DENSITY_SHAPING=") + (valid ? "PASS" : "FAIL"));
+        result = valid ? 0 : 1;
+    }
+    else if (directionalDiagnostics)
+    {
+        const bool valid = !directionalBaseline && !directionalVerify &&
+            renderer.RunDirectionalLightingDiagnostics(camera);
+        WriteDiagnosticLine(std::string("DIRECTIONAL_DIAGNOSTICS=") + (valid ? "PASS" : "FAIL"));
+        result = valid ? 0 : 1;
+    }
+    else if (directionalTest)
+    {
+        wchar_t root[32768] = {};
+        const DWORD length = GetEnvironmentVariableW(
+            directionalFinal ? L"VCLOUD_DIRECTIONAL_FINAL_ROOT" : L"VCLOUD_DIRECTIONAL_BASELINE_ROOT", root, 32768);
+        const bool valid = !(directionalBaseline && directionalVerify) &&
+            !(directionalFinal && (directionalBaseline || directionalVerify)) &&
+            length > 0 && length < 32768 &&
+            renderer.RunDirectionalLightingBaseline(camera, root, directionalVerify, directionalFinal);
+        WriteDiagnosticLine(std::string(directionalFinal ? "DIRECTIONAL_FINAL=" : directionalVerify
+            ? "DIRECTIONAL_VERIFY=" : "DIRECTIONAL_BASELINE=") + (valid ? "PASS" : "FAIL"));
+        result = valid ? 0 : 1;
+    }
+    else if (determinismSmoke && HasArgument(commandLine, L"--determinism-state-test"))
+    {
+        renderer.SetAutomatedRenderMode(true);
+        renderer.SetVSyncEnabled(false);
+        const bool valid = renderer.ValidateDeterminismTransitions(camera);
+        WriteDiagnosticLine(std::string("DETERMINISM_TRANSITIONS=") + (valid ? "PASS" : "FAIL"));
+        result = valid ? 0 : 1;
+    }
+    else if (determinismSmoke)
+        result = RunDeterminismSmoke(renderer, camera);
+    else if (highSmoke)
         result = RunHighCloudSmoke(renderer, camera);
     else if (formationSmoke)
         result = RunFormationSmoke(renderer, camera);
@@ -886,7 +1028,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
     else if (weatherReloadSmoke)
         result = RunWeatherReloadSmoke(renderer);
     else if (performanceTest)
-        result = RunPerformanceTest(renderer, camera);
+    {
+        const float candidate = HasArgument(commandLine, L"--density-shaping-070") ? 0.70f :
+            (HasArgument(commandLine, L"--density-shaping-035") ? 0.35f : -1.0f);
+        const float octaveExtra = HasArgument(commandLine, L"--base-octaves-150") ? 0.5f :
+            (HasArgument(commandLine, L"--base-octaves-125") ? 0.25f : 0.5f);
+        result = RunPerformanceTest(renderer, camera, candidate, octaveExtra);
+    }
     else
     {
         LARGE_INTEGER frequency = {};

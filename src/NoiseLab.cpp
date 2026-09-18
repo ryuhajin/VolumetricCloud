@@ -1,4 +1,7 @@
 #include "NoiseLab.h"
+#include "LightingPresetStore.h"
+#include "FormationParameterRanges.h"
+#include "CloudShapeDomainContract.h"
 #include "Fnv1a64.h"
 
 #include <algorithm>
@@ -10,6 +13,7 @@
 
 #include "Camera.h"
 #include "Stage13SceneMath.h"
+#include "Stage15Parameters.h"
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
@@ -21,8 +25,16 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 
 namespace
 {
+// 사용자 입력만 보정한다. 창을 열거나 항목을 숨기는 것으로 설정을 쓰지 않는다.
+bool FormationSliderFloat(const char* label, float* value, float minimum, float maximum,
+    const char* format = "%.3f", ImGuiSliderFlags flags = 0)
+{
+    return ImGui::SliderFloat(label, value, minimum, maximum, format,
+        flags | ImGuiSliderFlags_AlwaysClamp);
+}
+
 constexpr float kMaximumCloudTimeSeconds = 86400.0f;
-constexpr float kMaximumCloudMovementSpeedMetersPerSecond = 400.0f;
+constexpr float kMaximumCloudMovementSpeedMetersPerSecond = formationrange::motionSpeedMax;
 
 bool IsMouseMessage(UINT message)
 {
@@ -53,7 +65,7 @@ const char* NoiseOutputName(NoiseOutputMode mode)
         "Raw Noise", "Threshold Density", "Final Density",
         "Height Fraction", "Height Profile", "Base Density",
         "Detail Noise", "Erosion", "Detail Sample Mask",
-        "Weather Coverage", "Stored Regional Type G", "Weather Density",
+        "Weather Coverage", "Cloud Type", "Weather Density",
         "Weather Threshold", "Typed Profile", "Weather UV",
         "Base R", "Base G", "Base B", "Base A", "Base Combined",
         "Detail R", "Detail G", "Detail B", "Detail A",
@@ -74,6 +86,16 @@ const char* DebugName(CloudDebugMode mode)
     case CloudDebugMode::Transmittance: return "Transmittance";
     case CloudDebugMode::ViewOpticalDepth: return "Optical Depth";
     case CloudDebugMode::CloudDepth: return "Cloud Depth";
+    case CloudDebugMode::AccumulatedDirectLighting: return "Direct";
+    case CloudDebugMode::AccumulatedSkyAmbient: return "Sky";
+    case CloudDebugMode::AccumulatedGroundBounce: return "Ground";
+    case CloudDebugMode::AccumulatedMultipleScattering: return "Multiple";
+    case CloudDebugMode::SilverLiningContribution: return "Silver Lining (part of Direct)";
+    case CloudDebugMode::ShapedSunVisibility: return "Shaped Sun Visibility";
+    case CloudDebugMode::AmbientVisibility: return "Ground Ambient Visibility";
+    case CloudDebugMode::VisibleSunTransmittance: return "Visible Sun T (opacity weighted)";
+    case CloudDebugMode::LightTransmittance: return "Sun T (segment midpoint / key 9)";
+    case CloudDebugMode::DualPhaseFactor: return "Phase Factor (segment midpoint)";
     case CloudDebugMode::Stage12NearOpticalDepth: return "Near Cache";
     case CloudDebugMode::Stage12FarOpticalDepth: return "Far Cache";
     case CloudDebugMode::Stage12CascadeSelection: return "Cache Cascade";
@@ -89,23 +111,23 @@ constexpr CloudDebugMode kCloudDiagnosticModes[] = {
     CloudDebugMode::Transmittance,
     CloudDebugMode::ViewOpticalDepth,
     CloudDebugMode::CloudDepth,
+    CloudDebugMode::AccumulatedDirectLighting,
+    CloudDebugMode::AccumulatedSkyAmbient,
+    CloudDebugMode::AccumulatedGroundBounce,
+    CloudDebugMode::AccumulatedMultipleScattering,
+    CloudDebugMode::SilverLiningContribution,
+    CloudDebugMode::VisibleSunTransmittance,
+    CloudDebugMode::ShapedSunVisibility,
+    CloudDebugMode::AmbientVisibility,
+    CloudDebugMode::LightTransmittance,
+    CloudDebugMode::DualPhaseFactor,
     CloudDebugMode::Stage12NearOpticalDepth,
     CloudDebugMode::Stage12FarOpticalDepth,
     CloudDebugMode::Stage12CascadeSelection,
     CloudDebugMode::Stage12SurfaceTransmittance,
 };
 
-const char* CloudTypeSourceName(CloudTypeSelectionMode mode)
-{
-    switch (mode)
-    {
-    case CloudTypeSelectionMode::FixedStratus: return "Fixed Stratus";
-    case CloudTypeSelectionMode::FixedMixed: return "Fixed Mixed";
-    case CloudTypeSelectionMode::FixedCumulus: return "Fixed Cumulus";
-    case CloudTypeSelectionMode::RegionalBlend: return "Regional Weather G";
-    default: return "Unknown";
-    }
-}
+
 
 const char* AtmosphereDebugName(Stage14DebugView view)
 {
@@ -174,6 +196,7 @@ void NoiseLab::Shutdown()
     m_initialized = false;
     m_noiseLabCb.Reset();
     m_targets = {};
+    m_weatherTargets = {};
     m_context = nullptr;
     m_device = nullptr;
     m_hwnd = nullptr;
@@ -209,6 +232,13 @@ bool NoiseLab::CreatePreviewTargets()
         {
             return false;
         }
+    }
+    for (SliceTarget& target : m_weatherTargets)
+    {
+        if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &target.texture)) ||
+            FAILED(m_device->CreateRenderTargetView(target.texture.Get(), nullptr, &target.rtv)) ||
+            FAILED(m_device->CreateShaderResourceView(target.texture.Get(), nullptr, &target.srv)))
+            return false;
     }
     return true;
 }
@@ -386,7 +416,7 @@ void NoiseLab::BeginFrame(
                            hasCustomFormation, formationStatus,
                            vsyncEnabled, tearingSupported);
     if (m_panelVisible[1])
-        DrawWeatherMapPanel(cloud, weather.generator, typeSelection, noiseVolume,
+        DrawWeatherMapPanel(cloud, weather.generator, noiseVolume,
                             baseNoiseVolumeHash, detailNoiseVolumeHash,
                             noiseVolumeGenerationMilliseconds,
                             weatherMapGenerationMilliseconds,
@@ -434,7 +464,7 @@ void NoiseLab::DrawFormationPanel(
     } buttons[] = {
         { "Stratus", CloudFormationType::Stratus },
         { "Cumulus", CloudFormationType::Cumulus },
-        { "Mixed", CloudFormationType::Mixed },
+        { "Altocumulus", CloudFormationType::Mixed },
     };
     for (std::size_t index = 0; index < std::size(buttons); ++index)
     {
@@ -448,17 +478,17 @@ void NoiseLab::DrawFormationPanel(
         }
     }
     ImGui::SameLine();
-    if (!hasCustom)
-        ImGui::BeginDisabled();
+
     if (ImGui::Button("Custom"))
         m_loadCustomPending = true;
-    if (!hasCustom)
-        ImGui::EndDisabled();
+
     ImGui::Text("Active: %s (%s)",
                 CloudFormationPresetTargetName(target),
                 CloudFormationPresetSourceName(source));
     ImGui::TextWrapped("%s", status.c_str());
-    if (ImGui::Button("Save Custom"))
+    ImGui::TextWrapped("%s", CloudFormationPresetPath(m_presetRoot, target).generic_string().c_str());
+    ImGui::TextWrapped("Selecting a slot reloads it and discards unsaved edits.");
+    if (ImGui::Button("Save Preset"))
         m_saveCustomPending = true;
 
     ImGui::SeparatorText("Presentation");
@@ -475,60 +505,69 @@ void NoiseLab::DrawFormationPanel(
 
     ImGui::SeparatorText("Formation");
     bool edited = false;
-    edited |= ImGui::SliderFloat("Coverage", &cloud.coverage,
+    edited |= FormationSliderFloat("Coverage", &cloud.coverage,
                                  0.0f, 1.0f, "%.3f");
-    edited |= ImGui::SliderFloat("Density", &cloud.densityMultiplier,
-                                 0.0f, 4.0f, "%.3f");
-    edited |= ImGui::SliderFloat("Extinction / m",
+    edited |= FormationSliderFloat("Density", &cloud.densityMultiplier,
+                                 0.0f, formationrange::densityMax, "%.3f");
+    edited |= FormationSliderFloat("Extinction / m",
                                  &cloud.extinctionCoefficient,
-                                 0.00005f, 0.0010f, "%.6f");
-    edited |= ImGui::SliderFloat("Detail erosion",
+                                 formationrange::extinctionMin, formationrange::extinctionMax, "%.6f", ImGuiSliderFlags_Logarithmic);
+    edited |= FormationSliderFloat("Detail erosion",
                                  &cloud.detailErosionStrength,
                                  0.0f, 1.0f, "%.3f");
-    edited |= ImGui::SliderFloat("Weather threshold",
-                                 &weather.generator.coverageThreshold,
-                                 0.0f, 1.0f, "%.3f");
-    edited |= ImGui::SliderFloat("Weather softness",
-                                 &weather.generator.coverageSoftness,
-                                 0.001f, 0.5f, "%.3f");
 
-    ImGui::SeparatorText("Physical Column Geometry");
-    edited |= ImGui::SliderFloat("Stratus min thickness",
-        &weather.column.stratusMinimumThicknessMeters, 200.0f, 6000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Stratus max thickness",
-        &weather.column.stratusMaximumThicknessMeters, 200.0f, 6000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Cumulus min thickness",
-        &weather.column.cumulusMinimumThicknessMeters, 200.0f, 7000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Cumulus max thickness",
-        &weather.column.cumulusMaximumThicknessMeters, 200.0f, 7000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Base lift",
-        &weather.column.maximumBaseLiftMeters, 0.0f, 1000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Footprint influence",
-        &shape.footprintCoverageInfluence, 0.0f, 1.0f, "%.3f");
-    edited |= ImGui::SliderFloat("Domain bottom",
-        &domain.cloudBottomAltitude, 0.0f, 10000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Domain thickness",
-        &domain.cloudLayerThickness, 500.0f, 10000.0f, "%.0f m");
-    ImGui::TextUnformatted("Load/apply requires at least 200 m top headroom.");
-    ImGui::Text("Effective Cloud Type: %s",
-                CloudTypeSourceName(typeSelection.mode));
+
+    edited |= FormationSliderFloat("Density shaping",
+        &shape.densityShaping, 0.0f, 1.0f, "%.2f");
+
+    ImGui::SeparatorText("Cloud Local");
+    auto& column = weather.column;
+    edited |= FormationSliderFloat("Cloud min thickness", &column.minimumThicknessMeters,
+        1.0f, column.maximumThicknessMeters, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    edited |= FormationSliderFloat("Cloud max thickness", &column.maximumThicknessMeters,
+        column.minimumThicknessMeters, 6000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    const float availableLift = std::clamp(domain.cloudLayerThickness -
+        cloudshapedomain::ActiveMaximumThicknessMeters(column, typeSelection) - 200.0f,
+        0.0f, formationrange::liftMax);
+    edited |= FormationSliderFloat("Max base lift", &column.maximumBaseLiftMeters,
+        0.0f, availableLift, "%.0f m");
+    edited |= FormationSliderFloat("Height-based narrowing", &shape.footprintCoverageInfluence, 0.0f, 1.0f, "%.3f");
+
+    ImGui::SeparatorText("Vertical Profile");
+    const auto heightSlider = [&](const char* label, float& ratio, float lo, float hi) {
+        float percent=ratio*100.0f;
+        if (!FormationSliderFloat(label,&percent,lo*100.0f,hi*100.0f,"%.1f %%")) return false;
+        ratio=percent*0.01f;
+        return true;
+    };
+    edited |= heightSlider("Bottom fade end",shape.bottomFadeEnd,0.01f,shape.topFadeStart);
+    edited |= heightSlider("Top fade start",shape.topFadeStart,shape.bottomFadeEnd,0.99f);
+    edited |= FormationSliderFloat("Lower density", &shape.lowerDensityScale, 0.0f, 1.0f);
+    edited |= heightSlider("Density rise start",shape.upperTransitionStart,0.0f,shape.upperTransitionEnd-0.01f);
+    edited |= heightSlider("Density rise end",shape.upperTransitionEnd,shape.upperTransitionStart+0.01f,1.0f);
+    float profile[65];
+    for (int i=0;i<65;++i) profile[i]=EvaluateCommonVerticalProfile(i/64.0f,shape);
+    ImGui::PlotLines("Density vs height", profile, 65, 0, "Bottom 0 -> Top 1", 0.f, 1.f, ImVec2(0,Ui(80.f)));
+
+    ImGui::SeparatorText("Ray Domain");
+    edited |= FormationSliderFloat("Domain bottom altitude", &domain.cloudBottomAltitude,
+        0.0f, 7000.0f, "%.0f m");
+    const float minimumDomainHeight = cloudshapedomain::EvaluateFit(column, typeSelection, domain, 200.0f).requiredLayerThicknessMeters;
+    edited |= FormationSliderFloat("Domain height", &domain.cloudLayerThickness,
+        minimumDomainHeight, std::max(5000.0f, minimumDomainHeight), "%.0f m", ImGuiSliderFlags_Logarithmic);
 
     ImGui::SeparatorText("Cloud Movement");
     bool motionEdited = false;
     float directionXZ[2] = { motion.direction.x, motion.direction.z };
     if (ImGui::SliderFloat2(
-            "Wind direction XZ", directionXZ, -1.0f, 1.0f, "%.3f"))
+            "Wind direction XZ", directionXZ, -1.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp))
     {
         motion.direction = { directionXZ[0], 0.0f, directionXZ[1] };
         motionEdited = true;
     }
-    motionEdited |= ImGui::SliderFloat("Cloud movement speed", &motion.speedMetersPerSecond,
+    motionEdited |= FormationSliderFloat("Cloud movement speed", &motion.speedMetersPerSecond,
         0.0f, kMaximumCloudMovementSpeedMetersPerSecond, "%.1f m/s",
         ImGuiSliderFlags_AlwaysClamp);
-    ImGui::TextWrapped(
-        "Cloud offset is elapsed time x this speed along the global wind "
-        "direction. Use 100-400 m/s when movement must be obvious.");
-
     ImGui::SeparatorText("Preview");
     const int maximumMode = static_cast<int>(NoiseOutputMode::LocalBaseOffset);
     int output = static_cast<int>(m_parameters.outputMode);
@@ -569,17 +608,19 @@ bool NoiseLab::DrawPeriodicChannelFields(
         ImGui::PushID(label);
         edited |= ImGui::InputScalar(
             "Seed", ImGuiDataType_U32, &settings.seed);
-        edited |= ImGui::SliderInt(
-            "Macro period", reinterpret_cast<int*>(&settings.macroPeriod),
-            1, 64);
-        edited |= ImGui::SliderInt(
-            "Detail period", reinterpret_cast<int*>(&settings.detailPeriod),
-            1, 128);
-        edited |= ImGui::SliderFloat(
+        int macro = static_cast<int>(settings.macroPeriod);
+        int detail = static_cast<int>(settings.detailPeriod);
+        if (ImGui::SliderInt("Macro period", &macro, formationrange::macroMin, formationrange::macroMax, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+            settings.macroPeriod = static_cast<std::uint32_t>(macro); edited = true;
+        }
+        if (ImGui::SliderInt("Detail period", &detail, formationrange::detailMin, formationrange::detailMax, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+            settings.detailPeriod = static_cast<std::uint32_t>(detail); edited = true;
+        }
+        edited |= FormationSliderFloat(
             "Detail weight", &settings.detailWeight, 0.0f, 1.0f);
-        edited |= ImGui::SliderFloat("Bias", &settings.bias, -1.0f, 1.0f);
-        edited |= ImGui::SliderFloat(
-            "Contrast", &settings.contrast, 0.1f, 4.0f);
+        edited |= FormationSliderFloat("Bias", &settings.bias, formationrange::biasMin, formationrange::biasMax);
+        edited |= FormationSliderFloat(
+            "Contrast", &settings.contrast, formationrange::contrastMin, formationrange::contrastMax);
         ImGui::PopID();
         ImGui::TreePop();
     }
@@ -589,7 +630,6 @@ bool NoiseLab::DrawPeriodicChannelFields(
 void NoiseLab::DrawWeatherMapPanel(
     CloudParameters& cloud,
     WeatherMapGeneratorSettings& weather,
-    const CloudTypeSelection& typeSelection,
     NoiseVolumeParameters& noiseVolume,
     std::uint64_t baseHash,
     std::uint64_t detailHash,
@@ -605,7 +645,8 @@ void NoiseLab::DrawWeatherMapPanel(
         ImGui::End();
         return;
     }
-    ImGui::TextUnformatted("Texture3D Base + Detail");
+    ImGui::SeparatorText("Base / Detail Noise Scale");
+    ImGui::TextDisabled("Base mid octaves: %.2fx (approved)", 1.0f + noiseVolume.baseMidOctaveExtra);
     if (ImGui::Button("Regenerate Base and Detail"))
         m_noiseVolumeRegeneratePending = true;
     ImGui::Text("Base hash: %016llx",
@@ -614,39 +655,47 @@ void NoiseLab::DrawWeatherMapPanel(
         static_cast<unsigned long long>(detailHash));
     ImGui::Text("Generation: %.2f ms", generationMilliseconds);
     bool edited = false;
-    edited |= ImGui::SliderFloat("Base world size",
-        &noiseVolume.baseWorldSizeMeters, 1000.0f, 64000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Base vertical size",
+    edited |= FormationSliderFloat("Base world size",
+        &noiseVolume.baseWorldSizeMeters, 3000.0f, 40000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    edited |= FormationSliderFloat("Base vertical size",
         &noiseVolume.baseVerticalWorldSizeMeters,
-        1000.0f, 64000.0f, "%.0f m");
-    edited |= ImGui::SliderFloat("Detail world size",
-        &noiseVolume.detailWorldSizeMeters, 250.0f, 8000.0f, "%.0f m");
-    ImGui::SeparatorText("Weather Generator");
+        3000.0f, 40000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    edited |= FormationSliderFloat("Detail world size",
+        &noiseVolume.detailWorldSizeMeters, 700.0f, 6000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    ImGui::SeparatorText("Weather Map");
+    edited |= FormationSliderFloat("Weather map scale", &cloud.weatherMapWorldSize,
+        10000.0f, 64000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    edited |= FormationSliderFloat("Density coverage link",
+        &weather.densityCoverageInfluence, 0.0f, 1.0f);
+    edited |= FormationSliderFloat("Thickness coverage link",
+        &weather.thicknessCoverageInfluence, 0.0f, 1.0f);
+
     ImGui::Text("Last GPU generation: %.3f ms (#%llu)",
         weatherGenerationMilliseconds,
         static_cast<unsigned long long>(weatherGeneration));
     if (weatherMapSrv)
     {
-        ImGui::TextUnformatted("Weather Map RGBA");
-        ImGui::Image(ImTextureRef(static_cast<ImTextureID>(
-            reinterpret_cast<std::uintptr_t>(weatherMapSrv))),
-            ImVec2(Ui(256.0f), Ui(256.0f)));
+        const char* names[] = {"R/B/A composite", "R - Coverage", "B - Density", "A - Thickness potential"};
+        for (int channel = 0; channel < 4; ++channel) {
+            if (channel == 1 || channel == 3) ImGui::SameLine();
+            ImGui::BeginGroup();
+            ImGui::TextUnformatted(names[channel]);
+            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(
+                reinterpret_cast<std::uintptr_t>(m_weatherTargets[channel].srv.Get()))),
+                ImVec2(Ui(200.0f), Ui(200.0f)));
+            ImGui::EndGroup();
+        }
     }
-    ImGui::Text("Stored Regional Type G (always generated)");
-    ImGui::Text("Effective Cloud Type: %s",
-                CloudTypeSourceName(typeSelection.mode));
+    ImGui::SeparatorText("Weather Generator");
+    edited |= FormationSliderFloat("Coverage threshold (R)",
+        &weather.coverageThreshold, 0.0f, 1.0f, "%.3f");
+    edited |= FormationSliderFloat("Coverage softness (R)",
+        &weather.coverageSoftness, formationrange::softnessMin,
+        formationrange::softnessMax, "%.3f");
     edited |= DrawPeriodicChannelFields("Coverage channel", weather.coverage);
-    edited |= DrawPeriodicChannelFields(
-        "Cloud type channel (G)", weather.cloudType);
-    if (typeSelection.mode != CloudTypeSelectionMode::RegionalBlend)
-        ImGui::TextDisabled("Fixed 렌더 모드는 G를 보존하지만 유효 타입 계산에는 사용하지 않습니다.");
     edited |= DrawPeriodicChannelFields("Density channel", weather.density);
     edited |= DrawPeriodicChannelFields(
         "Thickness channel", weather.localThickness);
-    edited |= ImGui::SliderFloat("Density coverage link",
-        &weather.densityCoverageInfluence, 0.0f, 1.0f);
-    edited |= ImGui::SliderFloat("Thickness coverage link",
-        &weather.thicknessCoverageInfluence, 0.0f, 1.0f);
     if (edited)
         m_formationEdited = true;
     ImGui::End();
@@ -686,14 +735,41 @@ void NoiseLab::DrawLightingPanel(
         &light.phaseIntensity, 0.0f, 1.0f, "%.3f");
     edited |= ImGui::SliderFloat("Edge influence",
         &light.edgeInfluence, 0.0f, 1.0f, "%.3f");
+    edited |= ImGui::SliderFloat("Shadow exponent",
+        &light.shadowExponent, 0.5f, 4.0f, "%.3f");
+    edited |= ImGui::SliderFloat("Edge optical depth scale",
+        &light.edgeOpticalDepthScale, 0.25f, 8.0f, "%.3f");
 
+    ImGui::SeparatorText("Cloud Rim");
+    edited |= ImGui::SliderFloat("Rim intensity", &light.rimIntensity, 0.0f, 4.0f, "%.2f");
+    edited |= ImGui::SliderFloat("Rim depth scale", &light.rimDepthScale, 0.5f, 2.0f, "%.2f");
+    ImGui::TextDisabled("Rim phase cap: %.1f%s", m_rimComparisonCap,
+        m_rimComparisonCap == 2.5f ? "" : " (comparison)");
+    ImGui::TextWrapped("Rim intensity 0 removes the positive phase contribution only. Larger depth scale concentrates light in sun-exposed samples.");
     ImGui::SeparatorText("Environment");
     edited |= ImGui::SliderFloat("Sky fill",
-        &environment.physicalSkyFillScale, 0.0f, 2.0f, "%.3f");
+        &environment.physicalSkyFillScale, 0.0f, 2.0f, "%.4f");
     edited |= ImGui::SliderFloat("Ground fill",
-        &environment.physicalGroundFillScale, 0.0f, 2.0f, "%.3f");
+        &environment.physicalGroundFillScale, 0.0f, 2.0f, "%.4f");
     edited |= ImGui::SliderFloat("Interior scattering",
         &environment.multipleScatteringInteriorBlend, 0.0f, 1.0f, "%.3f");
+    edited |= ImGui::SliderFloat("Multiple attenuation",
+        &environment.multipleScatteringAttenuation, 0.0f, 1.0f, "%.4f");
+    if (ImGui::Button("Reset approved Urban lighting"))
+    {
+        // 비교 대상 여섯 명암 항목과 두 림 배율을 복원한다. 형상/태양 각도/노출은 유지한다.
+        const auto base = stage15::ResolveSceneConcept(Stage15ConceptPreset::UrbanFairWeather);
+        light.shadowExponent = base.light.shadowExponent;
+        light.edgeOpticalDepthScale = base.light.edgeOpticalDepthScale;
+        light.phaseIntensity = base.light.phaseIntensity;
+        light.rimIntensity = base.light.rimIntensity;
+        light.rimDepthScale = base.light.rimDepthScale;
+        environment.physicalSkyFillScale = base.environment.physicalSkyFillScale;
+        environment.physicalGroundFillScale = base.environment.physicalGroundFillScale;
+        environment.multipleScatteringAttenuation = base.environment.multipleScatteringAttenuation;
+        edited = true;
+    }
+    ImGui::TextWrapped("Approved Urban: Shadow 1.35; Sky/Ground .85; Multiple .15; Phase .20; Edge 2.");
 
     ImGui::SeparatorText("Atmosphere");
     edited |= ImGui::SliderFloat("Turbidity",
@@ -712,8 +788,10 @@ void NoiseLab::DrawLightingPanel(
         &shadow.surfaceShadowStrength, 0.0f, 1.0f, "%.3f");
     edited |= ImGui::SliderFloat("Ambient floor",
         &shadow.surfaceAmbientFloor, 0.0f, 1.0f, "%.3f");
-    ImGui::Text("Deep Cache: Balanced 512, %u + %u slices",
-                shadow.nearSliceCount, shadow.farSliceCount);
+    ImGui::Text("Deep Cache: 512, %u + %u height slices%s",
+                shadow.nearSliceCount, shadow.farSliceCount,
+                shadow.nearSliceCount > 80 ? " (05-B comparison)" : "");
+    ImGui::TextDisabled("Sun shadow transition: 3-5 deg");
 
     ImGui::SeparatorText("Tone Mapping");
     edited |= ImGui::SliderFloat("Exposure EV", &tone.exposureEv,
@@ -751,15 +829,16 @@ void NoiseLab::DrawDiagnosticsPanel(
 {
     ImGui::SetNextWindowSize(ImVec2(Ui(540.0f), Ui(760.0f)),
                              ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("F4 Concepts Diagnostics", &m_panelVisible[3]))
+    if (!ImGui::Begin("F4 Lighting & Environment", &m_panelVisible[3]))
     {
         ImGui::End();
         return;
     }
     const Stage15ConceptPreset concepts[] = {
-        Stage15ConceptPreset::UrbanFairWeather,
-        Stage15ConceptPreset::MeadowBrokenClouds,
-        Stage15ConceptPreset::SnowOvercast,
+        Stage15ConceptPreset::AutumnMorning,
+        Stage15ConceptPreset::BeachSunset,
+        Stage15ConceptPreset::BrightNoon,
+        Stage15ConceptPreset::PastelDream,
     };
     for (std::size_t index = 0; index < std::size(concepts); ++index)
     {
@@ -767,8 +846,15 @@ void NoiseLab::DrawDiagnosticsPanel(
             ImGui::SameLine();
         if (ImGui::Button(stage15::ConceptName(concepts[index])))
             m_sceneConceptRequest = static_cast<int>(concepts[index]);
+        const char* descriptions[] = {"Autumn morning", "Beach sunset", "Bright noon", "Pink / lavender dream"};
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", descriptions[index]);
     }
-    ImGui::Text("Current concept: %s", stage15::ConceptName(concept));
+    ImGui::Text("Lighting preset: %s (%s)", stage15::ConceptName(concept),
+        CloudFormationPresetSourceName(m_lightingSource));
+    ImGui::TextWrapped("%s", LightingPresetPath(m_presetRoot, concept).generic_string().c_str());
+    ImGui::TextWrapped("%s", m_lightingStatus.c_str());
+    ImGui::TextWrapped("Selecting a slot reloads it and discards unsaved edits.");
+    if (ImGui::Button("Save Preset")) m_saveLightingPending = true;
 
     ImGui::SeparatorText("Cloud and Cache Diagnostics");
     int currentCloudMode = cloud.debugMode;
@@ -787,6 +873,22 @@ void NoiseLab::DrawDiagnosticsPanel(
         }
         ImGui::EndCombo();
     }
+
+    const auto selectedCloudMode = static_cast<CloudDebugMode>(cloud.debugMode);
+    if (selectedCloudMode == CloudDebugMode::LightTransmittance)
+        ImGui::TextWrapped("Key 9 samples ONE segment midpoint, which may be empty. Use Visible Sun T for the clouds you can see.");
+    else if (selectedCloudMode == CloudDebugMode::VisibleSunTransmittance)
+        ImGui::TextWrapped("Sun T weighted by Tview * (1 - Tstep). Bright: sunlight passes through. Dark: blocked OR no cloud contribution; compare View Transmittance.");
+    else if (selectedCloudMode == CloudDebugMode::AmbientVisibility)
+        ImGui::TextWrapped("Ground bounce visibility: local AO times sun coupling. Sky uses local AO only; this is not sky visibility. Dark also means no cloud contribution.");
+    else if (selectedCloudMode == CloudDebugMode::ShapedSunVisibility)
+        ImGui::TextWrapped("Visibility after lighting shaping, weighted by scattering interaction. Bright: visible; dark: occluded OR no contribution.");
+    else if (selectedCloudMode == CloudDebugMode::AccumulatedDirectLighting ||
+             selectedCloudMode == CloudDebugMode::AccumulatedSkyAmbient ||
+             selectedCloudMode == CloudDebugMode::AccumulatedGroundBounce ||
+             selectedCloudMode == CloudDebugMode::AccumulatedMultipleScattering ||
+             selectedCloudMode == CloudDebugMode::SilverLiningContribution)
+        ImGui::TextWrapped("Integrated cloud light only: L / (1 + L), then current Tone settings. Silver Lining is already part of Direct. Displayed colors cannot be added numerically.");
 
     const Stage14DebugView atmosphereViews[] = {
         Stage14DebugView::None,
@@ -865,7 +967,7 @@ void NoiseLab::DrawDiagnosticsPanel(
     }
     if (!shaderError.empty())
         ImGui::TextWrapped("Error: %s", shaderError.c_str());
-    if (ImGui::Button("Export schema 40 snapshot"))
+    if (ImGui::Button("Export schema 42 snapshot"))
         m_exportPending = true;
     if (!m_exportStatus.empty())
         ImGui::TextWrapped("%s", m_exportStatus.c_str());
@@ -916,6 +1018,9 @@ void NoiseLab::DrawProfilerOverlay(
         ImGui::End();
         return;
     }
+    ImGui::Text("Time      %7.2f s", m_effectiveTime);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Cloud simulation time in seconds; not frame duration.");
     if (timing.cpuValid)
     {
         ImGui::Text("FPS       %7.1f", timing.fps);
@@ -925,16 +1030,19 @@ void NoiseLab::DrawProfilerOverlay(
     {
         ImGui::TextUnformatted("CPU timing warming up");
     }
-    ImGui::Text("Time      %7.2f s", m_effectiveTime);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Smoothed CPU render duration, including Present / VSync wait.\nFPS = 1000 / CPU frame milliseconds.");
     if (timing.gpuValid)
     {
         ImGui::Text("GPU frame %7.3f ms", timing.gpuFrameMs);
         ImGui::Separator();
-        ImGui::Text("Weather Map   %7.3f ms EMA  raw %7.3f",
-                    timing.gpuWeatherMapMs, timing.rawGpuWeatherMapMs);
-        ImGui::Text("  last generation %7.3f ms  #%llu",
-                    weatherGenerationMilliseconds,
-                    static_cast<unsigned long long>(weatherGeneration));
+        ImGui::TextDisabled("GPU pass times (smoothed)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Exponential moving average: 90%% previous average + 10%% latest sample.\nGPU frame uses the same smoothing. Results arrive asynchronously.");
+        ImGui::Text("Weather Map   %7.3f ms", timing.gpuWeatherMapMs);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Latest GPU interval: %.3f ms (before smoothing).\nAn unchanged Weather Map is reused; its frame interval can round to zero.",
+                              timing.rawGpuWeatherMapMs);
         ImGui::Text("Atmosphere LUT %7.3f ms", timing.gpuAtmosphereLutMs);
         ImGui::Text("Shadow     %7.3f ms", timing.gpuShadowCacheMs);
         ImGui::Text("Opaque     %7.3f ms", timing.gpuOpaqueSceneMs);
@@ -945,6 +1053,20 @@ void NoiseLab::DrawProfilerOverlay(
     {
         ImGui::TextUnformatted("GPU timing warming up");
     }
+    ImGui::Separator();
+    ImGui::TextDisabled("Last Weather rebuild (CPU elapsed)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Wall-clock time from compute submission through GPU readback.\nIncludes staging creation, GPU queue wait and CPU copy; excludes hashing.\nThis is not the Weather shader's GPU execution time or a per-frame cost.");
+    if (weatherGeneration > 0u)
+    {
+        ImGui::Text("Elapsed       %7.3f ms", weatherGenerationMilliseconds);
+        ImGui::Text("Rebuild count %llu",
+                    static_cast<unsigned long long>(weatherGeneration));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Successful Weather generations in this renderer session.\nA generated map with unchanged content still counts; a skipped generator key does not.");
+    }
+    else
+        ImGui::TextUnformatted("No completed rebuild");
     ImGui::End();
 }
 
@@ -1036,6 +1158,23 @@ void NoiseLab::RenderPreviews(
         m_context->OMSetRenderTargets(1, &target, nullptr);
         m_context->ClearRenderTargetView(target, clear);
         m_context->Draw(3, 0);
+    }
+    // F2의 Weather 원본 UV 전체를 불투명하게 표시한다. A는 두께 데이터다.
+    if (m_panelVisible[1] && weatherMapSrv) {
+        NoiseLabParameters weatherParameters = m_parameters;
+        for (std::uint32_t channel = 0; channel < m_weatherTargets.size(); ++channel) {
+            const unsigned modes[] = {100u,101u,103u,104u};
+            weatherParameters.outputMode = modes[channel];
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(m_context->Map(m_noiseLabCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) continue;
+            std::memcpy(mapped.pData, &weatherParameters, sizeof(weatherParameters));
+            m_context->Unmap(m_noiseLabCb.Get(), 0);
+            ID3D11Buffer* labCb = m_noiseLabCb.Get();
+            m_context->PSSetConstantBuffers(2, 1, &labCb);
+            ID3D11RenderTargetView* target = m_weatherTargets[channel].rtv.Get();
+            m_context->OMSetRenderTargets(1, &target, nullptr);
+            m_context->Draw(3, 0);
+        }
     }
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
     ID3D11ShaderResourceView* nullResources[3] = {};
@@ -1174,10 +1313,14 @@ bool NoiseLab::WriteMetadata(
         return false;
     output << std::setprecision(9)
         << "{\n"
-        << "  \"schemaVersion\": 40,\n"
+        << "  \"schemaVersion\": 44,\n"
         << "  \"renderPath\": \"HighFullResolutionDirect\",\n"
         << "  \"sceneConcept\": \"" << stage15::ConceptName(concept)
         << "\",\n"
+        << "  \"formationSlot\": \"" << CloudFormationPresetTargetName(m_snapshotFormationTarget) << "\",\n"
+        << "  \"formationSource\": \"" << CloudFormationPresetSourceName(m_snapshotFormationSource) << "\",\n"
+        << "  \"lightingSlot\": " << LightingPresetSlot(concept) << ",\n"
+        << "  \"lightingSource\": \"" << CloudFormationPresetSourceName(m_lightingSource) << "\",\n"
         << "  \"formation\": {\n"
         << "    \"coverage\": " << formation.coverage << ",\n"
         << "    \"densityMultiplier\": " << formation.densityMultiplier
@@ -1201,37 +1344,22 @@ bool NoiseLab::WriteMetadata(
         << formation.weather.generator.thicknessCoverageInfluence << ",\n"
         << "      \"coverageSeed\": "
         << formation.weather.generator.coverage.seed << ",\n"
-        << "      \"cloudTypeSeed\": "
-        << formation.weather.generator.cloudType.seed << ",\n"
         << "      \"densitySeed\": "
         << formation.weather.generator.density.seed << ",\n"
         << "      \"thicknessSeed\": "
         << formation.weather.generator.localThickness.seed << "\n"
         << "    },\n"
         << "    \"shape\": {\n"
-        << "      \"stratusThicknessMeters\": ["
-        << formation.weather.column.stratusMinimumThicknessMeters << ", "
-        << formation.weather.column.stratusMaximumThicknessMeters << "],\n"
-        << "      \"cumulusThicknessMeters\": ["
-        << formation.weather.column.cumulusMinimumThicknessMeters << ", "
-        << formation.weather.column.cumulusMaximumThicknessMeters << "],\n"
-        << "      \"stratusProfile\": ["
-        << formation.shape.stratusBottomFadeEnd << ", "
-        << formation.shape.stratusTopFadeStart << "],\n"
-        << "      \"mixedProfile\": ["
-        << formation.shape.mixedBottomFadeEnd << ", "
-        << formation.shape.mixedTopFadeStart << "],\n"
-        << "      \"cumulusProfile\": ["
-        << formation.shape.cumulusBottomFadeEnd << ", "
-        << formation.shape.cumulusTopFadeStart << "],\n"
-        << "      \"cumulusUpperMass\": ["
-        << formation.shape.cumulusUpperMassBottom << ", "
-        << formation.shape.cumulusUpperMassStart << ", "
-        << formation.shape.cumulusUpperMassEnd << "],\n"
+        << "      \"thicknessMeters\": [" << formation.weather.column.minimumThicknessMeters << ", "
+        << formation.weather.column.maximumThicknessMeters << "],\n"
+        << "      \"verticalProfile\": [" << formation.shape.bottomFadeEnd << ", "
+        << formation.shape.topFadeStart << ", " << formation.shape.lowerDensityScale << ", "
+        << formation.shape.upperTransitionStart << ", " << formation.shape.upperTransitionEnd << "],\n"
         << "      \"localBaseLiftMaxMeters\": "
         << formation.weather.column.maximumBaseLiftMeters << ",\n"
         << "      \"footprintCoverageInfluence\": "
-        << formation.shape.footprintCoverageInfluence << "\n"
+        << formation.shape.footprintCoverageInfluence << ",\n"
+        << "      \"densityShaping\": " << formation.shape.densityShaping << "\n"
         << "    },\n"
         << "    \"domainBottomMeters\": " << formation.domainBottomMeters
         << ",\n"
@@ -1257,9 +1385,17 @@ bool NoiseLab::WriteMetadata(
         << motion.speedMetersPerSecond << "],\n"
         << "  \"deepCache\": {\"resolution\": 512, \"nearSlices\": "
         << shadow.nearSliceCount << ", \"farSlices\": "
-        << shadow.farSliceCount << "},\n"
+        << shadow.farSliceCount << ", \"projection\": \"layer-projected-up\", \"maxIntegrationStepMeters\": 250, \"sunTransitionDegrees\": [3,5], \"cloudTransitionBlend\": \"optical-depth\"},\n"
         << "  \"lighting\": {\"sunIntensity\": " << light.sunIntensity
         << ", \"forwardScatteringG\": " << light.forwardScatteringG
+        << ", \"shadowExponent\": " << light.shadowExponent
+        << ", \"edgeOpticalDepthScale\": " << light.edgeOpticalDepthScale
+        << ", \"phaseIntensity\": " << light.phaseIntensity
+        << ", \"phaseCap\": 2.5"
+        << ", \"rimIntensity\": " << light.rimIntensity
+        << ", \"rimDepthScale\": " << light.rimDepthScale
+        << ", \"rimPhaseCap\": " << m_rimComparisonCap
+        << ", \"multipleAttenuation\": " << environment.multipleScatteringAttenuation
         << ", \"skyFill\": " << environment.physicalSkyFillScale
         << ", \"groundFill\": " << environment.physicalGroundFillScale
         << "},\n"
@@ -1298,6 +1434,7 @@ bool NoiseLab::WriteMetadata(
         << noiseVolume.detailWeights.y << ", "
         << noiseVolume.detailWeights.z << ", "
         << noiseVolume.detailWeights.w << "]"
+        << ", \"baseMidOctaveExtra\": " << noiseVolume.baseMidOctaveExtra
         << ", \"baseHash\": " << baseNoiseVolumeHash
         << ", \"detailHash\": " << detailNoiseVolumeHash
         << ", \"weatherHash\": " << weatherMapHash << "},\n"
@@ -1335,6 +1472,6 @@ bool NoiseLab::ExportSnapshot(
         m_exportStatus = "Snapshot export failed";
         return false;
     }
-    m_exportStatus = "Schema 40 snapshot exported";
+    m_exportStatus = "Schema 44 snapshot exported";
     return true;
 }

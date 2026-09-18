@@ -19,8 +19,11 @@ enum class GroundMaterialPreset : std::uint32_t
 
 struct GroundLightingParameters
 {
+    // [직접 조절] Concrete/Grass/Snow/Custom. 초기 Concrete; preset 적용 시 albedo 변경, Custom은 현재 albedo 보존.
     GroundMaterialPreset preset = GroundMaterialPreset::Concrete;
+    // [직접 조절] F3/지면 preset, xyz=선형 RGB 반사율 [0,1]. 기본 Concrete (0.18,0.18,0.18), Snow ~0.8 권장. 증가하면 지면과 반사광이 밝아진다.
     DirectX::XMFLOAT3 albedo = { 0.18f, 0.18f, 0.18f };
+    // [직접 조절] F3/scene 지면 반사광 배율 [0,2], 기본 1/내장 1~1.5 권장. 구름 하부 입사광을 키운다.
     float bounceMultiplier = 1.0f;
 };
 
