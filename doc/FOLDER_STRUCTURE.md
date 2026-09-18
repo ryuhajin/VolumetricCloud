@@ -192,3 +192,5 @@ b6 offset28 세션 후보, F2 선택과 기존 재생성 요청을 사용한다.
 - src/PresetPaths.h: 개발 원본 또는 실행 파일 옆 프리셋 루트 선택.
 - tests/PresetDeploymentTests.cpp: 원본/배포8슬롯 로드와 작업 디렉터리 독립 경로 회귀.
 - presets/: Git에 보존하는 형상4개·조명4개 JSON 원본.
+
+- tests/CloudDetailComparisonPage.h: Detail32³/64³ 진단의 로컬 비교 HTML. 네트워크 없이 정지/차이/원본 확대/동일 이동 경로를 표시한다.

@@ -850,6 +850,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
 {
     const bool presetSlots = HasArgument(commandLine, L"--preset-slots-test");
     const bool cloudClarity = HasArgument(commandLine, L"--cloud-clarity-test");
+    const bool cloudDetail = HasArgument(commandLine, L"--cloud-detail-resolution-test");
     const bool presetCapture = HasArgument(commandLine, L"--preset-slots-capture");
     const bool directionalBaseline = HasArgument(commandLine, L"--directional-lighting-baseline");
     const bool directionalFinal = HasArgument(commandLine, L"--directional-lighting-final");
@@ -886,13 +887,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         commandLine, L"--weather-hot-reload-smoke-test");
     const bool performanceTest = HasArgument(
         commandLine, L"--high-performance-test");
-    const bool automated = cloudClarity || presetSlots || presetCapture || directionalTest || determinismSmoke || highSmoke || formationSmoke || atmosphereSmoke ||
+    const bool automated = cloudDetail || cloudClarity || presetSlots || presetCapture || directionalTest || determinismSmoke || highSmoke || formationSmoke || atmosphereSmoke ||
         noiseLabSmoke || shaderCacheSmoke || toneReloadSmoke ||
         noiseReloadSmoke || weatherReloadSmoke || performanceTest;
 
-    const int initialWidth = (cloudClarity || performanceTest || directionalTest || presetCapture) ? 1920 :
+    const int initialWidth = (cloudDetail || cloudClarity || performanceTest || directionalTest || presetCapture) ? 1920 :
         ((highSmoke || determinismSmoke) ? 320 : (automated ? 640 : 1280));
-    const int initialHeight = (cloudClarity || performanceTest || directionalTest || presetCapture) ? 1080 :
+    const int initialHeight = (cloudDetail || cloudClarity || performanceTest || directionalTest || presetCapture) ? 1080 :
         ((highSmoke || determinismSmoke) ? 180 : (automated ? 360 : 720));
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -950,7 +951,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR commandLine, int)
         window.ApplyInitialPortfolioCamera();
 
     int result = 0;
-    if (cloudClarity) { result = renderer.RunCloudClarityDiagnostics(camera) ? 0 : 1; }
+    if (cloudDetail) { result = renderer.RunCloudDetailResolutionDiagnostics(camera) ? 0 : 1; }
+    else if (cloudClarity) { result = renderer.RunCloudClarityDiagnostics(camera) ? 0 : 1; }
     else if (presetSlots || presetCapture) { result = renderer.RunPresetSlotDiagnostics(camera, presetCapture) ? 0 : 1; }
     else if (rimTest) { result = renderer.RunRimLightingDiagnostics(camera) ? 0 : 1; }
     else if (solarTransitionTest)

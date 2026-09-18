@@ -5,6 +5,7 @@
 #include "Stage13CameraPresets.h"
 #include "Stage12ShadowMath.h"
 #include "CloudRimMath.h"
+#include "CloudDetailComparisonPage.h"
 #include <DirectXPackedVector.h>
 #include <wincodec.h>
 #include <cstring>
@@ -2579,5 +2580,234 @@ bool Renderer::RunCloudClarityDiagnostics(Camera& camera)
     Log(report.str()); Log("[CloudClarity] output=" + root.string());
     const bool passed = roundTrip.passed && !HasDebugLayerErrors();
     Log(std::string("CLOUD_CLARITY=") + (passed ? "PASS" : "FAIL"));
+    return passed;
+}
+
+// Detail 해상도만 교체하는 테스트 전용 경로. 일반32³/프리셋/셰이더 수식은 유지한다.
+bool Renderer::RunCloudDetailResolutionDiagnostics(Camera& camera)
+{
+    SetAutomatedRenderMode(true); SetVSyncEnabled(false); EnableNoiseLabPreviews(false);
+    SetNoiseLabVisible(false);
+    m_useSavedPresets = true;
+    if (!ApplyCloudType(TypeFormationTarget(CloudFormationType::Cumulus)) ||
+        !ApplySceneConcept(Stage15ConceptPreset::BrightNoon)) return false;
+    SetCloudMovementSpeedForValidation(0);
+    m_atmosphereParameters.timePlaybackEnabled = false;
+    m_atmosphereParameters.debugView = Stage14DebugView::None;
+    SetDebugMode(CloudDebugMode::Composite);
+    // 계획의 2000m 조건을 만족하지 않으면 원본을 몰래 바꾸지 않고 중단한다.
+    if (m_noiseVolumeParameters.detailWorldSizeMeters != 2000 ||
+        m_noiseVolumeParameters.baseResolution != 128 ||
+        m_noiseVolumeParameters.detailResolution != 32) return false;
+    const auto root = std::filesystem::absolute(DefaultNoiseLabOutputRoot().parent_path() /
+        "cloud-detail-resolution" / (std::to_string(GetCurrentProcessId()) + "-" +
+        std::to_string(GetTickCount64())));
+    std::filesystem::create_directories(root);
+    Log("[CloudDetailResolution] output=" + root.string());
+    const char* presetFiles[] = {"types/stratus.json","types/cumulus.json","types/mixed.json",
+        "custom-cloud.json","lighting/1.json","lighting/2.json","lighting/3.json","lighting/4.json"};
+    std::array<std::string,8> presetBytes;
+    std::ostringstream report, paths, samples;
+    report << std::setprecision(10) << "# Detail resolution comparison\n\n"
+        << "GPU: " << AdapterName() << "; driver: " << DriverVersion() << "\n"
+#if defined(_DEBUG)
+        << "Build: Debug (not the official performance result).\n"
+#else
+        << "Build: Release.\n"
+#endif
+        << "1920x1080; Cumulus + lighting3; F5/F6; FOV60; time71; wind0; UI/VSync Off.\n"
+        << "Base128 / Weather256 / Detail world2000m / High100m,512 / Base shadows / Deep80,79.\n"
+        << "32 and64 are freshly generated from the same seed/frequencies/weights.\n"
+        << "Generation time includes Base+Detail generation and GPU readback, not Detail alone.\n"
+        << "Preset root: " << m_cloudFormationPresetRoot.generic_string() << "\n";
+    for (std::size_t i=0;i<presetBytes.size();++i)
+    {
+        std::ifstream input(m_cloudFormationPresetRoot / presetFiles[i],std::ios::binary);
+        if (!input) return false;
+        presetBytes[i] = std::string(std::istreambuf_iterator<char>(input), {});
+        const auto copy = root / "presets" / presetFiles[i];
+        std::filesystem::create_directories(copy.parent_path());
+        if (!WriteText(copy,presetBytes[i])) return false;
+        report << presetFiles[i] << " FNV1a64=" << Hash(presetBytes[i].data(),presetBytes[i].size()) << "\n";
+    }
+    if (!WriteNew(root/"noise-parameters.bin",&m_noiseVolumeParameters,sizeof(m_noiseVolumeParameters))) return false;
+    report << "Noise seed=" << m_noiseVolumeParameters.seed << "; Detail frequencies=2,3,4,5"
+        << "; memory32=131072B, memory64=1048576B (resource payload, excluding driver overhead).\n";
+    const auto originalNoise = m_noiseVolumeParameters;
+    const auto originalBase = m_baseNoiseVolume;
+    const auto originalBaseSrv = m_baseNoiseVolumeSrv;
+    const auto originalDetail = m_detailNoiseVolume;
+    const auto originalDetailSrv = m_detailNoiseVolumeSrv;
+    const auto originalBaseHash = m_baseNoiseVolumeHash, originalDetailHash = m_detailNoiseVolumeHash;
+    const auto originalGeneration = m_noiseVolumeGenerationMilliseconds;
+    const auto inputCamera = camera;
+    const auto restore = [&]() {
+        m_directionalCaptureTarget = nullptr;
+        m_noiseVolumeParameters = originalNoise;
+        m_baseNoiseVolume = originalBase; m_baseNoiseVolumeSrv = originalBaseSrv;
+        m_detailNoiseVolume = originalDetail; m_detailNoiseVolumeSrv = originalDetailSrv;
+        m_baseNoiseVolumeHash = originalBaseHash; m_detailNoiseVolumeHash = originalDetailHash;
+        m_noiseVolumeGenerationMilliseconds = originalGeneration;
+        camera = inputCamera; SetDebugMode(CloudDebugMode::Composite);
+    };
+    // 에러 조기 반환에도 GPU 리소스/설정 복원.
+    struct RestoreGuard { const decltype(restore)& fn; ~RestoreGuard() { fn(); } } guard{restore};
+    const auto setCamera = [&](int view) {
+        const auto& p = stage13camera::kOpenWorldPresets[view];
+        camera.SetLookAt(p.position,p.target);
+        camera.SetClipPlanes(stage13camera::kNearPlaneMeters,stage13camera::kFarPlaneMeters);
+        camera.SetFovYDegrees(60);
+    };
+    const auto capture = [&](CloudDebugMode mode) {
+        SetDebugMode(mode);
+        DirectionalLightingFrame value; m_directionalCaptureTarget = &value;
+        Render(camera,kTime); m_directionalCaptureTarget = nullptr;
+        return value;
+    };
+    const auto valid = [&](const DirectionalLightingFrame& value) {
+        return value.valid && FiniteHdr(value.hdr) && !HasDebugLayerErrors();
+    };
+    const auto save = [&](const std::string& name,const DirectionalLightingFrame& value,bool raw) {
+        return valid(value) && SavePng(root/(name+".png"),value.rgba) &&
+            (!raw || WriteNew(root/(name+".rgba16f"),value.hdr.data(),value.hdr.size()));
+    };
+    setCamera(0);
+    for (int i=0;i<8;++i) Render(camera,kTime);
+    const auto baseline = capture(CloudDebugMode::Composite);
+    if (!save("baseline",baseline,true)) return false;
+    const CloudDebugMode modes[] = {CloudDebugMode::Composite,CloudDebugMode::CloudWithoutAerial,
+        CloudDebugMode::Transmittance,CloudDebugMode::ViewOpticalDepth};
+    const char* names[] = {"composite","without-air","cloud-T","cloud-tau"};
+    std::array<DirectionalLightingFrame,8> reference;
+    paths << "view,path,frame,time,positionX,positionY,positionZ,targetX,targetY,targetZ\n";
+    samples << "resolution,repeat,path,sample,gpuSampleIndex,cloudMs,frameMs\n";
+    // 해상도와 무관한 고정 카메라 목록을 먼저 만든다.
+    std::array<std::array<std::vector<Camera>,2>,2> routes;
+    for (int view=0;view<2;++view) for (int path=0;path<2;++path)
+    {
+        setCamera(view); const Camera start = camera;
+        for (int frame=0;frame<24;++frame)
+        {
+            camera = start;
+            if (path==0) camera.Rotate(float(frame)*4,0);
+            else camera.MoveLocal(float(frame)*30,0);
+            routes[view][path].push_back(camera);
+            const auto p=camera.GetPosition(),t=camera.GetTarget();
+            paths << "F" << view+5 << "," << (path==0?"rotation":"forward") << "," << frame
+                << ",71," << p.x << "," << p.y << "," << p.z << "," << t.x << "," << t.y << "," << t.z << "\n";
+        }
+    }
+    for (unsigned resolution : {32u,64u})
+    {
+        m_noiseVolumeParameters.detailResolution = resolution;
+        if (!RegenerateNoiseVolumes()) return false;
+        const auto generatedHash = m_detailNoiseVolumeHash;
+        const auto generationMs = m_noiseVolumeGenerationMilliseconds;
+        D3D11_TEXTURE3D_DESC desc{}; m_detailNoiseVolume->GetDesc(&desc);
+        std::vector<std::uint8_t> first,second;
+        if (desc.Width!=resolution || desc.Height!=resolution || desc.Depth!=resolution ||
+            desc.Format!=DXGI_FORMAT_R8G8B8A8_UNORM ||
+            !ReadNoiseVolumeBytesFromTexture(m_detailNoiseVolume.Get(),first) ||
+            first.size()!=std::size_t(resolution)*resolution*resolution*4 ||
+            m_baseNoiseVolumeHash!=originalBaseHash || !RegenerateNoiseVolumes() ||
+            !ReadNoiseVolumeBytesFromTexture(m_detailNoiseVolume.Get(),second) ||
+            first!=second || generatedHash!=m_detailNoiseVolumeHash ||
+            m_baseNoiseVolumeHash!=originalBaseHash) return false;
+        if (resolution==32 && generatedHash!=originalDetailHash) return false;
+        report << "\n" << resolution << "^3 regeneration/descriptor/base invariance: PASS; hash="
+            << std::hex << generatedHash << std::dec << "; payloadBytes=" << first.size()
+            << "; generation+readback ms=" << generationMs << "," << m_noiseVolumeGenerationMilliseconds << "\n";
+        if (!WriteNew(root/(std::to_string(resolution)+"-detail.rgba8"),first.data(),first.size())) return false;
+        for (int view=0;view<2;++view)
+        {
+            setCamera(view); SetDebugMode(CloudDebugMode::Composite);
+            for (int i=0;i<8;++i) Render(camera,kTime);
+            for (int mode=0;mode<4;++mode)
+            {
+                const std::string suffix = "F"+std::to_string(view+5)+"-"+names[mode];
+                auto value = capture(modes[mode]);
+                if (!save(std::to_string(resolution)+"-"+suffix,value,true)) return false;
+                if (resolution==32)
+                {
+                    if (view==0 && mode==0 && !Compare(baseline,value).passed) return false;
+                    reference[view*4+mode] = std::move(value);
+                }
+                else
+                {
+                    const auto& previous=reference[view*4+mode];
+                    const auto difference=Compare(previous,value);
+                    report << suffix << ": normalized HDR MAE=" << difference.hdrMae
+                        << ", max=" << difference.hdrMax << "; LDR MAE=" << difference.ldrMae
+                        << ", max=" << difference.ldrMax << " (intentional variant; no equality gate)\n";
+                    std::vector<std::uint8_t> diff(value.rgba.size(),255);
+                    for (std::size_t p=0;p<diff.size();p+=4) for (int c=0;c<3;++c)
+                        diff[p+c]=static_cast<std::uint8_t>(std::min(255,
+                            8*std::abs(int(value.rgba[p+c])-int(previous.rgba[p+c]))));
+                    if (!SavePng(root/("diff-"+suffix+".png"),diff)) return false;
+                }
+            }
+            for (int path=0;path<2;++path) for (int frame=0;frame<24;++frame)
+            {
+                camera = routes[view][path][frame];
+                const std::string name = std::to_string(resolution)+"-F"+std::to_string(view+5)+
+                    "-"+(path==0?"rotation":"forward")+"-"+std::to_string(frame);
+                if (!save(name,capture(CloudDebugMode::Composite),false)) return false;
+            }
+        }
+        // 캡처/readback 없이 일반 Composite GPU 시간을 측정한다.
+        SetDebugMode(CloudDebugMode::Composite);
+        for (int repeat=0;repeat<3;++repeat) for (int path=0;path<2;++path)
+        {
+            setCamera(0); const Camera start=camera;
+            for (int warm=0;warm<60;++warm)
+            {
+                if (path) camera.Rotate(.5f,0);
+                Render(camera,kTime);
+            }
+            std::uint64_t last=TimingSnapshot().gpuSampleIndex;
+            std::vector<double> cloudTimes,frameTimes;
+            for (int attempt=0;attempt<3000 && cloudTimes.size()<300;++attempt)
+            {
+                // 측정 경로는 렌더 번호에만 의존하고 GPU 쿼리 지연과 분리한다.
+                camera=start;
+                if (path) camera.Rotate(float(attempt+60)*.5f,0);
+                Render(camera,kTime);
+                const auto& timing=TimingSnapshot();
+                if (!timing.gpuValid || timing.gpuSampleIndex==last) continue;
+                last=timing.gpuSampleIndex;
+                samples << resolution << "," << repeat << "," << (path?"rotation":"stationary") << ","
+                    << cloudTimes.size() << "," << last << "," << timing.rawGpuCloudMs << "," << timing.rawGpuFrameMs << "\n";
+                cloudTimes.push_back(timing.rawGpuCloudMs); frameTimes.push_back(timing.rawGpuFrameMs);
+            }
+            if (cloudTimes.size()!=300) return false;
+            std::sort(cloudTimes.begin(),cloudTimes.end()); std::sort(frameTimes.begin(),frameTimes.end());
+            report << resolution << "^3 repeat" << repeat+1 << " " << (path?"rotation":"stationary")
+                << ": cloud median=" << (cloudTimes[149]+cloudTimes[150])*.5 << ", p95=" << cloudTimes[284]
+                << "ms; frame median=" << (frameTimes[149]+frameTimes[150])*.5 << ", p95=" << frameTimes[284] << "ms\n";
+        }
+        Log("[CloudDetailResolution] completed "+std::to_string(resolution));
+    }
+    restore(); setCamera(0);
+    for (int i=0;i<8;++i) Render(camera,kTime);
+    const auto restored=capture(CloudDebugMode::Composite);
+    const auto roundTrip=Compare(baseline,restored);
+    report << "\nOriginal resource restore Composite: " << (roundTrip.passed?"PASS":"FAIL")
+        << "; HDR MAE=" << roundTrip.hdrMae << ", max=" << roundTrip.hdrMax
+        << "; LDR MAE=" << roundTrip.ldrMae << ", max=" << roundTrip.ldrMax << "\n";
+    for (std::size_t i=0;i<presetBytes.size();++i)
+    {
+        std::ifstream input(m_cloudFormationPresetRoot/presetFiles[i],std::ios::binary);
+        if (!input || std::string(std::istreambuf_iterator<char>(input),{})!=presetBytes[i]) return false;
+    }
+    report << "All eight source preset files byte-identical: PASS.\n"
+        << "Motion: 24 frames, rotation=4 mouse pixels/frame, forward=30m/frame; time fixed71.\n"
+        << "Motion is a discrete path review, not a continuous-frame-rate capture.\n"
+        << "32^3 remains runtime default. User approval pending; no atmosphere/density tuning yet.\n";
+    if (!WriteText(root/"comparison.html",kCloudDetailComparisonPage) ||
+        !WriteText(root/"README.md",report.str()) || !WriteText(root/"paths.csv",paths.str()) ||
+        !WriteText(root/"gpu-samples.csv",samples.str())) return false;
+    Log(report.str());
+    const bool passed=roundTrip.passed && !HasDebugLayerErrors();
+    Log(std::string("CLOUD_DETAIL_RESOLUTION=")+(passed?"PASS":"FAIL"));
     return passed;
 }

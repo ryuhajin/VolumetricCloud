@@ -337,3 +337,6 @@ F2 원본 미리보기는 RBA 합성+R/B/A 흑백4장(512² RGBA8 약4MiB)이며
 ## 2026-09-18 구름 거리 대기 진단 (01)
 CloudDebugMode90=Cloud without aerial perspective,91=Air T at cloud depth,92=Air L at cloud depth. 기존82/83 등 폐기 번호는 보존한다. 일반0은 기존 경로이며90도 동일 구름 조명과 Tone을 적용하되 구름 앞 airL/airT만 제외한다. 하늘/지면의 기존 대기는 유지한다.
 Stage14CB224B renderFlags offset160의 x(uint)는 기존예약0에서0/91/92로 사용한다. 일반 및90에서는0이며, y/z/w와 다른 offset은 유지한다. CPU GpuParameters와 HLSL을 함께 갱신했다.91/92는 Cloud HDR RGB에 실제 대표 거리의 airT/airL, alpha에 유효 구름 불투명도 여부(1-Tcloud>1e-6)를 쓴다. Tone은 이 두 모드에서 기존 ValidateAndExposeDebug를 사용하고 EV/WB/ACES를 우회한다. 무기여 픽셀은 화면 회색. 구름 대표 깊이는 불투명도 기여 가중 평균이고 첫 표면 깊이가 아니다. 화면 지표와 별개로 rgba16f는 선형 원자료다.
+
+### 테스트 전용 Detail 해상도 비교
+--cloud-detail-resolution-test는 기존 NoiseVolumeCB96B의 detailResolution으로 CSDetail을32³/64³ 생성하고 실제 GPU 리소스 및 반복 생성 동일성을 확인한다. 일반32³, b6 ABI, JSON schema와 런타임 렌더 수식은 유지한다. 기존 GenerateNoiseVolumes 경로를 사용하며 Base hash 불변과 원본 리소스 복원 후 Composite tolerance를 검증한다.

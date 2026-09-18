@@ -328,3 +328,5 @@ add_test(NAME VolumetricCloud.PresetDeploymentCopy
 
 add_test(NAME VolumetricCloud.CloudClarity COMMAND VolumetricCloud --cloud-clarity-test)
 set_tests_properties(VolumetricCloud.CloudClarity PROPERTIES TIMEOUT 300 RESOURCE_LOCK vcloud_gpu LABELS "gpu;lighting")
+add_test(NAME VolumetricCloud.CloudDetailResolution COMMAND VolumetricCloud --cloud-detail-resolution-test)
+set_tests_properties(VolumetricCloud.CloudDetailResolution PROPERTIES TIMEOUT 600 RESOURCE_LOCK vcloud_gpu LABELS "gpu;lighting")

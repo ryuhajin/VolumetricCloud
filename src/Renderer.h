@@ -85,6 +85,7 @@ public:
     void LoadUserPresetDefaults();
     bool RunPresetSlotDiagnostics(Camera& camera, bool capture);
     bool RunCloudClarityDiagnostics(Camera& camera);
+    bool RunCloudDetailResolutionDiagnostics(Camera& camera);
 
     bool LoadCustomFormation();
     CloudFormationSettings CurrentCloudFormation() const;
