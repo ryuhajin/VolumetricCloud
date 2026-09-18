@@ -2,6 +2,7 @@
 //  CloudFormationPresetStore.cpp - 내장 formation과 단일 Custom JSON
 // ============================================================================
 #include "CloudFormationPresetStore.h"
+#include "PresetJsonSyntax.h"
 
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cerrno>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -40,19 +42,6 @@ CloudFormationSettings BasePhysicalFormation()
     result.weatherPreset = Stage5WeatherPreset::PeriodicPerlin;
     result.weather = WeatherMapDefinition{};
     result.shape = CloudShapeParameters{};
-    result.weather.column.stratusMinimumThicknessMeters = 1500.0f;
-    result.weather.column.stratusMaximumThicknessMeters = 2500.0f;
-    result.weather.column.cumulusMinimumThicknessMeters = 3000.0f;
-    result.weather.column.cumulusMaximumThicknessMeters = 6000.0f;
-    result.shape.stratusBottomFadeEnd = 0.06f;
-    result.shape.stratusTopFadeStart = 0.65f;
-    result.shape.mixedBottomFadeEnd = 0.10f;
-    result.shape.mixedTopFadeStart = 0.86f;
-    result.shape.cumulusBottomFadeEnd = 0.08f;
-    result.shape.cumulusTopFadeStart = 0.93f;
-    result.shape.cumulusUpperMassBottom = 0.65f;
-    result.shape.cumulusUpperMassStart = 0.08f;
-    result.shape.cumulusUpperMassEnd = 0.70f;
     result.weather.column.maximumBaseLiftMeters = 0.0f;
     result.shape.footprintCoverageInfluence = 0.20f;
     result.domainBottomMeters = 1800.0f;
@@ -151,10 +140,12 @@ bool ParseUnsigned(const std::string& text, const char* key,
     if (!FindUniqueValueStart(text, key, start))
         return false;
     char* end = nullptr;
+    if (text[start] < '0' || text[start] > '9') return false;
+    errno = 0;
     const unsigned long parsed = std::strtoul(
         text.c_str() + start, &end, 10);
     if (end == text.c_str() + start || !IsJsonValueEnd(end) ||
-        parsed > std::numeric_limits<std::uint32_t>::max())
+        errno == ERANGE || parsed > std::numeric_limits<std::uint32_t>::max())
     {
         return false;
     }
@@ -203,7 +194,6 @@ bool ParseFormation(const std::string& text, std::uint32_t schemaVersion,
         !ParseFloat(text, "detailErosion", value.detailErosion) ||
         !ParseUnsigned(text, "weatherPreset", weatherPreset) ||
         !ParseChannel(text, "weatherCoverage", value.weather.generator.coverage) ||
-        !ParseChannel(text, "weatherCloudType", value.weather.generator.cloudType) ||
         !ParseChannel(text, "weatherDensity", value.weather.generator.density) ||
         !ParseChannel(text, "weatherLocalThickness",
                       value.weather.generator.localThickness) ||
@@ -217,32 +207,6 @@ bool ParseFormation(const std::string& text, std::uint32_t schemaVersion,
                     value.weather.generator.thicknessCoverageInfluence) ||
         !ParseFloat(text, "weatherWorldSizeMeters",
                     value.weather.worldSizeMeters) ||
-        !ParseFloat(text, "stratusMinimumThicknessMeters",
-                    value.weather.column.stratusMinimumThicknessMeters) ||
-        !ParseFloat(text, "stratusMaximumThicknessMeters",
-                    value.weather.column.stratusMaximumThicknessMeters) ||
-        !ParseFloat(text, "cumulusMinimumThicknessMeters",
-                    value.weather.column.cumulusMinimumThicknessMeters) ||
-        !ParseFloat(text, "cumulusMaximumThicknessMeters",
-                    value.weather.column.cumulusMaximumThicknessMeters) ||
-        !ParseFloat(text, "stratusBottomFadeEnd",
-                    value.shape.stratusBottomFadeEnd) ||
-        !ParseFloat(text, "stratusTopFadeStart",
-                    value.shape.stratusTopFadeStart) ||
-        !ParseFloat(text, "mixedBottomFadeEnd",
-                    value.shape.mixedBottomFadeEnd) ||
-        !ParseFloat(text, "mixedTopFadeStart",
-                    value.shape.mixedTopFadeStart) ||
-        !ParseFloat(text, "cumulusBottomFadeEnd",
-                    value.shape.cumulusBottomFadeEnd) ||
-        !ParseFloat(text, "cumulusTopFadeStart",
-                    value.shape.cumulusTopFadeStart) ||
-        !ParseFloat(text, "cumulusUpperMassBottom",
-                    value.shape.cumulusUpperMassBottom) ||
-        !ParseFloat(text, "cumulusUpperMassStart",
-                    value.shape.cumulusUpperMassStart) ||
-        !ParseFloat(text, "cumulusUpperMassEnd",
-                    value.shape.cumulusUpperMassEnd) ||
         !ParseFloat(text, "localBaseLiftMaxMeters",
                     value.weather.column.maximumBaseLiftMeters) ||
         !ParseFloat(text, "footprintCoverageInfluence",
@@ -265,6 +229,10 @@ bool ParseFormation(const std::string& text, std::uint32_t schemaVersion,
     {
         return false;
     }
+    value.shape.densityShaping = 0.0f;
+    if (schemaVersion >= 3u &&
+        !ParseFloat(text, "densityShaping", value.shape.densityShaping))
+        return false;
     if (schemaVersion == 1u)
     {
         // schema 1 wind는 의도적으로 읽지 않는다. 세션 전역 motion을 보존한다.
@@ -278,6 +246,70 @@ bool ParseFormation(const std::string& text, std::uint32_t schemaVersion,
             return false;
         value.typeSelection.mode =
             static_cast<CloudTypeSelectionMode>(cloudTypeMode);
+    }
+    if (cloudTypeMode > (schemaVersion < 4u ? 3u : 2u)) return false;
+    value.typeSelection = MigrateLegacyCloudTypeMode(cloudTypeMode);
+    if (schemaVersion < 4u)
+    {
+        // 과거 G 노이즈는 읽기 호환 검증만 하고 런타임으로 전달하지 않는다.
+        PeriodicChannelSettings retiredG;
+        if (!ParseChannel(text, "weatherCloudType", retiredG)) return false;
+        if(retiredG.macroPeriod<1 || retiredG.macroPeriod>8 || retiredG.detailPeriod<2 || retiredG.detailPeriod>16 ||
+           retiredG.detailWeight<0 || retiredG.detailWeight>1 || retiredG.bias<-.5f || retiredG.bias>.5f ||
+           retiredG.contrast<.25f || retiredG.contrast>3.f) return false;
+        float stratusMinimumThicknessMeters=0.f;
+        if (!ParseFloat(text,"stratusMinimumThicknessMeters",stratusMinimumThicknessMeters)) return false;
+        float stratusMaximumThicknessMeters=0.f;
+        if (!ParseFloat(text,"stratusMaximumThicknessMeters",stratusMaximumThicknessMeters)) return false;
+        float cumulusMinimumThicknessMeters=0.f;
+        if (!ParseFloat(text,"cumulusMinimumThicknessMeters",cumulusMinimumThicknessMeters)) return false;
+        float cumulusMaximumThicknessMeters=0.f;
+        if (!ParseFloat(text,"cumulusMaximumThicknessMeters",cumulusMaximumThicknessMeters)) return false;
+        float stratusBottomFadeEnd=0.f;
+        if (!ParseFloat(text,"stratusBottomFadeEnd",stratusBottomFadeEnd)) return false;
+        float stratusTopFadeStart=0.f;
+        if (!ParseFloat(text,"stratusTopFadeStart",stratusTopFadeStart)) return false;
+        float mixedBottomFadeEnd=0.f;
+        if (!ParseFloat(text,"mixedBottomFadeEnd",mixedBottomFadeEnd)) return false;
+        float mixedTopFadeStart=0.f;
+        if (!ParseFloat(text,"mixedTopFadeStart",mixedTopFadeStart)) return false;
+        float cumulusBottomFadeEnd=0.f;
+        if (!ParseFloat(text,"cumulusBottomFadeEnd",cumulusBottomFadeEnd)) return false;
+        float cumulusTopFadeStart=0.f;
+        if (!ParseFloat(text,"cumulusTopFadeStart",cumulusTopFadeStart)) return false;
+        float cumulusUpperMassBottom=0.f;
+        if (!ParseFloat(text,"cumulusUpperMassBottom",cumulusUpperMassBottom)) return false;
+        float cumulusUpperMassStart=0.f;
+        if (!ParseFloat(text,"cumulusUpperMassStart",cumulusUpperMassStart)) return false;
+        float cumulusUpperMassEnd=0.f;
+        if (!ParseFloat(text,"cumulusUpperMassEnd",cumulusUpperMassEnd)) return false;
+
+        if(stratusMinimumThicknessMeters<1.f || stratusMaximumThicknessMeters<stratusMinimumThicknessMeters ||
+           cumulusMinimumThicknessMeters<stratusMinimumThicknessMeters || cumulusMaximumThicknessMeters<cumulusMinimumThicknessMeters ||
+           cumulusMaximumThicknessMeters<stratusMaximumThicknessMeters || cumulusMaximumThicknessMeters>6000.f) return false;
+        if(stratusBottomFadeEnd<.01f || stratusTopFadeStart<stratusBottomFadeEnd || stratusTopFadeStart>.99f ||
+           mixedBottomFadeEnd<.01f || mixedTopFadeStart<mixedBottomFadeEnd || mixedTopFadeStart>.99f ||
+           cumulusBottomFadeEnd<.01f || cumulusTopFadeStart<cumulusBottomFadeEnd || cumulusTopFadeStart>.99f ||
+           cumulusUpperMassBottom<0.f || cumulusUpperMassBottom>1.f || cumulusUpperMassStart<0.f ||
+           cumulusUpperMassEnd<cumulusUpperMassStart+.01f || cumulusUpperMassEnd>1.f) return false;
+        float t=FixedCloudType(value.typeSelection);
+        value.weather.column.minimumThicknessMeters=stratusMinimumThicknessMeters*(1.f-t)+cumulusMinimumThicknessMeters*t;
+        value.weather.column.maximumThicknessMeters=stratusMaximumThicknessMeters*(1.f-t)+cumulusMaximumThicknessMeters*t;
+        value.shape.bottomFadeEnd=t==0.f?stratusBottomFadeEnd:(t==1.f?cumulusBottomFadeEnd:mixedBottomFadeEnd);
+        value.shape.topFadeStart=t==0.f?stratusTopFadeStart:(t==1.f?cumulusTopFadeStart:mixedTopFadeStart);
+        value.shape.lowerDensityScale=t==1.f?cumulusUpperMassBottom:1.f;
+        value.shape.upperTransitionStart=cumulusUpperMassStart;
+        value.shape.upperTransitionEnd=cumulusUpperMassEnd;
+    }
+    else
+    {
+        if (!ParseFloat(text,"minimumThicknessMeters",value.weather.column.minimumThicknessMeters)) return false;
+        if (!ParseFloat(text,"maximumThicknessMeters",value.weather.column.maximumThicknessMeters)) return false;
+        if (!ParseFloat(text,"bottomFadeEnd",value.shape.bottomFadeEnd)) return false;
+        if (!ParseFloat(text,"topFadeStart",value.shape.topFadeStart)) return false;
+        if (!ParseFloat(text,"lowerDensityScale",value.shape.lowerDensityScale)) return false;
+        if (!ParseFloat(text,"upperTransitionStart",value.shape.upperTransitionStart)) return false;
+        if (!ParseFloat(text,"upperTransitionEnd",value.shape.upperTransitionEnd)) return false;
     }
     value.weatherPreset = static_cast<Stage5WeatherPreset>(weatherPreset);
     return true;
@@ -309,7 +341,6 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << "    \"weatherPreset\": "
            << static_cast<std::uint32_t>(value.weatherPreset) << ",\n";
     WriteChannel(stream, "weatherCoverage", value.weather.generator.coverage);
-    WriteChannel(stream, "weatherCloudType", value.weather.generator.cloudType);
     WriteChannel(stream, "weatherDensity", value.weather.generator.density);
     WriteChannel(stream, "weatherLocalThickness",
                  value.weather.generator.localThickness);
@@ -325,36 +356,18 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << static_cast<std::uint32_t>(value.typeSelection.mode) << ",\n"
            << "    \"weatherWorldSizeMeters\": "
            << value.weather.worldSizeMeters << ",\n"
-           << "    \"stratusMinimumThicknessMeters\": "
-           << value.weather.column.stratusMinimumThicknessMeters << ",\n"
-           << "    \"stratusMaximumThicknessMeters\": "
-           << value.weather.column.stratusMaximumThicknessMeters << ",\n"
-           << "    \"cumulusMinimumThicknessMeters\": "
-           << value.weather.column.cumulusMinimumThicknessMeters << ",\n"
-           << "    \"cumulusMaximumThicknessMeters\": "
-           << value.weather.column.cumulusMaximumThicknessMeters << ",\n"
-           << "    \"stratusBottomFadeEnd\": "
-           << value.shape.stratusBottomFadeEnd << ",\n"
-           << "    \"stratusTopFadeStart\": "
-           << value.shape.stratusTopFadeStart << ",\n"
-           << "    \"mixedBottomFadeEnd\": "
-           << value.shape.mixedBottomFadeEnd << ",\n"
-           << "    \"mixedTopFadeStart\": "
-           << value.shape.mixedTopFadeStart << ",\n"
-           << "    \"cumulusBottomFadeEnd\": "
-           << value.shape.cumulusBottomFadeEnd << ",\n"
-           << "    \"cumulusTopFadeStart\": "
-           << value.shape.cumulusTopFadeStart << ",\n"
-           << "    \"cumulusUpperMassBottom\": "
-           << value.shape.cumulusUpperMassBottom << ",\n"
-           << "    \"cumulusUpperMassStart\": "
-           << value.shape.cumulusUpperMassStart << ",\n"
-           << "    \"cumulusUpperMassEnd\": "
-           << value.shape.cumulusUpperMassEnd << ",\n"
+           << "    \"minimumThicknessMeters\": " << value.weather.column.minimumThicknessMeters << ",\n"
+           << "    \"maximumThicknessMeters\": " << value.weather.column.maximumThicknessMeters << ",\n"
+           << "    \"bottomFadeEnd\": " << value.shape.bottomFadeEnd << ",\n"
+           << "    \"topFadeStart\": " << value.shape.topFadeStart << ",\n"
+           << "    \"lowerDensityScale\": " << value.shape.lowerDensityScale << ",\n"
+           << "    \"upperTransitionStart\": " << value.shape.upperTransitionStart << ",\n"
+           << "    \"upperTransitionEnd\": " << value.shape.upperTransitionEnd << ",\n"
            << "    \"localBaseLiftMaxMeters\": "
            << value.weather.column.maximumBaseLiftMeters << ",\n"
            << "    \"footprintCoverageInfluence\": "
            << value.shape.footprintCoverageInfluence << ",\n"
+           << "    \"densityShaping\": " << value.shape.densityShaping << ",\n"
            << "    \"domainBottomMeters\": "
            << value.domainBottomMeters << ",\n"
            << "    \"domainThicknessMeters\": "
@@ -448,7 +461,7 @@ const char* CloudFormationPresetTargetName(
     {
     case CloudFormationType::Stratus: return "Stratus";
     case CloudFormationType::Cumulus: return "Cumulus";
-    case CloudFormationType::Mixed: return "Mixed";
+    case CloudFormationType::Mixed: return "Altocumulus";
     }
     return "Invalid";
 }
@@ -470,17 +483,17 @@ const char* CloudFormationPresetSourceName(CloudFormationPresetSource source)
     switch (source)
     {
     case CloudFormationPresetSource::BuiltIn: return "Built-in";
-    case CloudFormationPresetSource::UserOverride: return "User Override";
-    case CloudFormationPresetSource::Unsaved: return "Unsaved";
+    case CloudFormationPresetSource::UserOverride: return "Saved";
+    case CloudFormationPresetSource::Unsaved: return "Modified";
     }
-    return "Unsaved";
+    return "Modified";
 }
 
 bool CloudFormationCanSaveToPreset(
     const CloudFormationPresetTarget& target, bool targetValid)
 {
     return targetValid && IsValidCloudFormationPresetTarget(target) &&
-        target.group == CloudFormationPresetGroup::Custom;
+        (target.group == CloudFormationPresetGroup::Custom || target.group == CloudFormationPresetGroup::Type);
 }
 
 std::filesystem::path DefaultCloudFormationPresetRoot()
@@ -509,44 +522,46 @@ bool ResolveBuiltInCloudFormation(
     {
     case CloudFormationConcept::UrbanFairWeather:
         value.coverage = 0.38f;
+        value.shape.densityShaping = 0.70f; // 02 사용자 승인.
         value.densityMultiplier = 1.10f;
         value.extinctionPerMeter = 0.00036f;
         value.detailErosion = 0.24f;
         value.typeSelection.mode = CloudTypeSelectionMode::FixedCumulus;
         value.weather.generator.coverage = Channel(1013u, 4u, 11u, 0.42f, -0.02f, 1.15f);
-        value.weather.generator.cloudType = Channel(2017u, 2u, 4u, 0.20f, 0.20f, 0.85f);
         value.weather.generator.density = Channel(3019u, 3u, 6u, 0.25f, 0.0f, 0.75f);
         value.weather.generator.localThickness = Channel(4021u, 2u, 5u, 0.20f, 0.0f, 0.90f);
         value.weather.generator.coverageThreshold = 0.53f;
         value.weather.generator.coverageSoftness = 0.14f;
-        value.weather.column.cumulusMinimumThicknessMeters = 2000.0f;
-        value.weather.column.cumulusMaximumThicknessMeters = 3200.0f;
-        value.shape.cumulusTopFadeStart = 0.94f;
         value.weather.column.maximumBaseLiftMeters = 300.0f;
         value.shape.footprintCoverageInfluence = 0.50f;
         value.domainBottomMeters = 1800.0f;
         value.domainThicknessMeters = 3700.0f;
+        value.weather.column.minimumThicknessMeters = 2000.000000f;
+        value.weather.column.maximumThicknessMeters = 3200.000000f;
+        value.shape.bottomFadeEnd = 0.080000f;
+        value.shape.topFadeStart = 0.940000f;
+        value.shape.lowerDensityScale = 0.650000f;
         break;
     case CloudFormationConcept::MeadowBrokenClouds:
         value.coverage = 0.64f;
         value.densityMultiplier = 1.20f;
         value.extinctionPerMeter = 0.00039f;
         value.detailErosion = 0.20f;
-        value.typeSelection.mode = CloudTypeSelectionMode::RegionalBlend;
+        value.typeSelection.mode = CloudTypeSelectionMode::FixedMixed;
         value.weather.generator.coverage = Channel(1103u, 3u, 9u, 0.38f, 0.0f, 1.05f);
-        value.weather.generator.cloudType = Channel(2101u, 2u, 5u, 0.28f, 0.08f, 1.0f);
         value.weather.generator.density = Channel(3109u, 3u, 7u, 0.30f, 0.05f, 0.90f);
         value.weather.generator.localThickness = Channel(4103u, 2u, 6u, 0.32f, 0.05f, 1.05f);
         value.weather.generator.coverageThreshold = 0.485f;
         value.weather.generator.coverageSoftness = 0.18f;
-        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
-        value.weather.column.stratusMaximumThicknessMeters = 2500.0f;
-        value.weather.column.cumulusMinimumThicknessMeters = 3000.0f;
-        value.weather.column.cumulusMaximumThicknessMeters = 4600.0f;
         value.weather.column.maximumBaseLiftMeters = 200.0f;
         value.shape.footprintCoverageInfluence = 0.40f;
         value.domainBottomMeters = 1500.0f;
         value.domainThicknessMeters = 5000.0f;
+        value.weather.column.minimumThicknessMeters = 2250.000000f;
+        value.weather.column.maximumThicknessMeters = 3550.000000f;
+        value.shape.bottomFadeEnd = 0.100000f;
+        value.shape.topFadeStart = 0.860000f;
+        value.shape.lowerDensityScale = 1.000000f;
         break;
     case CloudFormationConcept::SnowOvercast:
         value.coverage = 0.90f;
@@ -555,19 +570,19 @@ bool ResolveBuiltInCloudFormation(
         value.detailErosion = 0.10f;
         value.typeSelection.mode = CloudTypeSelectionMode::FixedStratus;
         value.weather.generator.coverage = Channel(1301u, 2u, 6u, 0.20f, 0.10f, 0.85f);
-        value.weather.generator.cloudType = Channel(2309u, 2u, 4u, 0.15f, -0.30f, 0.60f);
         value.weather.generator.density = Channel(3301u, 2u, 5u, 0.18f, 0.05f, 0.75f);
         value.weather.generator.localThickness = Channel(4303u, 2u, 4u, 0.15f, 0.0f, 0.70f);
         value.weather.generator.coverageThreshold = 0.46f;
         value.weather.generator.coverageSoftness = 0.20f;
-        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
-        value.weather.column.stratusMaximumThicknessMeters = 2300.0f;
-        value.shape.stratusBottomFadeEnd = 0.05f;
-        value.shape.stratusTopFadeStart = 0.72f;
         value.weather.column.maximumBaseLiftMeters = 0.0f;
         value.shape.footprintCoverageInfluence = 0.20f;
         value.domainBottomMeters = 1500.0f;
         value.domainThicknessMeters = 2500.0f;
+        value.weather.column.minimumThicknessMeters = 1500.000000f;
+        value.weather.column.maximumThicknessMeters = 2300.000000f;
+        value.shape.bottomFadeEnd = 0.050000f;
+        value.shape.topFadeStart = 0.720000f;
+        value.shape.lowerDensityScale = 1.000000f;
         break;
     default:
         return false;
@@ -580,10 +595,14 @@ bool ResolveBuiltInCloudFormation(
 {
     // F1 타입은 장면 콘셉트와 독립된 formation 기본값이다.
     CloudFormationSettings value = BasePhysicalFormation();
+    value.shape.densityShaping = 0.70f; // 세 Type 모두 02 사용자 승인.
     switch (type)
     {
     case CloudFormationType::Stratus:
-        value.coverage = 0.40f;
+        value.baseNoiseWorldSizeMeters = 22000.0f;
+        value.baseNoiseVerticalWorldSizeMeters = 8000.0f;
+        value.weather.generator.coverage = Channel(1013u, 2u, 5u, .18f, .08f, .85f);
+        value.coverage = 0.60f;
         value.densityMultiplier = 1.20f;
         value.extinctionPerMeter = 0.00042f;
         value.detailErosion = 0.12f;
@@ -594,71 +613,63 @@ bool ResolveBuiltInCloudFormation(
         value.weather.generator.coverage.contrast = 1.03f;
         value.weather.generator.densityCoverageInfluence = 0.50f;
         value.weather.generator.thicknessCoverageInfluence = 0.65f;
-        value.weather.generator.cloudType.bias = 0.0f;
-        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
-        value.weather.column.stratusMaximumThicknessMeters = 2300.0f;
-        value.shape.stratusBottomFadeEnd = 0.05f;
-        value.shape.stratusTopFadeStart = 0.72f;
         value.weather.column.maximumBaseLiftMeters = 0.0f;
         value.shape.footprintCoverageInfluence = 0.20f;
         value.domainBottomMeters = 1500.0f;
-        value.domainThicknessMeters = 2500.0f;
+        value.domainThicknessMeters = 1050.0f;
+        value.weather.column.minimumThicknessMeters = 450.0f;
+        value.weather.column.maximumThicknessMeters = 850.0f;
+        value.shape.bottomFadeEnd = 0.050000f;
+        value.shape.topFadeStart = 0.720000f;
+        value.shape.lowerDensityScale = 1.000000f;
         break;
     case CloudFormationType::Cumulus:
-        value.coverage = 0.45f;
+        value.coverage = 0.48f;
         value.densityMultiplier = 1.25f;
         value.extinctionPerMeter = 0.00038f;
         value.detailErosion = 0.18f;
         value.typeSelection.mode = CloudTypeSelectionMode::FixedCumulus;
-        value.weather.generator.coverageThreshold = 0.52f;
-        value.weather.generator.coverageSoftness = 0.20f;
+        value.weather.generator.coverageThreshold = 0.56f;
+        value.weather.generator.coverageSoftness = 0.14f;
         value.weather.generator.coverage.bias = 0.0f;
         value.weather.generator.coverage.contrast = 1.05f;
         value.weather.generator.densityCoverageInfluence = 0.45f;
         value.weather.generator.thicknessCoverageInfluence = 0.70f;
-        value.weather.generator.cloudType.bias = 0.0f;
-        value.weather.column.cumulusMinimumThicknessMeters = 2000.0f;
-        value.weather.column.cumulusMaximumThicknessMeters = 3200.0f;
-        value.shape.cumulusBottomFadeEnd = 0.08f;
-        value.shape.cumulusTopFadeStart = 0.94f;
-        value.shape.cumulusUpperMassBottom = 0.65f;
-        value.shape.cumulusUpperMassStart = 0.08f;
-        value.shape.cumulusUpperMassEnd = 0.70f;
         value.weather.column.maximumBaseLiftMeters = 300.0f;
         value.shape.footprintCoverageInfluence = 0.50f;
         value.domainBottomMeters = 1800.0f;
         value.domainThicknessMeters = 3700.0f;
+        value.weather.column.minimumThicknessMeters = 2000.000000f;
+        value.weather.column.maximumThicknessMeters = 3200.000000f;
+        value.shape.bottomFadeEnd = 0.080000f;
+        value.shape.topFadeStart = 0.940000f;
+        value.shape.lowerDensityScale = 0.650000f;
         break;
     case CloudFormationType::Mixed:
-        value.coverage = 0.68f;
+        value.baseNoiseWorldSizeMeters = 4200.0f;
+        value.baseNoiseVerticalWorldSizeMeters = 5000.0f;
+        value.detailNoiseWorldSizeMeters = 700.0f;
+        value.weather.generator.coverage = Channel(1103u, 5u, 13u, .40f, .05f, 1.05f);
+        value.coverage = 0.42f;
         value.densityMultiplier = 1.15f;
         value.extinctionPerMeter = 0.00035f;
         value.detailErosion = 0.18f;
-        value.typeSelection.mode = CloudTypeSelectionMode::RegionalBlend;
-        value.weather.generator.coverageThreshold = 0.50f;
+        value.typeSelection.mode = CloudTypeSelectionMode::FixedMixed;
+        value.weather.generator.coverageThreshold = 0.35f;
         value.weather.generator.coverageSoftness = 0.20f;
         value.weather.generator.coverage.bias = 0.0f;
         value.weather.generator.coverage.contrast = 1.05f;
         value.weather.generator.densityCoverageInfluence = 0.45f;
         value.weather.generator.thicknessCoverageInfluence = 0.60f;
-        value.weather.generator.cloudType.bias = 0.08f;
-        value.weather.column.stratusMinimumThicknessMeters = 1500.0f;
-        value.weather.column.stratusMaximumThicknessMeters = 2500.0f;
-        value.weather.column.cumulusMinimumThicknessMeters = 3000.0f;
-        value.weather.column.cumulusMaximumThicknessMeters = 4600.0f;
-        value.shape.stratusBottomFadeEnd = 0.06f;
-        value.shape.stratusTopFadeStart = 0.65f;
-        value.shape.mixedBottomFadeEnd = 0.10f;
-        value.shape.mixedTopFadeStart = 0.86f;
-        value.shape.cumulusBottomFadeEnd = 0.08f;
-        value.shape.cumulusTopFadeStart = 0.93f;
-        value.shape.cumulusUpperMassBottom = 0.65f;
-        value.shape.cumulusUpperMassStart = 0.08f;
-        value.shape.cumulusUpperMassEnd = 0.70f;
-        value.weather.column.maximumBaseLiftMeters = 200.0f;
+        value.weather.column.maximumBaseLiftMeters = 100.0f;
         value.shape.footprintCoverageInfluence = 0.40f;
-        value.domainBottomMeters = 1500.0f;
-        value.domainThicknessMeters = 5000.0f;
+        value.domainBottomMeters = 3000.0f;
+        value.domainThicknessMeters = 1450.0f;
+        value.weather.column.minimumThicknessMeters = 650.0f;
+        value.weather.column.maximumThicknessMeters = 1150.0f;
+        value.shape.bottomFadeEnd = 0.100000f;
+        value.shape.topFadeStart = 0.860000f;
+        value.shape.lowerDensityScale = 1.000000f;
         break;
     default:
         return false;
@@ -691,9 +702,9 @@ bool SaveCloudFormationPresetAtomic(
     const CloudFormationSettings& settings, std::string& status)
 {
     if (path.empty() || !IsValidCloudFormationPresetTarget(target) ||
-        target.group != CloudFormationPresetGroup::Custom)
+        (target.group != CloudFormationPresetGroup::Custom && target.group != CloudFormationPresetGroup::Type))
     {
-        status = "Formation save rejected: only Custom is writable";
+        status = "Formation save rejected: only formation slots are writable";
         return false;
     }
     PreparedCloudFormation prepared;
@@ -716,7 +727,8 @@ bool SaveCloudFormationPresetAtomic(
             return false;
         }
         file << "{\n"
-             << "  \"schemaVersion\": 2,\n"
+             << "  \"schemaVersion\": 4,\n"
+             << (target.group == CloudFormationPresetGroup::Custom ? "  \"snowDefaultInitialized\": 1,\n" : "")
              << "  \"cloudFormation\": {\n";
         WriteFormation(file, prepared.settings);
         file << "  }\n}\n";
@@ -747,9 +759,9 @@ bool LoadCloudFormationPreset(
     CloudFormationSettings& outSettings, std::string& status)
 {
     if (path.empty() || !IsValidCloudFormationPresetTarget(expectedTarget) ||
-        expectedTarget.group != CloudFormationPresetGroup::Custom)
+        (expectedTarget.group != CloudFormationPresetGroup::Custom && expectedTarget.group != CloudFormationPresetGroup::Type))
     {
-        status = "Formation load rejected: only Custom is file-backed";
+        status = "Formation load rejected: only formation slots are file-backed";
         return false;
     }
     std::error_code error;
@@ -784,9 +796,10 @@ bool LoadCloudFormationPreset(
     std::ostringstream buffer;
     buffer << file.rdbuf();
     const std::string text = buffer.str();
+    if (!presetjson::Valid(text)) { status = "Malformed formation JSON"; return false; }
     std::uint32_t schemaVersion = 0;
     if (!ParseUnsigned(text, "schemaVersion", schemaVersion) ||
-        (schemaVersion != 1u && schemaVersion != 2u))
+        (schemaVersion != 1u && schemaVersion != 2u && schemaVersion != 3u && schemaVersion != 4u))
     {
         status = "Formation override rejected: schema or slot mismatch";
         return false;
@@ -806,7 +819,7 @@ bool LoadCloudFormationPreset(
     }
     outSettings = prepared.settings;
     status = std::string(CloudFormationPresetTargetName(expectedTarget)) +
-        " user override loaded";
+        (schemaVersion < 4u ? " legacy override migrated to common profile (Regional -> Mixed)" : " user override loaded");
     return true;
 }
 
@@ -821,24 +834,25 @@ bool ResolveCloudFormationPreset(
         status = "Formation resolve rejected: invalid preset target";
         return false;
     }
-    if (target.group == CloudFormationPresetGroup::Custom)
+    if (allowUserOverrides && target.group != CloudFormationPresetGroup::Concept)
     {
-        if (!allowUserOverrides)
+        std::error_code error;
+        const auto path = CloudFormationPresetPath(root, target);
+        const bool exists = std::filesystem::exists(path, error);
+        if (error) { status = "Cannot inspect formation file"; return false; }
+        if (exists)
         {
-            status = "Custom formation unavailable in isolated test mode";
-            return false;
+            CloudFormationSettings loaded;
+            if (!LoadCloudFormationPreset(path, target, loaded, status)) return false;
+            outSettings = loaded;
+            outSource = CloudFormationPresetSource::UserOverride;
+            return true;
         }
-        CloudFormationSettings loaded;
-        if (!LoadCloudFormationPreset(
-                CloudFormationPresetPath(root, target), target,
-                loaded, status))
-            return false;
-        outSettings = loaded;
-        outSource = CloudFormationPresetSource::UserOverride;
-        return true;
     }
     CloudFormationSettings builtIn;
-    if (!ResolveBuiltInCloudFormation(target, builtIn))
+    if (!(target.group == CloudFormationPresetGroup::Custom
+        ? ResolveBuiltInCloudFormation(CloudFormationConcept::SnowOvercast, builtIn)
+        : ResolveBuiltInCloudFormation(target, builtIn)))
     {
         status = "Formation resolve failed: no built-in preset";
         return false;
@@ -848,4 +862,28 @@ bool ResolveCloudFormationPreset(
     status = std::string(CloudFormationPresetTargetName(target)) +
         " built-in loaded";
     return true;
+}
+
+// 승인된 일회성 교체. 완료 표식은 Custom 본문과 같은 원자 교체에 포함된다.
+bool InitializeSnowCustomPreset(const std::filesystem::path& root, std::string& status)
+{
+    const auto target = CustomFormationTarget();
+    const auto path = CloudFormationPresetPath(root, target);
+    std::error_code error;
+    const bool exists = std::filesystem::exists(path, error);
+    if (error) { status = "Custom initialization: cannot inspect file"; return false; }
+    if (exists) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) { status = "Custom initialization: cannot read file"; return false; }
+        std::ostringstream text; text << in.rdbuf();
+        std::uint32_t initialized = 0;
+        if (ParseUnsigned(text.str(), "snowDefaultInitialized", initialized) && initialized == 1) return true;
+        auto backup = path; backup += L".before-snow.bak";
+        if (!std::filesystem::exists(backup, error))
+            std::filesystem::copy_file(path, backup, std::filesystem::copy_options::none, error);
+        if (error) { status = "Custom initialization: backup failed"; return false; }
+    }
+    CloudFormationSettings snow;
+    if (!ResolveBuiltInCloudFormation(CloudFormationConcept::SnowOvercast, snow)) return false;
+    return SaveCloudFormationPresetAtomic(path, target, snow, status);
 }

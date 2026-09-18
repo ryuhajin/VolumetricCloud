@@ -30,7 +30,29 @@ bool Near(double a, double b, double tolerance = 1e-6)
 int main()
 {
     using namespace stage13noise;
-    const NoiseVolumeParameters parameters;
+    Require(NoiseVolumeParameters{}.baseMidOctaveExtra == 0.5f, "03 approved Base scale");
+    NoiseVolumeParameters parameters;
+    parameters.baseMidOctaveExtra = 0; // 과거 noise 기준/후보 비교 출발값.
+    Require(sizeof(NoiseVolumeParameters) == 96 && offsetof(NoiseVolumeParameters, baseMidOctaveExtra) == 28,
+        "03 reserved field ABI");
+    Require(SanitizeBaseMidOctaveExtra(NAN) == 0 && SanitizeBaseMidOctaveExtra(-1) == 0 &&
+        SanitizeBaseMidOctaveExtra(0.25f) == 0.25f && SanitizeBaseMidOctaveExtra(5) == 0.5f,
+        "03 finite discrete candidate contract");
+    for (float extra : {0.0f, 0.25f, 0.5f})
+    {
+        auto candidate = parameters; candidate.baseMidOctaveExtra = extra;
+        bool changed = false;
+        for (int i = 0; i < 64; ++i)
+        {
+            Float3 p = {(i + 0.5) / 64, 0.293, 0.419};
+            const double value = BasePerlinWorley(p, candidate);
+            Require(value >= 0 && value <= 1 && std::isfinite(value), "03 normalized output");
+            Require(Near(value, BasePerlinWorley({p.x + 1, p.y - 1, p.z + 2}, candidate), 1e-5),
+                "03 tile continuity");
+            changed |= std::abs(value - BasePerlinWorley(p, parameters)) > 1e-6;
+        }
+        Require(changed == (extra != 0), "03 zero restores and candidates change Base");
+    }
     Require(parameters.baseResolution == 128u &&
             parameters.detailResolution == 32u && parameters.seed == 1337u,
             "resolution and seed contract changed");

@@ -17,7 +17,28 @@ int main()
 {
     using namespace stage12shadow;
     bool passed = true;
-
+    // 저고도 투영 범위는 각 높이의 수평 범위와 층 전체 높이를 모두 포함해야 한다.
+    for (float degrees : {0.0f, 3.0f, 5.0f, 10.0f, 45.0f, 70.0f, 90.0f})
+    for (float width : {24000.0f, 128000.0f})
+    {
+        const float a=degrees*3.14159265358979323846f/180;
+        const auto b=BuildLightBasis({std::cos(a),std::sin(a),0});
+        const float upWidth=ProjectedUpWidth(width,3700,b.forward.y);
+        const DirectX::XMFLOAT3 origin{0,0,0};
+        for(float x : {-width*.5f,width*.5f}) for(float y : {-1850.0f,1850.0f})
+        {
+            const DirectX::XMFLOAT3 p{x,y,0};
+            auto uv=CacheUv(p,origin,b,width,upWidth);
+            auto shifted=CacheUv(Add(p,Scale(b.forward,19000)),origin,b,width,upWidth);
+            passed &= Require(uv.y>=-1e-5 && uv.y<=1+1e-5 && std::abs(uv.y-shifted.y)<1e-5,
+                "05B projected bounds and sun-ray invariant");
+        }
+        const DirectX::XMFLOAT3 raw{1234,1850,567};
+        const auto snapped=SnappedCenter(raw,b,width,512,upWidth);
+        passed &= Require(std::abs(Dot(snapped,b.up)-Dot(raw,b.up))<=upWidth/1024+.01f,
+            "05B anisotropic center snap within half texel");
+    }
+    passed &= Require(sizeof(Stage12ShadowParameters)==160 && offsetof(Stage12ShadowParameters,padding1)==152 && Sanitize({}).padding1==0, "06 Shadow ABI padding");
     const LightBasis basis = BuildLightBasis({ 0.35f, 0.55f, -0.25f });
     passed &= Require(basis.valid &&
         std::abs(Length(basis.right) - 1.0f) < 1.0e-5f &&
@@ -86,8 +107,9 @@ int main()
                       parameters.surfaceShadowStrength == 1.0f &&
                       parameters.cacheDebugExposure == 4.0f &&
                       parameters.debugNearSlice == 79u &&
-                      parameters.debugFarSlice == 39u &&
-                      kCacheBytes == 120ull * 1024ull * 1024ull,
+                      parameters.debugFarSlice == 78u &&
+                      parameters.nearSliceCount == 80u && parameters.farSliceCount == 79u &&
+                      kCacheBytes == 159ull * 1024ull * 1024ull,
                       "b8 ABI, fixed cache size and sanitization");
 
     const DirectX::XMFLOAT3 fullCenter = SnappedCenter(

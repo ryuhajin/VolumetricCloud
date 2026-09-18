@@ -229,18 +229,15 @@ int main()
     CloudTypeSelection fixedStratus{ CloudTypeSelectionMode::FixedStratus };
     CloudTypeSelection fixedMixed{ CloudTypeSelectionMode::FixedMixed };
     CloudTypeSelection fixedCumulus{ CloudTypeSelectionMode::FixedCumulus };
-    CloudTypeSelection regional{ CloudTypeSelectionMode::RegionalBlend };
+    CloudTypeSelection regional{ CloudTypeSelectionMode::FixedMixed };
     if (!NearlyEqual(ResolveEffectiveCloudType(fixedStratus, 0.83f), 0.0f) ||
         !NearlyEqual(ResolveEffectiveCloudType(fixedMixed, 0.83f), 0.5f) ||
         !NearlyEqual(ResolveEffectiveCloudType(fixedCumulus, 0.17f), 1.0f) ||
-        !NearlyEqual(ResolveEffectiveCloudType(regional, 0.37f), 0.37f))
+        !NearlyEqual(ResolveEffectiveCloudType(regional, 0.37f), 0.5f))
         return Fail("effective type selection must resolve fixed and regional modes");
 
-    WeatherMapGeneratorSettings changedTypeGenerator = defaults;
-    ++changedTypeGenerator.cloudType.seed;
-    if (HashWeatherMap(BuildWeatherMap(Stage5WeatherPreset::PeriodicPerlin,
-            changedTypeGenerator)) == HashWeatherMap(perlinA))
-        return Fail("stored regional G generator must remain active in every selection");
+    for (std::size_t i=1;i<perlinA.rgba.size();i+=4)
+        if (perlinA.rgba[i]!=128u) return Fail("reserved G must remain neutral everywhere");
 
     if (!NearlyEqual(Channel(uniformA, 0, 0, 0), 1.0f) ||
         !NearlyEqual(stage5::DecodeCanonicalWeatherChannel(
@@ -367,7 +364,7 @@ int main()
             }
         }
     if (channelMinimum[0] > 0.01f || channelMaximum[0] < 0.99f ||
-        channelMaximum[1] - channelMinimum[1] < 0.25f ||
+        channelMaximum[1] != channelMinimum[1] ||
         channelMaximum[2] - channelMinimum[2] < 0.25f ||
         coveredHeightMaximum - coveredHeightMinimum < 0.25f)
     {
@@ -406,10 +403,6 @@ int main()
             Stage5WeatherPreset::PeriodicPerlin, changed)) == HashWeatherMap(perlinA))
         return Fail("coverage detail weight must change the generated map");
     changed = defaults;
-    ++changed.cloudType.seed;
-    const WeatherMapData changedType = BuildWeatherMap(
-        Stage5WeatherPreset::PeriodicPerlin, changed);
-    changed = defaults;
     ++changed.density.seed;
     const WeatherMapData changedDensity = BuildWeatherMap(
         Stage5WeatherPreset::PeriodicPerlin, changed);
@@ -417,21 +410,15 @@ int main()
     ++changed.localThickness.seed;
     const WeatherMapData changedHeight = BuildWeatherMap(
         Stage5WeatherPreset::PeriodicPerlin, changed);
-    bool typeChanged = false;
     bool densityChanged = false;
     bool heightChanged = false;
     for (std::uint32_t y = 0; y < perlinA.height; ++y)
         for (std::uint32_t x = 0; x < perlinA.width; ++x)
         {
-            if (Channel(perlinA, x, y, 1) != Channel(changedType, x, y, 1))
-                typeChanged = true;
             if (Channel(perlinA, x, y, 2) != Channel(changedDensity, x, y, 2))
                 densityChanged = true;
             if (Channel(perlinA, x, y, 3) != Channel(changedHeight, x, y, 3))
                 heightChanged = true;
-            if (Channel(perlinA, x, y, 0) != Channel(changedType, x, y, 0) ||
-                Channel(perlinA, x, y, 2) != Channel(changedType, x, y, 2))
-                return Fail("type seed must only change the G channel");
             if (Channel(perlinA, x, y, 0) != Channel(changedDensity, x, y, 0) ||
                 Channel(perlinA, x, y, 1) != Channel(changedDensity, x, y, 1) ||
                 Channel(perlinA, x, y, 3) != Channel(changedDensity, x, y, 3))
@@ -441,7 +428,7 @@ int main()
                     Channel(changedHeight, x, y, channel))
                     return Fail("height seed must only change the A channel");
         }
-    if (!typeChanged || !densityChanged || !heightChanged)
+    if (!densityChanged || !heightChanged)
         return Fail("type, density and height seeds must change their target channels");
 
     bool foundEmptyPixel = false;
@@ -465,7 +452,6 @@ int main()
     invalidSettings.coverage.macroPeriod = 0u;
     invalidSettings.coverage.detailPeriod = 999u;
     invalidSettings.coverage.detailWeight = NAN;
-    invalidSettings.cloudType.bias = INFINITY;
     invalidSettings.density.contrast = -INFINITY;
     invalidSettings.localThickness.detailWeight = NAN;
     invalidSettings.coverageThreshold = NAN;
@@ -490,18 +476,18 @@ int main()
         return Fail("invalid RGBA length must be rejected before GPU upload");
 
     if (!NearlyEqual(stage5::DecodeCanonicalWeatherChannel(
-            Channel(debug, 128, 20, 1)), 0.0f) ||
+            Channel(debug, 128, 20, 1)), 0.5f) ||
         !NearlyEqual(stage5::DecodeCanonicalWeatherChannel(
             Channel(debug, 128, 128, 1)), 0.5f) ||
         !NearlyEqual(stage5::DecodeCanonicalWeatherChannel(
-            Channel(debug, 128, 235, 1)), 1.0f) ||
+            Channel(debug, 128, 235, 1)), 0.5f) ||
         !NearlyEqual(stage5::DecodeCanonicalWeatherChannel(
             Channel(debug, 20, 128, 2)), 0.0f) ||
         !NearlyEqual(stage5::DecodeCanonicalWeatherChannel(
             Channel(debug, 128, 128, 2)), 0.5f) ||
         !NearlyEqual(stage5::DecodeCanonicalWeatherChannel(
             Channel(debug, 235, 128, 2)), 1.0f))
-        return Fail("debug map must expose canonical type and density bands");
+        return Fail("debug map must preserve reserved G and canonical density bands");
     if (Channel(debug, 77, 87, 0) < 0.99f ||
         Channel(debug, 0, 0, 0) > 0.01f)
         return Fail("channel debug must preserve its bright islands and dark background");

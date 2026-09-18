@@ -1,3 +1,6 @@
+// [학습 지도] b3/b8 + Base density/Deep Cache → 태양 T/tau와 표본 직접광 → CloudEnvironment. 거리 m, sigma 1/m.
+// [수정 안내] [직접 조절]의 CPU/UI 원본을 수정한다. 강제 범위는 입력 계약이며 화질 보장이 아니다.
+// 별도 권장 구간이 없는 값은 표시된 기본값을 비교 출발점으로 삼는다. b/t/u/s는 버퍼/읽기/쓰기/샘플러 슬롯.
 // ============================================================================
 //  CloudLighting.hlsli - 단계 6 Light Ray와 단계 7 방향성 단일 산란 기반
 // ----------------------------------------------------------------------------
@@ -34,12 +37,18 @@ struct LightMarchResult
 struct DirectLightingResponse
 {
     float shapedTransmittance; // shadowExponent가 적용된 직접광 투과율.
-    float surfaceExposure;     // 1에 가까울수록 태양 쪽 얇은 외곽이다.
+    float surfaceExposure;     // 태양 경로 T의 가중치. 화면 실루엣/시선 두께 판정은 아니다.
     float scopedPhase;         // 외곽 범위가 적용된 최종 Phase 배율.
+    float basePhase;           // 중립+음의 phase. 림 변경으로 바뀌지 않는다.
+    float rimPhase;            // 양의 phase 성분. Direct 안에 한 번만 더한다.
 };
 
+// [직접광 모양] 1. T를 [0,1]로 제한. 2. T^shadowExponent로 차폐 대비를 만든다.
+// 3. T^edgeScale은 태양 경로의 낮은 광학 깊이를 우대한다. 화면 외곽만 선택하지 않는다.
+// 4. phase-1에 외곽 가중치를 곱한 뒤 1을 더해 중립 배율을 유지한다.
+// 이 지수는 밀도/캐시 tau를 바꾸지 않고 직접광의 보이는 대비만 조절한다.
 DirectLightingResponse EvaluateDirectLightingResponse(
-    float lightTransmittance, float phaseFactor)
+    float lightTransmittance, float phaseFactor, float rimPhaseFactor)
 {
     DirectLightingResponse result;
     float safeTransmittance = saturate(lightTransmittance);
@@ -56,11 +65,18 @@ DirectLightingResponse EvaluateDirectLightingResponse(
         safeTransmittance, safeShadowExponent);
     result.surfaceExposure = pow(safeTransmittance, safeEdgeScale);
     float phaseWeight = lerp(1.0, result.surfaceExposure, safeEdgeInfluence);
-    result.scopedPhase = 1.0 +
-        (clamp(phaseFactor, 0.0, kMaxPhaseFactor) - 1.0) * phaseWeight;
+    result.basePhase = 1.0 + min(phaseFactor - 1.0, 0.0) * phaseWeight;
+    float rimWeight = lerp(1.0, pow(safeTransmittance,
+        safeEdgeScale * clamp(rimDepthScale, 0.5, 2.0)), safeEdgeInfluence);
+    result.rimPhase = clamp(rimIntensity, 0.0, 4.0) *
+        max(rimPhaseFactor - 1.0, 0.0) * rimWeight;
+    result.scopedPhase = result.basePhase + result.rimPhase;
     return result;
 }
 
+// [구간 적분] dTau=density*sigma_t*ds, Tstep=exp(-dTau).
+// Tview*incidentSun*albedo*(1-Tstep)는 이번 구간에서 관찰자에게 추가되는 RGB다.
+// (1-Tstep)를 단순 density로 대체하면 step 길이에 따라 밝기가 달라진다.
 float3 ComputeDirectInteractionColor(
     float density, float viewTransmittance, float viewStepLength,
     float3 incidentSun)
@@ -88,6 +104,12 @@ float ConeBoundaryFraction(uint index, uint count)
 // 같은 태양 직선의 균일 표본이 만드는 평행 띠를 줄이기 위해 태양 축 주변을
 // golden-angle로 넓혀 읽는다. 각 표본은 담당 구간 길이를 그대로 가중치로 써
 // 균일 밀도에서도 Beer-Lambert 광학 깊이를 보존한다.
+// [cone fallback 순서] 입력 표본 월드 m와 태양 방향 → (T,tau).
+// 1. 태양에 직교하는 tangent/bitangent와 1m bias 시작점 생성.
+// 2. 구름층 교차를 구하고 8개 비균일 구간으로 분할.
+// 3. 2도 cone 원판을 golden angle로 읽되 각 구간 길이(m)를 가중치로 유지.
+// 4. Base 밀도*sigma_t*구간 길이를 tau에 더하고 T≈0.0001이면 종료.
+// 표본 수만 줄이거나 길이 가중치를 빼면 그림자 밴딩/밝기 오차가 생긴다.
 LightMarchResult ComputeLightTransmittanceCone(
     float3 samplePosition, float3 lightDirection)
 {
@@ -133,6 +155,9 @@ LightMarchResult ComputeLightTransmittanceCone(
             (segmentStart + centerDistance) +
             (tangent * disk.x + bitangent * disk.y) * coneRadius;
         float density = EvaluateLightCloudDensity(position, time);
+#if defined(VCLOUD_TEST_CACHE_DETAIL)
+        density = SampleCloudDensity(position, time, true).finalDensity;
+#endif
         opticalDepth += max(density, 0.0) * safeExtinction * intervalLength;
         if (opticalDepth >= kLightEarlyExitOpticalDepth)
             break;
@@ -142,15 +167,57 @@ LightMarchResult ComputeLightTransmittanceCone(
     return result;
 }
 
+// [조회 선택] 먼저 t6/t7 Deep Cache를 읽고 valid일 때 그 T/tau를 재사용한다.
+// 자원 미준비/낮은 태양으로 valid=0이면 cone 적분. Far 영역 밖은 cache가 T=1로
+// fade한 유효 결과이므로 단순히 영역 밖이라는 이유로 cone을 다시 수행하지 않는다.
+#if defined(VCLOUD_TEST_SOLAR_REFERENCE_STEP)
+static bool solarReferencePixel = false;
+#endif
 LightMarchResult ComputeLightTransmittance(
     float3 samplePosition, float3 lightDirection)
 {
     LightMarchResult result = { 1.0, 0.0 };
+#if defined(VCLOUD_TEST_SOLAR_REFERENCE_STEP)
+    // 05 테스트 전용: 지정 ROI 또는 전체 화면에서 같은 Base 밀도를 직접 적분한다.
+    if (solarReferencePixel)
+    {
+        float lengthMeters = max(stage12CloudTopMeters - samplePosition.y, 0) / lightDirection.y;
+        uint count = max((uint)ceil(lengthMeters / VCLOUD_TEST_SOLAR_REFERENCE_STEP), 1u);
+        float ds = lengthMeters / count;
+        [loop] for (uint i = 0; i < count; ++i)
+        {
+#if defined(VCLOUD_TEST_BOUNDARY_SHADOW_DETAIL)
+            // 별도 밀도 표현 실험. N0~N3의 동일 Base 모델 수치 오차와 구분한다.
+            result.opticalDepth += max(SampleCloudDensity(
+                samplePosition + lightDirection * ((i + .5) * ds), time, true).finalDensity, 0) * extinctionCoefficient * ds;
+#else
+            result.opticalDepth += max(EvaluateLightCloudDensity(
+                samplePosition + lightDirection * ((i + .5) * ds), time), 0) * extinctionCoefficient * ds;
+#endif
+            if (result.opticalDepth >= stage12MaximumOpticalDepth) break;
+        }
+        result.opticalDepth = min(result.opticalDepth, stage12MaximumOpticalDepth);
+        result.transmittance = exp(-result.opticalDepth);
+        return result;
+    }
+#endif
+#if defined(VCLOUD_TEST_SUN_UNOCCLUDED)
+    // 05 원인 분리 전용. 태양 차폐를 제거해 View/입사광의 줄무늬와 구별한다.
+    return result;
+#endif
     Stage12ShadowSample cached = SampleStage12DeepShadow(samplePosition);
     if (cached.valid > 0.5)
     {
         result.transmittance = cached.transmittance;
         result.opticalDepth = cached.opticalDepth;
+        float cacheWeight = Stage12SunTransitionWeight();
+        if (cacheWeight < 1.0)
+        {
+            LightMarchResult cone = ComputeLightTransmittanceCone(samplePosition, lightDirection);
+            // cone T가0으로 underflow해도 원래tau를 보존한다. T와tau를 따로 섞지 않는다.
+            result.opticalDepth = lerp(cone.opticalDepth, cached.opticalDepth, cacheWeight);
+            result.transmittance = exp(-result.opticalDepth);
+        }
     }
     else
         result = ComputeLightTransmittanceCone(samplePosition, lightDirection);
@@ -163,10 +230,10 @@ LightMarchResult ComputeLightTransmittance(
 float3 IntegrateSingleScattering(
     float density, float lightTransmittance,
     float viewTransmittance, float viewStepLength,
-    float phaseFactor, float3 incidentSun)
+    float phaseFactor, float3 incidentSun, float rimPhaseFactor)
 {
     DirectLightingResponse response = EvaluateDirectLightingResponse(
-        lightTransmittance, phaseFactor);
+        lightTransmittance, phaseFactor, rimPhaseFactor);
     return ComputeDirectInteractionColor(
         density, viewTransmittance, viewStepLength, incidentSun) *
         response.shapedTransmittance * max(response.scopedPhase, 0.0);

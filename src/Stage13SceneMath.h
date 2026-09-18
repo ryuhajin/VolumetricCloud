@@ -14,7 +14,7 @@ namespace stage13scene
 inline constexpr float kGroundSizeMeters = 10000.0f;
 inline constexpr float kGroundHalfSizeMeters = kGroundSizeMeters * 0.5f;
 inline constexpr float kBuildingWidthMeters = 20.0f;
-inline constexpr float kBuildingHeightMeters = 60.0f;
+inline constexpr float kBuildingHeightMeters = 30.0f;
 inline constexpr float kBuildingDepthMeters = 20.0f;
 inline constexpr float kSupportedSkyRadiusMeters = 50000.0f;
 inline constexpr float kMoveSpeedMetersPerSecond = 1000.0f;
@@ -92,7 +92,7 @@ inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
 {
     const std::int32_t value = static_cast<std::int32_t>(mode);
     const bool regularDiagnostic = (value >= 8 && value <= 25) ||
-        (value >= 27 && value <= 33) || (value >= 35 && value <= 59);
+        (value >= 27 && value <= 33) || (value >= 35 && value <= 60);
     return value == 0 || regularDiagnostic ||
         (value >= 74 && value <= 77) || value == 81
         ? mode : CloudDebugMode::Composite;
@@ -119,7 +119,7 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::CloudType: return L"Cloud Type";
     case CloudDebugMode::WeatherThresholdDensity: return L"Weather Threshold";
     case CloudDebugMode::TypedShapeProfile: return L"Typed Shape Profile";
-    case CloudDebugMode::LightTransmittance: return L"Light Transmittance";
+    case CloudDebugMode::LightTransmittance: return L"Sun T - Segment Midpoint (9)";
     case CloudDebugMode::LightOpticalDepth: return L"Light Optical Depth";
     case CloudDebugMode::DirectSingleScattering: return L"Direct Scattering";
     case CloudDebugMode::PhaseCosTheta: return L"Phase cosTheta";
@@ -154,6 +154,7 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::SilverLiningContribution: return L"Silver Lining Contribution";
     case CloudDebugMode::ShapedSunVisibility: return L"Shaped Sun Visibility";
     case CloudDebugMode::AmbientVisibility: return L"Ambient Visibility";
+    case CloudDebugMode::VisibleSunTransmittance: return L"Visible Sun T - Opacity Weighted";
     case CloudDebugMode::Stage12NearOpticalDepth: return L"Stage 12 Near Cache Texture";
     case CloudDebugMode::Stage12FarOpticalDepth: return L"Stage 12 Far Cache Texture";
     case CloudDebugMode::Stage12CascadeSelection: return L"Stage 12 Cascade World Lookup";

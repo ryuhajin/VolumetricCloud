@@ -43,7 +43,7 @@ DirectX::XMFLOAT3 Direction(const Stage13CameraPreset& preset)
 bool InsideDiagnosticBuilding(const DirectX::XMFLOAT3& position)
 {
     return position.x >= -10.0f && position.x <= 10.0f &&
-           position.y >= 0.0f && position.y <= 60.0f &&
+           position.y >= 0.0f && position.y <= 30.0f &&
            position.z >= -10.0f && position.z <= 10.0f;
 }
 
@@ -102,15 +102,23 @@ int main()
             "invalid digit must sanitize to Composite");
     const Stage13CameraPreset& f5 = Get(Stage13CameraPresetId::HeroDepth);
     const Stage13CameraPreset& f6 = Get(Stage13CameraPresetId::GroundHorizon);
-    const Stage13CameraPreset& f7 = Get(Stage13CameraPresetId::InsideLayer);
+    const Stage13CameraPreset& f7 = Get(Stage13CameraPresetId::CloudOverview);
     const Stage13CameraPreset& f8 = Get(Stage13CameraPresetId::AboveLayer);
 
     Require(f5.position.y < 1500.0f && f6.position.y < 1500.0f,
             "F5/F6 must start below the Open World cloud layer");
-    Require(f7.position.y > 1500.0f && f7.position.y < 7500.0f,
-            "F7 must start inside the Open World cloud layer");
+    Require(f7.position.y > 7500.0f && f7.target.y < f7.position.y,
+            "F7 must look down from above the Open World cloud layer");
     Require(f8.position.y > 7500.0f,
             "F8 must start above the Open World cloud layer");
+    const auto sunView=FromSunDirection({.6f,.5f,.6244998f});
+    const auto sunDirection=Direction(sunView);
+    Require(sunView.position.y > 7500 && sunDirection.y < 0 &&
+            Near(sunDirection.x,-.6f,1e-4f) && Near(sunDirection.y,-.5f,1e-4f),
+            "F7 must face opposite the solar direction above the clouds");
+    Require(FromSunDirection({1,0,0}).position.y >= 8000 &&
+            Finite(FromSunDirection({0,1,0}).position),
+            "F7 low sun and zenith must remain above clouds and finite");
     for (const Stage13CameraPreset& preset : kOpenWorldPresets)
     {
         Require(Finite(preset.position) && Finite(preset.target),
@@ -140,8 +148,8 @@ int main()
     const float f5BuildingY = f5.position.y +
         (f5.target.y - f5.position.y) * f5BuildingT;
     Require(f5BuildingT > 0.0f && f5BuildingT < 1.0f &&
-            f5BuildingY >= 0.0f && f5BuildingY <= 60.0f,
-            "F5 center ray must intersect the 20x60x20m building");
+            f5BuildingY >= 0.0f && f5BuildingY <= 30.0f,
+            "F5 center ray must intersect the 20x30x20m building");
 
     const DirectX::XMFLOAT3 f6Direction = Direction(f6);
     const auto f6Interval = stage13domain::IntersectPlanarLayer(
@@ -152,7 +160,7 @@ int main()
     const auto f8Interval = stage13domain::IntersectPlanarLayer(
         f8.position.y, f8Direction.y, 1500.0, 6000.0, 60000.0, 50000.0);
     Require(f8Direction.y < 0.0f && f8Interval.hit,
-            "F8 center ray must look downward and enter the cloud layer");
+            "F8 center ray must look gently downward and enter the cloud layer");
 
     Camera lookCamera;
     lookCamera.SetLookAt(f5.position, f5.target);

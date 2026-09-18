@@ -1,10 +1,35 @@
 # High 단일화 사용자 렌더 검증 가이드
 
+## 현재 슬롯 프리셋 검증 (2026-09-18)
+
+이 절이 현재 런타임 기준이다. 아래 과거 Urban/Meadow/Snow 체크와 승인 기록은 역사적 자료다. 새 기본은 **Cumulus + 3번**이며 화면 승인은 아직 대기다.
+
+| 조작 위치·방법 | 직접 효과·검증 목적 | 정상 결과 | 실패 징후 |
+|---|---|---|---|
+| F1 Stratus/Cumulus/Altocumulus/Custom | 형상 슬롯 전환 | F3 값과 F4 선택 유지 | 조명까지 초기화 |
+| F1 Coverage 변경→Save Preset→다른 타입→원래 타입 | 선택 슬롯 JSON 저장·복원 | 수정 Coverage 복원, Saved 표시 | Custom에 대신 저장, 다른 타입 변경 |
+| F2 Coverage channel seed 변경→F1 Save Preset | Weather 생성기 소유권 | 같은 F1 슬롯 재선택 시 seed와 분포 복원 | 조명 파일에 기록되거나 Weather 미복원 |
+| F4 2→F3 Tone EV 변경→F4 Save Preset→3→2 | 조명 슬롯 저장·복원 | 노출 복원, formation 상태/값 유지 | 구름 두께·Coverage 변경 |
+| F4 1~4를 같은 F1 타입/F5에서 비교 | 조명·환경 분리 | 금빛 아침/노을/밝은 낮/분홍라벤더 구분 | 동일 룩, 검은 캐시 띠, 과도한 흰색 포화 |
+| 저장 후 종료·재실행 | JSON 영속성 | Cumulus+3으로 시작하며 해당 저장값 적용; 나머지는 재선택으로 복원 | 매 실행 내장값으로 초기화 |
+| 수정 후 저장 없이 다른 슬롯→원래 슬롯 | 명시적 저장 계약 | 이전 저장값으로 복원 | 수정값이 자동 저장됨 |
+
+형상 비교 전 F1 Cloud movement speed=0, F4 3, F5로 고정한다. Stratus는450~850m의 넓은 층, Cumulus는2000~3200m의 분리된 큰 질량, Altocumulus는650~1150m의 작은 군집이 목표다. F7/F8에서도 절단 여부를 본다. Custom은 기존 Snow 형상이다. F4는 지형을 추가하지 않는다.
+
+파일은 captures/noise-lab/types/{stratus,cumulus,mixed}.json, custom-cloud.json, lighting/{1,2,3,4}.json이다. 저장 전·후 경로 표시와 Saved/Modified를 함께 확인한다. 잘못된 JSON은 오류를 표시하며 기존 화면을 유지해야 한다. 기존 Custom은 최초 일반 실행에 .before-snow.bak으로 백업하고 Snow로 교체한다. 이후 Save Preset 편집은 보존한다.
+
+- [ ] 8슬롯 저장·재선택·재실행 사용자 확인
+- [ ] 4형상×4조명 화면 품질 확인
+- [ ] 사용자 최종 승인 (기존 승인과 별개)
+
+## 이전 버전 검증 기록
+
 이 문서는 자동 검증이 끝난 뒤 사용자가 Release 1920×1080 화면을 직접 보고 최종 승인하는 절차다. 에이전트는 빌드, 수치, GPU 오류와 자원 계약을 검사하지만 구름 모양·shimmer 허용 수준·색과 산란의 미학은 승인하지 않는다.
 
 ## 준비
 
 ```powershell
+cmake -B build -G "Visual Studio 17 2022" -A x64 -DVCLOUD_STRICT_VALIDATION=OFF
 cmake --build build --config Release
 .\build\Release\VolumetricCloud.exe
 ```
@@ -17,7 +42,7 @@ cmake --build build --config Release
 |---|---|---|---|---|---|
 | Urban / Meadow / Snow | `F4` 상단 | formation + 태양·환경광·대기·지면 | 세 최종 scene transaction | 한 번에 한 장면으로 전환 | 이전 장면 색/구름이 섞임, 검정 frame |
 | Stratus / Cumulus / Mixed / Custom | `F1` 상단 | formation만 | 타입 높이와 profile, Custom 복원 | 조명·대기·지면은 그대로 | F3 값도 바뀜, 상하단 칼 절단 |
-| Save Custom | `F1` | motion을 제외한 formation과 타입 선택 | schema 2 범위 | 저장 뒤 Custom 버튼 활성 | 파일 손상, Custom 비활성 |
+| Save Custom | `F1` | motion을 제외한 formation과 타입 선택 | schema 3 범위(densityShaping 포함) | 저장 뒤 Custom 버튼 활성 | 파일 손상, Custom 비활성 |
 | Cloud movement speed | `F1 > Cloud Motion` | 세션 전역 0~400m/s 속도 | 공통 이동 시작·정지와 타입 전환 보존 | 0에서 정지, 100~400에서 Weather/Base/Detail과 그림자가 함께 뚜렷하게 이동 | 높은 값에서도 정지, 일부 구조만 이동, 타입 전환 때 초기화 |
 | VSync | `F1 > Presentation` | swap-chain Present 방식 | 동기/즉시 표시 상태 | 기본 On, 지원 환경의 Off는 `immediate + tearing allowed` 표시 | 기본 Off, Off인데 interval 1, scene/preset 변경 |
 | Preview field | `F1 > Preview` combo | 세 preview의 출력 field | 진단 선택성과 ID | 목록에서 즉시 선택 | slider로 한 칸씩 이동, ID 경고 |
@@ -147,3 +172,38 @@ Release 1920×1080 자동 gate 목표는 Cloud p95 10ms 이하, Frame p95 16.67m
 - [x] F2 RGBA 최상단의 Stored Regional Type G는 Fixed에서도 유지되고 F1/F4 Effective Type만 선택 정책에 따라 변경
 - [x] 좌측 상단 Performance의 Weather Map/Atmosphere LUT 분리와 F4 Cloud view ID 경고 없음
 - [x] 사용자가 최종 승인
+
+## 방향광 후속06/07 구분 (2026-09-15)
+
+05 명암/80·40/3~5도 전환은 사용자 승인.06은 림 분리·밝은 가장자리 비교이며 사용자 화면 승인 전이다.07은06 승인 후에만 프리셋 전환/전체 회귀/12case 성능/07-final 촬영을 수행한다.06-final은 림 이전 승인 화면으로 보존한다. 하부 평탄화는 분석 보류다. 상세 조작은 CLOUD_LIGHTING_TUNING_GUIDE의06 체크리스트를 따른다.
+
+
+### 2026-09-16 카메라 구도 갱신
+
+F5: 지상 눈높이1.7m, (0,1.7,180)→(0,60,-200). F6: 기존 GroundHorizon 유지. F7: CloudOverview, (40,7800,0)→(40,3000,-3000). F8: 기존 AboveLayer 유지. 수직FOV60도,near0.1m/far60km. 이전 F5/F7 좌표의 캡처와 새 프리셋 결과는 동일 조건 비교가 아니다.
+
+
+### 2026-09-17 씬/카메라 현행 계약
+
+건물20×30×20m(10층),정점 생성은 stage13scene 치수 상수 사용. F5=(12,1.7,60)→(0,42,-40). F7은 현재 태양 방향 쪽에서(0,3000,-1200)을 보는20km 조감이며 키 입력 시 갱신한다. 저고도에서는 방향Y최소.25(고도약14.5도),천정Y최대.9999로 안전한 상공 시점을 유지한다. F6/F8과 수직FOV60도/near.1m/far60km는 유지. 과거 좌표/건물치수 기록은 역사 자료다.
+
+
+### 2026-09-17 F5 정면 정렬 / F8 수평선
+
+사용자 캡처 피드백: F5가 건물 측면으로 치우쳐 보이고 F8은 하향보다 수평선 구도가 필요했다. F5 position의X를12→0으로 바꿔 건물 중심과 target의X=0에 정렬한다. position(0,1.7,60),target(0,42,-40)이며 기존 상향 구도와 거리를 유지한다. F8은 position(40,7800,0)을 유지하고 target(40,7800,-1800)으로 바꿔 pitch0도를 만든다. 이름은 상공 수평선(F8). F6/F7,10층 건물,원근/구름/조명 설정은 유지한다.
+
+사용자 확인: F5에서 건물 정면이 중앙에 좌우 대칭으로 보이는지 확인한다. 올려다보는 원근에 따른 위쪽 폭 감소는 정상이며 좌우 비대칭 기울기는 실패 징후다. F8에서 상공 수평선과 아래 구름이 함께 보이는지 확인한다. 평면 구름층 위 수평 중심 레이는 구름에 교차하지 않는 것이 정상이며 화면 아래쪽 하향 레이가 구름을 본다. 기존 캡처는 보존하며 화면 승인은 사용자 확인 대기다.
+
+
+### 2026-09-17 F8 하향각 재조정
+
+사용자는 수평선 위 하늘보다 아래쪽 구름/지면 방향을 더 크게 보길 요청했다. F8 위치(40,7800,0),FOV60은 유지하고 target을(40,7417.4,-1800)으로 내려 pitch 약-12도로 조정했다. 수평 방향은 화면 상단 약32%에 놓이므로 아래 방향이 약68%를 차지하는 구도다(실제 대기 지평선은 지구 곡률 등으로 다를 수 있음). 표시 이름은 상공 완만한 하향(F8). F5/F6/F7 및 장면/조명은 유지한다.
+
+사용자 확인: 재실행 후 F8에서 수평선이 화면 위쪽으로 올라가고 아래쪽 구름이 더 넓게 보이는지 확인한다. 지면 메시의 면적 확대나 새로운 지형 추가는 하지 않았다. 화면 승인은 사용자 확인 대기. 기존 캡처는 보존한다.
+
+
+### 2026-09-17 F6: F5와 같은 위치에서 반대 방위
+
+사용자 요청으로 F6을 F5와 같은 position(0,1.7,60)에 두고 target(0,42,160)으로 변경했다. F5 target(0,42,-40)의 Z 방향을 반전한 구도다. 방위만180도 돌리고 상향각 약22도는 유지한다. 현재 F5는-Z, F6은+Z를 본다. 이름은 지상 눈높이 · 건물 반대편(F6).
+
+사용자 확인: 재실행 후 F5/F6 전환 시 위치 이동 없이 건물 쪽과 반대쪽 하늘을 번갈아 보는지 확인한다. 눈높이/상향각/FOV는 같아야 한다. F7/F8과 조명·밀도는 유지한다. 기존 캡처는 보존하고 새 F6은 과거 구도와 직접 이미지 비교하지 않는다.

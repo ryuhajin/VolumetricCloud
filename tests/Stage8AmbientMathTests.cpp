@@ -1,6 +1,7 @@
 #include "EnvironmentParameters.h"
+#include "LegacyEnvironmentParameters.h"
 #include "Stage6LightMath.h"
-#include "Stage8AmbientMath.h"
+#include "LegacyStage8AmbientMath.h"
 
 #include <cstddef>
 #include <cmath>
@@ -27,14 +28,15 @@ bool Near(float a, float b, float epsilon = 1e-5f)
 
 int main()
 {
-    Require(sizeof(EnvironmentParameters) == 80u,
-            "EnvironmentCB CPU layout must remain 80 bytes");
-    Require(offsetof(EnvironmentParameters, physicalSkyFillScale) == 60u &&
-                offsetof(EnvironmentParameters, physicalGroundFillScale) == 76u,
+    Require(sizeof(EnvironmentParameters)==48 && offsetof(EnvironmentParameters,physicalSkyFillScale)==28 && offsetof(EnvironmentParameters,physicalGroundFillScale)==44, "06 Physical Environment ABI");
+    Require(sizeof(LegacyEnvironmentParameters) == 80u,
+            "historical analytic environment fixture remains 80 bytes");
+    Require(offsetof(LegacyEnvironmentParameters, physicalSkyFillScale) == 60u &&
+                offsetof(LegacyEnvironmentParameters, physicalGroundFillScale) == 76u,
             "Physical fill controls must occupy the former padding offsets");
 
-    EnvironmentParameters off;
-    stage8environment::ApplyPreset(off, Stage8EnvironmentPreset::Off);
+    LegacyEnvironmentParameters off;
+    legacyenvironment::ApplyPreset(off, LegacyEnvironmentPreset::Off);
     Require(off.skyStrength == 0.0f && off.groundStrength == 0.0f &&
                 off.physicalSkyFillScale == 0.0f &&
                 off.physicalGroundFillScale == 0.0f &&
@@ -43,7 +45,7 @@ int main()
                 stage8::MultipleScatteringFactor(2.0f, 4.0f, off) == 0.0f,
             "Off must preserve stage 7 without indirect light");
 
-    EnvironmentParameters balanced;
+    LegacyEnvironmentParameters balanced;
     Require(balanced.physicalSkyFillScale == 1.0f &&
                 balanced.physicalGroundFillScale == 1.0f,
             "Balanced Physical fill must be neutral");
@@ -61,7 +63,7 @@ int main()
                  stage8::AmbientVisibility(0.4f, 1.0f, balanced)),
             "neutral ambient shadow coupling must preserve stage 8 visibility");
 
-    EnvironmentParameters doubledSky = balanced;
+    LegacyEnvironmentParameters doubledSky = balanced;
     doubledSky.skyStrength *= 2.0f;
     const auto baseAmbient = stage8::EvaluateAmbientRadiance(
         0.5f, 0.4f, balanced);
@@ -71,7 +73,7 @@ int main()
                 Near(doubledAmbient.sky.g, baseAmbient.sky.g * 2.0f) &&
                 Near(doubledAmbient.ground.r, baseAmbient.ground.r),
             "sky strength must scale only sky radiance linearly");
-    EnvironmentParameters physicalFillOff = balanced;
+    LegacyEnvironmentParameters physicalFillOff = balanced;
     physicalFillOff.physicalSkyFillScale = 0.0f;
     physicalFillOff.physicalGroundFillScale = 0.0f;
     const auto manualAmbientWithPhysicalFillOff = stage8::EvaluateAmbientRadiance(
@@ -82,14 +84,14 @@ int main()
                      baseAmbient.ground.r),
             "Physical fill controls must not change legacy analytic radiance");
 
-    EnvironmentParameters one = balanced;
+    LegacyEnvironmentParameters one = balanced;
     one.multipleScatteringOctaves = 1;
     const float expectedOne = one.multipleScatteringAttenuation *
         std::exp(-2.0f * one.multipleScatteringExtinctionFactor) *
         (1.0f + (3.0f - 1.0f) * one.multipleScatteringPhaseFactor);
     Require(Near(stage8::MultipleScatteringFactor(2.0f, 3.0f, one), expectedOne),
             "one octave must match the documented analytic formula");
-    EnvironmentParameters two = one;
+    LegacyEnvironmentParameters two = one;
     two.multipleScatteringOctaves = 2;
     const float expectedTwo = expectedOne +
         one.multipleScatteringAttenuation *
@@ -101,23 +103,23 @@ int main()
     Require(Near(stage8::MultipleScatteringFactor(2.0f, 3.0f, two), expectedTwo),
             "two octaves must reuse optical depth with decayed factors");
 
-    EnvironmentParameters strong;
-    stage8environment::ApplyPreset(strong, Stage8EnvironmentPreset::StrongFill);
+    LegacyEnvironmentParameters strong;
+    legacyenvironment::ApplyPreset(strong, LegacyEnvironmentPreset::StrongFill);
     Require(Near(strong.skyStrength, 0.40f) &&
                 Near(strong.groundStrength, 0.15f) &&
                 Near(strong.physicalSkyFillScale, 1.25f) &&
                 Near(strong.physicalGroundFillScale, 1.25f) &&
                 strong.multipleScatteringOctaves == 3u,
             "Strong Fill preset must be deterministic");
-    EnvironmentParameters ground;
-    stage8environment::ApplyPreset(ground, Stage8EnvironmentPreset::GroundCheck);
+    LegacyEnvironmentParameters ground;
+    legacyenvironment::ApplyPreset(ground, LegacyEnvironmentPreset::GroundCheck);
     Require(ground.skyStrength == 0.0f && Near(ground.groundStrength, 0.35f) &&
                 ground.physicalSkyFillScale == 0.0f &&
                 ground.physicalGroundFillScale == 1.0f &&
                 ground.multipleScatteringEnabled == 0.0f,
             "Ground Check must isolate ground bounce");
-    EnvironmentParameters hero;
-    stage8environment::ApplyPreset(hero, Stage8EnvironmentPreset::PortfolioHero);
+    LegacyEnvironmentParameters hero;
+    legacyenvironment::ApplyPreset(hero, LegacyEnvironmentPreset::PortfolioHero);
     const float heroLit = stage8::AmbientVisibility(0.4f, 1.0f, hero);
     const float heroShadow = stage8::AmbientVisibility(0.4f, 0.1f, hero);
     Require(hero.ambientShadowCoupling > 0.0f &&
@@ -141,7 +143,7 @@ int main()
                 lightBefore.stepCount == lightAfter.stepCount,
             "environment math must not change Light Ray results");
 
-    EnvironmentParameters invalid;
+    LegacyEnvironmentParameters invalid;
     invalid.skyColor.x = std::numeric_limits<float>::quiet_NaN();
     invalid.groundStrength = -10.0f;
     invalid.ambientOcclusionStrength = std::numeric_limits<float>::infinity();
@@ -153,7 +155,7 @@ int main()
     invalid.multipleScatteringInteriorBlend = 10.0f;
     invalid.physicalSkyFillScale = std::numeric_limits<float>::quiet_NaN();
     invalid.physicalGroundFillScale = 10.0f;
-    invalid = stage8environment::Sanitize(invalid);
+    invalid = legacyenvironment::Sanitize(invalid);
     const auto safeWeights = stage8::EvaluateWeights(
         std::numeric_limits<float>::quiet_NaN(),
         std::numeric_limits<float>::infinity(), invalid);

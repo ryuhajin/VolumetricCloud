@@ -170,6 +170,15 @@ public:
     bool ConsumeFormationEdited();
     bool ConsumeFormationPresetRequest(CloudFormationPresetTarget& target);
     bool ConsumeSaveCustomRequest();
+    bool ConsumeSaveLightingRequest() { bool value = m_saveLightingPending; m_saveLightingPending = false; return value; }
+    void SetPresetStatus(const std::filesystem::path& root,
+        const CloudFormationPresetTarget& target, CloudFormationPresetSource formationSource,
+        CloudFormationPresetSource lightingSource, const std::string& lightingStatus)
+    {
+        m_presetRoot = root; m_snapshotFormationTarget = target;
+        m_snapshotFormationSource = formationSource;
+        m_lightingSource = lightingSource; m_lightingStatus = lightingStatus;
+    }
     bool ConsumeLoadCustomRequest();
     bool ConsumeSceneConceptRequest(Stage15ConceptPreset& concept);
     bool ConsumeNoiseVolumeRegenerateRequest();
@@ -206,11 +215,13 @@ public:
         std::uint64_t shaderGeneration);
 
     float UserZoom() const { return m_developerUiSettings.userZoom; }
+    void SetRimComparisonCap(float cap) { m_rimComparisonCap = cap; }
     float EffectiveUiScale() const { return m_effectiveUiScale; }
     float StyleWindowPaddingXForValidation() const;
     bool SetDeveloperUiScaleForValidation(unsigned int dpi, float userZoom);
 
 private:
+    float m_rimComparisonCap = 2.5f;
     template <typename T>
     using ComPtr = Microsoft::WRL::ComPtr<T>;
 
@@ -247,7 +258,6 @@ private:
                             bool tearingSupported);
     void DrawWeatherMapPanel(CloudParameters& cloud,
                              WeatherMapGeneratorSettings& weather,
-                             const CloudTypeSelection& typeSelection,
                              NoiseVolumeParameters& noiseVolume,
                              std::uint64_t baseHash,
                              std::uint64_t detailHash,
@@ -303,6 +313,7 @@ private:
     ID3D11Device* m_device = nullptr;
     ID3D11DeviceContext* m_context = nullptr;
     std::array<SliceTarget, 3> m_targets;
+    std::array<SliceTarget, 4> m_weatherTargets; // RBA(불투명) + R/B/A
     ComPtr<ID3D11Buffer> m_noiseLabCb;
     bool m_initialized = false;
 
@@ -325,6 +336,12 @@ private:
     bool m_formationPresetPending = false;
     CloudFormationPresetTarget m_formationPresetRequest =
         TypeFormationTarget(CloudFormationType::Mixed);
+    std::filesystem::path m_presetRoot;
+    CloudFormationPresetTarget m_snapshotFormationTarget;
+    CloudFormationPresetSource m_snapshotFormationSource = CloudFormationPresetSource::BuiltIn;
+    CloudFormationPresetSource m_lightingSource = CloudFormationPresetSource::BuiltIn;
+    std::string m_lightingStatus;
+    bool m_saveLightingPending = false;
     bool m_saveCustomPending = false;
     bool m_loadCustomPending = false;
     int m_sceneConceptRequest = -1;

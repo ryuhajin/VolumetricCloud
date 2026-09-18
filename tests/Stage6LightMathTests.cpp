@@ -27,8 +27,8 @@ int main()
 {
     using namespace stage6;
 
-    Require(sizeof(LightParameters) == 64u,
-            "High-only LightCB CPU layout must remain 64 bytes");
+    Require(sizeof(LightParameters) == 80u,
+            "LightCB CPU layout must match 80 bytes");
 
     const auto uniform = MarchConstantDensity(4.0f, 0.35f, 1.0f, 0.25f, 32u);
     Require(Near(uniform.transmittance, std::exp(-1.4f), 1e-5f),
@@ -140,6 +140,13 @@ int main()
     Require(stage6light::Sanitize(bad).singleScatteringAlbedo == 1.0f,
             "NaN single-scattering albedo must reset to the default");
 
+    bad.rimIntensity=std::numeric_limits<float>::quiet_NaN();
+    bad.rimDepthScale=std::numeric_limits<float>::infinity();
+    Require(stage6light::Sanitize(bad).rimIntensity==2 && stage6light::Sanitize(bad).rimDepthScale==1,
+            "invalid rim multipliers return to approved defaults");
+    bad.rimIntensity=10;bad.rimDepthScale=-1;
+    Require(stage6light::Sanitize(bad).rimIntensity==4 && stage6light::Sanitize(bad).rimDepthScale==.5f,
+            "rim multipliers clamp to independent UI ranges");
     const auto east = stage6light::Preset(Stage6SunPreset::LowEast).directionToSun;
     const auto west = stage6light::Preset(Stage6SunPreset::LowWest).directionToSun;
     Require(east.x * west.x + east.z * west.z < 0.0f,

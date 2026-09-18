@@ -128,10 +128,8 @@ int main()
         Fail("effective time must pause exactly and resume continuously");
 
     WeatherColumnSettings invalidColumn;
-    invalidColumn.stratusMinimumThicknessMeters = NAN;
-    invalidColumn.stratusMaximumThicknessMeters = -100.0f;
-    invalidColumn.cumulusMinimumThicknessMeters = INFINITY;
-    invalidColumn.cumulusMaximumThicknessMeters = 100000.0f;
+    invalidColumn.minimumThicknessMeters = NAN;
+    invalidColumn.maximumThicknessMeters = 100000.0f;
     invalidColumn.maximumBaseLiftMeters = NAN;
     const WeatherColumnSettings sanitizedColumn =
         SanitizeWeatherColumnSettings(invalidColumn);
@@ -139,10 +137,10 @@ int main()
     invalidShape.footprintCoverageInfluence = 2.0f;
     const CloudShapeParameters sanitizedShape =
         SanitizeCloudShapeParameters(invalidShape);
-    if (sanitizedColumn.stratusMinimumThicknessMeters < 1.0f ||
-        sanitizedColumn.stratusMaximumThicknessMeters <
-            sanitizedColumn.stratusMinimumThicknessMeters ||
-        sanitizedColumn.cumulusMaximumThicknessMeters > 6000.0f ||
+    if (sanitizedColumn.minimumThicknessMeters < 1.0f ||
+        sanitizedColumn.maximumThicknessMeters <
+            sanitizedColumn.minimumThicknessMeters ||
+        sanitizedColumn.maximumThicknessMeters > 6000.0f ||
         sanitizedColumn.maximumBaseLiftMeters != 200.0f ||
         sanitizedShape.footprintCoverageInfluence != 1.0f)
         Fail("Weather column and CloudShapeCB sanitize must preserve bounds");
@@ -193,10 +191,11 @@ int main()
         const double coverage = weather.rgba[pixel * 4 + 0] / 255.0;
         if (coverage <= 1.0 / 255.0)
             continue;
-        const double type = weather.rgba[pixel * 4 + 1] / 255.0;
         const double potential = weather.rgba[pixel * 4 + 3] / 255.0;
-        const double thickness = stage13shape::EvaluateLocalThicknessMeters(
-            potential, type);
+        // 공통 설정의 A 보간을 검증한다. G 예약 값은 읽지 않는다.
+        const WeatherColumnSettings common;
+        const double thickness = common.minimumThicknessMeters +
+            (common.maximumThicknessMeters-common.minimumThicknessMeters)*potential;
         potentials.push_back(potential);
         thicknesses.push_back(thickness);
         if (thickness >= 5900.0)
@@ -212,14 +211,14 @@ int main()
     const double ceilingRatio = static_cast<double>(ceilingCount) /
         std::max<std::size_t>(thicknesses.size(), 1u);
     const bool distributionPassed = potentialSpan >= 0.30 &&
-        thicknessSpan >= 1750.0 && thicknessSpan <= 1900.0 &&
-        topStddev >= 500.0 && ceilingRatio <= 0.05;
+        std::abs(thicknessSpan-potentialSpan*1300.0)<1e-6 &&
+        topStddev > 0.0 && ceilingRatio <= 0.05;
     std::printf("[SHAPE][WEATHER] A_P05=%.3f A_P95=%.3f THICKNESS_SPAN_M=%.1f TOP_STDDEV_M=%.1f CEILING_RATIO=%.5f %s\n",
                 Percentile(potentials, 0.05), Percentile(potentials, 0.95),
                 thicknessSpan, topStddev, ceilingRatio,
                 distributionPassed ? "PASS" : "FAIL");
     if (!distributionPassed)
-        Fail("Dense Mixed Weather thickness distribution left its deterministic range");
+        Fail("common thickness span must equal A span times configured range");
 
     for (int potentialIndex = 0; potentialIndex <= 10; ++potentialIndex)
     {

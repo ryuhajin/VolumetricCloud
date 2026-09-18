@@ -65,7 +65,7 @@ std::filesystem::path CloudFormationPresetPath(
     const std::filesystem::path& root,
     const CloudFormationPresetTarget& target);
 
-// Concept와 Type은 파일로 덮어쓸 수 없는 내장값이다.
+// 내장 기본값. Type/Custom은 JSON 저장값으로 덮어쓸 수 있다.
 bool ResolveBuiltInCloudFormation(
     CloudFormationConcept concept,
     CloudFormationSettings& outSettings);
@@ -87,7 +87,7 @@ bool LoadCloudFormationPreset(
     CloudFormationSettings& outSettings,
     std::string& status);
 
-// Concept/Type은 항상 내장값을 적용한다. Custom은 schema 2를 쓰고 schema 1을 이관한다.
+// Concept는 역사적 검증 전용 내장값이다. Type/Custom은 저장값을 우선한다. Custom은 schema 4를 쓰고 schema 1~3의 공통 두께/profile을 이관한다.
 bool ResolveCloudFormationPreset(
     const std::filesystem::path& root,
     const CloudFormationPresetTarget& target,
@@ -95,3 +95,5 @@ bool ResolveCloudFormationPreset(
     CloudFormationSettings& outSettings,
     CloudFormationPresetSource& outSource,
     std::string& status);
+
+bool InitializeSnowCustomPreset(const std::filesystem::path& root, std::string& status);

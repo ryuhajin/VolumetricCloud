@@ -1,8 +1,8 @@
 // ============================================================================
-//  Stage15Parameters.h - 최종 장면 콘셉트의 CPU 전용 계약
+//  Stage15Parameters.h - 프리셋 식별자와 역사적 scene 검증 계약
 // ----------------------------------------------------------------------------
-//  렌더 품질은 High 하나로 고정한다. 이 파일은 장면 콘셉트가 함께 소유하는
-//  formation, 태양/환경광, 대기, 지면과 지표 그림자만 정의한다.
+//  일반 F4는 LightingPresetStore의 독립 descriptor를 사용한다.
+//  이 파일의 구 scene descriptor/resolver는 이전 진단 실행기 호환 전용이다.
 // ============================================================================
 #pragma once
 
@@ -19,22 +19,36 @@ enum class Stage15ConceptPreset : std::uint32_t
 {
     UrbanFairWeather = 0,
     MeadowBrokenClouds = 1,
-    SnowOvercast = 2,
+    SnowOvercast = 2, // 역사적 검증 전용 scene; 일반 UI에는 노출하지 않는다.
+    AutumnMorning = 3,
+    BeachSunset = 4,
+    BrightNoon = 5,
+    PastelDream = 6,
 };
 
 struct Stage15SceneDescriptor
 {
+    // [직접 조절] ResolveBuiltInCloudFormation이 제공하는 모양 설정. 세 scene별 실제 원본은 preset store resolver.
     CloudFormationSettings formation = {};
+    // [직접 조절] ResolveSceneConcept의 태양/phase 수치. 각 필드 범위는 LightParameters; F4 concept 적용 시 F3 수동값을 덮어쓴다.
     LightParameters light = {};
+    // [파생 값] UI 태양 preset 이름, 기본 LowEast. 실제 방향은 atmosphere 각도에서 계산.
     Stage6SunPreset sunPreset = Stage6SunPreset::LowEast;
+    // [직접 조절] phase preset 표식, 기본 SilverLining. 실제 계수는 resolver의 ApplyPhasePreset와 scene별 대입이 결정.
     Stage7PhasePreset phasePreset = Stage7PhasePreset::SilverLining;
+    // [직접 조절] 환경광 설정, PortfolioHero 후 scene별 fill 수정. 각 필드 범위는 EnvironmentParameters.
     EnvironmentParameters environment = {};
+    // [파생 값] UI 환경광 표식, Custom. 이름만 바꿔 계수 적용을 대신하지 않는다.
     Stage8EnvironmentPreset environmentPreset =
         Stage8EnvironmentPreset::Custom;
+    // [직접 조절] EarthClear 대기와 태양 각도. AtmosphereParameters의 km/범위 계약을 따른다.
     AtmosphereParameters atmosphere = {};
+    // [직접 조절] Concrete/Grass/Snow 반사율과 bounce; 구름 formation 저장과 별개.
     GroundLightingParameters ground = {};
-    std::uint32_t surfaceShadowEnabled = 1u;
+    // [호환 유지] bool uint, sanitize 0/1, 초기 1. 현재 셰이더 미사용: 실제 표면 그림자는 strength/floor로 조절한다.
+    // [직접 조절] F3/scene 그림자 강도 [0,1], 구조체 초기 1/내장 0.40~0.65 권장. 증가하면 지면/건물 그림자 대비 증가.
     float surfaceShadowStrength = 0.55f;
+    // [직접 조절] F3/scene 표면 그림자 계수 하한 [0,1], 기본/권장 0.35. 증가하면 깊은 표면 그림자가 밝아진다.
     float surfaceAmbientFloor = 0.35f;
 };
 
@@ -44,6 +58,10 @@ inline const char* ConceptName(Stage15ConceptPreset preset)
 {
     switch (preset)
     {
+    case Stage15ConceptPreset::AutumnMorning: return "1";
+    case Stage15ConceptPreset::BeachSunset: return "2";
+    case Stage15ConceptPreset::BrightNoon: return "3";
+    case Stage15ConceptPreset::PastelDream: return "4";
     case Stage15ConceptPreset::UrbanFairWeather:
         return "Urban Fair Weather";
     case Stage15ConceptPreset::MeadowBrokenClouds:

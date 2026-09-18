@@ -1,6 +1,54 @@
 # feature/stage15-final-quality
 
-## 목적
+## 2026-09-05 빌드 검증 역할 분리
+
+기본 OFF Release가 주요 렌더 TC와 성능 측정 대상이며, ON Strict Validation은
+필요 시 실행하는 결정적 해시 보조 도구다. Weather의 기존 strictness와 CameraCB 수정은 유지한다.
+이하 all-strict 성능 보류는 과거 기록이다. 현재 규약과 검증 상태는
+[정책 변경 기록](stage15c-determinism.md) 및 [빌드 규칙](../CONTRIBUTING.md)을 따른다.
+최종 HDR/Tone tolerance 이미지 회귀는 규약만 정의했으며 전용 TC는 후속 구현이다.
+
+## 2026-09-05 Stage 15C 학습 주석 정비
+
+아래는 주석 전용 정비 당시의 기록이다. 이후 승인된 결정성 수정은 별도
+[조사·수정 기록](stage15c-determinism.md)에 분리했다. 해시 결정성은 수정 후 검증을
+통과했지만 High 성능 gate가 남아 있으므로 Stage 15C 최종 완료는 여전히 보류한다.
+
+- 핵심 Weather/Noise, 밀도/광학, Deep Shadow, 대기 LUT, Scene/HDR/Tone 셰이더에
+  입력→계산→출력과 단계별 한국어 설명을 추가했다. Fullscreen/NoiseLab 전용 상세화는 제외했다.
+- CPU/HLSL 필드에 직접 조절 원본, 강제 범위, 기존 UI/내장값 기반 권장 출발점,
+  파생 값/고정 품질/패딩을 표시했다. packed vector는 성분별 뜻을 양쪽에 맞췄다.
+- Renderer의 생성 Dispatch와 프레임 패스/Draw/Present 순서, SRV/UAV 해제 이유를 기록했다.
+- Weather 생성 b0 160B 참조를 보완하고 windSpeed의 세션 전역 소유권,
+  현재 미사용 surfaceShadowEnabled, Base 밀도/phase 범위의 오래된 설명을 정정했다.
+- 동작/기본값/API/ABI 변경 없음. 주석 구현은 반영했으며, 아래 최초 실행 해시 변동의
+  원인 미확정으로 Stage 15C 최종 완료 판정은 보류한다.
+
+### 자동 검증
+
+- Debug/Release 빌드 성공. Release 전체 CTest **36/36 통과**(31.43초).
+- Debug HighCloud/Atmosphere GPU smoke **2/2 통과**. D3D11 debug layer error 없음.
+  활성 프로그램 런타임 컴파일과 기존 cbuffer 크기/슬롯 reflection 검증 통과.
+- Weather CPU/GPU parity는 기존 허용 오차(채널 최대 1 UNORM 단계) 기준 통과.
+  Atmosphere Release MAE=0.00018953, P99=0.00048470.
+- High 성능: RTX 4080 SUPER, 1,440 samples, Cloud p95=5.882ms,
+  Frame p95=6.818ms. Tone/Noise dependency/Weather rollback 테스트도 통과.
+- 변경된 C++/HLSL **44개 파일의 주석·공백 제외 토큰이 HEAD와 동일**하고
+  `git diff --check` 통과. 임시 계측 변경은 모두 제거했다.
+- 동일 warm-cache 조건의 원본 HEAD 셰이더와 수정 셰이더에서
+  **3 scene × 4 camera Weather/HDR 해시 12쌍 일치**.
+  기존 `CaptureCloudFrameHash`는 Tone 이후 RGBA8 back buffer를 읽으므로,
+  이 검증에서는 임시로 RGBA16F HDR target의 픽셀당 8바이트를 읽었다.
+  원본 셰이더는 `build/stage15c-baseline/shaders`에 별도 추출해 override로 실행했다.
+- **미해결:** 최초 compile/cache 준비 실행에서는 일부 프레임 해시가 후속 실행과
+  달랐고, 원본 HEAD 셰이더에서도 같은 종류의 변동을 관측했다. warm-cache에서
+  일치한다는 사실만으로 원인을 드라이버/캐시라고 단정하지 않는다. 첫 실행까지
+  포함한 결정성 원인 분석·해결은 주석 외 동작 수정이 필요할 수 있어 별도 판단이 필요하다.
+- 로컬 증거: `build/stage15c-ctest.log`, `build/stage15c-debug-gpu.log`,
+  `build/stage15c-hdr-before.log`(최초), `build/stage15c-hdr-before-warm.log`,
+  `build/stage15c-hdr-after-warm.log`, `build/stage15c-verify.ps1`.
+
+## 기존 Stage 15 목적
 
 Stage 15B 실험 상태를 복구 가능한 commit으로 보존한 뒤, 사용자가 이해하고 유지할 수 있는 Full-resolution High 단일 렌더러로 축소한다. 2026-09-05 사용자 최종 화면 승인을 완료했다.
 

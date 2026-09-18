@@ -1,3 +1,6 @@
+// [학습 지도] CPU NoiseVolumeParameters b6 → CSBase/CSDetail u0 → RGBA8 Base 128³/Detail 32³ → Noise t3/t4. UVW cycle.
+// [수정 안내] [직접 조절]의 CPU/UI 원본을 수정한다. 강제 범위는 입력 계약이며 화질 보장이 아니다.
+// 별도 권장 구간이 없는 값은 표시된 기본값을 비교 출발점으로 삼는다. b/t/u/s는 버퍼/읽기/쓰기/샘플러 슬롯.
 // ============================================================================
 //  NoiseVolume.hlsl - 단계 13-4 periodic Base/Detail RGBA8 Texture3D 생성
 // ============================================================================
@@ -5,6 +8,9 @@
 
 RWTexture3D<float4> outputVolume : register(u0);
 
+// [패스 지도] b6 생성 규격 → CSBase/CSDetail → u0 RGBA8 Texture3D → Noise.hlsli(t3/t4).
+// 좌표는 타일 UVW 또는 격자 cell, 월드 m 매핑은 조회 때 수행한다. 초기화/재생성 때만 실행.
+// 1. WrapCell은 음수 좌표도 [0,period) 주소로 감아 타일 양 끝의 gradient/feature를 공유한다.
 uint WrapCell(int value, uint period)
 {
     int safePeriod = (int)max(period, 1u);
@@ -12,6 +18,8 @@ uint WrapCell(int value, uint period)
     return (uint)(result < 0 ? result + safePeriod : result);
 }
 
+// 2. xyz 격자와 seed를 uint hash로 혼합한다. 정수 overflow는 의도적인 32bit 연산이다.
+// 같은 주소/seed는 같은 무늬를 재현하며 seed의 대소는 밀도·해상도와 무관하다.
 uint HashNoiseCell(int3 cell, uint seed)
 {
     uint value = seed ^ 0x9e3779b9u;
@@ -30,11 +38,14 @@ uint HashNoiseCell(int3 cell, uint seed)
     return value;
 }
 
+// 3. 하위 24bit를 2^24로 나누어 [0,1) 위치를 만든다. Worley의 cell 내부 점 위치다.
 float HashUnit(int3 cell, uint seed)
 {
     return (float)(HashNoiseCell(cell, seed) & 0x00ffffffu) / 16777216.0;
 }
 
+// 4. 3D 대각선 방향 중 하나를 골라 1/sqrt(2)로 길이를 맞춘다.
+// gradient는 색이 아니라 각 corner가 만드는 국소 기울기이며, dot 결과는 부호가 있다.
 float3 GradientFromHash(uint hash)
 {
     uint selector = hash & 15u;
@@ -52,6 +63,8 @@ float3 GradientFromHash(uint hash)
     return gradient * 0.70710678118;
 }
 
+// 5. cell+corner offset을 wrap한 뒤 gradient와 corner→표본 벡터를 내적한다.
+// 주소만 wrap하고 local offset은 유지해야 경계에서 위치가 갑자기 튀지 않는다.
 float GradientCorner(int3 cell, float3 local, int3 offset,
                      uint period, uint seed)
 {
@@ -63,6 +76,10 @@ float GradientCorner(int3 cell, float3 local, int3 offset,
                local - (float3)offset);
 }
 
+// [3D Perlin 순서] 1. floor(p)=cell, frac(p)=칸 내부 [0,1) 위치.
+// 2. quintic fade로 cell 경계의 미분을 부드럽게 만든다.
+// 3. 8 corner 기여를 x 네 번 → y 두 번 → z 한 번 보간한다.
+// 출력은 아직 signed noise. 2D Perlin과 같은 원리를 z축까지 확장한 것이다.
 float PeriodicGradientNoise(float3 p, uint period, uint seed)
 {
     int3 cell = (int3)floor(p);
@@ -80,6 +97,11 @@ float PeriodicGradientNoise(float3 p, uint period, uint seed)
     return lerp(lerp(x00, x10, fade.y), lerp(x01, x11, fade.y), fade.z);
 }
 
+// [Worley 순서] 1. 주변 3x3x3 cell마다 hash로 feature point를 배치한다.
+// 2. 현재 점에서 feature까지 제곱거리를 비교해 가장 가까운 것을 고른다.
+// 3. 마지막 한 번 sqrt하여 거리를 구하고 /1.15 후 [0,1]로 제한한다.
+// feature 근처는 검고 멀면 밝다. 1-거리로 뒤집으면 세포 중심에 질량이 모인다.
+// 이웃 탐색/wrap이 틀리면 격자 선이나 타일 이음매가 생긴다.
 float PeriodicWorleyDistance(float3 p, uint period, uint seed)
 {
     int3 cell = (int3)floor(p);
@@ -104,6 +126,11 @@ float PeriodicWorleyDistance(float3 p, uint period, uint seed)
     return saturate(sqrt(nearestSquared) / 1.15);
 }
 
+// [Base R 조립] 1. 4옥타브 gradient noise를 0.5,0.25,0.125,0.0625로 합친다.
+// 2. 합계 가중치로 나누고 signed 값을 [0,1] 중심으로 이동한다.
+// 3. 가장 낮은 주파수 Worley 질량과 혼합해 둥근 덩어리를 만든다.
+// 0.35/0.42는 현행 형상식 계수(자동 clamp 없음). 바꾸면 Base 전체 분포가 바뀌므로
+// 먼저 기존 값을 기준으로 한 항만 비교하고 R/최종 밀도 진단을 함께 본다.
 float BasePerlinWorley(float3 uvw)
 {
     float sum = 0.0;
@@ -113,10 +140,12 @@ float BasePerlinWorley(float3 uvw)
     for (uint octave = 0u; octave < 4u; ++octave)
     {
         uint frequency = max(baseVolumeFrequencies[octave], 1u);
+        float weight = amplitude * ((octave == 1u || octave == 2u)
+            ? 1.0 + baseMidOctaveExtra : 1.0);
         sum += PeriodicGradientNoise(
             uvw * frequency, frequency,
-            noiseVolumeSeed + octave * 173u) * amplitude;
-        normalization += amplitude;
+            noiseVolumeSeed + octave * 173u) * weight;
+        normalization += weight;
         amplitude *= 0.5;
     }
     float perlin = saturate(sum / max(normalization, 1e-6) * 0.5 + 0.5);
@@ -128,6 +157,8 @@ float BasePerlinWorley(float3 uvw)
 }
 
 [numthreads(4, 4, 4)]
+// [Base 출력] 4x4x4 thread에서 voxel 중심을 계산한다. R=Perlin-Worley,
+// G/B/A=첫 세 주파수 Worley 거리. 전 채널 [0,1] UNORM; 빈 voxel도 반드시 기록한다.
 void CSBase(uint3 id : SV_DispatchThreadID)
 {
     if (any(id >= baseVolumeResolution.xxx))
@@ -147,6 +178,8 @@ void CSBase(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(4, 4, 4)]
+// [Detail 출력] RGBA 각각 다른 주파수/seed의 Worley 거리를 저장한다.
+// 조회 단계의 detailWeights와 erosion이 파임을 만든다. seed/frequency 수정 뒤 재생성이 필요하다.
 void CSDetail(uint3 id : SV_DispatchThreadID)
 {
     if (any(id >= detailVolumeResolution.xxx))

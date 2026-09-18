@@ -39,6 +39,14 @@ float3 SliceWorldPosition(float2 uv)
 
 float4 main(VSOut input) : SV_TARGET
 {
+    // F2 전용 100=RBA,101/103/104=R/B/A. A를 투명도로 쓰지 않는다.
+    if (noiseOutputMode >= 100u && noiseOutputMode <= 104u)
+    {
+        float4 weather = weatherMapTexture.SampleLevel(weatherMapSampler, saturate(input.uv), 0);
+        if (noiseOutputMode == 100u) return float4(weather.r, weather.b, weather.a, 1.0);
+        float channel = weather[noiseOutputMode - 101u];
+        return float4(channel.xxx, 1.0);
+    }
     // Base/Height 전용 출력은 sampleDetail=false로 Detail 함수 자체를 생략한다.
     // Final/Detail/Erosion/Mask만 실제 침식 결과가 필요하다.
     bool requiresDetail = noiseOutputMode == 2u ||
@@ -66,7 +74,7 @@ float4 main(VSOut input) : SV_TARGET
     else if (noiseOutputMode == 9u)
         value = sample.weatherCoverage;
     else if (noiseOutputMode == 10u)
-        value = sample.storedRegionalType;
+        value = sample.cloudType;
     else if (noiseOutputMode == 11u)
         value = saturate((sample.weatherDensityModifier - 0.5) / 1.0);
     else if (noiseOutputMode == 12u)

@@ -1,3 +1,4 @@
+#include "FormationParameterRanges.h"
 #include "WeatherMap.h"
 #include "Fnv1a64.h"
 
@@ -114,23 +115,22 @@ WeatherMapGeneratorSettings SanitizeWeatherMapGeneratorSettings(
     WeatherMapGeneratorSettings result = settings;
     const auto sanitizeChannel = [](PeriodicChannelSettings& channel)
     {
-        channel.macroPeriod = std::clamp(channel.macroPeriod, 1u, 8u);
-        channel.detailPeriod = std::clamp(channel.detailPeriod, 2u, 16u);
+        channel.macroPeriod = std::clamp(channel.macroPeriod, formationrange::macroMin, formationrange::macroMax);
+        channel.detailPeriod = std::clamp(channel.detailPeriod, formationrange::detailMin, formationrange::detailMax);
         channel.detailWeight = std::clamp(
             FiniteOr(channel.detailWeight, 0.25f), 0.0f, 1.0f);
         channel.bias = std::clamp(
-            FiniteOr(channel.bias, 0.0f), -0.5f, 0.5f);
+            FiniteOr(channel.bias, 0.0f), formationrange::biasMin, formationrange::biasMax);
         channel.contrast = std::clamp(
-            FiniteOr(channel.contrast, 1.0f), 0.25f, 3.0f);
+            FiniteOr(channel.contrast, 1.0f), formationrange::contrastMin, formationrange::contrastMax);
     };
     sanitizeChannel(result.coverage);
-    sanitizeChannel(result.cloudType);
     sanitizeChannel(result.density);
     sanitizeChannel(result.localThickness);
     result.coverageThreshold = std::clamp(
         FiniteOr(result.coverageThreshold, 0.56f), 0.0f, 1.0f);
     result.coverageSoftness = std::clamp(
-        FiniteOr(result.coverageSoftness, 0.14f), 0.02f, 0.8f);
+        FiniteOr(result.coverageSoftness, 0.14f), formationrange::softnessMin, formationrange::softnessMax);
     result.densityCoverageInfluence = std::clamp(
         FiniteOr(result.densityCoverageInfluence, 0.35f), 0.0f, 1.0f);
     result.thicknessCoverageInfluence = std::clamp(
@@ -142,7 +142,6 @@ bool WeatherMapGeneratorSettingsEqual(const WeatherMapGeneratorSettings& a,
                                       const WeatherMapGeneratorSettings& b)
 {
     return ChannelSettingsEqual(a.coverage, b.coverage) &&
-           ChannelSettingsEqual(a.cloudType, b.cloudType) &&
            ChannelSettingsEqual(a.density, b.density) &&
            ChannelSettingsEqual(a.localThickness, b.localThickness) &&
            a.coverageThreshold == b.coverageThreshold &&
@@ -169,7 +168,7 @@ WeatherMapComputeParameters BuildWeatherMapComputeParameters(
         SanitizeWeatherMapGeneratorSettings(settings);
     WeatherMapComputeParameters result;
     const PeriodicChannelSettings inputs[4] = {
-        safe.coverage, safe.cloudType, safe.density, safe.localThickness };
+        safe.coverage, PeriodicChannelSettings{}, safe.density, safe.localThickness };
     for (std::size_t index = 0; index < 4; ++index)
     {
         result.channels[index].seed = inputs[index].seed;
@@ -236,7 +235,7 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
                 static_cast<float>(map.height);
 
             float coverage = 1.0f;
-            float cloudType = 0.5f;
+            const float reservedG = 0.5f;
             float density = 0.5f;
             float localThickness = 1.0f;
 
@@ -253,8 +252,6 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
                 // 기준만 쓰면 반올림 뒤 R=1인데 G/B가 활성인 경계 픽셀이 생긴다.
                 if (ToUnorm(coverage) > 1u)
                 {
-                    cloudType = AdjustField(
-                        SampleTwoScale(u, v, safe.cloudType), safe.cloudType);
                     const float densityField = AdjustField(
                         SampleTwoScale(u, v, safe.density), safe.density);
                     density = Saturate(densityField +
@@ -276,8 +273,6 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
                 const float smallIsland = 1.0f - Smoothstep(
                     0.11f, 0.23f, TiledDistance(u, v, 0.73f, 0.69f));
                 coverage = std::max(largeIsland, smallIsland);
-                cloudType = v < (1.0f / 3.0f) ? 0.0f :
-                    (v < (2.0f / 3.0f) ? 0.5f : 1.0f);
                 density = u < (1.0f / 3.0f) ? 0.0f :
                     (u < (2.0f / 3.0f) ? 0.5f : 1.0f);
                 // 큰 섬은 낮고 넓게, 작은 섬은 높게 만들어 A 채널을 구분한다.
@@ -287,7 +282,7 @@ WeatherMapData BuildWeatherMap(Stage5WeatherPreset preset,
             const std::size_t index =
                 (static_cast<std::size_t>(y) * map.width + x) * 4u;
             map.rgba[index + 0] = ToUnorm(coverage);
-            map.rgba[index + 1] = ToUnorm(cloudType);
+            map.rgba[index + 1] = ToUnorm(reservedG);
             map.rgba[index + 2] = ToUnorm(density);
             map.rgba[index + 3] = ToUnorm(localThickness);
         }

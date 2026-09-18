@@ -3,7 +3,7 @@
 // ============================================================================
 #pragma once
 
-#include "EnvironmentParameters.h"
+#include "LegacyEnvironmentParameters.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,9 +32,9 @@ struct AmbientRadiance
 };
 
 inline float AmbientVisibility(float density, float lightTransmittance,
-                               const EnvironmentParameters& input)
+                               const LegacyEnvironmentParameters& input)
 {
-    const EnvironmentParameters value = stage8environment::Sanitize(input);
+    const LegacyEnvironmentParameters value = legacyenvironment::Sanitize(input);
     const float safeDensity = std::max(
         std::isfinite(density) ? density : 0.0f, 0.0f);
     const float transmittance = std::clamp(
@@ -50,9 +50,9 @@ inline float AmbientVisibility(float density, float lightTransmittance,
 }
 
 inline float MultipleScatteringInteriorWeight(
-    float lightTransmittance, const EnvironmentParameters& input)
+    float lightTransmittance, const LegacyEnvironmentParameters& input)
 {
-    const EnvironmentParameters value = stage8environment::Sanitize(input);
+    const LegacyEnvironmentParameters value = legacyenvironment::Sanitize(input);
     const float transmittance = std::clamp(
         std::isfinite(lightTransmittance) ? lightTransmittance : 1.0f,
         0.0f, 1.0f);
@@ -60,9 +60,9 @@ inline float MultipleScatteringInteriorWeight(
 }
 
 inline Weights EvaluateWeights(float heightFraction, float density,
-                               const EnvironmentParameters& input)
+                               const LegacyEnvironmentParameters& input)
 {
-    const EnvironmentParameters value = stage8environment::Sanitize(input);
+    const LegacyEnvironmentParameters value = legacyenvironment::Sanitize(input);
     const float height = std::clamp(
         std::isfinite(heightFraction) ? heightFraction : 0.0f, 0.0f, 1.0f);
     const float safeDensity = std::max(
@@ -77,9 +77,9 @@ inline Weights EvaluateWeights(float heightFraction, float density,
 
 inline AmbientRadiance EvaluateAmbientRadiance(
     float heightFraction, float density,
-    const EnvironmentParameters& input)
+    const LegacyEnvironmentParameters& input)
 {
-    const EnvironmentParameters value = stage8environment::Sanitize(input);
+    const LegacyEnvironmentParameters value = legacyenvironment::Sanitize(input);
     AmbientRadiance result;
     result.weights = EvaluateWeights(heightFraction, density, value);
     const float skyScale = value.skyStrength * result.weights.sky *
@@ -97,9 +97,9 @@ inline AmbientRadiance EvaluateAmbientRadiance(
 
 inline float MultipleScatteringFactor(float lightOpticalDepth,
                                       float phaseFactor,
-                                      const EnvironmentParameters& input)
+                                      const LegacyEnvironmentParameters& input)
 {
-    const EnvironmentParameters value = stage8environment::Sanitize(input);
+    const LegacyEnvironmentParameters value = legacyenvironment::Sanitize(input);
     if (value.multipleScatteringEnabled < 0.5f ||
         value.multipleScatteringOctaves == 0)
         return 0.0f;

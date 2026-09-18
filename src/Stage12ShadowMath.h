@@ -72,24 +72,34 @@ inline LightBasis BuildLightBasis(const DirectX::XMFLOAT3& directionToSun)
     return result;
 }
 
+// 구름층 두께까지 포함하는 태양 평면 세로 투영 폭(m). 저고도에서 불필요한 넓이를 줄인다.
+inline float ProjectedUpWidth(float widthMeters, float layerHeightMeters, float sunY)
+{
+    const float y = std::clamp(sunY, 0.0f, 1.0f);
+    return std::max(widthMeters * y + std::max(layerHeightMeters, 1.0f) *
+        std::sqrt(std::max(1.0f - y*y, 0.0f)), 1.0f);
+}
+
 inline DirectX::XMFLOAT2 CacheUv(const DirectX::XMFLOAT3& position,
                                  const DirectX::XMFLOAT3& center,
-                                 const LightBasis& basis, float widthMeters)
+                                 const LightBasis& basis, float widthMeters, float upWidthMeters = 0.0f)
 {
     const DirectX::XMFLOAT3 delta = Add(position, Scale(center, -1.0f));
     const float invWidth = widthMeters > 1.0e-6f ? 1.0f / widthMeters : 0.0f;
     return { Dot(delta, basis.right) * invWidth + 0.5f,
-             Dot(delta, basis.up) * invWidth + 0.5f };
+             Dot(delta, basis.up) / std::max(upWidthMeters > 0 ? upWidthMeters : widthMeters, 1.0e-6f) + 0.5f };
 }
 
 inline DirectX::XMFLOAT3 SnappedCenter(
     const DirectX::XMFLOAT3& rawCenter, const LightBasis& basis,
-    float widthMeters, std::uint32_t resolution)
+    float widthMeters, std::uint32_t resolution, float upWidthMeters = 0.0f)
 {
     const float texel = widthMeters /
         static_cast<float>(std::max(resolution, 1u));
     const float u = std::round(Dot(rawCenter, basis.right) / texel) * texel;
-    const float v = std::round(Dot(rawCenter, basis.up) / texel) * texel;
+    const float upTexel = (upWidthMeters > 0 ? upWidthMeters : widthMeters) /
+        static_cast<float>(std::max(resolution, 1u));
+    const float v = std::round(Dot(rawCenter, basis.up) / upTexel) * upTexel;
     const float forward = Dot(rawCenter, basis.forward);
     return Add(Add(Scale(basis.right, u), Scale(basis.up, v)),
                Scale(basis.forward, forward));

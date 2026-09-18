@@ -1,6 +1,11 @@
+// [학습 지도] HDR t0 + b9/LUT 진단 → 최종 UNORM back buffer → UI/Present. 선형 HDR에서 sRGB로 변환.
+// [수정 안내] [직접 조절]의 CPU/UI 원본을 수정한다. 강제 범위는 입력 계약이며 화질 보장이 아니다.
+// 별도 권장 구간이 없는 값은 표시된 기본값을 비교 출발점으로 삼는다. b/t/u/s는 버퍼/읽기/쓰기/샘플러 슬롯.
 // ============================================================================
 //  Stage14ToneMap.hlsl - HDR composite를 최종 R8G8B8A8_UNORM으로 출력
 // ============================================================================
+// [패스 지도] t0 선형 HDR composite + b9/t8~t13 진단 → 최종 UNORM back buffer.
+// UV [0,1], RGB는 노출 전 1을 넘을 수 있다. 이후 UI 합성/Present로 전달한다.
 #include "Stage14Atmosphere.hlsli"
 
 Texture2D<float4> hdrCloudTexture : register(t0);
@@ -14,10 +19,14 @@ SamplerState toneLinearClampSampler : register(s0);
 
 struct VSOut
 {
+    // [파생 값] SV_POSITION 화면 pixel 좌표; xy는 dither seed, z/w는 rasterizer 전달값.
     float4 position : SV_POSITION;
+    // [파생 값] xy 화면 UV [0,1], HDR/LUT 조회.
     float2 uv : TEXCOORD0;
 };
 
+// 1. 색온도 K를 xy 색도 근사로 변환. 함수 자체 [1667,25000], 실제 Tone 입력은
+// CPU/main에서 [3500,10000]. 다항식 계수는 근사식의 일부로 색 튜닝 손잡이가 아니다.
 float2 CctToXy(float kelvin)
 {
     float t = clamp(kelvin, 1667.0, 25000.0);
@@ -45,6 +54,9 @@ float3 XyToXyz(float2 xy)
                   (1.0 - xy.x - xy.y) / max(xy.y, 1.0e-6));
 }
 
+// 2. linear RGB → XYZ → 원추세포 응답 공간 → 기준 백색점 비율 → RGB.
+// 입력 백색점을 6500K로 맞추므로 낮은 K 설정은 따뜻한 색으로 보정된다.
+// 행렬의 행/열 곱 순서를 바꾸면 색이 틀어진다. 음수 RGB는 호출부에서 제거.
 float3 BradfordWhiteBalance(float3 linearRgb, float kelvin)
 {
     const float3x3 rgbToXyz = float3x3(
@@ -70,6 +82,8 @@ float3 BradfordWhiteBalance(float3 linearRgb, float kelvin)
     return mul(xyzToRgb, mul(inverseBradford, cone));
 }
 
+// 3. HDR 하이라이트를 [0,1]로 압축하는 fitted curve. 밝은 구름 디테일을
+// 표시 범위에 담지만 잘못된 입사 에너지를 물리적으로 고쳐 주는 함수는 아니다.
 float3 AcesFitted(float3 color)
 {
     float3 x = max(color, 0.0.xxx);
@@ -88,6 +102,8 @@ float3 LegacyShoulder(float3 color)
     return safeColor * (mappedPeak / max(peak, 1.0e-6));
 }
 
+// 4. 선형 빛 → 표시용 sRGB. 0.0031308 이하 선형 구간, 위는 1/2.4 곡선.
+// 이미 sRGB인 값에 다시 적용하면 화면이 뿌옇게 밝아진다.
 float3 LinearToSrgb(float3 linearColor)
 {
     float3 low = 12.92 * linearColor;
@@ -95,6 +111,8 @@ float3 LinearToSrgb(float3 linearColor)
     return lerp(high, low, linearColor <= 0.0031308.xxx);
 }
 
+// 5. 화면 pixel 기반 결정적 [-0.5,0.5] 잡음. /255 후 더해 8bit banding을 줄인다.
+// 시간 입력이 없어 정지 화면 hash가 안정적이다.
 float DitherNoise(uint2 pixel)
 {
     uint value = pixel.x * 1664525u + pixel.y * 1013904223u + 374761393u;
@@ -113,6 +131,8 @@ float3 SelectDebugChannel(float3 color)
     return color;
 }
 
+// 진단 색: NaN/Inf=자홍, 음수=빨강, half float 최대 65504 초과=노랑.
+// bounded T는 [0,1], tau/HDR은 1-exp(-x*진단노출)로 표시한다.
 float3 ValidateAndExposeDebug(float3 raw, bool bounded)
 {
     if (any(isnan(raw)) || any(isinf(raw)))
@@ -210,6 +230,9 @@ float4 Stage14DebugOutput(VSOut input, float3 hdr)
     return float4(displayed, 1.0);
 }
 
+// [최종 출력 순서] HDR 읽기 → 진단 출력 우선 → 2^EV → Bradford WB →
+// ACES/Linear/Legacy → sRGB → 1/255 dither → saturate UNORM.
+// +1EV는 광학계수 변경 없이 표시 전 에너지만 두 배로 만든다.
 float4 main(VSOut input) : SV_TARGET
 {
     float3 hdr = max(hdrCloudTexture.SampleLevel(
