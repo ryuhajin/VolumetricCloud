@@ -630,8 +630,7 @@ bool Renderer::Init(HWND hwnd, int width, int height,
     std::filesystem::path shaderDirectory(m_shaderDir);
     if (shaderDirectory.filename().empty())
         shaderDirectory = shaderDirectory.parent_path();
-    m_cloudFormationPresetRoot = shaderDirectory.parent_path() / L"captures" /
-        L"noise-lab";
+    m_cloudFormationPresetRoot = DefaultCloudFormationPresetRoot();
     const std::filesystem::path developerUiSettingsPath =
         shaderDirectory.parent_path() / L"captures" /
         L"noise-lab" / L"developer-ui.json";
@@ -2944,7 +2943,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             m_weatherLinearWrapSampler.Get());
     }
     if (!m_automatedRenderMode && m_noiseLab.ConsumeExportRequest())
-        ExportNoiseLabSnapshot(DefaultCloudFormationPresetRoot());
+        ExportNoiseLabSnapshot(DefaultNoiseLabOutputRoot());
     if (!m_automatedRenderMode)
         m_noiseLab.EndFrame(m_backBufferRtv.Get());
     m_context->RSSetViewports(1, &viewport);
@@ -3635,10 +3634,7 @@ bool Renderer::SaveSelectedLighting()
 void Renderer::LoadUserPresetDefaults()
 {
     m_useSavedPresets = true;
-    std::string migrationStatus;
-    const bool migrated = InitializeSnowCustomPreset(m_cloudFormationPresetRoot, migrationStatus);
-    // 실패 시 ApplyStage15Defaults의 내장값과 오류 문구를 유지한다.
+    // 일반 시작은 읽기 전용이다. 추적 중인 Custom을 Snow로 교체하지 않는다.
     ApplyCloudType(TypeFormationTarget(CloudFormationType::Cumulus));
     ApplySceneConcept(Stage15ConceptPreset::BrightNoon);
-    if (!migrated) m_cloudFormationStatus = migrationStatus;
 }

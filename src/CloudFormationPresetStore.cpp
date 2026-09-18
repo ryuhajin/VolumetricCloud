@@ -3,6 +3,7 @@
 // ============================================================================
 #include "CloudFormationPresetStore.h"
 #include "PresetJsonSyntax.h"
+#include "PresetPaths.h"
 
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -497,6 +498,21 @@ bool CloudFormationCanSaveToPreset(
 }
 
 std::filesystem::path DefaultCloudFormationPresetRoot()
+{
+    std::wstring executable(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(),
+        static_cast<DWORD>(executable.size()));
+    if (length == 0 || length >= executable.size())
+        throw std::runtime_error("Cannot resolve executable directory for presets");
+    executable.resize(length);
+    std::filesystem::path source;
+#ifdef VCLOUD_PRESET_SOURCE_DIR
+    source = std::filesystem::u8path(VCLOUD_PRESET_SOURCE_DIR);
+#endif
+    return SelectPresetRoot(source, std::filesystem::path(executable).parent_path());
+}
+
+std::filesystem::path DefaultNoiseLabOutputRoot()
 {
     return std::filesystem::path("captures") / "noise-lab";
 }

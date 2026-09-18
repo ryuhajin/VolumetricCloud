@@ -2327,6 +2327,20 @@ bool Renderer::RunPresetSlotDiagnostics(Camera& camera, bool capture)
             m_atmosphereParameters.debugView==debug && CloudFormationSettingsEqual(before,CurrentCloudFormation()),
             "lighting preserves Weather and diagnostics") && passed;
     }
+    // 완료 표식이 없는 기존 Custom도 일반 시작에서 덮어쓰지 않아야 한다.
+    const auto customPath = CloudFormationPresetPath(root, CustomFormationTarget());
+    std::ifstream customInput(customPath, std::ios::binary);
+    std::string customText((std::istreambuf_iterator<char>(customInput)), {});
+    customInput.close();
+    const std::string markerText = "\"snowDefaultInitialized\": 1";
+    const auto marker = customText.find(markerText);
+    if (marker != std::string::npos) customText.replace(marker, markerText.size(), "\"snowDefaultInitialized\": 0");
+    { std::ofstream out(customPath, std::ios::binary); out << customText; }
+    LoadUserPresetDefaults();
+    std::ifstream customAfter(customPath, std::ios::binary);
+    const std::string afterText((std::istreambuf_iterator<char>(customAfter)), {});
+    customAfter.close();
+    passed = check(customText == afterText, "startup preserves Custom bytes") && passed;
     // 손상 파일은 현재 선택·설정·편집 표식을 모두 보존한다.
     const auto before=CurrentLightingPreset(); const auto selected=m_stage15ConceptPreset;
     const auto badSlot=Stage15ConceptPreset::AutumnMorning;
@@ -2340,7 +2354,7 @@ bool Renderer::RunPresetSlotDiagnostics(Camera& camera, bool capture)
     camera.SetLookAt(f5.position,f5.target);
     camera.SetClipPlanes(stage13camera::kNearPlaneMeters,stage13camera::kFarPlaneMeters);
     camera.SetFovYDegrees(60);
-    const auto output=originalRoot.parent_path()/"preset-slots"/std::to_string(GetTickCount64());
+    const auto output=DefaultNoiseLabOutputRoot().parent_path()/"preset-slots"/std::to_string(GetTickCount64());
     if(capture) std::filesystem::create_directories(output);
     const char* names[]={"stratus","cumulus","altocumulus","custom"};
     for(unsigned type=0;type<4;++type) {

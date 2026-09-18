@@ -2,7 +2,7 @@
 
 ## 2026-09-18 독립 프리셋 소유권
 
-일반 시작은 Cumulus+F4 3이다. F1/F2 형상과 F3/F4 조명·환경은 독립 슬롯이며 양쪽 Save Preset으로 선택 슬롯 JSON에 저장한다. LightingPresetSettings/LightingPresetStore가 조명 물리 값과 Tone을 소유하고 CloudFormationPresetStore는 세 타입+Custom을 저장한다. 기존 0~2 scene descriptor는 역사적 진단 전용이다. F4 적용은 formation/Weather/편집 상태를 보존한다. CB ABI와 Deep Cache512·80/79는 유지하고 기존 dirty 의존성으로 LUT/cache를 갱신한다. snapshot44, formation4, lighting1이다. 파일·실패·Custom 일회 초기화 계약은 [슬롯 변경 기록](changes/stage15-slot-presets.md)을 따른다.
+일반 시작은 Cumulus+F4 3이다. F1/F2 형상과 F3/F4 조명·환경은 독립 슬롯이며 양쪽 Save Preset으로 선택 슬롯 JSON에 저장한다. LightingPresetSettings/LightingPresetStore가 조명 물리 값과 Tone을 소유하고 CloudFormationPresetStore는 세 타입+Custom을 저장한다. 기존 0~2 scene descriptor는 역사적 진단 전용이다. F4 적용은 formation/Weather/편집 상태를 보존한다. CB ABI와 Deep Cache512·80/79는 유지하고 기존 dirty 의존성으로 LUT/cache를 갱신한다. snapshot44, formation4, lighting1이다. 파일·실패·Custom 일회 초기화 계약은 [슬롯 변경 기록](changes/stage15-cloud-quality-followups.md)을 따른다.
 
 
 
@@ -479,3 +479,6 @@ F5: 지상 눈높이1.7m, (0,1.7,180)→(0,60,-200). F6: 기존 GroundHorizon �
 2026-09-17 F8 최종 조정: (40,7800,0)→(40,7417.4,-1800),pitch 약-12도. 상공에서 완만하게 내려다보며 하늘보다 아래 방향을 넓게 보는 구도.
 
 2026-09-17 F6 갱신: F5와 같은(0,1.7,60)에서(0,42,160)을 본다. F5의-Z 방위를+Z로 반전하며 상향각은 유지한다.
+
+## 2026-09-18 프리셋 경로 갱신
+현재 활성 JSON은 저장소 presets/의 형상4개·조명4개다. 개발 실행은 원본을 읽고 Save Preset으로 수정한다. 소스 루트가 없는 배포에서는 exe 옆 presets/를 사용한다. CMake 빌드마다8개를 copy_if_different로 배치하며 JSON만 수정해도 복사한다. 일반 시작의 Snow 자동 교체는 제거했다. 이전 captures/noise-lab 저장/초기화 설명은 역사적 동작이다. snapshot 출력과 UI 설정은 captures에 유지한다. schema/CB/승인 기본값은 변경하지 않는다. 상세: [문제와 해결 기록](changes/stage15-cloud-quality-followups.md).

@@ -61,6 +61,7 @@ const char* CloudFormationPresetSourceName(CloudFormationPresetSource source);
 bool CloudFormationCanSaveToPreset(
     const CloudFormationPresetTarget& target, bool targetValid);
 std::filesystem::path DefaultCloudFormationPresetRoot();
+std::filesystem::path DefaultNoiseLabOutputRoot();
 std::filesystem::path CloudFormationPresetPath(
     const std::filesystem::path& root,
     const CloudFormationPresetTarget& target);

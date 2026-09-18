@@ -78,6 +78,7 @@ target_compile_definitions(VolumetricCloud PRIVATE
     NOMINMAX
     VCLOUD_STRICT_VALIDATION=$<BOOL:${VCLOUD_STRICT_VALIDATION}>
     VCLOUD_SHADER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/shaders"
+    VCLOUD_PRESET_SOURCE_DIR="${CMAKE_SOURCE_DIR}/presets"
 )
 
 if(MSVC)
@@ -86,6 +87,22 @@ if(MSVC)
 endif()
 
 enable_testing()
+
+# 원본 JSON만 바뀌어도 매 build에 동기화한다. 런타임의 개발 저장 대상은 원본이다.
+set(VCLOUD_PRESET_FILES types/stratus.json types/cumulus.json types/mixed.json
+    custom-cloud.json lighting/1.json lighting/2.json lighting/3.json lighting/4.json)
+add_custom_target(VolumetricCloudPresetSync
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:VolumetricCloud>/presets/types"
+        "$<TARGET_FILE_DIR:VolumetricCloud>/presets/lighting")
+foreach(preset IN LISTS VCLOUD_PRESET_FILES)
+    add_custom_command(TARGET VolumetricCloudPresetSync POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/presets/${preset}"
+            "$<TARGET_FILE_DIR:VolumetricCloud>/presets/${preset}"
+        VERBATIM)
+endforeach()
+add_dependencies(VolumetricCloud VolumetricCloudPresetSync)
 
 function(add_vcloud_cpu_test target test_name)
     add_executable(${target} ${ARGN})
@@ -299,3 +316,12 @@ add_vcloud_cpu_test(VolumetricCloud.LightingPresetStoreTests
 
 add_test(NAME VolumetricCloud.PresetSlotsSmoke COMMAND VolumetricCloud --preset-slots-test)
 set_tests_properties(VolumetricCloud.PresetSlotsSmoke PROPERTIES RESOURCE_LOCK vcloud_gpu TIMEOUT 180)
+
+add_executable(VolumetricCloud.PresetDeploymentTests tests/PresetDeploymentTests.cpp
+    src/LightingPresetStore.cpp src/CloudFormationSettings.cpp src/CloudFormationPresetStore.cpp src/WeatherMap.cpp)
+target_include_directories(VolumetricCloud.PresetDeploymentTests PRIVATE src)
+target_compile_options(VolumetricCloud.PresetDeploymentTests PRIVATE /utf-8)
+add_test(NAME VolumetricCloud.PresetDeployment
+    COMMAND VolumetricCloud.PresetDeploymentTests "${CMAKE_SOURCE_DIR}/presets")
+add_test(NAME VolumetricCloud.PresetDeploymentCopy
+    COMMAND VolumetricCloud.PresetDeploymentTests "$<TARGET_FILE_DIR:VolumetricCloud>/presets")

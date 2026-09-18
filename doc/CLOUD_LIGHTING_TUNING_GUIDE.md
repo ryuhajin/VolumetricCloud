@@ -568,3 +568,6 @@ CPU→GPU 흐름/책임: NoiseLab F1 편집 → Formation 후보 전체 검증/�
 - [ ] Save Custom후Type을바꾸고Custom을불러오면두께2개/profile5개가복원되어야한다. 이전Regional Custom은고정Mixed로이관되어지역타입차이가없어지는것이정상이며정확한옛화면복원이아니다.
 
 미룬 항목: 사용자 화면 승인, 하부 평탄화 추가분석,07 전체회귀/성능/최종포트폴리오촬영. 이번 변경은 새로운 두께/프로파일 조작을 제공하며 림·노출·조명 승인값을 바꾸지 않는다.
+
+## 2026-09-18 프리셋 경로 갱신
+현재 활성 JSON은 저장소 presets/의 형상4개·조명4개다. 개발 실행은 원본을 읽고 Save Preset으로 수정한다. 소스 루트가 없는 배포에서는 exe 옆 presets/를 사용한다. CMake 빌드마다8개를 copy_if_different로 배치하며 JSON만 수정해도 복사한다. 일반 시작의 Snow 자동 교체는 제거했다. 이전 captures/noise-lab 저장/초기화 설명은 역사적 동작이다. snapshot 출력과 UI 설정은 captures에 유지한다. schema/CB/승인 기본값은 변경하지 않는다. 상세: [문제와 해결 기록](changes/stage15-cloud-quality-followups.md).

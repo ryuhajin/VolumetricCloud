@@ -2,7 +2,7 @@
 
 ## 2026-09-18 독립 프리셋 소유권
 
-일반 시작은 Cumulus+F4 3이다. F1/F2 형상과 F3/F4 조명·환경은 독립 슬롯이며 양쪽 Save Preset으로 선택 슬롯 JSON에 저장한다. LightingPresetSettings/LightingPresetStore가 조명 물리 값과 Tone을 소유하고 CloudFormationPresetStore는 세 타입+Custom을 저장한다. 기존 0~2 scene descriptor는 역사적 진단 전용이다. F4 적용은 formation/Weather/편집 상태를 보존한다. CB ABI와 Deep Cache512·80/79는 유지하고 기존 dirty 의존성으로 LUT/cache를 갱신한다. snapshot44, formation4, lighting1이다. 파일·실패·Custom 일회 초기화 계약은 [슬롯 변경 기록](changes/stage15-slot-presets.md)을 따른다.
+일반 시작은 Cumulus+F4 3이다. F1/F2 형상과 F3/F4 조명·환경은 독립 슬롯이며 양쪽 Save Preset으로 선택 슬롯 JSON에 저장한다. LightingPresetSettings/LightingPresetStore가 조명 물리 값과 Tone을 소유하고 CloudFormationPresetStore는 세 타입+Custom을 저장한다. 기존 0~2 scene descriptor는 역사적 진단 전용이다. F4 적용은 formation/Weather/편집 상태를 보존한다. CB ABI와 Deep Cache512·80/79는 유지하고 기존 dirty 의존성으로 LUT/cache를 갱신한다. snapshot44, formation4, lighting1이다. 파일·실패·Custom 일회 초기화 계약은 [슬롯 변경 기록](changes/stage15-cloud-quality-followups.md)을 따른다.
 
 
 
@@ -330,3 +330,6 @@ Concept은 해당 조명 기본값(현재 Rim1/1)을 적용하고 Type은 기존
 b7 48B/b10 32B 크기는 유지하지만 필드 의미가 바뀌었으므로 새 exe와 shader를 함께 사용한다.
 Custom4는 공통 두께2개/profile5개와 활성 R/B/A 생성기만 저장한다. 구 schema1~3의 고정 타입은 해당 두께/profile로 이관하고 Regional은 고정Mixed 및 두께 범위의 중간값으로 이관한다. 기존 파일을 읽는 것만으로 덮어쓰지 않는다. Snapshot43은 공통 thicknessMeters/verticalProfile을 기록한다.
 F2 원본 미리보기는 RBA 합성+R/B/A 흑백4장(512² RGBA8 약4MiB)이며 G 조작/조회는 없다.
+
+## 2026-09-18 프리셋 경로 갱신
+현재 활성 JSON은 저장소 presets/의 형상4개·조명4개다. 개발 실행은 원본을 읽고 Save Preset으로 수정한다. 소스 루트가 없는 배포에서는 exe 옆 presets/를 사용한다. CMake 빌드마다8개를 copy_if_different로 배치하며 JSON만 수정해도 복사한다. 일반 시작의 Snow 자동 교체는 제거했다. 이전 captures/noise-lab 저장/초기화 설명은 역사적 동작이다. snapshot 출력과 UI 설정은 captures에 유지한다. schema/CB/승인 기본값은 변경하지 않는다. 상세: [문제와 해결 기록](changes/stage15-cloud-quality-followups.md).

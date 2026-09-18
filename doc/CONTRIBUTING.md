@@ -263,3 +263,6 @@ Detail 비교: 새 VCLOUD_RIM_BOUNDARY_DIR, VCLOUD_RIM_BOUNDARY_DENSE_ROI=1, VCL
 
 ### F1/F4 슬롯 회귀와 비교 촬영
 `ctest --test-dir build -C Release -R "LightingPresetStore|PresetSlotsSmoke" --output-on-failure`는 임시 루트만 사용한다. `build/Release/VolumetricCloud.exe --preset-slots-capture`는 1920×1080/F5/71초/바람0/8프레임 예열에서 내장4형상×4조명을 PNG와 설정 JSON으로 `captures/preset-slots/<실행ID>`에 보존한다. 기존 캡처는 덮어쓰지 않는다. 이 자료는 새 후보 비교이며 이전 baseline과 동일 픽셀을 요구하지 않는다. 화면 승인은 사용자 몫이며07-final이 아니다.
+
+## 2026-09-18 프리셋 경로 갱신
+현재 활성 JSON은 저장소 presets/의 형상4개·조명4개다. 개발 실행은 원본을 읽고 Save Preset으로 수정한다. 소스 루트가 없는 배포에서는 exe 옆 presets/를 사용한다. CMake 빌드마다8개를 copy_if_different로 배치하며 JSON만 수정해도 복사한다. 일반 시작의 Snow 자동 교체는 제거했다. 이전 captures/noise-lab 저장/초기화 설명은 역사적 동작이다. snapshot 출력과 UI 설정은 captures에 유지한다. schema/CB/승인 기본값은 변경하지 않는다. 상세: [문제와 해결 기록](changes/stage15-cloud-quality-followups.md).

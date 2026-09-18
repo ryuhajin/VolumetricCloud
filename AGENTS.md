@@ -147,4 +147,6 @@ baseMidOctaveExtra는 일반 UI에서 승인1.50 읽기 전용이며 과거 후�
 
 2026-09-18 형상 단순화: 공통 두께 min/max, 고정 Stratus/Mixed/Cumulus만 유지. Weather G는예약128이며Regional Blend/생성기/조회/UI는제거했다. F1 공통Vertical Profile5항목+곡선, Height-based narrowing(이전Footprint) 제공. b7 48B/b10 32B 필드의미는CBUFFER_REFERENCE최신표참조. Custom4(1~3이관),snapshot43. Mixed/Meadow의Regional→고정Mixed외형변화는사용자확인대기.
 
-2026-09-18 독립 슬롯 후속: 일반 기본 Cumulus+F4 3. F1 Stratus/Cumulus/Altocumulus/Custom과 F4 1~4는 각각 Save Preset/JSON을 사용한다. Custom 첫 일반 실행은 기존 파일 백업 후 Snow 형상으로 일회 교체한다. snapshot44, formation4, lighting1. 이전 Urban/Meadow/Snow는 역사적 테스트 전용. 상세는 doc/changes/stage15-slot-presets.md. 화면 채택 사용자 대기.
+2026-09-18 독립 슬롯 후속: 일반 기본 Cumulus+F4 3. F1 Stratus/Cumulus/Altocumulus/Custom과 F4 1~4는 각각 Save Preset/JSON을 사용한다. Custom 첫 일반 실행은 기존 파일 백업 후 Snow 형상으로 일회 교체한다. snapshot44, formation4, lighting1. 이전 Urban/Meadow/Snow는 역사적 테스트 전용. 상세는 doc/changes/stage15-cloud-quality-followups.md. 화면 채택 사용자 대기.
+
+2026-09-18 프리셋 보존 후속: 원본 presets/8개를 Git 관리하고 빌드마다 exe 옆에 배치한다. 개발 Save Preset은 원본, 소스 없는 배포는 exe 옆을 사용한다. 일반 시작 Snow 자동 교체 제거. captures는 출력 전용. 상세 doc/changes/stage15-cloud-quality-followups.md.
