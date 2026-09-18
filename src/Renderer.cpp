@@ -2011,7 +2011,8 @@ stage14::GpuParameters Renderer::BuildStage14GpuParameters(
         atmosphere.timeOfDayHours, atmosphere.sunElevationDegrees
     };
     gpu.renderFlags = {
-        0u,
+        (m_cloudParameters.debugMode == 91 || m_cloudParameters.debugMode == 92)
+            ? static_cast<std::uint32_t>(m_cloudParameters.debugMode) : 0u,
         static_cast<std::uint32_t>(tone.mode),
         static_cast<std::uint32_t>(atmosphere.debugView),
         static_cast<std::uint32_t>(atmosphere.debugChannel)

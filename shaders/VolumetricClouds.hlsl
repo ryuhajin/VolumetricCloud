@@ -345,7 +345,7 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             -sampledDensity * extinction * marchLength);
         debugData.viewOpticalDepth += sampledDensity * extinction * marchLength;
 
-        bool requiresLighting = debugMode == 0 ||
+        bool requiresLighting = debugMode == 0 || debugMode == 90 ||
             debugMode == 32 || debugMode == 53 || debugMode == 54 ||
             debugMode == 55 || debugMode == 57 || debugMode == 58 ||
             debugMode == 59 || debugMode == 60;
@@ -679,6 +679,15 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
             max(maximumBaseLiftMeters, 1.0);
         return float4((saturate(normalizedLift) * marchDebug.hit).xxx, 1.0);
     }
+    // 실제 불투명도 기여의 대표 거리. alpha=0은 구름 없음 표시용이다.
+    if (debugMode == 91 || debugMode == 92)
+    {
+        bool visibleCloud = (1.0 - cloud.transmittance) > 1.0e-6;
+        float3 air = debugMode == 91
+            ? SampleAtmosphereAerialTransmittance(uv, cloud.representativeDepth)
+            : SampleAtmosphereAerialRadiance(uv, cloud.representativeDepth);
+        return float4(visibleCloud ? air : 0.0.xxx, visibleCloud ? 1.0 : 0.0);
+    }
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
         ? sceneColorTexture.SampleLevel(pointClampSampler, uv, 0).rgb
@@ -686,7 +695,7 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
     float3 composite = ComposeStage14Atmosphere(
         uv, rayDirection, hasGeometry, background, sceneDistance,
         cloud.scattering, cloud.transmittance,
-        cloud.representativeDepth);
+        cloud.representativeDepth, debugMode == 90);
     return float4(max(composite, 0.0.xxx), 1.0);
 }
 

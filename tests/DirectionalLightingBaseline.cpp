@@ -2382,3 +2382,202 @@ bool Renderer::RunPresetSlotDiagnostics(Camera& camera, bool capture)
     Log(std::string("PRESET_SLOTS=")+(passed?"PASS":"FAIL"));
     return passed;
 }
+
+// 실제 저장 프리셋을 읽되 쓰기는 고유 captures 폴더에만 수행한다.
+bool Renderer::RunCloudClarityDiagnostics(Camera& camera)
+{
+    SetAutomatedRenderMode(true); SetVSyncEnabled(false); EnableNoiseLabPreviews(false);
+    m_useSavedPresets = true;
+    if (!ApplyCloudType(TypeFormationTarget(CloudFormationType::Cumulus)) ||
+        !ApplySceneConcept(Stage15ConceptPreset::BrightNoon)) return false;
+    SetCloudMovementSpeedForValidation(0);
+    m_atmosphereParameters.timePlaybackEnabled = false;
+    m_atmosphereParameters.debugView = Stage14DebugView::None;
+    m_atmosphereParameters.debugChannel = Stage14DebugChannel::Rgb;
+    m_atmosphereParameters.debugExposure = 1;
+    const auto& f5 = stage13camera::Get(Stage13CameraPresetId::HeroDepth);
+    camera.SetLookAt(f5.position, f5.target);
+    camera.SetClipPlanes(stage13camera::kNearPlaneMeters, stage13camera::kFarPlaneMeters);
+    camera.SetFovYDegrees(60);
+    const Camera fixedCamera = camera;
+    const auto root = DefaultNoiseLabOutputRoot().parent_path() / "cloud-clarity" /
+        ("diagnostics-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+    std::filesystem::create_directories(root);
+    std::string status;
+    if (!SaveCloudFormationPresetAtomic(root / "formation.json", FormationTarget(), CurrentCloudFormation(), status) ||
+        !SaveLightingPreset(root, Stage15ConceptPreset::BrightNoon, CurrentLightingPreset(), status)) return false;
+    std::ostringstream report;
+    report << std::setprecision(9) << "# Cloud clarity diagnostic\n\n1920x1080; Cumulus + lighting3; F5; FOV60; time71; wind0; UI/VSync Off.\n"
+        << "Camera(m): " << Float3(camera.GetPosition()) << "; target: " << Float3(camera.GetTarget())
+        << "\nSource: " << m_cloudFormationPresetRoot.generic_string() << "\n"
+        << "Stored preset snapshots: formation.json, lighting/3.json. LUT diagnostics: exposure1/RGB.\n\n";
+    const auto frame = [&](CloudDebugMode mode) {
+        SetDebugMode(mode);
+        DirectionalLightingFrame value;
+        m_directionalCaptureTarget = &value;
+        Render(camera, kTime);
+        return value;
+    };
+    const auto valid = [&](const DirectionalLightingFrame& value) {
+        return value.valid && FiniteHdr(value.hdr) && !HasDebugLayerErrors();
+    };
+    const auto save = [&](const std::string& name, const DirectionalLightingFrame& value) {
+        return valid(value) && SavePng(root / (name + ".png"), value.rgba) &&
+            WriteNew(root / (name + ".rgba16f"), value.hdr.data(), value.hdr.size());
+    };
+    SetDebugMode(CloudDebugMode::Composite);
+    for (int i = 0; i < 8; ++i) Render(camera, kTime);
+    const auto baseline = frame(CloudDebugMode::Composite);
+    if (!save("baseline-composite", baseline)) return false;
+    // 최초 작업에서만 보존한 변경 전 셰이더를 명시적으로 제공한다.
+    wchar_t referencePath[32768] = {};
+    if (GetEnvironmentVariableW(L"VCLOUD_CLARITY_REFERENCE_SHADERS", referencePath, 32768))
+    {
+        ComPtr<ID3DBlob> blob;
+        ComPtr<ID3D11PixelShader> reference;
+        if (!CompileShaderFromFile((std::filesystem::path(referencePath) / "VolumetricClouds.hlsl").wstring(),
+            "main", "ps_5_0", blob, false) || FAILED(m_device->CreatePixelShader(blob->GetBufferPointer(),
+            blob->GetBufferSize(), nullptr, &reference))) return false;
+        const auto current = m_cloudPs;
+        m_cloudPs = reference;
+        const auto before = frame(CloudDebugMode::Composite);
+        m_cloudPs = current;
+        const auto difference = Compare(baseline, before);
+        report << "Pre-change Composite: " << (difference.passed ? "PASS" : "FAIL")
+            << "; normalized HDR MAE=" << difference.hdrMae << ", max=" << difference.hdrMax
+            << "; LDR MAE=" << difference.ldrMae << ", max=" << difference.ldrMax << "\n";
+        if (!difference.passed) return false;
+    }
+    else report << "Pre-change external shader comparison: not requested.\n";
+    const auto originalAerial = m_atmosphereAerialCs;
+    std::array<DirectionalLightingFrame,3> airT, airL;
+    DirectionalLightingFrame cloudDepth, cloudT;
+    const CloudDebugMode modes[] = { CloudDebugMode::Composite, CloudDebugMode::CloudWithoutAerial,
+        CloudDebugMode::AirTransmittanceAtCloud, CloudDebugMode::AirRadianceAtCloud,
+        CloudDebugMode::CloudDepth, CloudDebugMode::Transmittance, CloudDebugMode::ViewOpticalDepth };
+    const char* names[] = {"composite", "without-air", "air-T", "air-L", "depth", "cloud-T", "cloud-tau"};
+    int variant = 0;
+    for (unsigned steps : {4u,16u,32u})
+    {
+        if (steps != 4)
+        {
+            const auto count = std::to_string(steps);
+            const D3D_SHADER_MACRO macros[] = {{"VCLOUD_TEST_AERIAL_STEPS",count.c_str()},{nullptr,nullptr}};
+            ComPtr<ID3DBlob> blob;
+            if (!CompileShaderFromFile(m_atmosphereLutShaderPath, "CSAerialPerspective", "cs_5_0", blob, false, macros) ||
+                FAILED(m_device->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(),
+                    nullptr, &m_atmosphereAerialCs))) return false;
+        }
+        camera = fixedCamera;
+        m_atmosphereLutHashes[4] = m_atmosphereLutHashes[5] = 0;
+        for (std::size_t i = 0; i < std::size(modes); ++i)
+        {
+            auto value = frame(modes[i]);
+            if (!save(std::to_string(steps) + "-" + names[i], value)) return false;
+            if (i == 2) airT[variant] = std::move(value);
+            if (i == 3) airL[variant] = std::move(value);
+            if (variant == 0 && i == 4) cloudDepth = std::move(value);
+            if (variant == 0 && i == 5) cloudT = std::move(value);
+        }
+        // 일반 Composite에서 측정. 정지와 회전은 LUT dirty 여부가 다르다.
+        SetDebugMode(CloudDebugMode::Composite);
+        for (bool rotate : {false,true})
+        {
+            camera = fixedCamera;
+            std::vector<double> atmosphereTimes, frameTimes;
+            std::uint64_t lastSample = 0;
+            for (int i = 0; i < 96; ++i)
+            {
+                if (rotate) camera.Rotate(.5f, 0);
+                Render(camera, kTime);
+                const auto& timing = TimingSnapshot();
+                if (i >= 32 && timing.gpuValid && timing.gpuSampleIndex != lastSample)
+                {
+                    lastSample = timing.gpuSampleIndex;
+                    atmosphereTimes.push_back(timing.rawGpuAtmosphereLutMs);
+                    frameTimes.push_back(timing.rawGpuFrameMs);
+                }
+            }
+            if (atmosphereTimes.size() < 32) return false;
+            std::sort(atmosphereTimes.begin(), atmosphereTimes.end());
+            std::sort(frameTimes.begin(), frameTimes.end());
+            const auto index = std::min(atmosphereTimes.size()-1,
+                static_cast<std::size_t>(std::ceil(.95 * atmosphereTimes.size()))-1);
+            report << steps << " steps " << (rotate ? "rotation" : "stationary")
+                << ": GPU atmosphere p95=" << atmosphereTimes[index]
+                << "ms, frame p95=" << frameTimes[index] << "ms\n";
+        }
+        ++variant;
+    }
+    // 32는 수렴 비교 기준이며 정확한 해라고 가정하지 않는다. 마스크가 같은 표본만 비교한다.
+    for (int kind = 0; kind < 2; ++kind) for (int index = 0; index < 2; ++index)
+    {
+        const auto& values = kind == 0 ? airT : airL;
+        double sum = 0, maximum = 0; std::size_t count = 0;
+        for (std::size_t pixel = 0; pixel < std::size_t(kWidth)*kHeight; ++pixel)
+        {
+            if (HdrChannel(values[2],pixel,3) < .5f) continue;
+            for (int channel = 0; channel < 3; ++channel)
+            {
+                const float a = HdrChannel(values[index],pixel,channel);
+                const float b = HdrChannel(values[2],pixel,channel);
+                if (kind == 0 && (a < 0 || a > 1 || b < 0 || b > 1)) return false;
+                const double error = std::abs(double(a)-b);
+                sum += error; maximum = std::max(maximum,error); ++count;
+            }
+        }
+        if (!count) return false;
+        report << (kind == 0 ? "Air T" : "Air L") << " " << (index == 0 ? 4 : 16)
+            << " vs32: linear RGB MAE=" << sum/count << ", max=" << maximum
+            << ", channels=" << count << "\n";
+    }
+    for (int bin = 0; bin < 3; ++bin)
+    {
+        const float edges[] = {0,5000,15000,200001};
+        double airSum = 0, opacitySum = 0; std::size_t count = 0;
+        for (std::size_t pixel = 0; pixel < std::size_t(kWidth)*kHeight; ++pixel)
+        {
+            if (HdrChannel(airT[0],pixel,3) < .5f) continue;
+            const float distance = HdrChannel(cloudDepth,pixel) * camera.GetFarPlane();
+            if (distance < edges[bin] || distance >= edges[bin+1]) continue;
+            airSum += HdrChannel(airT[0],pixel,1);
+            opacitySum += 1.0 - HdrChannel(cloudT,pixel);
+            ++count;
+        }
+        report << "Distance bin " << edges[bin] << ".." << edges[bin+1] << "m pixels=" << count;
+        if (count) report << "; mean air T(G)=" << airSum/count << "; mean cloud opacity=" << opacitySum/count;
+        report << "\n";
+    }
+    m_atmosphereAerialCs = originalAerial;
+    m_atmosphereLutHashes[4] = m_atmosphereLutHashes[5] = 0;
+    camera = fixedCamera;
+    const auto restored = frame(CloudDebugMode::Composite);
+    const auto roundTrip = Compare(baseline,restored);
+    const auto diagnosticBeforeTone = frame(CloudDebugMode::AirRadianceAtCloud);
+    const auto savedTone = m_toneMappingParameters;
+    m_toneMappingParameters.exposureEv = 4;
+    m_toneMappingParameters.whiteBalanceKelvin = 3500;
+    const auto diagnosticAfterTone = frame(CloudDebugMode::AirRadianceAtCloud);
+    m_toneMappingParameters = savedTone;
+    if (!Compare(diagnosticBeforeTone,diagnosticAfterTone).passed) return false;
+    const auto density = m_cloudParameters.densityMultiplier;
+    m_cloudParameters.densityMultiplier = 0;
+    const auto emptyAir = frame(CloudDebugMode::AirTransmittanceAtCloud);
+    if (!valid(emptyAir)) return false;
+    for (std::size_t pixel = 0; pixel < std::size_t(kWidth)*kHeight; ++pixel)
+        if (HdrChannel(emptyAir,pixel,3) != 0) return false;
+    const auto emptyComposite = frame(CloudDebugMode::Composite);
+    const auto emptyWithoutAir = frame(CloudDebugMode::CloudWithoutAerial);
+    m_cloudParameters.densityMultiplier = density;
+    SetDebugMode(CloudDebugMode::Composite);
+    if (!Compare(emptyComposite,emptyWithoutAir).passed) return false;
+    report << "No-cloud mask/background and diagnostic Tone independence: PASS\n";
+    report << "\nDiagnostic round trip: " << (roundTrip.passed ? "PASS" : "FAIL")
+        << "; HDR MAE=" << roundTrip.hdrMae << ", max=" << roundTrip.hdrMax << "\n"
+        << "User visual approval pending. 4-step runtime and preset values unchanged.\n";
+    if (!WriteText(root / "README.md", report.str())) return false;
+    Log(report.str()); Log("[CloudClarity] output=" + root.string());
+    const bool passed = roundTrip.passed && !HasDebugLayerErrors();
+    Log(std::string("CLOUD_CLARITY=") + (passed ? "PASS" : "FAIL"));
+    return passed;
+}

@@ -94,7 +94,7 @@ inline CloudDebugMode SanitizeDebugMode(CloudDebugMode mode)
     const bool regularDiagnostic = (value >= 8 && value <= 25) ||
         (value >= 27 && value <= 33) || (value >= 35 && value <= 60);
     return value == 0 || regularDiagnostic ||
-        (value >= 74 && value <= 77) || value == 81
+        (value >= 74 && value <= 77) || value == 81 || (value >= 90 && value <= 92)
         ? mode : CloudDebugMode::Composite;
 }
 
@@ -144,6 +144,9 @@ inline const wchar_t* DebugModeName(CloudDebugMode mode)
     case CloudDebugMode::LocalThickness: return L"Local Thickness";
     case CloudDebugMode::LocalHeightFraction: return L"Local Height";
     case CloudDebugMode::LocalBaseOffset: return L"Local Base Offset";
+    case CloudDebugMode::CloudWithoutAerial: return L"Cloud without aerial";
+    case CloudDebugMode::AirTransmittanceAtCloud: return L"Air T at cloud depth";
+    case CloudDebugMode::AirRadianceAtCloud: return L"Air L at cloud depth";
     case CloudDebugMode::EffectiveShapeCoverage: return L"Shape Coverage";
     case CloudDebugMode::BaseSupportBeforeDensity: return L"Base Support";
     case CloudDebugMode::ViewOpticalDepth: return L"View Optical Depth";

@@ -325,3 +325,6 @@ add_test(NAME VolumetricCloud.PresetDeployment
     COMMAND VolumetricCloud.PresetDeploymentTests "${CMAKE_SOURCE_DIR}/presets")
 add_test(NAME VolumetricCloud.PresetDeploymentCopy
     COMMAND VolumetricCloud.PresetDeploymentTests "$<TARGET_FILE_DIR:VolumetricCloud>/presets")
+
+add_test(NAME VolumetricCloud.CloudClarity COMMAND VolumetricCloud --cloud-clarity-test)
+set_tests_properties(VolumetricCloud.CloudClarity PROPERTIES TIMEOUT 300 RESOURCE_LOCK vcloud_gpu LABELS "gpu;lighting")

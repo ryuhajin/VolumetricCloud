@@ -571,3 +571,5 @@ CPU→GPU 흐름/책임: NoiseLab F1 편집 → Formation 후보 전체 검증/�
 
 ## 2026-09-18 프리셋 경로 갱신
 현재 활성 JSON은 저장소 presets/의 형상4개·조명4개다. 개발 실행은 원본을 읽고 Save Preset으로 수정한다. 소스 루트가 없는 배포에서는 exe 옆 presets/를 사용한다. CMake 빌드마다8개를 copy_if_different로 배치하며 JSON만 수정해도 복사한다. 일반 시작의 Snow 자동 교체는 제거했다. 이전 captures/noise-lab 저장/초기화 설명은 역사적 동작이다. snapshot 출력과 UI 설정은 captures에 유지한다. schema/CB/승인 기본값은 변경하지 않는다. 상세: [문제와 해결 기록](changes/stage15-cloud-quality-followups.md).
+
+F4 신규 Cloud view90~92는구름대기제외/실제구름깊이 Air T/Air L이다. Air진단회색은구름없음이며F3 EV대신F4 Debug exposure/channel을쓴다. Composite와no-air비교는Atmosphere view=None으로한다. 자세한조작·정상/실패기준은 [후속 기록](changes/stage15-cloud-quality-followups.md)의01항목을참조한다. Mie높이UI와형상튜닝은01사용자확인후진행예정이며아직구현/채택하지않았다.

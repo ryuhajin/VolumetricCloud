@@ -10,6 +10,11 @@
 // 좌표/거리/소멸 단위는 행성 중심 km/1km. dirty일 때만 다시 만든다.
 #include "Stage14Atmosphere.hlsli"
 
+// 명시적 진단 실행기만 16/32로 재컴파일한다. 일반 품질은 4로 고정.
+#ifndef VCLOUD_TEST_AERIAL_STEPS
+#define VCLOUD_TEST_AERIAL_STEPS 4
+#endif
+
 RWTexture2D<float4> output2D : register(u0);
 RWTexture3D<float4> output3DRadiance : register(u0);
 RWTexture3D<float4> output3DTransmittance : register(u1);
@@ -298,7 +303,7 @@ void CSAerialPerspective(uint3 id : SV_DispatchThreadID)
     float3 position = float3(0.0, AtmosphereBottomRadiusKm() +
                              cameraHeightKm, 0.0);
     AtmosphereIntegration integrated = IntegrateAtmosphere(
-        position, worldDirection, AtmosphereSunDirection(), 4u, false, true,
+        position, worldDirection, AtmosphereSunDirection(), VCLOUD_TEST_AERIAL_STEPS, false, true,
         distanceKm);
     output3DRadiance[id] = float4(integrated.radiance, 1.0);
     output3DTransmittance[id] = float4(integrated.transmittance, 1.0);

@@ -32,7 +32,7 @@ cbuffer Stage14CB : register(b9)
     float4 groundAlbedoAndDebugExposure;
     // [파생 값] x=EV [-8,8], y=백색점 K [3500,10000], z=시각 hour [5.5,19.5], w=태양 고도 도 [-6,90]. 초기 (0,6500,7.5,18).
     float4 toneAndTime;
-    // [파생 값] x=0 예약, y=Tone 0 ACES/1 Linear/2 Legacy, z=대기 진단 0~13, w=채널 0 RGB/1 R/2 G/3 B. 기본 모두 0.
+    // [파생 값] x=구름 거리 대기 진단 0/91/92, y=Tone, z=대기 진단, w=채널. 기본 모두 0.
     uint4 renderFlags;
     // [고정 품질] x/y=Transmittance 폭/높이 256/64, z/w=Multi 폭/높이 32/32 texel.
     float4 transmittanceMultiSize;
@@ -336,7 +336,7 @@ float3 ComposeStage14Atmosphere(
     float2 uv, float3 rayDirection, bool hasGeometry,
     float3 litSurface, float sceneDistance,
     float3 cloudScattering, float cloudTransmittance,
-    float cloudRepresentativeDepth)
+    float cloudRepresentativeDepth, bool omitCloudAerial = false)
 {
     float3 clearBackground;
     if (hasGeometry)
@@ -353,6 +353,8 @@ float3 ComposeStage14Atmosphere(
             sunDirectionAndCameraHeight.w);
     }
 
+    if (omitCloudAerial)
+        return max(cloudScattering, 0.0.xxx) + saturate(cloudTransmittance) * clearBackground;
     float safeCloudDepth = max(cloudRepresentativeDepth, 0.0);
     float3 cloudAir = SampleAtmosphereAerialRadiance(uv, safeCloudDepth);
     float3 cloudAirT = SampleAtmosphereAerialTransmittance(uv, safeCloudDepth);

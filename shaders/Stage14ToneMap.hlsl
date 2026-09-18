@@ -235,6 +235,12 @@ float4 Stage14DebugOutput(VSOut input, float3 hdr)
 // +1EV는 광학계수 변경 없이 표시 전 에너지만 두 배로 만든다.
 float4 main(VSOut input) : SV_TARGET
 {
+    if (renderFlags.x == 91u || renderFlags.x == 92u)
+    {
+        float4 air = hdrCloudTexture.SampleLevel(toneLinearClampSampler, input.uv, 0);
+        return float4(air.a < 0.5 ? 0.25.xxx :
+            ValidateAndExposeDebug(air.rgb, renderFlags.x == 91u), 1.0);
+    }
     float3 hdr = max(hdrCloudTexture.SampleLevel(
         toneLinearClampSampler, input.uv, 0).rgb +
         VCLOUD_TONE_TEST_BIAS.xxx, 0.0.xxx);

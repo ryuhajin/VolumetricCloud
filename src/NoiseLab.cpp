@@ -86,6 +86,9 @@ const char* DebugName(CloudDebugMode mode)
     case CloudDebugMode::Transmittance: return "Transmittance";
     case CloudDebugMode::ViewOpticalDepth: return "Optical Depth";
     case CloudDebugMode::CloudDepth: return "Cloud Depth";
+    case CloudDebugMode::CloudWithoutAerial: return "Cloud without aerial perspective";
+    case CloudDebugMode::AirTransmittanceAtCloud: return "Air T at cloud depth";
+    case CloudDebugMode::AirRadianceAtCloud: return "Air L at cloud depth";
     case CloudDebugMode::AccumulatedDirectLighting: return "Direct";
     case CloudDebugMode::AccumulatedSkyAmbient: return "Sky";
     case CloudDebugMode::AccumulatedGroundBounce: return "Ground";
@@ -111,6 +114,9 @@ constexpr CloudDebugMode kCloudDiagnosticModes[] = {
     CloudDebugMode::Transmittance,
     CloudDebugMode::ViewOpticalDepth,
     CloudDebugMode::CloudDepth,
+    CloudDebugMode::CloudWithoutAerial,
+    CloudDebugMode::AirTransmittanceAtCloud,
+    CloudDebugMode::AirRadianceAtCloud,
     CloudDebugMode::AccumulatedDirectLighting,
     CloudDebugMode::AccumulatedSkyAmbient,
     CloudDebugMode::AccumulatedGroundBounce,
@@ -875,6 +881,11 @@ void NoiseLab::DrawDiagnosticsPanel(
     }
 
     const auto selectedCloudMode = static_cast<CloudDebugMode>(cloud.debugMode);
+    if (selectedCloudMode == CloudDebugMode::CloudWithoutAerial)
+        ImGui::TextWrapped("Cloud air attenuation/scattering removed; cloud lighting, sky, ground air and tone remain. Compare with Composite at the same camera.");
+    else if (selectedCloudMode == CloudDebugMode::AirTransmittanceAtCloud ||
+             selectedCloudMode == CloudDebugMode::AirRadianceAtCloud)
+        ImGui::TextWrapped("Actual opacity-weighted cloud depth. Air T: white=clear, dark=attenuated. Air L: added air light (F4 Debug exposure/channel). Gray=no cloud opacity. Exposure EV/white balance/ACES bypassed.");
     if (selectedCloudMode == CloudDebugMode::LightTransmittance)
         ImGui::TextWrapped("Key 9 samples ONE segment midpoint, which may be empty. Use Visible Sun T for the clouds you can see.");
     else if (selectedCloudMode == CloudDebugMode::VisibleSunTransmittance)

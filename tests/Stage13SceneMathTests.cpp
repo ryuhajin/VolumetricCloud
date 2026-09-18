@@ -87,6 +87,9 @@ int main()
     Require(SanitizeDebugMode(static_cast<CloudDebugMode>(83)) ==
                 CloudDebugMode::Composite,
             "removed rim diagnostics must sanitize");
+    for (const auto mode : {CloudDebugMode::CloudWithoutAerial,
+         CloudDebugMode::AirTransmittanceAtCloud, CloudDebugMode::AirRadianceAtCloud})
+        Require(SanitizeDebugMode(mode) == mode, "cloud air diagnostics remain selectable");
     std::cout << "[UNIFIED-SCENE][MATH] GROUND=10000 BUILDING=20x30x20 RADIUS=50000 PASS\n";
     return 0;
 }

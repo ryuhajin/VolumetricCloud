@@ -242,7 +242,7 @@ CPU 원본은 `AtmosphereParameters`, `GroundLightingParameters`, `ToneMappingPa
 | `sunTintAndGroundBounce` | `Light.sunColor.r` | g | b | ground bounce | Light 재패킹 + Ground |
 | `groundAlbedoAndDebugExposure` | ground R | G | B | atmosphere debug exposure | Ground + F4 진단 |
 | `toneAndTime` | exposure EV | white balance K | time-of-day 호환값 | sun elevation deg | Tone + 호환/진단 |
-| `renderFlags` | 0 예약 | tone mode | atmosphere debug view | debug channel | Tone/F4 |
+| `renderFlags` | Cloud air 진단 0/91/92 | tone mode | atmosphere debug view | debug channel | Tone/F4 |
 | `transmittanceMultiSize` | 256 | 64 | 32 | 32 | LUT 크기 고정 |
 | `skyViewIrradianceSize` | 192 | 108 | 64 | 16 | LUT 크기 고정 |
 | `aerialDebugGeneration` | aerial size 32 | debug slice | max generation low32 | 0 | LUT 고정/진단 파생 |
@@ -427,3 +427,7 @@ Concept은 해당 조명 기본값(현재 Rim2/1)을 적용하고 Type은 기존
 2026-09-18: 현재 계약은 Custom4/snapshot43. 아래 과거 schema3/42 기록은 당시 단계 이력이다. Weather G는 생성/조회하지 않고 UNORM128 예약값이며 R/B/A만 활성이다.
 
 2026-09-18 슬롯 프리셋: CPU 저장 소유권만 분리하고 모든 CB 크기/필드/슬롯을 유지한다. F4 저장은 padding·directionToSun·캐시 위치 등 파생값을 제외한다. snapshot44, formation schema4, lighting schema1.
+
+## 2026-09-18 구름 거리 대기 진단 (01)
+CloudDebugMode90=Cloud without aerial perspective,91=Air T at cloud depth,92=Air L at cloud depth. 기존82/83 등 폐기 번호는 보존한다. 일반0은 기존 경로이며90도 동일 구름 조명과 Tone을 적용하되 구름 앞 airL/airT만 제외한다. 하늘/지면의 기존 대기는 유지한다.
+Stage14CB224B renderFlags offset160의 x(uint)는 기존예약0에서0/91/92로 사용한다. 일반 및90에서는0이며, y/z/w와 다른 offset은 유지한다. CPU GpuParameters와 HLSL을 함께 갱신했다.91/92는 Cloud HDR RGB에 실제 대표 거리의 airT/airL, alpha에 유효 구름 불투명도 여부(1-Tcloud>1e-6)를 쓴다. Tone은 이 두 모드에서 기존 ValidateAndExposeDebug를 사용하고 EV/WB/ACES를 우회한다. 무기여 픽셀은 화면 회색. 구름 대표 깊이는 불투명도 기여 가중 평균이고 첫 표면 깊이가 아니다. 화면 지표와 별개로 rgba16f는 선형 원자료다.
