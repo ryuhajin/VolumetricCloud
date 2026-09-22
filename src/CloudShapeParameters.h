@@ -16,17 +16,20 @@ struct alignas(16) CloudShapeParameters
     float padding4=0.0f;
     float footprintCoverageInfluence=0.40f;
     float densityShaping=0.0f;
-    float padding1=0.0f;
+    float detailCoreProtection=0.0f;
 };
+static_assert(offsetof(CloudShapeParameters,detailCoreProtection)==44, "detail core protection offset");
 static_assert(sizeof(CloudShapeParameters)==48, "CloudShapeCB size");
 static_assert(offsetof(CloudShapeParameters,footprintCoverageInfluence)==36, "footprint offset");
 static_assert(offsetof(CloudShapeParameters,densityShaping)==40, "density shaping offset");
 inline float ShapeCloudDensity(float q, float strength)
 {
-    if (strength <= 0.0f) return q;
-    const float t = std::clamp(q / 0.4f, 0.0f, 1.0f);
-    const float shaped = t * t * (3.0f - 2.0f * t);
-    return q + (shaped - q) * strength;
+    if (strength > 0.0f) {
+        const float t = std::clamp(q / 0.4f, 0.0f, 1.0f);
+        const float shaped = t * t * (3.0f - 2.0f * t);
+        q = q + (shaped - q) * strength;
+    }
+    return q;
 }
 
 inline CloudShapeParameters SanitizeCloudShapeParameters(CloudShapeParameters v)
@@ -39,7 +42,8 @@ inline CloudShapeParameters SanitizeCloudShapeParameters(CloudShapeParameters v)
     v.upperTransitionEnd=std::clamp(finite(v.upperTransitionEnd,.70f),v.upperTransitionStart+.01f,1.f);
     v.footprintCoverageInfluence=std::clamp(finite(v.footprintCoverageInfluence,.40f),0.f,1.f);
     v.densityShaping=std::clamp(finite(v.densityShaping,0.f),0.f,1.f);
-    v.padding0=v.padding1=v.padding2=v.padding3=v.padding4=0.f;
+    v.detailCoreProtection=std::clamp(finite(v.detailCoreProtection,0.f),0.f,1.f);
+    v.padding0=v.padding2=v.padding3=v.padding4=0.f;
     return v;
 }
 inline float EvaluateCommonVerticalProfile(float h,const CloudShapeParameters& v)

@@ -97,7 +97,7 @@ F1/F2 편집은 현재 runtime 값에 임시로 쓴 뒤 raw 후보를 캡처하�
 
 | UI 이름 | CPU → GPU/HLSL | 단위 | 범위 | 값을 올리면 | 재생성·저장 | 진단 |
 |---|---|---:|---|---|---|---|
-| Regenerate Base and Detail | `Renderer::RegenerateNoiseVolumes` | - | 버튼 | 현재 seed/frequency shader로 128³/32³ 내용을 다시 생성 | GPU compute·hash 갱신, Custom 값 아님 | F2 hash, `1`,`3`,`4` |
+| Regenerate Base and Detail | `Renderer::RegenerateNoiseVolumes` | - | 버튼 | 현재 seed/frequency shader로 128³/64³ 내용을 다시 생성 | GPU compute·hash 갱신, Custom 값 아님 | F2 hash, `1`,`3`,`4` |
 | Base world size | `NoiseVolumeParameters.baseWorldSizeMeters` → b6 | m/cycle | `1000~64000 → 1~200000` | 덩어리가 월드에서 더 커지고 반복 주기가 길어짐 | Texture3D 내용 재생성 없음; Custom O | `1`,`3` |
 | Base vertical size | `baseVerticalWorldSizeMeters` → b6 | m/cycle | `1000~64000 → 1~200000` | Y 방향 noise 변화가 느려져 큰 수직 질량 | 재생성 없음; O | F1 slice, F7 |
 | Detail world size | `detailWorldSizeMeters` → b6 | m/cycle | `250~8000 → 1~100000` | 침식 무늬가 커지고 거칠게 보임 | 재생성 없음; O | `4`,`5` |
@@ -445,7 +445,7 @@ F3 Sun azimuth=-108.5°, Sun altitude=18°에서 시작한다. 작은 글씨 값
 
 ### 06 Detail 강도 분리 진단
 
-현재 View에는 침식 후 밀도, 태양 캐시/cone에는 Base 밀도를 사용한다. Detail은 raw Base의 boundary=1-smoothstep(.45,.90,Base)를 곱해 깎고 그 뒤 shaping을 적용한다. 강도를 올리면 밀도량과 광학 두께가 줄어들며 새로운 조밀한 덩어리가 생기지 않는다. 06 Urban/F5 비교에서 .24→.5→1은 파임 보강보다 소실이 커졌다. 테스트 전용 Detail 그림자 경로를 일반 정책으로 채택한 것은 아니다. 수치는 stage15-cloud-rim-lighting 변경 기록 참조.
+현재 View에는 침식 후 밀도, 태양 캐시/cone에는 Base 밀도를 사용한다. 2026-09-22 채택 후 Detail은 밀도 배율 전 형상 S의 boundary=1-smoothstep(.45,.90,S)로 침식량 e를 정하고, [e,1]을 [0,1]로 remap한 뒤 높이/밀도 배율과 기존 shaping을 적용한다. 강도를 올리면 밀도량과 광학 두께가 줄어든다. 옛 감산식의 06 Urban/F5 비교에서 .24→.5→1은 파임 보강보다 소실이 컸으며 이 수치를 새 remap의 실험 결과로 해석하지 않는다. 태양 그림자는 계속 Base다. 최신 문제·해결·한계는 stage15-cloud-near-clarity 변경 기록 참조.
 
 
 ## 2026-09-17 F1·F2 UI 정리와 범위 정합
@@ -571,3 +571,41 @@ CPU→GPU 흐름/책임: NoiseLab F1 편집 → Formation 후보 전체 검증/�
 
 ## 2026-09-18 프리셋 경로 갱신
 현재 활성 JSON은 저장소 presets/의 형상4개·조명4개다. 개발 실행은 원본을 읽고 Save Preset으로 수정한다. 소스 루트가 없는 배포에서는 exe 옆 presets/를 사용한다. CMake 빌드마다8개를 copy_if_different로 배치하며 JSON만 수정해도 복사한다. 일반 시작의 Snow 자동 교체는 제거했다. 이전 captures/noise-lab 저장/초기화 설명은 역사적 동작이다. snapshot 출력과 UI 설정은 captures에 유지한다. schema/CB/승인 기본값은 변경하지 않는다. 상세: [문제와 해결 기록](changes/stage15-cloud-quality-followups.md).
+
+F4 신규 Cloud view90~92는구름대기제외/실제구름깊이 Air T/Air L이다. Air진단회색은구름없음이며F3 EV대신F4 Debug exposure/channel을쓴다. Composite와no-air비교는Atmosphere view=None으로한다. 자세한조작·정상/실패기준은 [후속 기록](changes/stage15-cloud-quality-followups.md)의01항목을참조한다. Mie높이UI와형상튜닝은01사용자확인후진행예정이며아직구현/채택하지않았다.
+
+2026-09-18: Detail64³ 사용자 채택. F3 Atmosphere에 Mie scale height (km)0.5~4를 추가했다. 높일수록 높은 곳에도 Mie 연무가 남으며 Turbidity와 함께 원경 대비/하늘/건물/태양 주변에 영향을 준다. F4 환경 슬롯 Save Preset이 기존 lighting schema1의 atmosphere.mieScaleHeightKm를 저장한다. 비교 후보는 사용자 선택 전 원본에 저장하지 않는다.
+
+후광 조절: F3 Atmosphere의 Mie anisotropy (g)0~0.95는 대기 산란의 태양 방향 집중도다. 낮추면 밝은 전방 봉우리가 약해지지만 빛이 다른 방향으로 재분포한다. 구름 Phase와 다르며 대기 소멸이나 밀도를 직접 바꾸지 않는다. 기존 lighting JSON의 atmosphere.mieG를 저장한다.
+
+2026-09-19 사용자 승인으로 대기 Mie g 내장 기본값과 환경3 저장값은0.3이다. 기존 다른 저장 슬롯은 개별값을 유지한다. g0.3 고정 후 Turbidity/높이 비교를 진행하며 수평 원경의 화면 승인은 별도다.
+
+2026-09-19: Mie scale height 내장 기본/reset/fallback 및 환경3 저장값2km 사용자 승인. g0.3/Turbidity1.5 고정 후 근경 Density shaping0.48±10% 비교. 사용자 선택 전 형상 후보는 저장하지 않는다.
+
+F1 Cloud Local → Detail core protection: 0=보호 없음, 0.65=코어 침식량35%, 1=추정몸체의침식제거. 타입별Save Preset으로저장. 2026-09-22부터 일반 밀도식은 정규화 remap이므로 .65가 옛 감산식의 화면을 재현한다는 뜻은 아니다. Density transition width는2026-09-21사용자요청으로UI/수식제거. 기존JSON의옛필드는무시한다.
+
+F2 → Temporary Base comparison → Base candidate: Original / Threshold+0.05 / Contrast x2 / Mid octaves x2.5 / Combined. 변경시셰이더컴파일/노이즈생성으로잠시멈출수있다. Restore original Base로복귀. F4환경슬롯과카메라는그대로사용가능. 선택은세션전용이며Save Preset으로저장되지않는다. 재시작Original. High100m/512거리step불변. 실패시이전후보와오류표시. 후보삭제/기본채택은사용자선택후진행.
+
+F4 Cloud view: Occupied cloud length=구름점유구간길이합(빈공간제외), Mean density in occupied cloud=그구간평균밀도, Distance to first occupied cloud=카메라에서첫밀도표본까지거리. 점유문턱rho>0.001/100m간격,조기종료없음. 길이/거리검정0→흰색10km이상,밀도검정0→흰색1이상,청록구름없음. 뒤에가려진구름도포함하므로단일구름두께아님. Tone/대기없음. 실제원근은첫거리/CloudDepth로보고통과길이로근원경을판정하지않는다.
+
+## P0–P2 근경·원경 검사
+`--cloud-near-far-diagnostics-test`는 일반 룩을 변경하지 않는 오프라인 비교다. F5/F6와 F5 위치의 고도각75도/5도, Original/Cumulus/환경3/시간71/바람0으로 실행한다. 결과는 `build/captures/cloud-near-far/<실행ID>/comparison.html`.
+Composite/AP-off는 같은 Tone을 적용하며 AP-off에서도 하늘·지면 대기는 유지한다. Cloud-radiance와 Direct/Sky/Ground/Multiple은 배경 없는 선형 누적값이다. Rim은 Direct에 포함된 부분이므로 다시 더하지 않는다. Cloud-T는 흰색투명/검정불투명; Alpha는반대. Distance는0~10km선형으로원시HDR단위는m다. RGB 진단PNG는0~1에서포화하므로숫자는HDR/CSV로판정한다.
+광선 그래프는 Base(shaping후)와 Detail최종밀도의비교다. 파란값이높고주황값이낮으면현재침식에서많이제거된것이다. 이를곧바로오류나Detail제거승인으로해석하지않는다. 기존Detail크기실험은패턴간격,이번검사는감산량과코어보존문제다.
+High/25m ROI는같은근경중심·경계를포함한다. ROI외부검정은구름불투명도가아니라미측정이다. 구입력은반경600m/중심(0,3200,-3000),소광0.0005/m. 부드러운구는반경450~600m전이이며CPU2m적분을참조한다. 거리/표본수등도RGBA16F로읽으므로큰m값은양자화된다. 구간완료여부는별도종료코드로판정한다.
+
+### Detail 코어 보존 비교 (일반 UI에는 미추가)
+`--cloud-detail-core-test`는Original/Cumulus+환경3에서기존침식/코어가중치35%/코어제거상한35%를비교한다. 생성된comparison.html에서Near75를먼저보고F5/F6로원경부작용을확인한다. Composite와구름대기제외는동일Tone,Cloud T는밝을수록투명하다.
+가중치35%는코어에서기존감산량의35%만적용한다. 상한35%는코어에서shaping전Base의35%까지만제거한다. 코어0외곽은기존과같다. 코어근사는실제중심점/표면거리가아니므로모든형상을보호한다는보장이없다. Detail크기/강도파라미터자체는현재값을유지한다.
+확인순서: Near75 T에서몸체가더불투명해지는가→대기제외에서윤곽과내부굴곡이남는가→F5/F6에서작은구름이과하게늘거나원경이덩어리로뭉치지않는가→회전/전진24위치에서경계가급변하지않는가. 평판같이채워지거나그림자와형태가맞지않으면개선으로판정하지않는다. 이 절은 옛 코어 실험 기록이며 2026-09-22 이후 일반 기본식은 정규화 remap이다.
+
+
+타입별 `--cloud-detail-core-types-test`: comparison.html에서 타입/시점/출력 선택, 이미지 클릭으로 같은 좌표1:1확대. Alpha는 선형1−T(흰색불투명)이며 Tone을 적용하지 않는다. 원본프리셋을 유지하고 후보35%는 테스트View에만 적용한다. 몸체/파임/구멍/이동안정성을 별도로 승인한다.
+
+
+2026-09-22 사용자 승인: 구름 전용 대기 거리 배율2는 일반 고정값이다. F4 Air T/L은 2배 조회 결과, 대표거리는 실제 거리다. Cloud without aerial perspective는 이 보정을 우회한다. Save Preset으로 저장할 별도 항목은 없다.
+
+2026-09-22 사용자 채택: Detail 원본은64³ 무보정 Worley fBm(각 채널 f/2f/4f에.625/.25/.125)이다.
+F2 Detail 크기와 기존 Detail erosion/몸체보호/정규화 remap은 유지하며 추가 보정 슬라이더는 없다.
+비교페이지2번의 제거량 보정(.981983208배)은 진단용이고 일반 기본값은1번이다.
+이는 작은 주파수 대역이 담긴 원본 선택이며 근경 선명도 완전 해결 판정과 구분한다.

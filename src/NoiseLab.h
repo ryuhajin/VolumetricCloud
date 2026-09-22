@@ -216,12 +216,19 @@ public:
 
     float UserZoom() const { return m_developerUiSettings.userZoom; }
     void SetRimComparisonCap(float cap) { m_rimComparisonCap = cap; }
+    // 임시 세션 후보: 프리셋/개발 UI 설정에 저장하지 않는다.
+    void SetBaseCandidateStatus(int value, const std::string& status)
+    { m_baseCandidate=value; m_baseCandidateStatus=status; }
+    int ConsumeBaseCandidateRequest()
+    { const int value=m_baseCandidateRequest; m_baseCandidateRequest=-1; return value; }
     float EffectiveUiScale() const { return m_effectiveUiScale; }
     float StyleWindowPaddingXForValidation() const;
     bool SetDeveloperUiScaleForValidation(unsigned int dpi, float userZoom);
 
 private:
     float m_rimComparisonCap = 2.5f;
+    int m_baseCandidate=0, m_baseCandidateRequest=-1;
+    std::string m_baseCandidateStatus;
     template <typename T>
     using ComPtr = Microsoft::WRL::ComPtr<T>;
 

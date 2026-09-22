@@ -1,5 +1,41 @@
 # 기여 / 작업 규칙
 
+## 일반 배포와 로컬 검증 분리
+
+[빌드 안내](BUILDING.md)가 현재 실행 계약이다. 일반 빌드는 `VCLOUD_BUILD_TESTS=OFF`이며
+tests 없이 VolumetricCloud를 만든다. 로컬 검증은 ON + 별도 VolumetricCloudTestRunner를 사용한다.
+아래 과거 CLI 명령의 실행 파일은 검사 앱 경로로 바꿔 사용한다. 일반 앱에는 테스트 CLI가 없다.
+원격은 일반 코드·필수 빌드 설정·프리셋·doc만 반영하며 로컬 테스트/도구/notes/captures는 전송하지 않는다.
+
+## 현재 산출물 관리 계약
+
+[데이터 관리 규칙](DATA_MANAGEMENT.md)을 먼저 적용한다. 완료 실험은 반영·재검증·노트 기록 후
+캡처와 덤프를 삭제하며, 진행 중 비교와 실패 자료는 보호한다. 아래 역사적 캡처 경로는 존재를 보장하지 않는다.
+기본 슬라이더/결정성 테스트는 성공 후 최신 수치 로그만 남긴다. 상세 조건·정리 도구 사용법은 위 문서에 있다.
+
+## 2026-09-22 대기 합성 진단
+
+`VolumetricCloud.exe --cloud-aerial-composition-test`는 A/B/C/D와 직접100→50m 수렴을 검사한 뒤
+조건 통과 시만 거리배율1/1.5/2를 촬영한다. CTest `VolumetricCloud.CloudAerialComposition`은
+`VCLOUD_ENABLE_DIAGNOSTIC_TESTS=ON`만 등록한다. GPU직렬, timeout900초. UI/CB/schema 불변.
+결과는 작업 디렉터리의 `captures/cloud-aerial-composition/<새ID>`다.
+기준/한계는 [합성 진단 기록](changes/stage15-cloud-aerial-composition.md)을 따른다.
+렌더 성공 후 `python tests/AnalyzeAerialComposition.py <결과 폴더>`로 픽셀 CSV의 거리별 대비,
+공기T/L 재합성과 파일을 검산한다. NumPy/Pillow가 필요하며 `review.html`에서 같은 시점의
+1/1.5/2배를 전환한다. 기존 원본 캡처를 바꾸거나 새 GPU 촬영을 하지 않는다.
+
+## 2026-09-21 테스트 산출물 정책
+
+일반 CMake 구성은 `VCLOUD_ENABLE_DIAGNOSTIC_TESTS=OFF`이며 대량 이미지를 만드는
+`CloudNearFarDiagnostics`와 `CloudPathLength`를 CTest에 등록하지 않는다. 두 진단이 필요한
+경우 별도 빌드 디렉터리를 `-DVCLOUD_ENABLE_DIAGNOSTIC_TESTS=ON`으로 구성하거나 해당 CLI를
+명시적으로 실행한다. 진단 출력은 일회성 로컬 자료이며 런타임 입력이나 프리셋이 아니다.
+
+2026-09-21 이전 방향광·림·대기·형상 후보 비교 명령과 분석 스크립트는 완료된 실험 기록이다.
+아래 역사적 절차에 적힌 실행 파일과 스크립트는 현재 소스에서 제거되었으며 다시 실행하는
+현재 검증 계약으로 사용하지 않는다. 기본 CPU 회귀, GPU smoke, High 성능, 결정성,
+프리셋·핫리로드 검증은 계속 유지한다.
+
 이 프로젝트는 학습용이며, **사람과 AI 에이전트가 함께** 작업합니다.
 일관성을 위해 아래 규칙을 따릅니다.
 
@@ -266,3 +302,77 @@ Detail 비교: 새 VCLOUD_RIM_BOUNDARY_DIR, VCLOUD_RIM_BOUNDARY_DENSE_ROI=1, VCL
 
 ## 2026-09-18 프리셋 경로 갱신
 현재 활성 JSON은 저장소 presets/의 형상4개·조명4개다. 개발 실행은 원본을 읽고 Save Preset으로 수정한다. 소스 루트가 없는 배포에서는 exe 옆 presets/를 사용한다. CMake 빌드마다8개를 copy_if_different로 배치하며 JSON만 수정해도 복사한다. 일반 시작의 Snow 자동 교체는 제거했다. 이전 captures/noise-lab 저장/초기화 설명은 역사적 동작이다. snapshot 출력과 UI 설정은 captures에 유지한다. schema/CB/승인 기본값은 변경하지 않는다. 상세: [문제와 해결 기록](changes/stage15-cloud-quality-followups.md).
+
+01 진단: OFF Release VolumetricCloud.exe --cloud-clarity-test 또는 CTest CloudClarity. 저장프리셋은 읽기만 하고 captures/cloud-clarity/diagnostics-<pid>-<tick>에 조건/JSON/PNG/HDR/수치/성능을 쓴다. VCLOUD_CLARITY_REFERENCE_SHADERS는 선택형 변경 전 셰이더 폴더이며 Composite tolerance를 확인한다. 일반 Aerial4는 유지하고 테스트에서만16/32로 재컴파일한다.32도 정확한 해로 단정하지 않는다.
+
+### Detail 해상도 비교
+OFF Release에서 ctest --test-dir build -C Release -R "^VolumetricCloud.CloudDetailResolution$" --output-on-failure -j 1을 실행한다. 앱 직접 실행은 --cloud-detail-resolution-test다. 현재 Cumulus JSON의 Detail 크기2000m를 요구하며 원본을 보정/저장하지 않는다. CTest 결과는 build/captures/cloud-detail-resolution/<PID>-<tick>/comparison.html에 생성한다. 일반32³을 유지하고 후보64³은 테스트 안에서만 생성한다. GPU 성능 측정은 다른 GPU 작업과 겹치지 않게 실행한다. 상세 조건/한계는 stage15-cloud-quality-followups.md를 따른다.
+
+### 원경 대기9조합
+--cloud-aerial-tuning-test 또는 CTest VolumetricCloud.CloudAerialTuning은 Detail64³에서 현재 환경3 baseline과9조합을 생성한다. 출력은 CTest 기준 build/captures/cloud-aerial-tuning/<PID>-<tick>/comparison.html이다. GPU 테스트는 직렬 실행한다. 일반 Detail64³ 채택 후 과거32/64 비교 테스트도64³ 원래 상태로 복원한다.
+
+후광 비교: --cloud-aerial-phase-test / CTest VolumetricCloud.CloudAerialPhase는 기존 대기 비교기에서 Mie g0.8/0.6/0.4만 변경한다. CTest 출력은 build/captures/cloud-aerial-phase/<PID>-<tick>/comparison.html. Release만 성능 반복을 수행하고 Debug는 이미지·D3D 검증을 수행한다.
+
+근경 형상 비교: --cloud-shape-tuning-test / CTest VolumetricCloud.CloudShapeTuning. 현재 Cumulus와 환경3을 읽고 Density shaping±10%만 변경한다. build/captures/cloud-shape-tuning/<PID>-<tick>/에8개 원본 사본, 후보JSON, F5/F6 정지4모드와24프레임 회전/전진,8배 차이PNG, 비교HTML을 저장한다. GPU 직렬 실행. Release만 warm60+유효300샘플×3회 정지/회전 계측. 원본 비파괴/노이즈 해시/유한HDR/D3D오류/기준복원 tolerance를 검사한다.
+
+Detail 크기 비교: --cloud-detail-size-test / CTest VolumetricCloud.CloudDetailSize. 기존 형상 비교기를 사용하되 Density shaping/침식/profile을 고정하고 Detail world size만 ±10%로 바꾼다. 출력 build/captures/cloud-detail-size/<PID>-<tick>/. 노이즈 재생성 없이 동일64³ 데이터 사용. GPU 직렬 검증/성능 조건은 CloudShapeTuning과 같다.
+
+밀도 전이 시험: --cloud-density-transition-test / VolumetricCloud.CloudDensityTransition. 폭1/.75/.5 비교. 출력 build/captures/cloud-density-transition/<PID>-<tick>. 기존 형상 실행기 검증/성능 조건 사용.
+
+거리별 View step 진단: --cloud-distance-step-test / VolumetricCloud.CloudDistanceStep. build/captures/cloud-distance-step/<PID>-<tick>. 전이폭1 고정으로 기준100m/512 대 근경50m/25m(5km까지,15km에서기존복귀,4096회)을 비교한다. 일반 High와 원본 JSON 유지. CPU 빌드 완료 후 GPU 테스트 직렬, 성능 중 다른 빌드 금지.
+
+Weather/Base 분리: VolumetricCloud.exe --cloud-base-weather-test 또는 CTest CloudBaseWeather. GPU 직렬 실행. captures/cloud-base-weather 아래 원본8JSON/HDR12개/선형PNG48개/통계/비교페이지. 테스트 shader define 전용이며 일반 렌더 경로/CB는 유지한다.
+
+Base 재매핑 비교: --cloud-base-remap-test / CTest CloudBaseRemap. F5/F6의 문턱/대비/중간옥타브5케이스. Release에서60예열+300GPU표본×정지/회전×3회×5케이스. GPU직렬실행, 원본프리셋불변, shader/Texture3D복원검사. 출력captures/cloud-base-remap.
+
+임시Base UI검증: --base-candidate-ui-smoke / CTest BaseCandidateUiSmoke. 실제전환/전체핫리로드/Original복원/프리셋불변검사. 클릭/환경별화면품질은사용자검증.
+
+--cloud-path-length-test / CloudPathLength: F5/F6길이·밀도·거리진단,소멸계수독립성/Composite복원/원본불변. 일반렌더step은유지.
+
+P0–P2 근경/원경 보완: `ctest --test-dir build -C Release -R CloudNearFarDiagnostics --output-on-failure -j1` (`--cloud-near-far-diagnostics-test`). 기존후보격자재실행없이실제View적분/광선밀도/대기계약검사. 캡처는build/captures/cloud-near-far. 느린진단이며성능후보아님. 일반기본값/프리셋변경없음.
+
+`--cloud-detail-core-test` / CTest `VolumetricCloud.CloudDetailCore`: 기존형상비교기로Detail코어가중치/제거상한을비교한다. 일반기본값불변. 결과build/captures/cloud-detail-core. GPU직렬,Release성능측정중다른빌드/테스트금지.
+
+
+`--cloud-detail-core-types-test` / CTest `VolumetricCloud.CloudDetailCoreTypes`: 기존 형상 실행기로 저장된 네 타입의 기존/가중치35%를 직렬 비교한다. 결과 cloud-detail-core-types/<ID>/comparison.html. 일반 실행 변경 없음. Debug/Release 사용 가능, 성능 재측정 제외.
+
+
+2026-09-21: `--detail-core-slider-smoke` / DetailCoreSliderSmoke는0/.325/.65/1전달,이전후보동등성,Base태양T보존,핫리로드,원상복원,원본8JSON불변검사. `--cloud-density-transition-test`/CloudDensityTransition은렌더수식과함께폐기. 과거자료는보존.
+
+근경 경계 재분석: `python tests/AnalyzeCloudBoundary.py <대기합성결과> <보존계보폴더> <출력폴더>`. NumPy 필요. 대기 진단은 Near752배의 화면 전체 폭1920×64 Cloud T를 near-boundary-strip.csv에 추가 저장한다.
+
+## 근경 선명도 / Detail 태양 차폐 진단
+`build/Release/VolumetricCloud.exe --cloud-near-clarity-test`를 build 작업폴더에서 실행한다. CTest VolumetricCloud.CloudNearClarity는 VCLOUD_ENABLE_DIAGNOSTIC_TESTS=ON일때만등록(1200초/GPU직렬).
+`python tests/AnalyzeNearClarity.py <결과폴더>`(NumPy/Pillow)로 독립검산과 comparison.html을생성한다. 결과는 captures/cloud-near-clarity/<고유ID>. 일반값/8프리셋불변. 기존격자재실행이나 일반형상채택이아니다. 현재Cumulus 진단뒤 유망후보가없으면 다른타입/이동/성능비교를확대하지않는다.
+
+2026-09-22 후보2 사용자 채택 후, 일반 셰이더=후보2를 검증하고 ROI 기준은 역사적 후보0으로
+고정한다. 채택 검증 실행의 Release에서만 `VCLOUD_CLARITY_MEASURE_PERFORMANCE=1`을 주면
+F5/Near75/F6의 후보0/2를 120프레임 예열+600개 고유 GPU 표본으로 측정한다. GPU 작업은 직렬로
+실행하며 `performance.csv`와 README의 p95/기준 판정을 남긴다. 시간71/바람0 정지 비용이며
+다른 타입·태양각·이동 안정성/성능을 검증한 것으로 확대하지 않는다. 환경변수는 실행 뒤 해제한다.
+
+## Detail 대역 결합 후속
+
+build 작업폴더에서 `Release/VolumetricCloud.exe --cloud-detail-bands-test`를 실행한다.
+출력은 `build/captures/cloud-detail-bands/<고유ID>`이며 원본8JSON과 일반 remap을 보존한다.
+루트에서 `python tests/AnalyzeDetailBands.py <출력폴더>`로 NumPy/Pillow 검산과 comparison.html을 만든다.
+CTest `VolumetricCloud.CloudDetailBands`는 `VCLOUD_ENABLE_DIAGNOSTIC_TESTS=ON`만 등록한다.
+GPU 직렬/timeout900초. 후보0은 현재 remap,1은 연속 remap,2는 평균 제거량 보정이다.
+이전 NearClarity 후보 번호와 혼동하지 않는다. 상세: [E17 기록](changes/stage15-cloud-detail-band-composition.md).
+
+## Detail 원본 주파수 후속
+
+build 작업폴더에서 `Release/VolumetricCloud.exe --cloud-detail-spectrum-test`를 실행한다.
+같은 실행기에 새64³ fBm 생성기와 현재/보정후보의 짧은 이동 비교를 추가했다.
+출력은 `build/captures/cloud-detail-spectrum/<고유ID>`이며 분석 명령은
+`python tests/AnalyzeDetailBands.py <출력폴더>`다. README의 실험 표식으로 E17/E18을 구분한다.
+CTest `VolumetricCloud.CloudDetailSpectrum`은 대량 진단 옵션 ON에서만 등록한다(900초/vcloud_gpu 직렬).
+후보0=단일 Worley,1=fBm,2=평균 제거량 보정 fBm. 일반 생성기/8프리셋은 복원·보존한다.
+회전/전진 각24위치의 화면 차이는 의도한 이동을 포함하므로 인접 Alpha MAE를 깜빡임 점수로 해석하지 않는다.
+상세: [E18 기록](changes/stage15-cloud-detail-spectrum.md).
+
+2026-09-22 사용자 채택 후 일반=후보1(무보정 fBm)이다. 진단은 정의0으로 옛 단일 Worley를
+생성해 기준0을 보존하고 일반=1 동등성/복원을 검사한다. 회전·전진은0/1을 촬영한다.
+Release 채택 성능은 `VCLOUD_SPECTRUM_MEASURE_PERFORMANCE=1` 환경변수를 준 위 명령으로 실행한다.
+Near75/F5/F6의0/1을120프레임 예열+600개 고유 GPU 표본으로 측정하고 performance.csv/README에 기록한다.
+실행 뒤 환경변수를 해제한다. 측정 중 다른 빌드/GPU 테스트는 실행하지 않는다.

@@ -87,6 +87,7 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
         Near(value.shape.footprintCoverageInfluence,
              safeShape.footprintCoverageInfluence) &&
         FiniteIn(value.shape.densityShaping, 0.0f, 1.0f) &&
+        FiniteIn(value.shape.detailCoreProtection, 0.0f, 1.0f) &&
         FiniteIn(value.domainBottomMeters, formationrange::bottomMin, formationrange::bottomMax) &&
         FiniteIn(value.domainThicknessMeters, 1.0f, formationrange::domainMax) &&
         FiniteIn(value.maximumViewTraceDistanceMeters, 1.0f, formationrange::baseSizeMax) &&

@@ -1,4 +1,4 @@
-// [학습 지도] CPU NoiseVolumeParameters b6 → CSBase/CSDetail u0 → RGBA8 Base 128³/Detail 32³ → Noise t3/t4. UVW cycle.
+// [학습 지도] CPU NoiseVolumeParameters b6 → CSBase/CSDetail u0 → RGBA8 Base 128³/Detail 64³ → Noise t3/t4. UVW cycle.
 // [수정 안내] [직접 조절]의 CPU/UI 원본을 수정한다. 강제 범위는 입력 계약이며 화질 보장이 아니다.
 // 별도 권장 구간이 없는 값은 표시된 기본값을 비교 출발점으로 삼는다. b/t/u/s는 버퍼/읽기/쓰기/샘플러 슬롯.
 // ============================================================================
@@ -107,7 +107,12 @@ float PeriodicWorleyDistance(float3 p, uint period, uint seed)
     int3 cell = (int3)floor(p);
     float3 local = frac(p);
     float nearestSquared = 4.0;
+#if defined(VCLOUD_TEST_DETAIL_SPECTRUM) && VCLOUD_TEST_DETAIL_SPECTRUM
+    // Detail fBm의 추가 호출이 FXC 펼침 한도를 넘지 않도록 이웃 탐색 루프 유지.
+    [loop]
+#else
     [unroll]
+#endif
     for (int z = -1; z <= 1; ++z)
     [unroll]
     for (int y = -1; y <= 1; ++y)
@@ -142,6 +147,10 @@ float BasePerlinWorley(float3 uvw)
         uint frequency = max(baseVolumeFrequencies[octave], 1u);
         float weight = amplitude * ((octave == 1u || octave == 2u)
             ? 1.0 + baseMidOctaveExtra : 1.0);
+#if defined(VCLOUD_TEST_BASE_MID_WEIGHT)
+        // 비교 전용: 주파수/seed/해상도는 유지하고 중간 두 옥타브 진폭만 변경한다.
+        weight = amplitude * ((octave == 1u || octave == 2u) ? VCLOUD_TEST_BASE_MID_WEIGHT : 1.0);
+#endif
         sum += PeriodicGradientNoise(
             uvw * frequency, frequency,
             noiseVolumeSeed + octave * 173u) * weight;
@@ -178,7 +187,8 @@ void CSBase(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(4, 4, 4)]
-// [Detail 출력] RGBA 각각 다른 주파수/seed의 Worley 거리를 저장한다.
+// [Detail 출력] RGBA 각각 다른 기저 주파수/seed의 Worley fBm을 저장한다.
+// Renderer가 CSDetail에만 정의1을 전달한다. 정의0은 역사적 단일 Worley 비교용이다.
 // 조회 단계의 detailWeights와 erosion이 파임을 만든다. seed/frequency 수정 뒤 재생성이 필요하다.
 void CSDetail(uint3 id : SV_DispatchThreadID)
 {
@@ -193,6 +203,14 @@ void CSDetail(uint3 id : SV_DispatchThreadID)
         result[channel] = PeriodicWorleyDistance(
             uvw * frequency + 19.0, frequency,
             noiseVolumeSeed + 911u + channel * 173u);
+#if defined(VCLOUD_TEST_DETAIL_SPECTRUM) && VCLOUD_TEST_DETAIL_SPECTRUM
+        // 승인 fBm: 같은 타일/seed/기저 대역에 2배·4배 주파수 추가. 가중치 합1.
+        float middle=PeriodicWorleyDistance(uvw*(frequency*2u)+19.0,frequency*2u,
+            noiseVolumeSeed+911u+channel*173u);
+        float fine=PeriodicWorleyDistance(uvw*(frequency*4u)+19.0,frequency*4u,
+            noiseVolumeSeed+911u+channel*173u);
+        result[channel]=result[channel]*.625+middle*.25+fine*.125;
+#endif
     }
     outputVolume[id] = saturate(result);
 }

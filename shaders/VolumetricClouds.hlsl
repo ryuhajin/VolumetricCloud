@@ -46,6 +46,7 @@ cbuffer cbCamera : register(b0)
 #include "CloudDomainParameters.hlsli"
 #include "HighCloudQuality.hlsli"
 #include "CloudEnvironment.hlsli"
+// VCLOUD_LOCAL_AERIAL_HELPER
 
 // t0: 앞선 DiagnosticScene PS가 R16G16B16A16_FLOAT에 쓴 linear RGB 장면색.
 Texture2D<float4> sceneColorTexture : register(t0);
@@ -62,16 +63,38 @@ struct VSOut
 };
 
 // 구름 패스가 이후 단계까지 유지할 합성 결과.
+#if defined(VCLOUD_CLARITY_PROBE)
+static uint clarityStep=0xffffffff;
+static float clarityTarget=-1;
+#endif
 struct CloudResult
 {
+#if defined(VCLOUD_CLARITY_PROBE)
+    float4 claritySample; // 실제 High의 거리m/불투명도 기여/ds/T앞
+#endif
     float3 scattering;       // 안개가 카메라 쪽으로 새로 더한 linear RGB 빛.
     float transmittance;     // 뒤 배경빛의 생존 비율. 1=완전 투명, 0=완전 불투명.
     float representativeDepth; // 불투명도 가중 구름 깊이(m).
+#if defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+    float3 sampleLut;
+    float3 sampleDirect;
+    float depthSecondMoment; // km² 가중 합 (half 저장 범위 보호)
+    float firstDepthKm;
+    float lastDepthKm;
+    float4 depthBins; // 0~5 / 5~10 / 10~20 / 20km 이상 불투명도 기여
+#endif
 };
 
 // 단계 1 교차, 단계 2 noise와 단계 3 높이 적분이 사용한 대표값 진단 자료.
 struct CloudMarchDebug
 {
+#if defined(VCLOUD_TEST_NEAR_FAR)
+    float sampleCount;
+    float minDs;
+    float maxDs;
+    float lastDistance;
+    float termination; // 0=구간 완료, 1=early exit, 2=반복 한도
+#endif
     float entryDistance;   // 선택한 도메인의 진입을 0 이상으로 자른 거리(m).
     float exitDistance;    // Scene Depth로 제한된 실제 이탈 거리(m).
     float segmentLength;   // 실제 적분 구간 길이(m).
@@ -200,9 +223,30 @@ float Stage9ViewStep(float sampleDistance)
     float distanceBlend = smoothstep(
         kHighDistanceStepStartMeters, kHighDistanceStepEndMeters,
         sampleDistance);
-    return kHighViewStepMeters * lerp(
-        1.0, kHighFarStepMultiplier, distanceBlend);
+    float normalStep = kHighViewStepMeters * lerp(1.0, kHighFarStepMultiplier, distanceBlend);
+#if defined(VCLOUD_TEST_NEAR_STEP_METERS)
+    // 시험 전용: 5km까지 촘촘하게, 5~15km에서 기존 거리 step으로 복귀.
+    return lerp(VCLOUD_TEST_NEAR_STEP_METERS, normalStep, smoothstep(5000.0,15000.0,sampleDistance));
+#else
+    return normalStep;
+#endif
 }
+
+#if defined(VCLOUD_TEST_NEAR_FAR_SPHERE)
+// 진단 입력만 교체하고 아래의 실제 View 적분은 그대로 사용한다.
+CloudDensitySample NearFarSphereDensity(float3 p, float seconds, bool detail)
+{
+    CloudDensitySample s = (CloudDensitySample)0;
+    float r = length(p-float3(0,3200,-3000));
+    float support = r < 600 ? 1.0 : 0.0;
+#if VCLOUD_TEST_NEAR_FAR_SPHERE == 2
+    support = 1-smoothstep(450.0,600.0,r);
+#endif
+    s.baseDensity = s.finalDensity = support * 0.0005 / max(extinctionCoefficient,1e-8);
+    return s;
+}
+#define SampleCloudDensity NearFarSphereDensity
+#endif
 
 // [적분 전체] Scene depth로 끝을 자른 Planar 구간에서 앞→뒤 순서로 진행한다.
 // 출력 scattering=누적 선형 HDR RGB, transmittance=남은 배경 비율,
@@ -226,6 +270,10 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
     debugData.entryDistance = tStart;
     debugData.exitDistance = tEnd;
     debugData.segmentLength = segmentLength;
+#if defined(VCLOUD_TEST_NEAR_FAR)
+    debugData.minDs = 65504;
+    debugData.lastDistance = tStart;
+#endif
 
     // 1. 구간 중점 표본은 진단용이다. 실제 화면 빛은 아래 loop의 모든 유효 표본을 적분한다.
     // LUT 입사광과 phase는 한 ray에서 재사용해 중복 비용을 줄인다.
@@ -296,8 +344,11 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
     float extinction = max(extinctionCoefficient, 0.0);
     float opacityDepthMoment = 0.0;
     float opacityWeight = 0.0;
+#if defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+    CompositionAir compositionAir=EmptyCompositionAir();
+#endif
     uint safeMaxSteps = kHighMaximumViewSteps;
-#if defined(VCLOUD_TEST_VIEW_STEP_METERS)
+#if defined(VCLOUD_TEST_VIEW_STEP_METERS) || defined(VCLOUD_TEST_NEAR_STEP_METERS)
     safeMaxSteps = 4096u;
 #endif
     [loop]
@@ -314,6 +365,12 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             : fullStep;
         float marchLength = min(candidateStep, tEnd - cursor);
         float sampleDistance = cursor + 0.5 * marchLength;
+#if defined(VCLOUD_TEST_NEAR_FAR)
+        debugData.sampleCount += 1;
+        debugData.minDs = min(debugData.minDs,marchLength);
+        debugData.maxDs = max(debugData.maxDs,marchLength);
+        debugData.lastDistance = cursor + marchLength;
+#endif
         float3 samplePosition = rayOrigin + rayDirection * sampleDistance;
 
         // 4. 빈 Base 3개 뒤 큰 간격으로 탐색한다. 구름을 다시 찾으면 한 구간 되감아
@@ -345,10 +402,16 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             -sampledDensity * extinction * marchLength);
         debugData.viewOpticalDepth += sampledDensity * extinction * marchLength;
 
-        bool requiresLighting = debugMode == 0 ||
+        bool requiresLighting = debugMode == 0 || debugMode == 90 ||
             debugMode == 32 || debugMode == 53 || debugMode == 54 ||
             debugMode == 55 || debugMode == 57 || debugMode == 58 ||
             debugMode == 59 || debugMode == 60;
+#if defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+        requiresLighting=true;
+#endif
+#if defined(VCLOUD_TEST_AERIAL_SCALE_RUNTIME)
+        requiresLighting=true;
+#endif
         if (sampledDensity > 0.0 && requiresLighting)
         {
             LightMarchResult light = ComputeLightTransmittance(
@@ -383,13 +446,41 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             debugData.lightingDiagnosticWeight += lighting.diagnosticWeight;
             result.scattering += lighting.direct + lighting.skyAmbient +
                 lighting.groundBounce + lighting.multipleScattering;
+#if defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+            float3 contribution=lighting.direct+lighting.skyAmbient+lighting.groundBounce+lighting.multipleScattering;
+            float w=result.transmittance*(1-stepTransmittance);
+            result.sampleLut+=CompositionContribution(contribution,w,
+                SampleAtmosphereAerialTransmittance(compositionUv,sampleDistance),
+                SampleAtmosphereAerialRadiance(compositionUv,sampleDistance));
+            AdvanceCompositionAir(compositionAir,rayDirection,sampleDistance);
+            result.sampleDirect+=CompositionContribution(contribution,w,compositionAir.T,compositionAir.L);
+#endif
         }
         // 6. 이번 불투명도 기여=T앞*(1-Tstep). 거리 moment에 이 가중치를 사용해
         // 보이지 않는 깊은 표본이 대표 깊이를 과도하게 뒤로 밀지 않게 한다.
         float sampleOpacityContribution = result.transmittance *
             (1.0 - stepTransmittance);
+#if defined(VCLOUD_CLARITY_PROBE)
+        if (iteration==clarityStep || (clarityTarget>=0 && result.claritySample.x==0 &&
+            opacityWeight+sampleOpacityContribution>=clarityTarget && sampleOpacityContribution>0))
+            result.claritySample=float4(sampleDistance,sampleOpacityContribution,marchLength,result.transmittance);
+#endif
         opacityDepthMoment += sampleDistance * sampleOpacityContribution;
         opacityWeight += sampleOpacityContribution;
+#if defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+        float distanceKm=sampleDistance*.001;
+        result.depthSecondMoment+=distanceKm*distanceKm*sampleOpacityContribution;
+        if(sampleOpacityContribution>0)
+        {
+            if(result.firstDepthKm==0)result.firstDepthKm=distanceKm;
+            result.lastDepthKm=distanceKm;
+            // 통계는 실제 T 갱신 전후 차이를 누적해 작은 1-exp 상쇄 오차를 피한다.
+            precise float binNextT=result.transmittance*stepTransmittance;
+            precise float binOpacity=result.transmittance-binNextT;
+            result.depthBins+=binOpacity*float4(distanceKm<5,
+                distanceKm>=5 && distanceKm<10,distanceKm>=10 && distanceKm<20,distanceKm>=20);
+        }
+#endif
         result.transmittance *= stepTransmittance;
         cursor += marchLength;
 
@@ -410,6 +501,10 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
     }
 
     result.transmittance = saturate(result.transmittance);
+#if defined(VCLOUD_TEST_NEAR_FAR)
+    debugData.termination = cursor >= tEnd-1e-5 ? 0 :
+        (result.transmittance <= kHighTransmittanceThreshold ? 1 : 2);
+#endif
     result.representativeDepth = opacityWeight > 1e-6
         ? opacityDepthMoment / opacityWeight : sceneDistance;
     debugData.hit = 1.0;
@@ -679,6 +774,15 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
             max(maximumBaseLiftMeters, 1.0);
         return float4((saturate(normalizedLift) * marchDebug.hit).xxx, 1.0);
     }
+    // 불투명도 가중 대표거리의 승인된 2배 Air 조회. 실제 깊이 진단값은 유지한다.
+    if (debugMode == 91 || debugMode == 92)
+    {
+        bool visibleCloud = (1.0 - cloud.transmittance) > 1.0e-6;
+        float3 air = debugMode == 91
+            ? SampleAtmosphereAerialTransmittance(uv, CloudAerialLookupDepth(cloud.representativeDepth))
+            : SampleAtmosphereAerialRadiance(uv, CloudAerialLookupDepth(cloud.representativeDepth));
+        return float4(visibleCloud ? air : 0.0.xxx, visibleCloud ? 1.0 : 0.0);
+    }
     // 7. 모드 0: 안개가 더한 빛 + 안개를 통과한 배경빛으로 최종 합성한다.
     float3 background = hasGeometry
         ? sceneColorTexture.SampleLevel(pointClampSampler, uv, 0).rgb
@@ -686,17 +790,64 @@ float4 RenderCloudOutput(VSOut input, bool hasGeometry,
     float3 composite = ComposeStage14Atmosphere(
         uv, rayDirection, hasGeometry, background, sceneDistance,
         cloud.scattering, cloud.transmittance,
-        cloud.representativeDepth);
+        cloud.representativeDepth, debugMode == 90);
     return float4(max(composite, 0.0.xxx), 1.0);
 }
 
+// VCLOUD_LOCAL_CLARITY_HELPER
 // 최종 High 경로의 유일한 픽셀 셰이더 엔트리다.
 // [패스 지도] t0 Scene HDR/t1 depth + Weather/Noise/Shadow/LUT + b0~b10 → HDR target.
 // 1. 캐시 진단이면 해당 texture 표시. 2. Scene depth [0,1]로 물체 유무 판정.
 // 3. 월드 ray와 표면 거리(m) 복원. 4. Raymarch. 5. 대기/배경 합성.
 // 출력은 linear HDR이며 sRGB 변환은 다음 Tone Map에서 한 번만 수행한다.
+// VCLOUD_LOCAL_NEAR_FAR_HELPER
 float4 main(VSOut input) : SV_TARGET
 {
+#if defined(VCLOUD_CLARITY_PROBE)
+    return NearClarityProbe(input);
+#endif
+#if defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+    if(debugMode==120) return input.position.y<1 && input.position.x<5 ? CompositionContract((uint)input.position.x) : 0;
+    compositionUv=saturate(input.uv);
+    if(input.position.x<VCLOUD_TEST_ROI_X || input.position.x>=VCLOUD_TEST_ROI_X+VCLOUD_TEST_ROI_W ||
+       input.position.y<VCLOUD_TEST_ROI_Y || input.position.y>=VCLOUD_TEST_ROI_Y+VCLOUD_TEST_ROI_H) return 0;
+#endif
+#if defined(VCLOUD_TEST_NEAR_FAR_PROBE)
+    return NearFarProbe(input);
+#endif
+#if defined(VCLOUD_TEST_NEAR_FAR_ROI)
+    if(input.position.x<VCLOUD_TEST_ROI_X || input.position.x>=VCLOUD_TEST_ROI_X+VCLOUD_TEST_ROI_W ||
+       input.position.y<VCLOUD_TEST_ROI_Y || input.position.y>=VCLOUD_TEST_ROI_Y+VCLOUD_TEST_ROI_H) return 0;
+#endif
+#if defined(VCLOUD_TEST_BASE_WEATHER_SLICE)
+    // 진단 전용 직교 단면. 빈 공간도 원본 noise를 조회하며 HDR 채널을 CPU에서 분리한다.
+    float2 sliceUv = saturate(input.uv);
+    float3 p = float3((sliceUv.x-0.5)*24000.0,
+        cloudBoundsMin.y + VCLOUD_TEST_SLICE_HEIGHT * (cloudBoundsMax.y-cloudBoundsMin.y),
+        (sliceUv.y-0.5)*24000.0);
+#if VCLOUD_TEST_SLICE_VERTICAL
+    p = float3((sliceUv.x-0.5)*24000.0,
+        lerp(cloudBoundsMax.y,cloudBoundsMin.y,sliceUv.y),0.0);
+#endif
+    NoiseFieldSample n = SampleBaseShapeNoise(p,time);
+    WeatherSample w = SampleWeatherMap(p,time);
+    CloudDensitySample b = ComposeBaseCloudDensity(p,n,w);
+#if VCLOUD_TEST_SLICE_PACK == 0
+    return float4(n.value,RemapCoverage(n.value,coverage),w.coverage,
+        smoothstep(0.02,0.20,w.coverage));
+#elif VCLOUD_TEST_SLICE_PACK == 1
+    return float4(b.weatherThresholdDensity,b.baseDensity,
+        ShapeCloudDensity(b.baseDensity),SampleCloudDensity(p,time,true).finalDensity);
+#else
+    WeatherSample neutral = w;
+    neutral.coverage=1.0; neutral.densityModifier=1.0; neutral.localThicknessPotential=0.5;
+    // 일정 Base 0.65는 평균 대체가 아닌 명시적 제거 대조군이다.
+    NoiseFieldSample constantNoise=n; constantNoise.value=0.65;
+    return float4(ComposeBaseCloudDensity(p,n,neutral).baseDensity,
+        ComposeBaseCloudDensity(p,constantNoise,w).baseDensity,
+        EvaluateCommonVerticalProfile(b.localHeightFraction),w.densityModifier/1.5);
+#endif
+#endif
 #if defined(VCLOUD_TEST_SOLAR_REFERENCE_STEP)
 #if defined(VCLOUD_TEST_SOLAR_REFERENCE_FULL)
     solarReferencePixel = true;
@@ -718,10 +869,85 @@ float4 main(VSOut input) : SV_TARGET
         : cameraPos + rayDirection * farPlane;
     float sceneDistance = hasGeometry
         ? length(worldPosition - cameraPos) : farPlane;
+    if(debugMode>=93 && debugMode<=95)
+    {
+        // 구름 점유 여부는 미소 밀도 문턱에 의존한다. 거리 fade 전 값을 측정하는 진단 전용 적분.
+        float start=0.0,end=0.0,occupied=0.0,mass=0.0,first=0.0;
+        if(IntersectCloudVolume(cameraPos,rayDirection,sceneDistance,start,end))
+        {
+            float t=start;
+            [loop] for(uint i=0;i<4096 && t<end-1e-5;++i)
+            {
+                float ds=min(100.0,end-t);
+                float rho=SampleCloudDensity(cameraPos+rayDirection*(t+0.5*ds),time,true).finalDensity;
+                if(rho>0.001){if(occupied==0.0)first=t+0.5*ds;occupied+=ds;mass+=rho*ds;}
+                t+=ds;
+            }
+        }
+        float value=debugMode==93?occupied:(debugMode==94?mass/max(occupied,1e-6):first);
+        return float4(value.xxx,occupied>0.0?1.0:0.0);
+    }
     CloudMarchDebug marchDebug = (CloudMarchDebug)0;
     CloudResult cloud = (CloudResult)0;
     cloud = RaymarchCloud(
         cameraPos, rayDirection, sceneDistance, marchDebug);
+#if defined(VCLOUD_TEST_AERIAL_SCALE_RUNTIME)
+    // 하나의 같은 DXBC/같은 View 경로에서 공기 거리만 바꾼다. Alpha에는 원시 Cloud T.
+    testAerialScale=debugMode==122?1.5:(debugMode==123?2.0:1.0);
+    float3 scaleSurface=hasGeometry?sceneColorTexture.SampleLevel(pointClampSampler,uv,0).rgb:0;
+    return float4(ComposeStage14Atmosphere(uv,rayDirection,hasGeometry,scaleSurface,sceneDistance,
+        cloud.scattering,cloud.transmittance,cloud.representativeDepth),cloud.transmittance);
+#endif
+#if defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+    float3 surface=hasGeometry?sceneColorTexture.SampleLevel(pointClampSampler,uv,0).rgb:0;
+    float3 bg=ComposeStage14Atmosphere(uv,rayDirection,hasGeometry,surface,sceneDistance,0,1,0,true);
+    CompositionAir representativeAir=EmptyCompositionAir();
+    AdvanceCompositionAir(representativeAir,rayDirection,cloud.representativeDepth);
+    float airLookupDepth=cloud.representativeDepth;
+#if defined(VCLOUD_TEST_AERIAL_SCALE)
+    airLookupDepth*=VCLOUD_TEST_AERIAL_SCALE;
+#endif
+    float3 airT=SampleAtmosphereAerialTransmittance(uv,airLookupDepth);
+    float3 airL=SampleAtmosphereAerialRadiance(uv,airLookupDepth);
+    float tc=cloud.transmittance;
+    float3 color=ComposeStage14Atmosphere(uv,rayDirection,hasGeometry,surface,sceneDistance,
+        cloud.scattering,tc,cloud.representativeDepth);
+    if(debugMode==101)color=cloud.sampleLut+tc*bg;
+    if(debugMode==102)color=CompositionContribution(cloud.scattering,1-tc,representativeAir.T,representativeAir.L)+tc*bg;
+    if(debugMode==103)color=cloud.sampleDirect+tc*bg;
+    if(debugMode==104)return float4(cloud.representativeDepth*.001,
+        sqrt(max(cloud.depthSecondMoment/max(1-tc,1e-6)-pow(cloud.representativeDepth*.001,2),0)),
+        cloud.firstDepthKm,cloud.lastDepthKm);
+    if(debugMode==105)return float4(cloud.scattering,tc);
+    if(debugMode==106)return float4(bg,hasGeometry?1:0);
+    if(debugMode==107)return float4(airT,tc);
+    if(debugMode==108)return float4(airL,tc);
+    if(debugMode==109)return float4(representativeAir.T,tc);
+    if(debugMode==110)return float4(representativeAir.L,tc);
+    if(debugMode==111)return cloud.depthBins;
+    if(debugMode==112)color=cloud.scattering+tc*bg;
+    return float4(color,tc);
+#endif
+#if defined(VCLOUD_TEST_NEAR_FAR_RAW)
+    if(debugMode==32) return float4(marchDebug.accumulatedDirect,cloud.transmittance);
+    if(debugMode==53) return float4(marchDebug.accumulatedSky,cloud.transmittance);
+    if(debugMode==54) return float4(marchDebug.accumulatedGround,cloud.transmittance);
+    if(debugMode==55) return float4(marchDebug.accumulatedMultiple,cloud.transmittance);
+    if(debugMode==57) return float4(marchDebug.accumulatedSilverLining,cloud.transmittance);
+    if(debugMode==59) return float4(cloud.scattering,cloud.transmittance);
+    if(debugMode==56) return float4(cloud.representativeDepth.xxx,1-cloud.transmittance);
+    if(debugMode==91) return float4(SampleAtmosphereAerialTransmittance(uv,CloudAerialLookupDepth(cloud.representativeDepth)),1-cloud.transmittance);
+    if(debugMode==92) return float4(SampleAtmosphereAerialRadiance(uv,CloudAerialLookupDepth(cloud.representativeDepth)),1-cloud.transmittance);
+#endif
+#if defined(VCLOUD_TEST_NEAR_FAR_PACK)
+#if VCLOUD_TEST_NEAR_FAR_PACK == 0
+    return float4(cloud.transmittance,marchDebug.viewOpticalDepth,cloud.representativeDepth,1);
+#elif VCLOUD_TEST_NEAR_FAR_PACK == 1
+    return float4(marchDebug.sampleCount,marchDebug.minDs,marchDebug.maxDs,marchDebug.termination);
+#else
+    return float4(marchDebug.lastDistance,marchDebug.exitDistance,marchDebug.termination,1);
+#endif
+#endif
     return RenderCloudOutput(
         input, hasGeometry, rayDirection, cloud, marchDebug, sceneDistance);
 }

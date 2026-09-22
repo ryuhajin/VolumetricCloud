@@ -67,6 +67,12 @@ enum class CloudDebugMode : std::int32_t
     Stage12SurfaceTransmittance = 77,
     // Weather A/G가 전역 바닥에서 올린 로컬 컬럼 바닥 높이다.
     LocalBaseOffset = 81,
+    CloudWithoutAerial = 90,
+    AirTransmittanceAtCloud = 91,
+    AirRadianceAtCloud = 92,
+    OccupiedCloudLength = 93,
+    OccupiedCloudMeanDensity = 94,
+    FirstOccupiedCloudDistance = 95,
 };
 
 enum class Stage5WeatherPreset : std::int32_t

@@ -166,7 +166,7 @@ CPU `src/Stage13NoiseVolumeMath.h` ↔ HLSL `shaders/NoiseVolumeParameters.hlsli
 
 | 필드 | 단위 | 상태 | 역할 |
 |---|---|---|---|
-| `baseResolution`, `detailResolution` | texel/axis | 직접 사용/생성 계약 | 각각 128³, 32³. 현재 UI에서 변경 불가 |
+| `baseResolution`, `detailResolution` | texel/axis | 직접 사용/생성 계약 | 각각 128³, 64³. 현재 UI에서 변경 불가 |
 | `seed` | uint | 생성 계약 | Base/Detail 절차 생성 seed. 현재 UI 없음 |
 | `baseWorldSizeMeters` | m/cycle | 직접 사용 | Base XZ 반복 크기, F2/formation 저장 |
 | `baseVerticalWorldSizeMeters` | m/cycle | 직접 사용 | Base Y 반복 크기, F2/formation 저장 |
@@ -192,7 +192,7 @@ CPU `src/CloudShapeParameters.h` ↔ HLSL `shaders/CloudShapeParameters.hlsli`.
 | padding0/2/3/4 | 20/24/28/32 | CPU0, 예약 |
 | footprintCoverageInfluence | 36 | 0~1, F1 Height-based narrowing |
 | densityShaping | 40 | 0~1, View/Light 공통 밀도 곡선 |
-| padding1 | 44 | CPU0, 예약 |
+| detailCoreProtection | 44 | [0,1], 기본0. View Detail 몸체 보존 가중치 |
 
 `profile=smoothstep(0,bottom,h)*(1-smoothstep(top,1,h))*lerp(lower,1,smoothstep(start,end,h))`.
 Renderer reflection은 활성 필드 offset/크기도 검사한다. DensityShaping GPU probe는 공통 profile도 CPU와 대조한다.
@@ -242,7 +242,7 @@ CPU 원본은 `AtmosphereParameters`, `GroundLightingParameters`, `ToneMappingPa
 | `sunTintAndGroundBounce` | `Light.sunColor.r` | g | b | ground bounce | Light 재패킹 + Ground |
 | `groundAlbedoAndDebugExposure` | ground R | G | B | atmosphere debug exposure | Ground + F4 진단 |
 | `toneAndTime` | exposure EV | white balance K | time-of-day 호환값 | sun elevation deg | Tone + 호환/진단 |
-| `renderFlags` | 0 예약 | tone mode | atmosphere debug view | debug channel | Tone/F4 |
+| `renderFlags` | Cloud air 진단 0/91/92 | tone mode | atmosphere debug view | debug channel | Tone/F4 |
 | `transmittanceMultiSize` | 256 | 64 | 32 | 32 | LUT 크기 고정 |
 | `skyViewIrradianceSize` | 192 | 108 | 64 | 16 | LUT 크기 고정 |
 | `aerialDebugGeneration` | aerial size 32 | debug slice | max generation low32 | 0 | LUT 고정/진단 파생 |
@@ -330,7 +330,7 @@ Formation 저장/적용 경로에서는 3,000~160,000m다. `[권장 범위]`는 
 ### 방향광 개선 02: 공통 밀도 곡선
 
 b7 `densityShaping`은 float offset 40, 크기 4B, 범위 0~1이며 F1/Formation이 소유한다.
-b7 총 48B, offset 44의 padding1만 예약한다. CPU offsetof와 활성 셰이더 reflection을 검사한다.
+b7 총 48B, offset 44는 densityTransitionWidth(기본1)이다. CPU offsetof와 활성 셰이더 reflection을 검사한다.
 `F(q,s)=lerp(q,smoothstep(0,0.4,q),s)`; s=0은 raw q를 그대로 반환한다.
 View는 기존 Detail 침식 후, Light는 기존 Base 조립 후 적용한다. 침식 문턱은 raw Base로 유지한다.
 매 프레임 b7 업로드와 기존 Shadow 적분 경로를 사용하며 새 texture/step은 없다.
@@ -427,3 +427,16 @@ Concept은 해당 조명 기본값(현재 Rim2/1)을 적용하고 Type은 기존
 2026-09-18: 현재 계약은 Custom4/snapshot43. 아래 과거 schema3/42 기록은 당시 단계 이력이다. Weather G는 생성/조회하지 않고 UNORM128 예약값이며 R/B/A만 활성이다.
 
 2026-09-18 슬롯 프리셋: CPU 저장 소유권만 분리하고 모든 CB 크기/필드/슬롯을 유지한다. F4 저장은 padding·directionToSun·캐시 위치 등 파생값을 제외한다. snapshot44, formation schema4, lighting schema1.
+
+## 2026-09-18 구름 거리 대기 진단 (01)
+CloudDebugMode90=Cloud without aerial perspective,91=Air T at cloud depth,92=Air L at cloud depth. 기존82/83 등 폐기 번호는 보존한다. 일반0은 기존 경로이며90도 동일 구름 조명과 Tone을 적용하되 구름 앞 airL/airT만 제외한다. 하늘/지면의 기존 대기는 유지한다.
+Stage14CB224B renderFlags offset160의 x(uint)는 기존예약0에서0/91/92로 사용한다. 일반 및90에서는0이며, y/z/w와 다른 offset은 유지한다. CPU GpuParameters와 HLSL을 함께 갱신했다.91/92는 Cloud HDR RGB에 실제 대표 거리의 airT/airL, alpha에 유효 구름 불투명도 여부(1-Tcloud>1e-6)를 쓴다. Tone은 이 두 모드에서 기존 ValidateAndExposeDebug를 사용하고 EV/WB/ACES를 우회한다. 무기여 픽셀은 화면 회색. 구름 대표 깊이는 불투명도 기여 가중 평균이고 첫 표면 깊이가 아니다. 화면 지표와 별개로 rgba16f는 선형 원자료다.
+
+2026-09-18: NoiseVolumeCB(b6) detailResolution의 일반 고정값은 사용자 승인64로 변경됐다.96B ABI는 동일하며32는 비교 실행기에서만 사용한다. Stage14CB(b9)의 기존 Mie 높이는 F3 UI에서0.5~4km로 편집하며 필드·224B ABI는 변경하지 않는다.
+
+2026-09-19: b9 renderFlags.x(160)는0/91~95로확장.93길이m/94평균밀도/95첫거리m. HDR alpha는점유여부. Tone고정선형표시,ABI유지.
+
+
+2026-09-21: b7 offset44는 float `detailCoreProtection` [0,1], 기본0으로 변경. CPU CloudShapeParameters/HLSL CloudShapeCB 총48B와 나머지 offset은 유지한다. 기존 densityTransitionWidth의 UI/수식/출력은 제거했고 옛JSON필드는 무시한다. Formation4 선택필드 detailCoreProtection(누락0), snapshot44 동일필드 기록. View Detail 침식에만 Eold*(1−protection*core)를 적용하며 Base 태양 차폐는 유지한다.0.65는 과거35%후보이다.
+
+2026-09-22: 사용자 승인으로 구름 합성 및91/92 Air T/L은 대표거리2배에서 조회한다. Cloud Depth 자체는 실제거리이며, 90대기제외/하늘/지면은 유지한다. CB크기/번호는 그대로다.

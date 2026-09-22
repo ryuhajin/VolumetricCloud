@@ -84,6 +84,14 @@ public:
     LightingPresetSettings CurrentLightingPreset() const;
     void LoadUserPresetDefaults();
     bool RunPresetSlotDiagnostics(Camera& camera, bool capture);
+    bool RunDetailCoreSliderSmoke(Camera& camera);
+    bool RunBaseCandidateUiSmoke(Camera& camera);
+    bool RunCloudPathLengthDiagnostics(Camera& camera);
+    bool RunCloudNearFarDiagnostics(Camera& camera);
+    bool RunCloudAerialCompositionDiagnostics(Camera& camera);
+    bool RunCloudNearClarityDiagnostics(Camera& camera);
+    bool RunCloudDetailBandsDiagnostics(Camera& camera, bool spectrum = false);
+    bool ApplyBaseCandidate(int candidate);
 
     bool LoadCustomFormation();
     CloudFormationSettings CurrentCloudFormation() const;
@@ -292,19 +300,6 @@ public:
     }
     bool ValidateNoiseLabPreviews();
     bool ExportNoiseLabSnapshot(const std::filesystem::path& root);
-    // 명시적 테스트 실행에서만 사용. 일반 UI/렌더 preset에는 촬영 경로를 추가하지 않는다.
-    bool RunDirectionalLightingBaseline(Camera& camera,
-        const std::filesystem::path& root, bool verifyOnly, bool finalApproved = false);
-    bool RunDirectionalLightingDiagnostics(Camera& camera);
-    bool RunDensityShapingDiagnostics(Camera& camera);
-    bool RunBaseOctaveDiagnostics(Camera& camera);
-    bool RunLightingTuningDiagnostics(Camera& camera);
-    bool RunSolarOcclusionDiagnostics(Camera& camera);
-    bool RunSolarBandingDiagnostics(Camera& camera);
-    bool RunSolarTransitionDiagnostics(Camera& camera);
-    bool RunRimLightingDiagnostics(Camera& camera);
-    bool RunRimBoundaryDiagnostics(Camera& camera);
-    bool RunFarHeightStability(Camera& camera, const std::filesystem::path& root);
     bool SetRimPhaseCapForValidation(float cap);
     bool SetShadowHeightRefinementForValidation(bool enabled, bool farOnly = false);
     bool SetBaseOctaveExtraForValidation(float extra)
@@ -587,6 +582,8 @@ private:
     ComPtr<ID3D11PixelShader> m_toneMapPs;
     ComPtr<ID3D11ComputeShader> m_weatherMapCs;
     ComPtr<ID3D11ComputeShader> m_noiseBaseCs;
+    int m_baseCandidate=0;
+    std::string m_baseCandidateStatus="Original Base active";
     ComPtr<ID3D11ComputeShader> m_noiseDetailCs;
     ComPtr<ID3D11ComputeShader> m_deepShadowCs;
     ComPtr<ID3D11ComputeShader> m_atmosphereTransmittanceCs;
