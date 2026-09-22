@@ -212,11 +212,21 @@ if (shouldApplyDetail)
 {
     NoiseFieldSample detail = SampleDetailErosionNoise(
         worldPosition, timeSeconds);
-    float boundary = 1.0 - smoothstep(0.45, 0.90, sample.baseDensity);
-    sample.erosion = detail.value * detailErosionStrength * boundary;
-    sample.finalDensity = saturate(sample.baseDensity - sample.erosion);
+    float S = saturate(sample.weatherThresholdDensity);
+    float A = insideColumn * weatherSupport * verticalProfile
+              * densityMultiplier * weatherDensity;
+    float e = detail.value * detailErosionStrength
+              * (1.0 - smoothstep(0.45, 0.90, S))
+              * (1.0 - detailCoreProtection * core);
+    float carved = e >= 1.0 ? 0.0 : saturate((S - e) / max(1.0 - e, 1e-6));
+    sample.finalDensity = saturate(A * carved);
 }
 ```
+
+위 코드는 의미를 보여 주는 축약식이다. 2026-09-22 사용자 채택으로 Detail은 형상의
+`[e,1]→[0,1]` remap 후 밀도 배율을 적용한다. 최종 shaping, Base 태양 차폐와 High는 유지한다.
+외곽 표현의 선호에 따른 채택이며 근경 선명도 해결 판정은 아니다.
+문제·해결·남은 한계는 [근경 선명도 기록](changes/stage15-cloud-near-clarity.md)을 따른다.
 
 ## 4. 뷰 레이마칭
 
@@ -486,3 +496,10 @@ F5: 지상 눈높이1.7m, (0,1.7,180)→(0,60,-200). F6: 기존 GroundHorizon �
 ## 2026-09-18 구름 거리 대기 진단 (01)
 CloudDebugMode90=Cloud without aerial perspective,91=Air T at cloud depth,92=Air L at cloud depth. 기존82/83 등 폐기 번호는 보존한다. 일반0은 기존 경로이며90도 동일 구름 조명과 Tone을 적용하되 구름 앞 airL/airT만 제외한다. 하늘/지면의 기존 대기는 유지한다.
 Stage14CB224B renderFlags offset160의 x(uint)는 기존예약0에서0/91/92로 사용한다. 일반 및90에서는0이며, y/z/w와 다른 offset은 유지한다. CPU GpuParameters와 HLSL을 함께 갱신했다.91/92는 Cloud HDR RGB에 실제 대표 거리의 airT/airL, alpha에 유효 구름 불투명도 여부(1-Tcloud>1e-6)를 쓴다. Tone은 이 두 모드에서 기존 ValidateAndExposeDebug를 사용하고 EV/WB/ACES를 우회한다. 무기여 픽셀은 화면 회색. 구름 대표 깊이는 불투명도 기여 가중 평균이고 첫 표면 깊이가 아니다. 화면 지표와 별개로 rgba16f는 선형 원자료다.
+
+2026-09-22: 사용자 승인으로 구름 합성 및91/92 Air T/L은 대표거리2배에서 조회한다. Cloud Depth 자체는 실제거리이며, 90대기제외/하늘/지면은 유지한다. CB크기/번호는 그대로다.
+
+2026-09-22: Detail 생성 기본값은 무보정 Worley fBm이다. CPU 컴파일 래퍼가 CSDetail에만
+VCLOUD_TEST_DETAIL_SPECTRUM=1을 전달하고64³ RGBA8에 각 채널 f/2f/4f의.625/.25/.125 합을 쓴다.
+같은 t4 조회→승인 정규화 remap→High 적분을 사용하며 침식량.982 보정은 일반에 없다.
+CSBase/태양 차폐와 상수버퍼·프리셋 schema는 유지한다. 선택 및 한계는 E18 기록을 참조한다.

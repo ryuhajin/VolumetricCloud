@@ -1,5 +1,9 @@
 # High Planar Cloud 레이마칭
 
+2026-09-22 명시적 진단은 같은 View 표본에서 `Σ(Tair(d_i)*c_i + Lair(d_i)*w_i)+Tcloud*background`를
+현재 대표거리 합성과 비교한다. `c_i`는 앞 구름T/구간적분을 이미 포함하고 `w_i=Tbefore*(1-Tstep)`이다.
+일반 수식 변경이 아닌 조건부 테스트이며 [직접 적분/범위](changes/stage15-cloud-aerial-composition.md)를 따른다.
+
 현재 셰이더는 meter 단위 Planar layer 하나를 Full resolution에서 추적한다. Stage 1의 AABB 수학은 CPU 학습 테스트로만 남고 런타임 선택지가 아니다.
 
 패스와 실제 심볼을 먼저 따라가려면 [렌더링 파이프라인 가이드](RENDERING_PIPELINE_GUIDE.md),
@@ -100,10 +104,17 @@ baseDensity = insideColumn × weatherSupport × threshold
 
 ```text
 detailUVW = frac(stationaryWorld / detailWorldSize + detailOffset)
-boundary  = 1 - smoothstep(0.45, 0.90, baseDensity)
-erosion   = detailNoise × detailStrength × boundary
-finalDensity = saturate(baseDensity - erosion)
+S = saturate(threshold)
+A = insideColumn × weatherSupport × verticalProfile × densityMultiplier × weatherDensity
+boundary = 1 - smoothstep(0.45, 0.90, S)
+e = detailNoise × detailStrength × boundary × (1 - protection × core)
+carved = e >= 1 ? 0 : saturate((S - e) / max(1 - e, 1e-6))
+finalDensity = saturate(A × carved)
 ```
+
+2026-09-22 사용자 채택식이다. `[e,1]` 형상 구간을 `[0,1]`로 펼치고 밀도 배율을 뒤에 적용한다.
+Detail을 생략하면 기존 Base를 그대로 반환하며 마지막 공통 shaping은 유지한다.
+과거 감산식은 명시적 진단 정의0에 남겨 비교한다. 근경 선명도는 미해결 상태다.
 
 모든 거리에서 같은 Detail 경로를 사용한다. 거리 LOD나 fade는 없다.
 
@@ -280,3 +291,30 @@ CPU F3/Concept → LightParameters sanitize → b3 → PhaseFunction의 P0/Prim 
 ### 테스트 전용 Powder
 
 VCLOUD_TEST_POWDER_STRENGTH가 있을 때만 기본 직접광에 weight를 곱한다. curve=saturate(2*(1-exp(-4*finalDensity))), angle=1-smoothstep(-.5,.5,cosTheta), weight=lerp(1,curve,strength*angle). finalDensity는 기존 Detail 침식과 density shaping 이후 샘플 밀도이며 ds를 곱하지 않는다. cosTheta는 카메라→표본과 표본→태양의 내적이다. 순광에서 낮은 밀도 부분을 감광하고 역광에서는 중립이다. Direct=BaseDirect*weight+Rim이며 Sky/Ground/Multiple과 밀도·투과율은 그대로다. 곡선4와 강도는 미승인 실험값으로 일반 렌더에는 적용하지 않는다.
+
+### Stage15 거리별 View 적분 시험
+일반 High의 s(d)=100*lerp(1,1.25,smoothstep(24000,50000,d))m는 유지한다.
+시험 매크로 VCLOUD_TEST_NEAR_STEP_METERS가 있을 때 s_test(d)=lerp(s_near,s(d),smoothstep(5000,15000,d))이며 s_near=50 또는25m. d는 ray cursor이고 구름 대표깊이가 아니다. 밀도는 그대로 두며 Beer-Lambert의 실제 marchLength 가중도 유지한다. 시험 반복한도4096은 작은step에512를그대로 적용할 때 추적거리가 줄어드는 혼동을 피하기 위한 여유다. 일반512는 불변이며 채택은 화면·성능 비교 뒤 결정한다.
+
+### Base 재매핑 테스트 전용 (2026-09-19)
+--cloud-base-remap-test는 기존 d=saturate((n-(1-c))/c)에서 문턱이동 d=saturate((n-(1-c)-0.05)/c), 또는 raw 대비 n'=saturate(0.65+2*(n-0.65))를 독립 비교한다. c는 기존 Weather/footprint가 적용된 유효 coverage다. 중간 옥타브는 생성기의 주파수9/17 가중치배수1.5를2.5로 바꾸되 총가중치 정규화는 유지한다. View/Light/Deep이 같은 n과 d를 쓰고 Beer-Lambert의 sigma/ds는 바꾸지 않는다. macro 없는 일반경로는 동일하다.
+
+Detail 코어보존(테스트전용): k=smoothstep(.15,.40,Weather문턱통과밀도)*smoothstep(.15,.75,높이profile)*WeatherSupport. 가중치후보E=Eold*lerp(1,.35,k),상한후보E=min(Eold,Base*lerp(1,.35,k)). 이후기존saturate(Base-E)/shaping. 코어추정은SDF가아니며카메라거리와독립. Base0은0유지. 일반High/그림자/기본식불변.
+
+
+2026-09-21: 런타임Detail몸체보호는 E=Eold*(1−p*core), p∈[0,1](기본0). core근사는기존비교식과동일하며.65가이전35%감산후보를재현한다. 밀도전이폭재매핑은사용자요청으로제거했다. 거리보정/형상두께수정/태양Detail차폐는없다.
+
+
+2026-09-22 승인된 구름 대기 합성은 d_air=2*d_rep에서 T_air/L_air를 함께 조회한다. 실제 ray 거리와 Cloud T는 바꾸지 않는다. 구름 전용 예술적 보정이며 대기 제외는 그대로 C+Tc*B다.
+
+근경진단: S=coverage remap형상, A=높이·Weather·밀도곱. 후보1은Shape(saturate(A*saturate(S-e))), 후보2는Shape(saturate(A*saturate((S-e)/(1-e)))); e≥1이면0. e는S로계산한경계가중치/기존몸체보호를쓴다. 태양비교는High누적불투명도의25/50/75%실제표본을고르고같은태양광선을12.5/6.25m로적분한다. 25m시선계보는분석전용이며일반Viewstep후보가아니다.
+
+E17 시험 전용 대역 결합: q=strength·boundary(S)·(1−protection·core), 기존 e=q·Σ(w_i n_i),
+연속 remap의 유효 문턱 e=1−∏(1−saturate(k q w_i n_i)). 동일한 S/A/shaping을 적용한다.
+k=1과 고정 단면의 shaping 후 평균 제거량을 맞춘 k를 비교하며 일반 수식은 가중합 remap을 유지한다.
+
+E18 시험 전용 원본 주파수: n'_i=.625 W(f_i)+.25 W(2f_i)+.125 W(4f_i), f_i=2/3/4/5 cycle/2km.
+각 W는 같은 채널 seed/주기 wrap을 사용한다. e=k q saturate(Σw_i n'_i), 나머지는 승인 remap 그대로다.
+최대20cycle/tile은 voxel Nyquist32보다 작지만 Worley는 대역 제한 함수가 아니고,
+High100m 적분의 화면 안정성도 보장하지 않는다. 2026-09-22 사용자 채택으로 일반은 위 fBm에 k=1이다.
+실험2의 제거량 보정 k≈.981983208은 일반에 적용하지 않는다.

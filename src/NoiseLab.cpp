@@ -89,6 +89,9 @@ const char* DebugName(CloudDebugMode mode)
     case CloudDebugMode::CloudWithoutAerial: return "Cloud without aerial perspective";
     case CloudDebugMode::AirTransmittanceAtCloud: return "Air T at cloud depth";
     case CloudDebugMode::AirRadianceAtCloud: return "Air L at cloud depth";
+    case CloudDebugMode::OccupiedCloudLength: return "Occupied cloud length";
+    case CloudDebugMode::OccupiedCloudMeanDensity: return "Mean density in occupied cloud";
+    case CloudDebugMode::FirstOccupiedCloudDistance: return "Distance to first occupied cloud";
     case CloudDebugMode::AccumulatedDirectLighting: return "Direct";
     case CloudDebugMode::AccumulatedSkyAmbient: return "Sky";
     case CloudDebugMode::AccumulatedGroundBounce: return "Ground";
@@ -117,6 +120,9 @@ constexpr CloudDebugMode kCloudDiagnosticModes[] = {
     CloudDebugMode::CloudWithoutAerial,
     CloudDebugMode::AirTransmittanceAtCloud,
     CloudDebugMode::AirRadianceAtCloud,
+    CloudDebugMode::OccupiedCloudLength,
+    CloudDebugMode::OccupiedCloudMeanDensity,
+    CloudDebugMode::FirstOccupiedCloudDistance,
     CloudDebugMode::AccumulatedDirectLighting,
     CloudDebugMode::AccumulatedSkyAmbient,
     CloudDebugMode::AccumulatedGroundBounce,
@@ -527,6 +533,8 @@ void NoiseLab::DrawFormationPanel(
         &shape.densityShaping, 0.0f, 1.0f, "%.2f");
 
     ImGui::SeparatorText("Cloud Local");
+    edited |= FormationSliderFloat("Detail core protection", &shape.detailCoreProtection, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normalized shape remap. 0 = no core protection. 0.65 = 35% erosion in inferred cores. 1 = no erosion in full cores. Save Preset stores this slot only. Base shadows unchanged.");
     auto& column = weather.column;
     edited |= FormationSliderFloat("Cloud min thickness", &column.minimumThicknessMeters,
         1.0f, column.maximumThicknessMeters, "%.0f m", ImGuiSliderFlags_Logarithmic);
@@ -652,7 +660,18 @@ void NoiseLab::DrawWeatherMapPanel(
         return;
     }
     ImGui::SeparatorText("Base / Detail Noise Scale");
-    ImGui::TextDisabled("Base mid octaves: %.2fx (approved)", 1.0f + noiseVolume.baseMidOctaveExtra);
+    ImGui::SeparatorText("Temporary Base comparison");
+    const char* baseCandidates[]={"Original", "Threshold +0.05", "Contrast x2 (pivot 0.65)",
+        "Mid octaves x2.5", "Contrast x2 + Mid x2.5"};
+    int baseCandidate=m_baseCandidate;
+    if(ImGui::Combo("Base candidate", &baseCandidate, baseCandidates, 5))
+        m_baseCandidateRequest=baseCandidate;
+    if(ImGui::Button("Restore original Base"))m_baseCandidateRequest=0;
+    ImGui::TextDisabled("Session only; Save Preset does not save this candidate.");
+    ImGui::TextDisabled("View step unchanged: High 100m / 512, far 100-125m.");
+    if(!m_baseCandidateStatus.empty())ImGui::TextWrapped("%s",m_baseCandidateStatus.c_str());
+    ImGui::TextDisabled("Base mid octaves: %.2fx%s", m_baseCandidate>=3?2.5f:1.0f+noiseVolume.baseMidOctaveExtra,
+        m_baseCandidate>=3?" (temporary)":" (original)");
     if (ImGui::Button("Regenerate Base and Detail"))
         m_noiseVolumeRegeneratePending = true;
     ImGui::Text("Base hash: %016llx",
@@ -780,6 +799,14 @@ void NoiseLab::DrawLightingPanel(
     ImGui::SeparatorText("Atmosphere");
     edited |= ImGui::SliderFloat("Turbidity",
         &atmosphere.turbidity, 0.25f, 4.0f, "%.3f");
+    edited |= ImGui::SliderFloat("Mie scale height (km)",
+        &atmosphere.mieScaleHeightKm, 0.5f, 4.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Higher values retain more haze at cloud altitude. Affects clouds, sky, ground and the sun halo.");
+    edited |= ImGui::SliderFloat("Mie anisotropy (g)",
+        &atmosphere.mieG, 0.0f, 0.95f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Lower values reduce the concentration of atmospheric light around the sun. Does not change air extinction or cloud phase.");
     edited |= ImGui::SliderFloat("Rayleigh scale",
         &atmosphere.rayleighScale, 0.25f, 4.0f, "%.3f");
     edited |= ImGui::SliderFloat("Ozone scale",
@@ -881,11 +908,13 @@ void NoiseLab::DrawDiagnosticsPanel(
     }
 
     const auto selectedCloudMode = static_cast<CloudDebugMode>(cloud.debugMode);
+    if(cloud.debugMode>=93 && cloud.debugMode<=95)
+        ImGui::TextWrapped("Diagnostic only: fixed 100m samples, no early exit/empty skip; rho > 0.001. All occupied segments summed, including hidden clouds. Cyan=no occupied cloud. Length/distance: black=0, white=10km or more; mean density: black=0, white=1 or more. Physical density before far fade. Tone bypassed; not a near/far classification.");
     if (selectedCloudMode == CloudDebugMode::CloudWithoutAerial)
         ImGui::TextWrapped("Cloud air attenuation/scattering removed; cloud lighting, sky, ground air and tone remain. Compare with Composite at the same camera.");
     else if (selectedCloudMode == CloudDebugMode::AirTransmittanceAtCloud ||
              selectedCloudMode == CloudDebugMode::AirRadianceAtCloud)
-        ImGui::TextWrapped("Actual opacity-weighted cloud depth. Air T: white=clear, dark=attenuated. Air L: added air light (F4 Debug exposure/channel). Gray=no cloud opacity. Exposure EV/white balance/ACES bypassed.");
+        ImGui::TextWrapped("Cloud air lookup at 2x opacity-weighted depth (same as Composite). Cloud Depth still shows actual distance. Air T: white=clear, dark=attenuated. Air L: added air light (F4 Debug exposure/channel). Gray=no cloud opacity. Exposure EV/white balance/ACES bypassed.");
     if (selectedCloudMode == CloudDebugMode::LightTransmittance)
         ImGui::TextWrapped("Key 9 samples ONE segment midpoint, which may be empty. Use Visible Sun T for the clouds you can see.");
     else if (selectedCloudMode == CloudDebugMode::VisibleSunTransmittance)
@@ -1370,6 +1399,7 @@ bool NoiseLab::WriteMetadata(
         << formation.weather.column.maximumBaseLiftMeters << ",\n"
         << "      \"footprintCoverageInfluence\": "
         << formation.shape.footprintCoverageInfluence << ",\n"
+        << "      \"detailCoreProtection\": " << formation.shape.detailCoreProtection << ",\n"
         << "      \"densityShaping\": " << formation.shape.densityShaping << "\n"
         << "    },\n"
         << "    \"domainBottomMeters\": " << formation.domainBottomMeters
@@ -1406,6 +1436,7 @@ bool NoiseLab::WriteMetadata(
         << ", \"rimIntensity\": " << light.rimIntensity
         << ", \"rimDepthScale\": " << light.rimDepthScale
         << ", \"rimPhaseCap\": " << m_rimComparisonCap
+        << ", \"temporaryBaseCandidate\": " << m_baseCandidate
         << ", \"multipleAttenuation\": " << environment.multipleScatteringAttenuation
         << ", \"skyFill\": " << environment.physicalSkyFillScale
         << ", \"groundFill\": " << environment.physicalGroundFillScale

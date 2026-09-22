@@ -1,5 +1,13 @@
 # 아키텍처
 
+일반 실행과 로컬 검증의 현재 연결은 [빌드 안내](BUILDING.md)를 따른다.
+일반 main/Renderer는 tests 없이 연결된다. 검사 main과 readback은 별도 로컬 검사 앱에만 연결하며
+일반 셰이더의 literal include closure에는 검사 helper가 없다. 렌더 파이프라인/CB ABI/승인 기본값은 동일하다.
+
+2026-09-22 대기 합성 진단은 `CloudAerialComposition.inl`/`CloudAerialComposition.hlsli`에서 기존
+PS 바인딩과 RGBA16F 캡처를 재사용한다. CPU/GPU CB와 일반 패스/프리셋 스키마는 변경하지 않는다.
+`VCLOUD_TEST_AERIAL_COMPOSITION`/`VCLOUD_TEST_AERIAL_SCALE`은 명시적 테스트 컴파일에만 들어간다.
+
 ## 2026-09-18 독립 프리셋 소유권
 
 일반 시작은 Cumulus+F4 3이다. F1/F2 형상과 F3/F4 조명·환경은 독립 슬롯이며 양쪽 Save Preset으로 선택 슬롯 JSON에 저장한다. LightingPresetSettings/LightingPresetStore가 조명 물리 값과 Tone을 소유하고 CloudFormationPresetStore는 세 타입+Custom을 저장한다. 기존 0~2 scene descriptor는 역사적 진단 전용이다. F4 적용은 formation/Weather/편집 상태를 보존한다. CB ABI와 Deep Cache512·80/79는 유지하고 기존 dirty 의존성으로 LUT/cache를 갱신한다. snapshot44, formation4, lighting1이다. 파일·실패·Custom 일회 초기화 계약은 [슬롯 변경 기록](changes/stage15-cloud-quality-followups.md)을 따른다.
@@ -128,7 +136,7 @@ CPU 테스트 가능한 계약으로 고정한다.
 | HDR Cloud | 창 크기 `RGBA16_FLOAT` | Cloud PS | Tone Map PS |
 | Weather Map | 256² `RGBA8_UNORM` | 8×8 Weather Map CS → 임시 UAV → `CopyResource` | Cloud/Deep Shadow/NoiseLab |
 | Base Noise | 128³ `RGBA8_UNORM` | Noise Volume CS | Cloud/Deep Shadow/NoiseLab |
-| Detail Noise | 32³ `RGBA8_UNORM` | Noise Volume CS | Cloud/NoiseLab |
+| Detail Noise | 64³ `RGBA8_UNORM` | Noise Volume CS | Cloud/NoiseLab |
 | Near Deep Cache | 512²×80 `R32_FLOAT` | Deep Shadow CS | Cloud/Scene |
 | Far Deep Cache | 512²×40 `R32_FLOAT` | Deep Shadow CS | Cloud/Scene |
 | Atmosphere LUT 2D | 256×64, 32×32, 192×108, 64×16 `RGBA16_FLOAT` | Atmosphere CS | Scene/Cloud/Tone |
@@ -340,3 +348,35 @@ Stage14CB224B renderFlags offset160의 x(uint)는 기존예약0에서0/91/92로 
 
 ### 테스트 전용 Detail 해상도 비교
 --cloud-detail-resolution-test는 기존 NoiseVolumeCB96B의 detailResolution으로 CSDetail을32³/64³ 생성하고 실제 GPU 리소스 및 반복 생성 동일성을 확인한다. 일반32³, b6 ABI, JSON schema와 런타임 렌더 수식은 유지한다. 기존 GenerateNoiseVolumes 경로를 사용하며 Base hash 불변과 원본 리소스 복원 후 Composite tolerance를 검증한다.
+
+2026-09-18 후속 승인: 일반 Detail은64³ RGBA8(1MiB)다. 위의32³ 유지 설명은 이전 비교 시점 기록이다. Mie scale height UI는 기존 AtmosphereParameters→b9→LUT dirty/hash→Aerial 합성 경로를 그대로 사용한다. --cloud-aerial-tuning-test는 로컬 후보 JSON과9조합을 생성하며 원본을 수정하지 않는다.
+
+2026-09-19: b9 Mie g의 CPU 기본값은 사용자 승인0.3이다. ABI/필드 배치 변경은 없고 환경3 JSON도0.3으로 저장했다.
+
+2026-09-19: b9의 Mie density scale height 기본2km(사용자 승인). CPU/HLSL 배치와 LUT 규격은 유지한다.
+
+b7 후속(2026-09-19): offset44의 padding1을 float densityTransitionWidth로 사용한다. 범위[0.05,1], 기본1(기존룩), 총48B와 나머지 offset은 동일하다. CPU CloudShapeParameters↔HLSL CloudShapeCB 동기화. 공통 ShapeCloudDensity가 기존 shaping 후 약한 밀도q<0.2를 압축하며 View/Base shadow 양쪽 적용. Formation4 선택JSON필드(누락1)와 snapshot44 기록.
+
+2026-09-19: renderFlags.x offset160은0/91~95. 93~95는점유길이/평균밀도/첫거리로HDR RGB는원시미터/밀도,alpha점유여부. Tone선형표시(길이/거리10000m,밀도1),청록무점유. CB크기224B/offset변경없음.
+
+
+2026-09-21: b7 offset44는 float `detailCoreProtection` [0,1], 기본0으로 변경. CPU CloudShapeParameters/HLSL CloudShapeCB 총48B와 나머지 offset은 유지한다. 기존 densityTransitionWidth의 UI/수식/출력은 제거했고 옛JSON필드는 무시한다. Formation4 선택필드 detailCoreProtection(누락0), snapshot44 동일필드 기록. View Detail 침식에만 Eold*(1−protection*core)를 적용하며 Base 태양 차폐는 유지한다.0.65는 과거35%후보이다.
+
+
+구름 대기 조회 거리: 2026-09-22 사용자 승인으로 CloudAerialLookupDepth가 대표거리의 2배를 Air T/L에 공통 적용한다. 배경/지면 및 실제 깊이 값은 유지하며 CB 필드 추가는 없다.
+
+## 근경 선명도 진단(2026-09-22)
+후속 `--cloud-detail-bands-test`는 같은 Texture3D의 네 채널을 합/곱 문턱으로 비교한다.
+`VCLOUD_TEST_DETAIL_BANDS`/`VCLOUD_TEST_DETAIL_BAND_SCALE`은 시험 정의이며 일반에는 없다.
+CloudNearClarity probe5/6은 실제 High 가시 위치에 고정한 XY/XZ/YZ 단면과 중심을 출력한다.
+CPU 보정은 한 계수만 정하고 실제 GPU 밀도로 재확인한다. CB/UI/리소스/schema 추가 없음.
+
+2026-09-22 사용자 채택으로 `CompileShaderFromFile`은 CSDetail에만 `VCLOUD_TEST_DETAIL_SPECTRUM=1`을 기본 전달한다.
+각 채널은 기존 Worley f에2f/4f를 .625/.25/.125로 합친다. CSBase는 정의를 추가하지 않으며 기존 hash를 보존한다.
+`--cloud-detail-spectrum-test`는 정의0으로 옛 단일 Worley64³ RGBA8/SRV를 임시 생성해 비교한다.
+일반=후보1(무보정 fBm)을 검증한다. 캐시 키와 핫리로드에도 정의가 반영된다.
+`VCLOUD_TEST_DETAIL_EROSION_SCALE`은 평균 제거량을 맞출 시험용 계수이며 일반에는 없다.
+원래 Detail 리소스/SRV/hash는 참조로 보존하고 실패/정상 종료 모두 복원한다.
+상수버퍼/UI/프리셋 schema/일반 프레임 리소스 구성은 그대로다.
+
+명시적 --cloud-near-clarity-test는 기존 Renderer/High를 재사용한다. VCLOUD_TEST_NEAR_CLARITY(0/1/2)는 침식 비교 정의이며, 2026-09-22 사용자 채택 후 일반 기본식은2(remap)다. 옛 코어 시험 정의만 있는 경우는 역사적 감산 경로를 유지한다. CloudNearClarity.hlsli가 인접광선/실제High/태양참조를 읽는다. 새GPU리소스/CB/UI/schema는없다. 진단실행기는 CPU상태·PS·DeepCS·원본8프리셋을보존하고 일반화면을복원한다. 일반식=후보2, ROI 기준=옛 후보0을 각각 검증한다.

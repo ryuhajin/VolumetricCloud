@@ -12,11 +12,11 @@ static const float kAtmospherePi = 3.14159265358979323846;
 // CPU stage14::GpuParameters와 같은 14레지스터(224바이트)다.
 cbuffer Stage14CB : register(b9)
 {
-    // [파생 값] Atmosphere 원본 → x=행성 반지름 km [1,100000], y=대기 반지름 [x+1,x+1000], z=Rayleigh 높이 [4,16], w=Mie 높이 [0.5,4]. Earth (6360,6460,8,1.2).
+    // [파생 값] Atmosphere 원본 → x=행성 반지름 km [1,100000], y=대기 반지름 [x+1,x+1000], z=Rayleigh 높이 [4,16], w=Mie 높이 [0.5,4]. Earth (6360,6460,8,2.0).
     float4 planetRadiiDensityHeights;
     // [파생 값] xyz=Rayleigh RGB 1/km >=0, w=scale [0.25,4]. 기본 (0.005802,0.013558,0.033100,1).
     float4 rayleighScatteringAndScale;
-    // [파생 값] x=Mie 산란 1/km >=0, y=소멸 1/km >=x, z=g [0,0.95], w=흡수 배율 [0,4]. 기본 (0.003996,0.004440,0.8,1).
+    // [파생 값] x=Mie 산란 1/km >=0, y=소멸 1/km >=x, z=g [0,0.95], w=흡수 배율 [0,4]. 기본 (0.003996,0.004440,0.3,1).
     float4 mieScatteringExtinctionGAbsorption;
     // [파생 값] xyz=오존 RGB 흡수 1/km >=0, w=scale [0,4]. 기본 (0.000650,0.001881,0.000085,1).
     float4 ozoneAbsorptionAndScale;
@@ -32,7 +32,7 @@ cbuffer Stage14CB : register(b9)
     float4 groundAlbedoAndDebugExposure;
     // [파생 값] x=EV [-8,8], y=백색점 K [3500,10000], z=시각 hour [5.5,19.5], w=태양 고도 도 [-6,90]. 초기 (0,6500,7.5,18).
     float4 toneAndTime;
-    // [파생 값] x=구름 거리 대기 진단 0/91/92, y=Tone, z=대기 진단, w=채널. 기본 모두 0.
+    // [파생 값] x=구름 거리 대기 진단 0/91~95, y=Tone, z=대기 진단, w=채널. 기본 모두 0.
     uint4 renderFlags;
     // [고정 품질] x/y=Transmittance 폭/높이 256/64, z/w=Multi 폭/높이 32/32 texel.
     float4 transmittanceMultiSize;
@@ -332,6 +332,23 @@ float3 SampleAtmosphereAerialTransmittance(float2 uv, float distanceMeters)
 // 3. cloudAir + airT*cloud빛 + cloudT*(배경-cloudAir).
 // 배경에서 앞쪽 공기를 빼고 cloudT를 적용해 같은 공기를 두 번 세지 않는다.
 // 구름이 없으면 cloudT=1/cloud빛=0으로 원래 배경이 복원된다. 대표 깊이 기반 근사다.
+#if defined(VCLOUD_TEST_AERIAL_SCALE_RUNTIME)
+static float testAerialScale=1;
+#endif
+// 2026-09-22 사용자 승인: 구름 앞 공기만 거리 2배로 조회한다.
+// 진단 A/B/C/D는 물리 거리 1배를 보존하고 후보 정의는 절대 배율이다.
+float CloudAerialLookupDepth(float depth)
+{
+#if defined(VCLOUD_TEST_AERIAL_SCALE_RUNTIME)
+    return max(depth, 0.0) * testAerialScale;
+#elif defined(VCLOUD_TEST_AERIAL_SCALE)
+    return max(depth, 0.0) * VCLOUD_TEST_AERIAL_SCALE;
+#elif defined(VCLOUD_TEST_AERIAL_COMPOSITION)
+    return max(depth, 0.0);
+#else
+    return max(depth, 0.0) * 2.0;
+#endif
+}
 float3 ComposeStage14Atmosphere(
     float2 uv, float3 rayDirection, bool hasGeometry,
     float3 litSurface, float sceneDistance,
@@ -355,7 +372,7 @@ float3 ComposeStage14Atmosphere(
 
     if (omitCloudAerial)
         return max(cloudScattering, 0.0.xxx) + saturate(cloudTransmittance) * clearBackground;
-    float safeCloudDepth = max(cloudRepresentativeDepth, 0.0);
+    float safeCloudDepth = CloudAerialLookupDepth(cloudRepresentativeDepth);
     float3 cloudAir = SampleAtmosphereAerialRadiance(uv, safeCloudDepth);
     float3 cloudAirT = SampleAtmosphereAerialTransmittance(uv, safeCloudDepth);
     float safeCloudT = saturate(cloudTransmittance);

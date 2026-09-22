@@ -14,7 +14,7 @@ cbuffer CloudShapeCB : register(b7)
  float shapePadding4;
  float footprintCoverageInfluence;
  float densityShaping;
- float cloudShapePadding1;
+ float detailCoreProtection;
 };
 // CPU EvaluateCommonVerticalProfile과 같은 공통 곡선. 표본 간격과 무관하다.
 float EvaluateCommonVerticalProfile(float heightFraction)
@@ -27,8 +27,8 @@ float EvaluateCommonVerticalProfile(float heightFraction)
 // Detail 침식은 raw Base로 먼저 계산한다. 그 후 View/Light에 같은 곡선을 쓴다.
 float ShapeCloudDensity(float q)
 {
-    if (densityShaping <= 0.0) return q;
-    return lerp(q, smoothstep(0.0, 0.4, q), densityShaping);
+    if (densityShaping > 0.0) q = lerp(q, smoothstep(0.0, 0.4, q), densityShaping);
+    return q;
 }
 
 #endif

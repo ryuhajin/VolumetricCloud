@@ -70,6 +70,9 @@ enum class CloudDebugMode : std::int32_t
     CloudWithoutAerial = 90,
     AirTransmittanceAtCloud = 91,
     AirRadianceAtCloud = 92,
+    OccupiedCloudLength = 93,
+    OccupiedCloudMeanDensity = 94,
+    FirstOccupiedCloudDistance = 95,
 };
 
 enum class Stage5WeatherPreset : std::int32_t

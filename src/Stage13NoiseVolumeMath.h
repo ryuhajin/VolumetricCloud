@@ -23,8 +23,8 @@ struct alignas(16) NoiseVolumeParameters
 {
     // [고정 품질] Base 한 축 128 texel(128³ RGBA8). 텍스처 할당·검증 계약과 함께 고정.
     std::uint32_t baseResolution = 128;
-    // [고정 품질] Detail 한 축 32 texel(32³ RGBA8). world size와 달리 내용 생성 규격.
-    std::uint32_t detailResolution = 32;
+    // [고정 품질] Detail 한 축 64 texel(64³ RGBA8). world size와 달리 내용 생성 규격.
+    std::uint32_t detailResolution = 64;
     // [고정 품질] 3D Noise seed uint [0,4294967295], 기본/권장 1337. 같은 seed는 같은 무늬; 변경은 재생성이 필요하며 크기/밀도와 무관.
     std::uint32_t seed = 1337;
     // [패딩] 16바이트 packing 예약 칸, 0 유지. 화면 효과 없음; 삭제/재배치 금지.
@@ -41,7 +41,8 @@ struct alignas(16) NoiseVolumeParameters
 
     // [고정 품질] x/y/z/w={4,9,17,23} cycle/타일. R fBm의 4옥타브, G/B/A Worley는 xyz 사용. 생성 경로 최소 1, 권장 현행 유지.
     DirectX::XMUINT4 baseFrequencies = { 4, 9, 17, 23 };
-    // [고정 품질] x/y/z/w=RGBA Worley {2,3,4,5} cycle/타일. 생성 최소 1, 표본 한계는 resolution/2; 현행 유지.
+    // [고정 품질] RGBA Worley fBm 기저 {2,3,4,5} cycle/타일. 각 채널 f/2f/4f, .625/.25/.125.
+    // 2026-09-22 무보정 fBm 채택. 최대 명목20cycle/타일; 화면 High 안정성은 별도 검증.
     DirectX::XMUINT4 detailFrequencies = { 2, 3, 4, 5 };
     // [직접 조절: 코드] x/y/z=Base G/B/A Worley 가중치 (0.625,0.25,0.125), w=0 미사용. 별도 CPU clamp/정규화 없음; 권장 비음수 합 1 유지.
     DirectX::XMFLOAT4 baseWeights = { 0.625f, 0.25f, 0.125f, 0.0f };
@@ -61,7 +62,7 @@ inline float SanitizeBaseMidOctaveExtra(float value)
 namespace stage13noise
 {
 constexpr std::uint32_t kBaseResolution = 128;
-constexpr std::uint32_t kDetailResolution = 32;
+constexpr std::uint32_t kDetailResolution = 64;
 constexpr std::uint32_t kBytesPerTexel = 4;
 constexpr std::uint64_t kBaseBytes =
     static_cast<std::uint64_t>(kBaseResolution) * kBaseResolution *

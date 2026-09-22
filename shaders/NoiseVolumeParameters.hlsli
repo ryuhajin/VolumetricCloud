@@ -11,7 +11,7 @@ cbuffer NoiseVolumeCB : register(b6)
 {
     // [고정 품질] Base 한 축 128 texel(128³ RGBA8). 텍스처 할당·검증 계약과 함께 고정.
     uint baseVolumeResolution;
-    // [고정 품질] Detail 한 축 32 texel(32³ RGBA8). world size와 달리 내용 생성 규격.
+    // [고정 품질] Detail 한 축 64 texel(64³ RGBA8). world size와 달리 내용 생성 규격.
     uint detailVolumeResolution;
     // [고정 품질] 3D Noise seed uint [0,4294967295], 기본/권장 1337. 같은 seed는 같은 무늬; 변경은 재생성이 필요하며 크기/밀도와 무관.
     uint noiseVolumeSeed;

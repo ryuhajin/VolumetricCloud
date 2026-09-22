@@ -470,7 +470,8 @@ bool HasReflectedConstantBufferContract(
     if (std::strcmp(name,"CloudShapeCB")==0 &&
         (!fieldOffset("bottomFadeEnd",0) || !fieldOffset("topFadeStart",4) ||
          !fieldOffset("lowerDensityScale",8) || !fieldOffset("upperTransitionStart",12) ||
-         !fieldOffset("upperTransitionEnd",16) || !fieldOffset("footprintCoverageInfluence",36))) return false;
+         !fieldOffset("upperTransitionEnd",16) || !fieldOffset("footprintCoverageInfluence",36) ||
+         !fieldOffset("detailCoreProtection",44))) return false;
     if (std::strcmp(name,"WeatherColumnCB")==0 &&
         (!fieldOffset("minimumThicknessMeters",0) || !fieldOffset("maximumThicknessMeters",4) ||
          !fieldOffset("maximumBaseLiftMeters",16) || !fieldOffset("fixedType",20))) return false;
@@ -901,10 +902,16 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
     // 비교 cap은 캐시 키/핫 리로드에도 포함한다. 명시적 테스트 define이 우선한다.
     std::vector<D3D_SHADER_MACRO> rimDefines;
     bool hasRimCap = false;
+    bool hasDetailSpectrum = false;
     if (defines) for (auto* d=defines; d->Name; ++d) {
         rimDefines.push_back(*d);
         hasRimCap |= std::strcmp(d->Name,"VCLOUD_TEST_RIM_CAP")==0;
+        hasDetailSpectrum |= std::strcmp(d->Name,"VCLOUD_TEST_DETAIL_SPECTRUM")==0;
     }
+    // 2026-09-22 사용자 채택: Detail 생성만 무보정 fBm. Base 생성/태양 밀도는 유지.
+    // 옛 단일 Worley 비교는 명시적 정의0으로 요청하며 캐시 키에도 반영된다.
+    if(path==m_noiseVolumeShaderPath && std::strcmp(entryPoint,"CSDetail")==0 && !hasDetailSpectrum)
+        rimDefines.push_back({"VCLOUD_TEST_DETAIL_SPECTRUM","1"});
     if (!hasRimCap) rimDefines.push_back({"VCLOUD_TEST_RIM_CAP",
         m_rimComparisonCap == 8 ? "8" : (m_rimComparisonCap == 4 ? "4" : "2.5")});
     rimDefines.push_back({nullptr,nullptr});
@@ -945,7 +952,9 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
         SUCCEEDED(D3DReadFileToBlob(cachePath.c_str(), &outBlob)) && outBlob)
     {
         ++m_shaderCacheHitCount;
+#if VCLOUD_TEST_HOOKS
         RecordDeterminismShader(path, entryPoint, target, compileFlags, cacheKey, outBlob.Get());
+#endif
         return true;
     }
 
@@ -956,7 +965,9 @@ bool Renderer::CompileShaderFromFile(const std::wstring& path,
         entryPoint, target, compileFlags, 0, &outBlob, &errors);
     if (SUCCEEDED(result))
     {
+#if VCLOUD_TEST_HOOKS
         RecordDeterminismShader(path, entryPoint, target, compileFlags, cacheKey, outBlob.Get());
+#endif
         if (!cachePath.empty())
         {
             std::error_code cacheError;
@@ -1119,6 +1130,14 @@ bool Renderer::ReloadShaderPrograms(
         macros.reserve(program.defines.size() + 1u);
         for (const auto& define : program.defines)
             macros.push_back({ define.name.c_str(), define.value.c_str() });
+        // 임시 Base 후보도 기존 원자적 reload 경로를 사용한다. 핫 리로드 시 선택 유지.
+        if(program.id==ProgramId::CloudPs || program.id==ProgramId::NoiseLabPs || program.id==ProgramId::DeepShadowCs)
+        {
+            if(m_baseCandidate==1)macros.push_back({"VCLOUD_TEST_BASE_THRESHOLD_OFFSET","0.05"});
+            if(m_baseCandidate==2 || m_baseCandidate==4)macros.push_back({"VCLOUD_TEST_BASE_CONTRAST","2.0"});
+        }
+        if(program.id==ProgramId::NoiseBaseCs && m_baseCandidate>=3)
+            macros.push_back({"VCLOUD_TEST_BASE_MID_WEIGHT","2.5"});
         macros.push_back({ nullptr, nullptr });
 
         PendingProgram item;
@@ -1126,7 +1145,7 @@ bool Renderer::ReloadShaderPrograms(
         if (!CompileShaderFromFile(
                 (root / program.source).wstring(), program.entry.c_str(),
                 program.target.c_str(), item.blob, showErrors,
-                program.defines.empty() ? nullptr : macros.data()))
+                macros.data()))
             return finish(false);
         if (!validateContracts(program.id, item.blob.Get()))
         {
@@ -1361,6 +1380,28 @@ bool Renderer::CreateShaders(bool showErrors)
     for (std::size_t index = 0; index < allPrograms.size(); ++index)
         allPrograms[index] = index;
     return ReloadShaderPrograms(allPrograms, { "startup" }, showErrors);
+}
+
+bool Renderer::ApplyBaseCandidate(int candidate)
+{
+    if(candidate<0 || candidate>4)return false;
+    const int previous=m_baseCandidate;
+    m_baseCandidate=candidate;
+    std::vector<std::size_t> selected;
+    for(std::size_t i=0;i<m_shaderManifest.size();++i){
+        const auto id=m_shaderManifest[i].id;
+        if(id==shaderreload::ProgramId::CloudPs || id==shaderreload::ProgramId::NoiseLabPs ||
+           id==shaderreload::ProgramId::DeepShadowCs || id==shaderreload::ProgramId::NoiseBaseCs)
+            selected.push_back(i);
+    }
+    if(!ReloadShaderPrograms(selected,{"temporary Base candidate"},false)){
+        m_baseCandidate=previous;
+        m_baseCandidateStatus="Candidate failed; previous kept: "+m_shaderError;
+        return false;
+    }
+    m_baseCandidateStatus=candidate==0?"Original Base active":"Temporary candidate active (not saved)";
+    m_noiseLab.SetBaseCandidateStatus(m_baseCandidate,m_baseCandidateStatus);
+    return true;
 }
 
 bool Renderer::CreateDiagnosticScene()
@@ -2011,7 +2052,7 @@ stage14::GpuParameters Renderer::BuildStage14GpuParameters(
         atmosphere.timeOfDayHours, atmosphere.sunElevationDegrees
     };
     gpu.renderFlags = {
-        (m_cloudParameters.debugMode == 91 || m_cloudParameters.debugMode == 92)
+        (m_cloudParameters.debugMode >= 91 && m_cloudParameters.debugMode <= 95)
             ? static_cast<std::uint32_t>(m_cloudParameters.debugMode) : 0u,
         static_cast<std::uint32_t>(tone.mode),
         static_cast<std::uint32_t>(atmosphere.debugView),
@@ -2832,6 +2873,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     };
     if (!m_automatedRenderMode)
     {
+        m_noiseLab.SetBaseCandidateStatus(m_baseCandidate,m_baseCandidateStatus);
         m_noiseLab.SetPresetStatus(m_cloudFormationPresetRoot, m_cloudFormationTarget, m_cloudFormationSource,
             m_lightingSource, m_lightingStatus);
         m_noiseLab.BeginFrame(
@@ -2894,6 +2936,8 @@ void Renderer::Render(Camera& camera, float timeSeconds)
         Stage15ConceptPreset conceptRequest = m_stage15ConceptPreset;
         if (m_noiseLab.ConsumeSceneConceptRequest(conceptRequest))
             ApplySceneConcept(conceptRequest);
+        const int baseCandidateRequest=m_noiseLab.ConsumeBaseCandidateRequest();
+        if(baseCandidateRequest>=0)ApplyBaseCandidate(baseCandidateRequest);
         if (m_noiseLab.ConsumeNoiseVolumeRegenerateRequest())
         {
             if (!RegenerateNoiseVolumes())
@@ -2927,12 +2971,14 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     RenderToneMapPass();
     m_frameProfiler.MarkToneMapEnd(m_context.Get());
     // 테스트가 요청한 프레임만 UI/Present 이전의 원본을 읽는다.
+#if VCLOUD_TEST_HOOKS
     if (m_directionalCaptureTarget)
         CaptureDirectionalLightingFrame();
     if (m_captureFrameHashes)
         CaptureCloudFrameHash();
     if (m_determinismValidation)
         CaptureDeterminismFrame();
+#endif
     // 7. 선택적 미리보기/진단 export/UI를 합성한다. 자동 테스트에서는 UI를 건너뛴다.
     if (!m_automatedRenderMode && m_renderNoiseLabPreviews)
     {

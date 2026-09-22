@@ -26,11 +26,11 @@ constexpr std::uint32_t kAerialSize = 32u;
 // HLSL Stage14CB(b9)의 14개 16바이트 레지스터와 순서가 같다.
 struct alignas(16) GpuParameters
 {
-    // [파생 값] Atmosphere 원본 → x=행성 반지름 km [1,100000], y=대기 반지름 [x+1,x+1000], z=Rayleigh 높이 [4,16], w=Mie 높이 [0.5,4]. Earth (6360,6460,8,1.2).
+    // [파생 값] Atmosphere 원본 → x=행성 반지름 km [1,100000], y=대기 반지름 [x+1,x+1000], z=Rayleigh 높이 [4,16], w=Mie 높이 [0.5,4]. Earth (6360,6460,8,2.0).
     DirectX::XMFLOAT4 planetRadiiDensityHeights;
     // [파생 값] xyz=Rayleigh RGB 1/km >=0, w=scale [0.25,4]. 기본 (0.005802,0.013558,0.033100,1).
     DirectX::XMFLOAT4 rayleighScatteringAndScale;
-    // [파생 값] x=Mie 산란 1/km >=0, y=소멸 1/km >=x, z=g [0,0.95], w=흡수 배율 [0,4]. 기본 (0.003996,0.004440,0.8,1).
+    // [파생 값] x=Mie 산란 1/km >=0, y=소멸 1/km >=x, z=g [0,0.95], w=흡수 배율 [0,4]. 기본 (0.003996,0.004440,0.3,1).
     DirectX::XMFLOAT4 mieScatteringExtinctionGAbsorption;
     // [파생 값] xyz=오존 RGB 흡수 1/km >=0, w=scale [0,4]. 기본 (0.000650,0.001881,0.000085,1).
     DirectX::XMFLOAT4 ozoneAbsorptionAndScale;
@@ -46,7 +46,7 @@ struct alignas(16) GpuParameters
     DirectX::XMFLOAT4 groundAlbedoAndDebugExposure;
     // [파생 값] x=EV [-8,8], y=백색점 K [3500,10000], z=시각 hour [5.5,19.5], w=태양 고도 도 [-6,90]. 초기 (0,6500,7.5,18).
     DirectX::XMFLOAT4 toneAndTime;
-    // [파생 값] x=구름 거리 대기 진단 0/91/92, y=Tone, z=대기 진단, w=채널. 기본 모두 0.
+    // [파생 값] x=구름 거리 대기 진단 0/91~95, y=Tone, z=대기 진단, w=채널. 기본 모두 0.
     DirectX::XMUINT4 renderFlags;
     // [고정 품질] x/y=Transmittance 폭/높이 256/64, z/w=Multi 폭/높이 32/32 texel.
     DirectX::XMFLOAT4 transmittanceMultiSize;

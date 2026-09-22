@@ -30,6 +30,16 @@ Texture3D<float4> detailNoiseVolumeTexture : register(t4);
 #define VCLOUD_NOISE_TEST_BIAS 0.0
 #endif
 
+// 사용자 채택: 일반 실행은 정규화 형상 remap(2).
+// 과거 비교 실행기의 0/1/2와 옛 코어 실험은 시험 정의로 보존한다.
+#ifndef VCLOUD_TEST_NEAR_CLARITY
+#if defined(VCLOUD_TEST_DETAIL_CORE_MODE)
+#define VCLOUD_TEST_NEAR_CLARITY 0
+#else
+#define VCLOUD_TEST_NEAR_CLARITY 2
+#endif
+#endif
+
 struct CloudDensitySample
 {
     float rawNoise;          // threshold 전 Base Texture3D 조합값(0~1).
@@ -49,8 +59,8 @@ struct CloudDensitySample
     float weatherThicknessPotential;// Weather A 로컬 두께 보간값(0~1).
     float baseDensity;       // 배율까지 적용한 큰 형태. 비음수이며 1을 넘을 수 있다.
     float detailNoise;       // 실제 샘플한 고주파 침식 noise(0~1).
-    float erosion;           // detailNoise × strength × boundary, [0,1].
-    float finalDensity;      // Detail 적용 시 saturate(base-erosion); 생략 시 Base 그대로(1 초과 가능).
+    float erosion;           // 일반 remap의 형상 문턱 e. 시험0에서는 밀도 감산량.
+    float finalDensity;      // Detail 적용 시 A*remap(S,e,1); 생략 시 Base 그대로(1 초과 가능). 이후 공통 shaping.
     float detailSampled;     // Detail 함수를 호출했으면 1, 생략했으면 0.
     float3 noiseUvw;         // Base Texture3D의 연속 좌표(cycle).
     float3 detailNoiseUvw;   // Detail Texture3D의 연속 좌표(cycle), 생략 시 0.
@@ -92,6 +102,10 @@ float RemapCoverage(float rawNoise, float coverageValue)
     float safeCoverage = saturate(coverageValue);
     float validCoverage = safeCoverage > 1e-4 ? 1.0 : 0.0;
     float safeDivisor = max(safeCoverage, 1e-4);
+#if defined(VCLOUD_TEST_BASE_THRESHOLD_OFFSET)
+    // 비교 전용: 분모를 유지해 문턱 이동과 대비 변경을 분리한다.
+    rawNoise -= VCLOUD_TEST_BASE_THRESHOLD_OFFSET;
+#endif
     return saturate((rawNoise - (1.0 - safeCoverage)) / safeDivisor) *
         validCoverage;
 }
@@ -113,6 +127,10 @@ NoiseFieldSample SampleBaseShapeNoise(float3 worldPosition, float timeSeconds)
     result.value = saturate(
         (result.channels.r - lowerBound) / max(1.0 - lowerBound, 1e-4) +
         VCLOUD_NOISE_TEST_BIAS);
+#if defined(VCLOUD_TEST_BASE_CONTRAST)
+    // 비교 전용: 생성 텍스처는 그대로 두고 조회 조합값의 분포만 넓힌다.
+    result.value = saturate(0.65 + (result.value - 0.65) * VCLOUD_TEST_BASE_CONTRAST);
+#endif
     return result;
 }
 
@@ -208,6 +226,9 @@ CloudDensitySample EvaluateBaseCloudDensity(
     bool definitelyEmpty = localHeight < 0.0 || localHeight > 1.0 ||
         verticalProfile <= 0.0 || weatherSupport <= 0.0 ||
         coverage <= 0.0 || densityMultiplier <= 0.0;
+#if defined(VCLOUD_TEST_NEAR_FAR_NO_PRECHECK)
+    definitelyEmpty = false; // 참조 진단: 동일 조립식으로 0 여부를 직접 계산한다.
+#endif
     if (!definitelyEmpty)
     {
         NoiseFieldSample baseNoise = SampleBaseShapeNoise(
@@ -264,12 +285,21 @@ float EvaluateLightCloudDensity(float3 worldPosition, float timeSeconds)
     return ShapeCloudDensity(lightDensity);
 }
 
+// 코어 근사. 진짜 표면 거리/SDF가 아니다. 높이 감쇠 전 shape와
+// profile 안쪽을 함께 사용하며 Weather/높이 경계에서는 보호를 줄인다.
+float DetailCoreForComparison(CloudDensitySample sample)
+{
+    return smoothstep(0.15,0.40,sample.weatherThresholdDensity) *
+        smoothstep(0.15,0.75,EvaluateCommonVerticalProfile(sample.localHeightFraction)) *
+        smoothstep(0.02,0.20,sample.weatherCoverage);
+}
+
 // Base Shape 뒤에 선택적으로 Detail Erosion을 적용한다.
 // sampleDetail=false, 빈 Base, strength=0 경로는 Detail 함수 자체를 호출하지 않는다.
 // 이 조기 반환은 단계 4의 기능 요구이며 단계 9의 레이 스텝 최적화와는 별개다.
 // [Detail 순서] 1. Base를 평가. 2. 필요하고 Base>0/strength>0일 때만 Detail fetch.
-// 3. boundary=1-smoothstep(0.45,0.90,Base): 약한 경계는 크게, 조밀한 내부는 적게 깎는다.
-// 4. saturate(Base-Detail*strength*boundary). 침식이 과하면 작은 구름이 사라진다.
+// 3. 밀도 배율 전 형상 S로 boundary와 침식량 e를 정한다.
+// 4. [e,1]을 [0,1]로 remap한 뒤 높이/밀도 배율 A를 적용한다. e>=1은 완전 침식.
 // sampleDetail=false는 Base 그대로 반환하므로 Shadow 경로와 View 최종 표면은 의도적으로 다르다.
 CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
                                       bool sampleDetail)
@@ -287,12 +317,55 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
     }
     if (shouldApplyDetail)
     {
+#if VCLOUD_TEST_NEAR_CLARITY == 0
         float boundary = 1.0 - smoothstep(0.45, 0.90, sample.baseDensity);
         sample.erosion = sample.detailNoise * max(detailErosionStrength, 0.0) *
             boundary;
+#if VCLOUD_TEST_DETAIL_CORE_MODE == 1
+        // 코어에서 기존 감산량의 35%만 적용. core=0인 외곽은 기존식 그대로.
+        sample.erosion *= lerp(1.0,0.35,DetailCoreForComparison(sample));
+#elif VCLOUD_TEST_DETAIL_CORE_MODE == 2
+        // 코어에서 shaping 전 Base의 최대35% 제거. 빈 영역에 밀도를 더하지 않는다.
+        float erosionLimit=sample.baseDensity*lerp(1.0,0.35,DetailCoreForComparison(sample));
+        sample.erosion=min(sample.erosion,erosionLimit);
+#elif !defined(VCLOUD_TEST_DETAIL_CORE_MODE)
+        // 슬롯별 몸체 보호. 0이면 기존 연산을 그대로 유지한다.
+        if (detailCoreProtection > 0.0)
+            sample.erosion *= lerp(1.0, 1.0 - saturate(detailCoreProtection), DetailCoreForComparison(sample));
+#endif
         sample.finalDensity = saturate(sample.baseDensity - sample.erosion);
+#else
+        // 정규화 형상을 먼저 침식하고 높이/밀도 배율은 뒤에서 한 번 적용한다.
+        float shape=saturate(sample.weatherThresholdDensity);
+        float amplitude=(sample.localHeightFraction>=0 && sample.localHeightFraction<=1 ? 1.0 : 0.0) *
+            smoothstep(.02,.20,sample.weatherCoverage) * EvaluateCommonVerticalProfile(sample.localHeightFraction) *
+            max(densityMultiplier,0.0) * sample.weatherDensityModifier;
+        float protection=saturate(detailCoreProtection);
+#if VCLOUD_TEST_DETAIL_CORE_MODE == 1
+        protection=0.65; // 새 remap에서도 UI .65와 고정 가중치의 동등성을 검증한다.
+#endif
+        float erosion=sample.detailNoise*max(detailErosionStrength,0.0)*(1-smoothstep(.45,.90,shape)) *
+            (1-protection*DetailCoreForComparison(sample));
+#if defined(VCLOUD_TEST_DETAIL_EROSION_SCALE)
+        erosion*=VCLOUD_TEST_DETAIL_EROSION_SCALE; // 원본 주파수 시험의 평균 제거량 일치 전용.
+#endif
+#if defined(VCLOUD_TEST_DETAIL_BANDS) && VCLOUD_TEST_DETAIL_BANDS > 0
+        // 시험 전용: 같은 네 대역/가중치로 연속 remap. 추가 texture fetch 없음.
+        float q=max(detailErosionStrength,0.0)*(1-smoothstep(.45,.90,shape)) *
+            (1-protection*DetailCoreForComparison(sample));
+        float4 band=saturate(VCLOUD_TEST_DETAIL_BAND_SCALE*q*max(detailVolumeWeights,0)*sample.detailNoiseChannels);
+        float4 remain=1-band;
+        erosion=1-remain.x*remain.y*remain.z*remain.w;
+#endif
+        float carved=max(shape-erosion,0.0);
+#if VCLOUD_TEST_NEAR_CLARITY == 2
+        carved=erosion>=1 ? 0 : carved/max(1-erosion,1e-6);
+#endif
+        sample.finalDensity=saturate(amplitude*saturate(carved));
+        sample.erosion=erosion; // 정규화 형상에서 깎을 문턱. 밀도 단위 감산량이 아니다.
+#endif
     }
-    // 침식 문턱/강도는 raw Base 기준으로 유지하고 결과만 공통 변환한다.
+    // 최종 밀도와 Base 태양 차폐에 동일한 기존 shaping을 적용한다.
     sample.baseDensity = ShapeCloudDensity(sample.baseDensity);
     sample.finalDensity = ShapeCloudDensity(sample.finalDensity);
     return sample;

@@ -61,8 +61,8 @@ struct AtmosphereParameters
     float topRadiusKm = 6460.0f;
     // [직접 조절] 분자 밀도가 1/e가 되는 높이 km. [강제 범위] [4,16], 기본/권장 8. 증가하면 높은 곳에도 분자 산란이 남는다.
     float rayleighScaleHeightKm = 8.0f;
-    // [직접 조절] 에어로졸 밀도의 1/e 높이 km. [강제 범위] [0.5,4], 기본/권장 1.2. 증가하면 연무가 위로 퍼진다.
-    float mieScaleHeightKm = 1.2f;
+    // [직접 조절] 에어로졸 밀도의 1/e 높이 km. [강제 범위] [0.5,4], 기본/권장 2.0. 증가하면 연무가 위로 퍼진다.
+    float mieScaleHeightKm = 2.0f;
 
     // [직접 조절] xyz=선형 RGB별 분자 산란 계수 1/km. 유한 [0,무제한), 기본/권장 (0.005802,0.013558,0.033100); 해당 색 산란/소멸 증가.
     DirectX::XMFLOAT3 rayleighScatteringPerKm = {
@@ -77,8 +77,8 @@ struct AtmosphereParameters
     float mieExtinctionPerKm = 0.004440f;
     // [직접 조절] 에어로졸 흡수 배율. [강제 범위] [0,4], 기본/권장 1. 증가하면 빛이 더 흡수되며 산란 자체는 늘지 않는다.
     float mieAbsorptionScale = 1.0f;
-    // [직접 조절] 대기 Mie 방향 비대칭도. [강제 범위] [0,0.95], 기본/권장 0.8. 증가하면 태양 방향 봉우리가 좁아진다.
-    float mieG = 0.8f;
+    // [직접 조절] 대기 Mie 방향 비대칭도. [강제 범위] [0,0.95], 기본/권장 0.3. 증가하면 태양 방향 봉우리가 좁아진다.
+    float mieG = 0.3f;
 
     // [직접 조절] xyz=RGB별 오존 흡수 1/km. 유한 [0,무제한), 기본/권장 (0.000650,0.001881,0.000085); 해당 색 빛이 더 줄어든다.
     DirectX::XMFLOAT3 ozoneAbsorptionPerKm = {
@@ -136,12 +136,12 @@ inline AtmosphereParameters Sanitize(AtmosphereParameters value)
     value.rayleighScaleHeightKm = std::clamp(
         FiniteOr(value.rayleighScaleHeightKm, 8.0f), 4.0f, 16.0f);
     value.mieScaleHeightKm = std::clamp(
-        FiniteOr(value.mieScaleHeightKm, 1.2f), 0.5f, 4.0f);
+        FiniteOr(value.mieScaleHeightKm, 2.0f), 0.5f, 4.0f);
     value.rayleighScale = std::clamp(
         FiniteOr(value.rayleighScale, 1.0f), 0.25f, 4.0f);
     value.mieAbsorptionScale = std::clamp(
         FiniteOr(value.mieAbsorptionScale, 1.0f), 0.0f, 4.0f);
-    value.mieG = std::clamp(FiniteOr(value.mieG, 0.8f), 0.0f, 0.95f);
+    value.mieG = std::clamp(FiniteOr(value.mieG, 0.3f), 0.0f, 0.95f);
     value.ozoneScale = std::clamp(
         FiniteOr(value.ozoneScale, 1.0f), 0.0f, 4.0f);
     value.ozoneCenterKm = std::clamp(
@@ -196,7 +196,7 @@ inline void ApplyPreset(AtmosphereParameters& value,
     value.bottomRadiusKm = 6360.0f;
     value.topRadiusKm = 6460.0f;
     value.rayleighScaleHeightKm = 8.0f;
-    value.mieScaleHeightKm = 1.2f;
+    value.mieScaleHeightKm = 2.0f;
     value.rayleighScatteringPerKm = {
         0.005802f, 0.013558f, 0.033100f
     };
@@ -204,7 +204,7 @@ inline void ApplyPreset(AtmosphereParameters& value,
     value.mieScatteringPerKm = 0.003996f;
     value.mieExtinctionPerKm = 0.004440f;
     value.mieAbsorptionScale = 1.0f;
-    value.mieG = 0.8f;
+    value.mieG = 0.3f;
     value.ozoneAbsorptionPerKm = {
         0.000650f, 0.001881f, 0.000085f
     };

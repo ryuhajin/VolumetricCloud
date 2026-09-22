@@ -230,6 +230,9 @@ bool ParseFormation(const std::string& text, std::uint32_t schemaVersion,
     {
         return false;
     }
+    value.shape.detailCoreProtection = 0.0f;
+    if (text.find("\"detailCoreProtection\"") != std::string::npos &&
+        !ParseFloat(text, "detailCoreProtection", value.shape.detailCoreProtection)) return false;
     value.shape.densityShaping = 0.0f;
     if (schemaVersion >= 3u &&
         !ParseFloat(text, "densityShaping", value.shape.densityShaping))
@@ -368,6 +371,7 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << value.weather.column.maximumBaseLiftMeters << ",\n"
            << "    \"footprintCoverageInfluence\": "
            << value.shape.footprintCoverageInfluence << ",\n"
+           << "    \"detailCoreProtection\": " << value.shape.detailCoreProtection << ",\n"
            << "    \"densityShaping\": " << value.shape.densityShaping << ",\n"
            << "    \"domainBottomMeters\": "
            << value.domainBottomMeters << ",\n"

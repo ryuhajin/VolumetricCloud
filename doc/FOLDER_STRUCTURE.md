@@ -1,6 +1,30 @@
 # 폴더 / 파일 구조
 
-06-B 경계 진단은 기존 `tests/DirectionalLightingBaseline.cpp`와 `shaders/RimLightingProbe.hlsl`을 재사용한다. `tests/AnalyzeRimBoundary.py`는 NumPy로 선형 RGBA16F의 ROI 통계·CSV 프로파일을 분석한다. 로컬 계획 패키지는 `notes/stage15-cloud-rim-midtone-package/`, 출력은 `captures/stage15-directional-lighting/06-boundary/`이며 둘 다 Git 제외 대상이다.
+## 일반 배포 / 로컬 검사 패키지
+
+현재 [빌드 계약](BUILDING.md): `src/main.cpp`는 일반 앱 진입점이며 CMake의 기본 테스트 옵션은 OFF다.
+`tests/TestMain.cpp`, `tests/RendererDeterminism.cpp`, `tests/RegisterTests.cmake`, `tests/shaders/`는
+로컬 검사 패키지다. 원격의 일반 배포에는 tests/tools/cmake 검사 도구를 넣지 않는다.
+검사 앱은 `build/validation/<구성>/VolumetricCloudTestRunner.exe`, 일반 앱은 기존 `build/<구성>/VolumetricCloud.exe`다.
+아래 역사적 tests/도구 경로는 일반 배포의 필수 파일 목록이 아니다.
+
+## 산출물 위치와 수명
+
+[데이터 관리 규칙](DATA_MANAGEMENT.md)이 과거 캡처 보관 설명보다 우선한다.
+`src/`, `shaders/`, `tests/`, `presets/`, `third_party/`, `doc/`, `notes/`는 보존한다.
+`tools/`는 명시적 정리 도구와 진행 중 자료 보호 목록을 담는다. `build/`는 현재 Debug/Release 빌드 하나만 유지한다.
+루트 또는 build의 `captures/`에는 진행 중 비교와 개인 설정만 남기며 완료된 실험은 노트 기록 후 삭제한다.
+기본 회귀의 최신 작은 수치 요약은 다음 실행 시 교체한다. 아래 예전 캡처 경로는 역사적 식별자일 수 있다.
+
+`tests/CloudAerialComposition.inl`은 대표거리/LUT 분리와 조건부 거리배율 검증 실행기,
+`shaders/CloudAerialComposition.hlsli`는 진단 전용 직접 공기 적분/합성 helper다.
+`doc/changes/stage15-cloud-aerial-composition.md`에 조건·결과·한계를 기록한다.
+`tests/AnalyzeAerialComposition.py`는 렌더 재실행 없이 거리별 대비·원시 합성·파일을 검산하고
+`analysis.md/html`, `review.html`, 카메라/프리셋 SHA-256을 만든다(NumPy/Pillow 필요).
+
+2026-09-21 이후 `captures/`는 UI 설정과 사용자가 명시적으로 만든 로컬 출력만 담는다.
+과거 대량 비교 이미지와 완료된 후보 분석기는 제거했다. 현재 대량 진단은
+`CloudNearFarDiagnostics`와 `CloudPathLength`뿐이며 기본 CTest 구성에서는 등록하지 않는다.
 
 ```text
 VolumetricCloud/
@@ -194,3 +218,19 @@ b6 offset28 세션 후보, F2 선택과 기존 재생성 요청을 사용한다.
 - presets/: Git에 보존하는 형상4개·조명4개 JSON 원본.
 
 - tests/CloudDetailComparisonPage.h: Detail32³/64³ 진단의 로컬 비교 HTML. 네트워크 없이 정지/차이/원본 확대/동일 이동 경로를 표시한다.
+
+- ideas/density-transition-width.md: 밀도 전이 재매핑 수식·구현 위치·사용자 피드백·향후 제거 시 검토 항목. 구현 삭제 후에도 재사용을 위해 보존하는 아이디어 기록.
+
+- tests/CloudNearFarDiagnostics.inl: DirectionalLightingBaseline.cpp 도구를 공유하는 P0–P2 검사 실행기.
+- shaders/CloudNearFarDiagnostics.hlsli: 테스트 전용 실제GPU 밀도 계보/대기합성 조회. 일반렌더에서는미컴파일.
+
+`tests/AnalyzeCloudBoundary.py`: 보존 밀도 계보와 현재 Alpha 띠의 경계폭/미측정 범위 분석. 일반 렌더 변경 없음.
+
+- tests/CloudNearClarity.inl: 근경3영역/침식2후보/조건부Detail캐시, 상태복원·수치계약.
+- shaders/CloudNearClarity.hlsli: 25m밀도계보/High가시표본/12.5·6.25m 태양참조/밀도불변식.
+- tests/AnalyzeNearClarity.py: 원시수치 독립검산, 국소윤곽·성분별명암·캐시오차와 comparison.html 생성.
+- tests/CloudDetailBands.inl: 같은 Detail 대역의 합/곱 비교, 고정 월드 단면과 평균 제거량 보정/복원.
+- tests/AnalyzeDetailBands.py: 대역 수식 독립 검산, 단면 연결성/기울기·화면 ROI 지표와 비교 페이지.
+- doc/changes/stage15-cloud-detail-band-composition.md: E17 조건·결과·미채택 이유와 다음 가설.
+- doc/changes/stage15-cloud-detail-spectrum.md: E18 Detail 생성 주파수·제거량 보정·이동 비교.
+  E17의 CloudDetailBands.inl/AnalyzeDetailBands.py를 공유하며 원시 Texture3D와 FFT 지표를 추가한다.
