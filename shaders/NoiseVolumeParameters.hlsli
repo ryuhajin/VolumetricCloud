@@ -15,8 +15,9 @@ cbuffer NoiseVolumeCB : register(b6)
     uint detailVolumeResolution;
     // [고정 품질] 3D Noise seed uint [0,4294967295], 기본/권장 1337. 같은 seed는 같은 무늬; 변경은 재생성이 필요하며 크기/밀도와 무관.
     uint noiseVolumeSeed;
-    // [패딩] 16바이트 packing 예약 칸, 0 유지. 화면 효과 없음; 삭제/재배치 금지.
-    uint noiseVolumePaddingUint0;
+    // [직접 조절] F2 "Near micro tile" m/반복(옛 패딩 칸, offset 12). Formation [200,2000], 기본 570, 타입별 저장.
+    // 근경 미세 Detail(Noise.hlsli)만 읽고 생성 CS는 읽지 않는다.
+    float nearMicroTileMeters;
 
     // [직접 조절] F2/Formation Base XZ m/반복. Formation [1,200000], 기본/권장 12000. 늘리면 덩어리가 넓어지며 재생성 불필요.
     float baseVolumeWorldSizeMeters;

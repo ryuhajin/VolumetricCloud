@@ -347,7 +347,7 @@ P0–P2 근경/원경 보완: `ctest --test-dir build -C Release -R CloudNearFar
 `--cloud-detail-core-types-test` / CTest `VolumetricCloud.CloudDetailCoreTypes`: 기존 형상 실행기로 저장된 네 타입의 기존/가중치35%를 직렬 비교한다. 결과 cloud-detail-core-types/<ID>/comparison.html. 일반 실행 변경 없음. Debug/Release 사용 가능, 성능 재측정 제외.
 
 
-2026-09-21: `--detail-core-slider-smoke` / DetailCoreSliderSmoke는0/.325/.65/1전달,이전후보동등성,Base태양T보존,핫리로드,원상복원,원본8JSON불변검사. `--cloud-density-transition-test`/CloudDensityTransition은렌더수식과함께폐기. 과거자료는보존.
+2026-09-21(2026-09-24 슬라이더와 함께 폐기): `--detail-core-slider-smoke` / DetailCoreSliderSmoke는0/.325/.65/1전달,이전후보동등성,Base태양T보존,핫리로드,원상복원,원본8JSON불변검사. `--cloud-density-transition-test`/CloudDensityTransition은렌더수식과함께폐기. 과거자료는보존.
 
 근경 경계 재분석: `python tests/AnalyzeCloudBoundary.py <대기합성결과> <보존계보폴더> <출력폴더>`. NumPy 필요. 대기 진단은 Near752배의 화면 전체 폭1920×64 Cloud T를 near-boundary-strip.csv에 추가 저장한다.
 

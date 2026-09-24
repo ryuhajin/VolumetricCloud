@@ -27,8 +27,10 @@ struct alignas(16) NoiseVolumeParameters
     std::uint32_t detailResolution = 64;
     // [고정 품질] 3D Noise seed uint [0,4294967295], 기본/권장 1337. 같은 seed는 같은 무늬; 변경은 재생성이 필요하며 크기/밀도와 무관.
     std::uint32_t seed = 1337;
-    // [패딩] 16바이트 packing 예약 칸, 0 유지. 화면 효과 없음; 삭제/재배치 금지.
-    std::uint32_t paddingUint0 = 0;
+    // [직접 조절] F2 "Near micro tile" m/반복, offset 12(옛 패딩 칸). Formation [200,2000], 기본 570.
+    // 근경 미세 Detail 무늬 크기와 사라지는 거리를 정한다. CloudFormationSettings가 소유하며 타입별 Save Preset에 저장된다.
+    // 생성 CS는 읽지 않으므로 바꿔도 텍스처를 다시 굽지 않는다.
+    float nearMicroTileMeters = 570.0f;
 
     // [직접 조절] F2/Formation Base XZ m/반복. Formation [1,200000], 기본/권장 12000. 늘리면 덩어리가 넓어지며 재생성 불필요.
     float baseWorldSizeMeters = stage13noise::kBaseHorizontalWorldSizeMeters;
@@ -52,6 +54,8 @@ struct alignas(16) NoiseVolumeParameters
 
 static_assert(sizeof(NoiseVolumeParameters) == 96,
               "NoiseVolumeParameters must match NoiseVolumeCB");
+static_assert(offsetof(NoiseVolumeParameters, nearMicroTileMeters) == 12,
+              "nearMicroTileMeters must match NoiseVolumeCB offset 12");
 static_assert(offsetof(NoiseVolumeParameters, baseMidOctaveExtra) == 28);
 inline float SanitizeBaseMidOctaveExtra(float value)
 {

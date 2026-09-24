@@ -214,3 +214,25 @@ void CSDetail(uint3 id : SV_DispatchThreadID)
     }
     outputVolume[id] = saturate(result);
 }
+
+#if defined(VCLOUD_NEAR_MICRO_BAKE_RESOLUTION)
+// [근경 미세 Detail] 전용 Worley fBm을 단일 채널(R8) 64³로 굽는다. u1은 이 경로만 사용한다.
+// 기저 3 cycle/tile, 1×/2×/4× .625/.25/.125, 거리 sqrt(d²)/1.15로 Detail 생성기와 같은 Worley 정의를 쓴다.
+// 반복 텍스처라 Detail과 같은 주기 Worley(PeriodicWorleyDistance)를 쓰고 seed는 Detail과 다르다.
+// 해상도는 컴파일 정의(Renderer는 64)로 정한다. b6은 읽지 않는다.
+RWTexture3D<unorm float> nearMicroOutput : register(u1);
+
+[numthreads(4, 4, 4)]
+void CSNearMicro(uint3 id : SV_DispatchThreadID)
+{
+    const uint resolution = VCLOUD_NEAR_MICRO_BAKE_RESOLUTION;
+    if (any(id >= resolution.xxx))
+        return;
+    float3 uvw = ((float3)id + 0.5) / (float)resolution;
+    const uint seed = 1337u + 5003u;
+    float n = 0.625 * PeriodicWorleyDistance(uvw * 3.0 + 19.0, 3u, seed) +
+              0.25 * PeriodicWorleyDistance(uvw * 6.0 + 57.1, 6u, seed + 71u) +
+              0.125 * PeriodicWorleyDistance(uvw * 12.0 + 93.7, 12u, seed + 149u);
+    nearMicroOutput[id] = saturate(n);
+}
+#endif

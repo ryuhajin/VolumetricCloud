@@ -88,6 +88,10 @@ HIGH_PERFORMANCE=PASS samples=... cloud_p95_ms=... frame_p95_ms=...
 
 이 값은 `HighCloudQuality` CPU/HLSL 상수로 고정되어 성능 측정 중 바뀌지 않는다. Detail Texture3D는 모든 거리에서 유지하므로 성능 수치에는 Detail LOD 이득이 섞이지 않는다.
 
+2026-09-24 근경 미세 Detail(E19): 타입별 `nearMicroStrength`가 0보다 크면 화면 footprint로 정한 근경(1080p/FOV60 중앙 약 tile×29.3m 이내) 표본에서만
+전용 64³ 텍스처를 두 번 읽고 warp>0이면 gradient noise 벡터 1회를 더 계산한다. strength 0(기본)과 원경은 추가 조회가 없다.
+시험 측정(Cumulus, tile 570~700/strength .5/DUAL/WARP .15·.2, 정/역 두 회차 Cloud 중앙값): Near75 약+.8ms, F5 약+1.4~1.7ms, F6 약+2.2~2.5ms, 최대 p95 약7ms로 예산 안이다.
+
 ## 비교 기준 보존
 
 삭제 전 기준은 `captures/simplification-baseline-2026-08-31`에 로컬 보존한다. 이 fixture는 1920×1080, High, Temporal Off, Rim Off, Detail LOD Off, optimized direct 조건에서 만들었다.
@@ -235,3 +239,7 @@ Release OFF 1920×1080, UI/VSync/캡처 Off, 직렬60프레임 예열/120 raw �
 
 현재 일반 Deep Cache는Near512²×80/Far512²×79,R32_FLOAT 배열159MiB다. 이전05의80/40 기록은과거규격이다. C++초기값·sanitize·자원생성·HLSL slice입력·디버그최대index78이일치한다. ShadowCB160B/offset/바인딩은불변이며선형tau보간과3~5도전환을유지한다.159/79는검증전용이다.
 2026-09-18 독립 슬롯: 고정 High·512/80+79 cache 유지. 전체 회귀의 HighPerformance/ShadowHeightPerformance 및 최종 튜닝 후 HighPerformance 통과. 새16조합 촬영은8프레임 예열의 외관 비교이며16조합 전체 steady-state 성능 게이트 측정으로 해석하지 않는다.
+
+### 시선 표본 지터 — 2026-09-25
+
+View march의 표본 위치만 구간 중점에서 픽셀별 IGN 지터로 바꿨다(step 수·적분 길이 불변). Release 1920×1080, RTX 4080 SUPER, 드라이버 32.0.15.9186에서 HighPerformance 12case·1440표본 통과: 전체 Cloud p95 4.564ms, Frame p95 5.089ms, 최대 case Meadow CloudOverview Cloud 6.948ms/Frame 7.498ms. 상세는 [시선 표본 지터](changes/stage15-view-sample-jitter.md).

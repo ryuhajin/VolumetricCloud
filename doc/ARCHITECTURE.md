@@ -154,12 +154,12 @@ C++ 구조체, HLSL cbuffer, 이 표는 함께 변경한다.
 | b0 | `WeatherMapComputeParameters` / `WeatherMapBuildCB` | 160B | Weather CS 전용 4채널 생성 설정, threshold/link와 256² 출력 크기 |
 | b0 | `SceneCB` / `cbScene` | 64B | opaque scene view-projection. 다른 stage에서 사용 |
 | b1 | `CloudParameters` / `CloudCB` | 80B | bounds Y mirror, density/extinction, debug, coverage, wind, offsets |
-| b2 | `NoiseLabParameters` / `NoiseLabCB` | 32B | preview 축, 출력 필드, 시간 |
+| b2 | `NoiseLabParameters` / `NoiseLabCB` | 32B | preview 축, 출력 필드, 시간, E19 미세 비교 미리보기 월드 길이(offset24) |
 | b3 | `LightParameters` / `LightCB` | 80B | 태양, albedo, dual-lobe phase와 직접광 shape |
 | b4 | `EnvironmentParameters` / `EnvironmentCB` | 48B | sky/ground fill, AO, 다중 산란 |
 | b5 | `CloudDomainParameters` / `CloudDomainCB` | 32B | Planar bottom/thickness와 View/Light 유한 거리 |
-| b6 | `NoiseVolumeParameters` / `NoiseVolumeCB` | 96B | Texture3D 규격, 월드 크기와 조합 weight |
-| b7 | `CloudShapeParameters` / `CloudShapeCB` | 48B | 공통 profile(offset 0~16), 예약20~32, footprint36, densityShaping40, 예약44 |
+| b6 | `NoiseVolumeParameters` / `NoiseVolumeCB` | 96B | Texture3D 규격, 월드 크기와 조합 weight, E19 시험 미세 tile(offset12, 옛 패딩) |
+| b7 | `CloudShapeParameters` / `CloudShapeCB` | 48B | 공통 profile(offset 0~16), 근경 미세 strength/mean/warp/warpFrequency(20~32), footprint36, densityShaping40, 예약44(2026-09-24 detailCoreProtection 제거) |
 | b8 | `Stage12ShadowParameters` / `ShadowCB` | 160B | Balanced512 basis, cascade, surface shadow, debug |
 | b9 | `stage14::GpuParameters` / `Stage14CB` | 224B | 물리 대기, 태양, Tone, LUT 크기와 debug |
 | b10 | `WeatherColumnParameters` / `WeatherColumnCB` | 32B | 공통 min/max(offset0/4), 예약8/12, lift16, fixedType20, 예약24/28 |
@@ -380,3 +380,7 @@ CPU 보정은 한 계수만 정하고 실제 GPU 밀도로 재확인한다. CB/U
 상수버퍼/UI/프리셋 schema/일반 프레임 리소스 구성은 그대로다.
 
 명시적 --cloud-near-clarity-test는 기존 Renderer/High를 재사용한다. VCLOUD_TEST_NEAR_CLARITY(0/1/2)는 침식 비교 정의이며, 2026-09-22 사용자 채택 후 일반 기본식은2(remap)다. 옛 코어 시험 정의만 있는 경우는 역사적 감산 경로를 유지한다. CloudNearClarity.hlsli가 인접광선/실제High/태양참조를 읽는다. 새GPU리소스/CB/UI/schema는없다. 진단실행기는 CPU상태·PS·DeepCS·원본8프리셋을보존하고 일반화면을복원한다. 일반식=후보2, ROI 기준=옛 후보0을 각각 검증한다.
+
+2026-09-24 근경 미세 Detail(E19) 런타임 채택: b6 offset12=`nearMicroTileMeters`, b7 offset20~32=`nearMicroStrength/Mean/Warp/WarpFrequency`(옛 패딩), b2 offset24=F2 미리보기 `microPreviewExtentMeters`. CB 크기(96B/48B/32B)는 그대로이며 반사 offset 검사를 추가했다. 다섯 값은 `CloudFormationSettings`(tile)와 `CloudShapeParameters`(나머지)가 소유해 F2 슬라이더로 편집하고 타입별 Save Preset JSON의 선택 키로 저장한다(없으면 strength 0=끔). 구름 PS와 F2 미리보기 PS는 t14(전용 Worley 64³ R8, 256KiB)를 읽는다. 텍스처는 첫 Render에서 NoiseVolume.hlsl `CSNearMicro`(u1)로 한 번 굽는다. 상세는 changes/stage15-cloud-near-micro-detail.md.
+
+2026-09-24: Detail core protection 제거. 저장된 모든 타입 값이 0(Custom은 키 없음=0)이라 일반 화면에 영향이 없었다. b7 offset44는 예약 `cloudShapeReserved44`(CPU `reserved44`, 항상0)로 바꾸고 48B/나머지 offset은 유지한다. F1 슬라이더, JSON 쓰기·범위 검사, snapshot 필드, DetailCoreSliderSmoke를 제거했다. 옛 JSON의 `detailCoreProtection` 키는 값과 무관하게 무시하며 원본 프리셋 파일은 자동 수정하지 않는다(다음 Save Preset에서 빠진다). 일반 침식식은 `(1-p*core)` 항 없이 `e=D*s*(1-smoothstep(.45,.90,S))`이다. 과거 .65 비교는 시험 정의 `VCLOUD_TEST_DETAIL_CORE_MODE`로만 재현한다.

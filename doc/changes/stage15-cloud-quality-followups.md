@@ -19,7 +19,7 @@
 | E08 | View 부족? 100/50/25m | Near75 High–25m T MAE .000513, 부드러움 잔존 | 실행 완료, High 유지 | 선택ROI/광선 | View코드/범위 밖 조건/새 실패 | build-captures/cloud-distance-step/15248-36299828/README.md; cloud-near-far/42308-45389781/README.md |
 | E09 | Weather/Base 문턱·대비·옥타브? 단면/5후보 | 전달 확인, 대비·옥타브 증가로 미해결 | 실행 완료, Original 유지 | 모양 분포와 경계 원인 구분 | noise/Weather 변경 또는 새 근거 | build-captures/cloud-base-weather/34548-38669531/README.md; cloud-base-remap/41620-39338562/README.md |
 | E10 | 짧은 점유길이=근거리? F5/F6, 광선 계보 | 먼 접선 반례, 선택근경에서 Detail 큰 감산 | 실행 완료 | 25m 계보는 High 종료 뒤도 포함 | 점유/밀도 정의 변경 또는 새 관찰 | build-captures/cloud-path-length/39388-42348312/README.md; cloud-near-far/42308-45389781/rays.csv |
-| E11 | Detail 코어 가중치·상한, 네 타입 | 몸체 회복, 얇은 타입 과한 채움. 내부 명암 개선 아님 | **타입별 슬라이더 채택**, 공통값 미채택 | 코어는 공간경계 아닌 밀도추정 | 코어 수식/타입 입력 변경 | build-captures/cloud-detail-core/46784-46441093/README.md; cloud-detail-core-types/2688-2612437/README.md |
+| E11 | Detail 코어 가중치·상한, 네 타입 | 몸체 회복, 얇은 타입 과한 채움. 내부 명암 개선 아님 | 타입별 슬라이더 채택 후 **2026-09-24 제거**(저장값 전부 0, 미사용) | 코어는 공간경계 아닌 밀도추정 | 코어 수식/타입 입력 변경 | build-captures/cloud-detail-core/46784-46441093/README.md; cloud-detail-core-types/2688-2612437/README.md |
 | E12 | 대기 조회·합성 경계? 상향ray2~40km | T역전0, 합성max .000473 | 실행 완료, 깊이분포 근사 당시 미검증 | 유한 광선/대수계약 | 실제 깊이분포 비교는 새 범위E14 | build-captures/cloud-near-far/42308-45389781/aerial.csv |
 | E13 | 림/캐시/소멸계수/Sky fill/Multiple | 비교 완료, 캐시80/79·Rim2 채택 | 실행 완료/부분 사용자 채택 | 당시Urban과 현재저장값 다름 | 입력·코드 변경 또는 새 실패 | captures/stage15-directional-lighting; [림](stage15-cloud-rim-lighting.md), [방향광](stage15-directional-cloud-lighting.md) |
 | E14 | 대표거리/Aerial LUT 오차 A/B/C/D | 4시점 수렴/계약 통과 | 2026-09-22 거리2배 사용자 채택 | 참조도 태양T/Multi LUT 공유 | 이번 결과에 명시 | [합성 진단 기록](stage15-cloud-aerial-composition.md) |
@@ -27,6 +27,7 @@
 | E16 | 정규화 형상 침식/인접9광선/현재Cumulus 태양Detail 차이 | 외곽축소와골대비손실혼재 | **후보2 remap 사용자 채택**, Base 그림자 유지, 근경 선명도 미해결 | 작은영역/형상과조명분리, 기존전체폭과다름 | 일반=후보2 채택 검증 및 새 참조 구조 비교 | [근경선명도](stage15-cloud-near-clarity.md) |
 | E17 | 동일 Detail 대역 가중합 대 연속 remap/평균 제거량 일치 | k1은제거량약9%감소, 보정k1.09605도외곽/골대비이득없음 | 실행 완료, 일반 가중합 remap 유지 | 동일대역·가중치/고정단면, 참조전체식재현아님 | 대역 생성/공간 구조가 바뀔 때 | [대역 결합](stage15-cloud-detail-band-composition.md) |
 | E18 | Detail 원본에2f/4f 추가,64³/2km·가중합 remap 고정 | 고주파 비율 증가하나 분산 감소, 보정 후보 파임 대비 약20% 감소 | **사용자 무보정 fBm 후보1 일반 채택**, 선명도 해결은 별개 | 평균 제거량 일치≠분포 일치, 이동 MAE는 깜빡임 점수 아님 | 일반 채택 경로/비용 검증, 이후 새 입력 변경 근거 | [원본 주파수](stage15-cloud-detail-spectrum.md) |
+| E19 | 근경 전용 두 번째 Detail 조회(tile500/250, 평균0 섭동, 화면 footprint로 0), c4는+50m step | c1 근경 굴곡 증가·원경 불변(컴파일 바닥 .00031), c3/c4 천정 방사 줄무늬, c1 비용 최대+.56ms | **2026-09-24 런타임 채택**: 전용 Worley 64³+DUAL+warp, F2 5슬라이더 타입별 저장(기본 strength 0). SOURCE 0/1/2·128³·ROTATE·FINE·SHADOW·SHELL·Extinction 상한 확대 기각 | 작은 tile의 시선 방향 번짐 잔존, 타입별 값·화면 승인 사용자 대기 | tile/가중 규칙 또는 조명 모델 변경 | [근경 미세 Detail](stage15-cloud-near-micro-detail.md) |
 
 재실행은 관련 코드·입력 변경, 기존 범위 밖 조건, 새 관찰 실패 중 하나를 먼저 기록한다.
 같은 후보를 단순히 다시 찍는 것은 허용 범위에 포함하지 않는다.
@@ -409,7 +410,7 @@ GPU검사산출물: build/captures/detail-core-slider/4876718(Release),4963015(D
 
 완료된 방향광·림·대기·해상도·형상·Detail·Base 후보 비교의 CLI와 CTest 등록, 전용 분석기와
 probe를 폐기했다. 현재 미해결 근경/원경 분리용 `CloudNearFarDiagnostics`,
-`CloudPathLength`와 현재 기능 회귀인 `DetailCoreSliderSmoke`, `BaseCandidateUiSmoke`는 유지한다.
+`CloudPathLength`와 현재 기능 회귀인 `BaseCandidateUiSmoke`는 유지한다(`DetailCoreSliderSmoke`는 2026-09-24 슬라이더와 함께 폐기).
 대량 진단 두 개는 `VCLOUD_ENABLE_DIAGNOSTIC_TESTS=ON`일 때만 CTest에 등록되며 명시적 CLI는
 항상 사용할 수 있다. 렌더 기본값, 프리셋 8개와 사용자 화면 승인 상태는 바꾸지 않았다.
 
@@ -426,3 +427,15 @@ probe를 폐기했다. 현재 미해결 근경/원경 분리용 `CloudNearFarDia
 **외곽 표현 개선의 채택이며 근경 선명도 문제는 미해결**이다. 문제·해결 원리·남은 손실·검증과
 참조 DirectX11 프로젝트 비교/다음 순서는 [같은 해결 기록](stage15-cloud-near-clarity.md)에 작성한다.
 원본8JSON/High/대기2배/Base 태양 차폐를 유지하고 push하지 않는다.
+
+## 2026-09-24 F2 Base 비교 UI 정리
+
+사용자 요청: F2의 `Base / Detail Noise Scale` 제목 아래 슬라이더가 없어 보인다는 지적과 임시 Base 후보 정리. 슬라이더(Base world size/Base vertical size/Detail world size)는 제거된 적이 없고 2026-09-19 임시 비교 블록이 제목과 슬라이더 사이에 삽입되어 있었다. 슬라이더와 Regenerate/hash 표시를 제목 바로 아래로 옮기고 `Temporary Base comparison`을 그 뒤로 분리했다.
+`Base candidate`는 Original / Mid octaves x2.5 두 개만 남긴다(Threshold +0.05, Contrast x2, Contrast x2 + Mid x2.5 제거). 런타임 후보 번호는 0/1이며 스냅샷 `temporaryBaseCandidate`도 0/1이다. 후보 전환은 Base 생성 프로그램만 재컴파일해 Base 볼륨을 재생성한다. 셰이더의 `VCLOUD_TEST_BASE_THRESHOLD_OFFSET`/`VCLOUD_TEST_BASE_CONTRAST` 매크로는 로컬 실행기 Base remap 비교 재현용으로만 남긴다. 세션 전용·프리셋 비저장 계약은 유지.
+검증: Release/Debug 빌드, BaseCandidateUiSmoke(2후보 해시 상이·재로드 유지·범위 밖 2 거부·Original 복원)/NoiseLabSmoke/HotReloadDependencySmoke 통과, Release CTest 46/46.
+
+## 2026-09-24 Detail core protection 제거
+
+사용자 요청: F1 Cloud Local의 Detail core protection을 쓰지 않는 것 같으니 확인 후 런타임/UI에서 삭제. 확인 결과 원본 타입 프리셋 3개(stratus/cumulus/mixed)는 모두 0, custom-cloud.json은 키 없음(=0)이라 일반 실행에서 셰이더 분기 `detailCoreProtection>0`이 한 번도 켜지지 않았다.
+2026-09-24: Detail core protection 제거. 저장된 모든 타입 값이 0(Custom은 키 없음=0)이라 일반 화면에 영향이 없었다. b7 offset44는 예약 `cloudShapeReserved44`(CPU `reserved44`, 항상0)로 바꾸고 48B/나머지 offset은 유지한다. F1 슬라이더, JSON 쓰기·범위 검사, snapshot 필드, DetailCoreSliderSmoke를 제거했다. 옛 JSON의 `detailCoreProtection` 키는 값과 무관하게 무시하며 원본 프리셋 파일은 자동 수정하지 않는다(다음 Save Preset에서 빠진다). 일반 침식식은 `(1-p*core)` 항 없이 `e=D*s*(1-smoothstep(.45,.90,S))`이다. 과거 .65 비교는 시험 정의 `VCLOUD_TEST_DETAIL_CORE_MODE`로만 재현한다.
+검증: Debug/Release 빌드(Release 앱 exe는 실행 중이라 링크 잠김, TestRunner/Debug는 갱신), Release·Debug CTest 45/45(DetailCoreSliderSmoke 등록 해제로 1개 감소). CloudFormationPresetStore는 새 파일에 키를 쓰지 않음, 옛 키 0/.65/1.5 모두 무시하고 나머지 값 동일 로드를 검사한다. HighPerformance는 사용자 exe 동시 실행 중 1회 실패 후 단독 재실행 통과.

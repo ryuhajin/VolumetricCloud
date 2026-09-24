@@ -148,6 +148,72 @@ NoiseFieldSample SampleDetailErosionNoise(float3 worldPosition, float timeSecond
     return result;
 }
 
+// [근경 미세 Detail, E19] 가까운 표본에서만 Detail에 평균0 섭동을 더해 작은 굴곡을 만든다.
+// 값은 선택한 구름 타입의 Formation(F2 슬라이더, 타입별 Save Preset)에서 온다: tile=b6 nearMicroTileMeters,
+// strength/mean/warp/warp freq=b7. strength 0이면 호출부가 조회 자체를 건너뛴다.
+// 1. p = 바람 적용 월드 위치 / tile.
+// 2. warp>0이면 부드러운 gradient noise 벡터로 좌표를 비튼다(domain warp). 같은 위치는 항상 같은 offset이다.
+// 3. 전용 미세 Worley 64³(t14)를 p와, 다른 회전·0.731배 좌표로 두 번 읽어 평균한다(DUAL).
+//    두 반복 주기가 나눠떨어지지 않아 TILE 주기 격자가 드러나지 않는다.
+// 4. (평균 − mean) × Detail 표준편차 정규화 배율 × √2를 반환한다. strength의 의미는 "Detail 표준편차의 몇 배"다.
+Texture3D<float> nearMicroVolume : register(t14);
+
+// 구운 64³ texel 표준편차 0.107505(seed 1337+5003 고정 실측)를 Detail 가중합 표준편차 0.056369에 맞춘다.
+// 두 조회 평균은 표준편차가 1/√2로 줄므로 √2를 곱한다(두 조회 상관은 미측정, 근사).
+static const float kNearMicroScale = 0.056369 / 0.107505 * 1.41421356;
+// warp offset 필드의 단일 gradient noise 표준편차(tests/NearMicroNoiseStats.py 30만 표본).
+static const float kNearMicroWarpNoiseStd = 0.190687;
+
+uint3 NearMicroHash(uint3 v)
+{
+    // PCG3D 정수 해시. 음수 격자 좌표는 2의 보수 비트 그대로 사용한다.
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+
+// quintic gradient noise 벡터(비주기, 2차 미분 연속). 모서리마다 해시 1회, 성분 순서만 바꾼 세 gradient로 x/y/z를 만든다.
+float3 NearMicroWarpNoise(float3 p)
+{
+    float3 cell = floor(p);
+    float3 f = p - cell;
+    float3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    int3 c = int3(cell);
+    float3 corners[8];
+    [unroll] for (int i = 0; i < 8; ++i)
+    {
+        int3 o = int3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        float3 g = float3(NearMicroHash(asuint(c + o))) * (2.0 / 4294967295.0) - 1.0;
+        float3 d = f - float3(o);
+        corners[i] = float3(dot(g, d), dot(g.yzx, d), dot(g.zxy, d));
+    }
+    float3 x00 = lerp(corners[0], corners[1], u.x), x10 = lerp(corners[2], corners[3], u.x);
+    float3 x01 = lerp(corners[4], corners[5], u.x), x11 = lerp(corners[6], corners[7], u.x);
+    return lerp(lerp(x00, x10, u.y), lerp(x01, x11, u.y), u.z);
+}
+
+float NearMicroTileMeters()
+{
+    return max(nearMicroTileMeters, 1.0);
+}
+
+// 반환값은 평균0 섭동이며 호출부가 strength × 거리 가중치를 곱한다.
+float SampleNearMicroPerturbation(float3 worldPosition, float timeSeconds)
+{
+    float3 p = ComputePhysicalCloudSamplePosition(worldPosition, timeSeconds) /
+        NearMicroTileMeters();
+    if (nearMicroWarp > 0.0)
+        p += (nearMicroWarp / kNearMicroWarpNoiseStd) *
+            NearMicroWarpNoise(p * nearMicroWarpFrequency + 31.7);
+    float3 q = mul(float3x3(0.36, 0.48, -0.80, -0.80, 0.60, 0.00, 0.48, 0.64, 0.60), p) * 0.731 +
+        float3(0.213, 0.577, 0.891);
+    float v = 0.5 * (nearMicroVolume.SampleLevel(weatherMapSampler, frac(p), 0) +
+                     nearMicroVolume.SampleLevel(weatherMapSampler, frac(q), 0));
+    return (v - nearMicroMean) * kNearMicroScale;
+}
+
 // [밀도 조립] 입력은 월드 m, Base [0,1], Weather RGBA 해석값이다.
 // 1. 기둥의 두께/lift/정규화 높이를 계산한다.
 // 2. Weather support로 없는 지역을 지우고 footprint로 수평 문턱을 조절한다.
@@ -301,8 +367,9 @@ float DetailCoreForComparison(CloudDensitySample sample)
 // 3. 밀도 배율 전 형상 S로 boundary와 침식량 e를 정한다.
 // 4. [e,1]을 [0,1]로 remap한 뒤 높이/밀도 배율 A를 적용한다. e>=1은 완전 침식.
 // sampleDetail=false는 Base 그대로 반환하므로 Shadow 경로와 View 최종 표면은 의도적으로 다르다.
+// nearMicroWeight는 View 경로의 근경 미세 가중치(0~1)다. 0이면 기존 연산과 완전히 같다.
 CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
-                                      bool sampleDetail)
+                                      bool sampleDetail, float nearMicroWeight)
 {
     CloudDensitySample sample = EvaluateBaseCloudDensity(worldPosition, timeSeconds);
     bool shouldApplyDetail = sampleDetail && sample.baseDensity > 0.0 &&
@@ -314,6 +381,11 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
         sample.detailNoiseChannels = detail.channels;
         sample.detailNoise = detail.value;
         sample.detailSampled = 1.0;
+        // 근경 미세 Detail: 평균0 섭동. 가중치 0 또는 strength 0이면 조회 없이 기존 값 그대로다.
+        if (nearMicroWeight > 0.0 && nearMicroStrength > 0.0)
+            sample.detailNoise = saturate(sample.detailNoise +
+                nearMicroStrength * nearMicroWeight *
+                SampleNearMicroPerturbation(worldPosition, timeSeconds));
     }
     if (shouldApplyDetail)
     {
@@ -328,10 +400,6 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
         // 코어에서 shaping 전 Base의 최대35% 제거. 빈 영역에 밀도를 더하지 않는다.
         float erosionLimit=sample.baseDensity*lerp(1.0,0.35,DetailCoreForComparison(sample));
         sample.erosion=min(sample.erosion,erosionLimit);
-#elif !defined(VCLOUD_TEST_DETAIL_CORE_MODE)
-        // 슬롯별 몸체 보호. 0이면 기존 연산을 그대로 유지한다.
-        if (detailCoreProtection > 0.0)
-            sample.erosion *= lerp(1.0, 1.0 - saturate(detailCoreProtection), DetailCoreForComparison(sample));
 #endif
         sample.finalDensity = saturate(sample.baseDensity - sample.erosion);
 #else
@@ -340,19 +408,17 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
         float amplitude=(sample.localHeightFraction>=0 && sample.localHeightFraction<=1 ? 1.0 : 0.0) *
             smoothstep(.02,.20,sample.weatherCoverage) * EvaluateCommonVerticalProfile(sample.localHeightFraction) *
             max(densityMultiplier,0.0) * sample.weatherDensityModifier;
-        float protection=saturate(detailCoreProtection);
+        float erosion=sample.detailNoise*max(detailErosionStrength,0.0)*(1-smoothstep(.45,.90,shape));
 #if VCLOUD_TEST_DETAIL_CORE_MODE == 1
-        protection=0.65; // 새 remap에서도 UI .65와 고정 가중치의 동등성을 검증한다.
+        // 비교 전용: 과거 몸체 보호 .65 가중치. 일반 슬라이더는 2026-09-24 제거했다.
+        erosion*=1-0.65*DetailCoreForComparison(sample);
 #endif
-        float erosion=sample.detailNoise*max(detailErosionStrength,0.0)*(1-smoothstep(.45,.90,shape)) *
-            (1-protection*DetailCoreForComparison(sample));
 #if defined(VCLOUD_TEST_DETAIL_EROSION_SCALE)
         erosion*=VCLOUD_TEST_DETAIL_EROSION_SCALE; // 원본 주파수 시험의 평균 제거량 일치 전용.
 #endif
 #if defined(VCLOUD_TEST_DETAIL_BANDS) && VCLOUD_TEST_DETAIL_BANDS > 0
         // 시험 전용: 같은 네 대역/가중치로 연속 remap. 추가 texture fetch 없음.
-        float q=max(detailErosionStrength,0.0)*(1-smoothstep(.45,.90,shape)) *
-            (1-protection*DetailCoreForComparison(sample));
+        float q=max(detailErosionStrength,0.0)*(1-smoothstep(.45,.90,shape));
         float4 band=saturate(VCLOUD_TEST_DETAIL_BAND_SCALE*q*max(detailVolumeWeights,0)*sample.detailNoiseChannels);
         float4 remain=1-band;
         erosion=1-remain.x*remain.y*remain.z*remain.w;
@@ -369,6 +435,12 @@ CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
     sample.baseDensity = ShapeCloudDensity(sample.baseDensity);
     sample.finalDensity = ShapeCloudDensity(sample.finalDensity);
     return sample;
+}
+
+CloudDensitySample SampleCloudDensity(float3 worldPosition, float timeSeconds,
+                                      bool sampleDetail)
+{
+    return SampleCloudDensity(worldPosition, timeSeconds, sampleDetail, 0.0);
 }
 
 

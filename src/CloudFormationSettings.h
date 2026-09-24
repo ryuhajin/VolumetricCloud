@@ -59,6 +59,9 @@ struct CloudFormationSettings
         stage13noise::kBaseVerticalWorldSizeMeters;
     // [직접 조절] F2/Formation Detail XYZ m/반복. Formation [1,100000], 기본/권장 2000. 늘리면 표면 파임이 커진다.
     float detailNoiseWorldSizeMeters = 2000.0f;
+    // [직접 조절] F2 Near micro tile m/반복 [200,2000], 기본 570. 근경 미세 Detail 무늬 크기이며 사라지는 거리(약 tile×14.6~29.3m)도 정한다.
+    // 나머지 미세 값(strength/mean/warp/warp freq)은 shape가 소유한다. 모두 타입별 Save Preset에 저장된다.
+    float nearMicroTileMeters = nearmicro::kDefaultTileMeters;
 
 };
 

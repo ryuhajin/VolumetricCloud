@@ -87,7 +87,6 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
         Near(value.shape.footprintCoverageInfluence,
              safeShape.footprintCoverageInfluence) &&
         FiniteIn(value.shape.densityShaping, 0.0f, 1.0f) &&
-        FiniteIn(value.shape.detailCoreProtection, 0.0f, 1.0f) &&
         FiniteIn(value.domainBottomMeters, formationrange::bottomMin, formationrange::bottomMax) &&
         FiniteIn(value.domainThicknessMeters, 1.0f, formationrange::domainMax) &&
         FiniteIn(value.maximumViewTraceDistanceMeters, 1.0f, formationrange::baseSizeMax) &&
@@ -96,7 +95,12 @@ bool IsValidCloudFormationSettings(const CloudFormationSettings& value)
         FiniteIn(value.maximumLightTraceDistanceMeters, 1.0f, formationrange::baseSizeMax) &&
         FiniteIn(value.baseNoiseWorldSizeMeters, 1.0f, formationrange::baseSizeMax) &&
         FiniteIn(value.baseNoiseVerticalWorldSizeMeters, 1.0f, formationrange::baseSizeMax) &&
-        FiniteIn(value.detailNoiseWorldSizeMeters, 1.0f, formationrange::domainMax);
+        FiniteIn(value.detailNoiseWorldSizeMeters, 1.0f, formationrange::domainMax) &&
+        FiniteIn(value.nearMicroTileMeters, formationrange::microTileMin, formationrange::microTileMax) &&
+        FiniteIn(value.shape.nearMicroStrength, 0.0f, formationrange::microStrengthMax) &&
+        FiniteIn(value.shape.nearMicroMean, formationrange::microMeanMin, formationrange::microMeanMax) &&
+        FiniteIn(value.shape.nearMicroWarp, 0.0f, formationrange::microWarpMax) &&
+        FiniteIn(value.shape.nearMicroWarpFrequency, formationrange::microWarpFrequencyMin, formationrange::microWarpFrequencyMax);
 }
 
 CloudFormationSettings SanitizeCloudFormationSettings(const CloudFormationSettings& value)
@@ -123,6 +127,7 @@ CloudFormationSettings SanitizeCloudFormationSettings(const CloudFormationSettin
     result.baseNoiseWorldSizeMeters = std::clamp(finiteOr(result.baseNoiseWorldSizeMeters, 12000.0f), 1.0f, formationrange::baseSizeMax);
     result.baseNoiseVerticalWorldSizeMeters = std::clamp(finiteOr(result.baseNoiseVerticalWorldSizeMeters, 12000.0f), 1.0f, formationrange::baseSizeMax);
     result.detailNoiseWorldSizeMeters = std::clamp(finiteOr(result.detailNoiseWorldSizeMeters, 2000.0f), 1.0f, formationrange::domainMax);
+    result.nearMicroTileMeters = std::clamp(finiteOr(result.nearMicroTileMeters, nearmicro::kDefaultTileMeters), formationrange::microTileMin, formationrange::microTileMax);
     return result;
 }
 
@@ -185,6 +190,7 @@ CloudFormationSettings CaptureCloudFormationSettingsUnchecked(
     result.baseNoiseWorldSizeMeters = noise.baseWorldSizeMeters;
     result.baseNoiseVerticalWorldSizeMeters = noise.baseVerticalWorldSizeMeters;
     result.detailNoiseWorldSizeMeters = noise.detailWorldSizeMeters;
+    result.nearMicroTileMeters = noise.nearMicroTileMeters;
     return result;
 }
 
@@ -216,6 +222,7 @@ void WriteCloudFormationToRuntime(const PreparedCloudFormation& formation,
     noise.baseWorldSizeMeters = value.baseNoiseWorldSizeMeters;
     noise.baseVerticalWorldSizeMeters = value.baseNoiseVerticalWorldSizeMeters;
     noise.detailWorldSizeMeters = value.detailNoiseWorldSizeMeters;
+    noise.nearMicroTileMeters = value.nearMicroTileMeters;
 }
 
 bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
@@ -237,7 +244,7 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
         a.weather.column.maximumBaseLiftMeters,a.weather.worldSizeMeters,a.domainBottomMeters,
         a.domainThicknessMeters,a.maximumViewTraceDistanceMeters,a.viewTraceFadeStartDistanceMeters,
         a.maximumLightTraceDistanceMeters,a.baseNoiseWorldSizeMeters,a.baseNoiseVerticalWorldSizeMeters,
-        a.detailNoiseWorldSizeMeters};
+        a.detailNoiseWorldSizeMeters,a.nearMicroTileMeters};
     const float bv[] = {b.coverage,b.densityMultiplier,b.extinctionPerMeter,b.detailErosion,
         b.weather.generator.coverageThreshold,b.weather.generator.coverageSoftness,
         b.weather.generator.densityCoverageInfluence,b.weather.generator.thicknessCoverageInfluence,
@@ -245,7 +252,7 @@ bool CloudFormationSettingsEqual(const CloudFormationSettings& a,
         b.weather.column.maximumBaseLiftMeters,b.weather.worldSizeMeters,b.domainBottomMeters,
         b.domainThicknessMeters,b.maximumViewTraceDistanceMeters,b.viewTraceFadeStartDistanceMeters,
         b.maximumLightTraceDistanceMeters,b.baseNoiseWorldSizeMeters,b.baseNoiseVerticalWorldSizeMeters,
-        b.detailNoiseWorldSizeMeters};
+        b.detailNoiseWorldSizeMeters,b.nearMicroTileMeters};
     for (std::size_t i = 0; i < std::size(av); ++i)
         if (!Near(av[i], bv[i], epsilon)) return false;
     return true;
@@ -269,7 +276,7 @@ std::uint64_t HashCloudFormationSettings(const CloudFormationSettings& input)
     const float remaining[] = {value.domainBottomMeters,value.domainThicknessMeters,
         value.maximumViewTraceDistanceMeters,value.viewTraceFadeStartDistanceMeters,
         value.maximumLightTraceDistanceMeters,value.baseNoiseWorldSizeMeters,
-        value.baseNoiseVerticalWorldSizeMeters,value.detailNoiseWorldSizeMeters};
+        value.baseNoiseVerticalWorldSizeMeters,value.detailNoiseWorldSizeMeters,value.nearMicroTileMeters};
     fnv1a64::Append(hash,remaining,sizeof(remaining));
     return hash;
 }

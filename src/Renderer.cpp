@@ -471,7 +471,9 @@ bool HasReflectedConstantBufferContract(
         (!fieldOffset("bottomFadeEnd",0) || !fieldOffset("topFadeStart",4) ||
          !fieldOffset("lowerDensityScale",8) || !fieldOffset("upperTransitionStart",12) ||
          !fieldOffset("upperTransitionEnd",16) || !fieldOffset("footprintCoverageInfluence",36) ||
-         !fieldOffset("detailCoreProtection",44))) return false;
+         !fieldOffset("cloudShapeReserved44",44) || !fieldOffset("nearMicroStrength",20) ||
+         !fieldOffset("nearMicroMean",24) || !fieldOffset("nearMicroWarp",28) ||
+         !fieldOffset("nearMicroWarpFrequency",32))) return false;
     if (std::strcmp(name,"WeatherColumnCB")==0 &&
         (!fieldOffset("minimumThicknessMeters",0) || !fieldOffset("maximumThicknessMeters",4) ||
          !fieldOffset("maximumBaseLiftMeters",16) || !fieldOffset("fixedType",20))) return false;
@@ -489,6 +491,9 @@ bool HasReflectedConstantBufferContract(
         if (FAILED(reflection->GetConstantBufferByName(name)->
                 GetVariableByName("baseMidOctaveExtra")->GetDesc(&variable)) ||
             variable.StartOffset != 28u || variable.Size != 4u) return false;
+        if (FAILED(reflection->GetConstantBufferByName(name)->
+                GetVariableByName("nearMicroTileMeters")->GetDesc(&variable)) ||
+            variable.StartOffset != 12u || variable.Size != 4u) return false;
     }
     if (std::strcmp(name, "LightCB") == 0 || std::strcmp(name, "EnvironmentCB") == 0)
     {
@@ -1130,13 +1135,8 @@ bool Renderer::ReloadShaderPrograms(
         macros.reserve(program.defines.size() + 1u);
         for (const auto& define : program.defines)
             macros.push_back({ define.name.c_str(), define.value.c_str() });
-        // 임시 Base 후보도 기존 원자적 reload 경로를 사용한다. 핫 리로드 시 선택 유지.
-        if(program.id==ProgramId::CloudPs || program.id==ProgramId::NoiseLabPs || program.id==ProgramId::DeepShadowCs)
-        {
-            if(m_baseCandidate==1)macros.push_back({"VCLOUD_TEST_BASE_THRESHOLD_OFFSET","0.05"});
-            if(m_baseCandidate==2 || m_baseCandidate==4)macros.push_back({"VCLOUD_TEST_BASE_CONTRAST","2.0"});
-        }
-        if(program.id==ProgramId::NoiseBaseCs && m_baseCandidate>=3)
+        // 임시 Base 후보(1=중간 옥타브 x2.5)도 기존 원자적 reload 경로를 사용한다. 핫 리로드 시 선택 유지.
+        if(program.id==ProgramId::NoiseBaseCs && m_baseCandidate==1)
             macros.push_back({"VCLOUD_TEST_BASE_MID_WEIGHT","2.5"});
         macros.push_back({ nullptr, nullptr });
 
@@ -1384,16 +1384,13 @@ bool Renderer::CreateShaders(bool showErrors)
 
 bool Renderer::ApplyBaseCandidate(int candidate)
 {
-    if(candidate<0 || candidate>4)return false;
+    if(candidate<0 || candidate>1)return false;
     const int previous=m_baseCandidate;
     m_baseCandidate=candidate;
+    // 남은 후보는 Base 생성 옥타브만 바꾸므로 Base 생성 프로그램만 다시 컴파일해 볼륨을 재생성한다.
     std::vector<std::size_t> selected;
-    for(std::size_t i=0;i<m_shaderManifest.size();++i){
-        const auto id=m_shaderManifest[i].id;
-        if(id==shaderreload::ProgramId::CloudPs || id==shaderreload::ProgramId::NoiseLabPs ||
-           id==shaderreload::ProgramId::DeepShadowCs || id==shaderreload::ProgramId::NoiseBaseCs)
-            selected.push_back(i);
-    }
+    for(std::size_t i=0;i<m_shaderManifest.size();++i)
+        if(m_shaderManifest[i].id==shaderreload::ProgramId::NoiseBaseCs)selected.push_back(i);
     if(!ReloadShaderPrograms(selected,{"temporary Base candidate"},false)){
         m_baseCandidate=previous;
         m_baseCandidateStatus="Candidate failed; previous kept: "+m_shaderError;
@@ -1914,6 +1911,83 @@ bool Renderer::RegenerateNoiseVolumes()
     m_baseNoiseVolumeHash = baseHash;
     m_detailNoiseVolumeHash = detailHash;
     m_noiseVolumeGenerationMilliseconds = milliseconds;
+    return true;
+}
+
+// 근경 미세 Detail 전용 Worley fBm을 단일 채널 R8 64³로 굽는다(NoiseVolume.hlsl CSNearMicro, u1, b6 미사용).
+// 셰이더 정규화 상수(texel 평균 .456036/표준편차 .107505)의 근거인 통계를 계산해 디버그 출력에 남긴다.
+// 64³는 2026-09-24 사용자 비교에서 128³와 화면 차이가 없고 약 .2ms 빨라 채택했다.
+bool Renderer::GenerateNearMicroVolumes()
+{
+    const UINT resolution = 64u;
+    const D3D_SHADER_MACRO defines[] = {
+        { "VCLOUD_NEAR_MICRO_BAKE_RESOLUTION", "64" }, { nullptr, nullptr } };
+    ComPtr<ID3DBlob> code;
+    ComPtr<ID3D11ComputeShader> shader;
+    if (!CompileShaderFromFile(m_noiseVolumeShaderPath, "CSNearMicro",
+                               "cs_5_0", code, false, defines) ||
+        FAILED(m_device->CreateComputeShader(code->GetBufferPointer(),
+            code->GetBufferSize(), nullptr, &shader)))
+        return false;
+
+    D3D11_TEXTURE3D_DESC desc = {};
+    desc.Width = desc.Height = desc.Depth = resolution;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R8_UNORM;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    ComPtr<ID3D11Texture3D> texture;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(m_device->CreateTexture3D(&desc, nullptr, &texture)) ||
+        FAILED(m_device->CreateUnorderedAccessView(texture.Get(), nullptr, &uav)) ||
+        FAILED(m_device->CreateShaderResourceView(texture.Get(), nullptr, &srv)))
+        return false;
+    ID3D11UnorderedAccessView* output = uav.Get();
+    m_context->CSSetShader(shader.Get(), nullptr, 0);
+    m_context->CSSetUnorderedAccessViews(1, 1, &output, nullptr);
+    const UINT groups = (resolution + 3u) / 4u;
+    m_context->Dispatch(groups, groups, groups);
+    ID3D11UnorderedAccessView* nullUav = nullptr;
+    m_context->CSSetUnorderedAccessViews(1, 1, &nullUav, nullptr);
+    m_context->CSSetShader(nullptr, nullptr, 0);
+
+    // texel 통계: staging으로 복사해 slice/row pitch를 따라 읽는다.
+    D3D11_TEXTURE3D_DESC stagingDesc = desc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture3D> staging;
+    if (FAILED(m_device->CreateTexture3D(&stagingDesc, nullptr, &staging)))
+        return false;
+    m_context->CopyResource(staging.Get(), texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return false;
+    double sum = 0.0, square = 0.0;
+    for (UINT z = 0; z < resolution; ++z)
+        for (UINT y = 0; y < resolution; ++y)
+        {
+            const auto* row = static_cast<const std::uint8_t*>(mapped.pData) +
+                z * mapped.DepthPitch + y * mapped.RowPitch;
+            for (UINT x = 0; x < resolution; ++x)
+            {
+                const double value = row[x] / 255.0;
+                sum += value;
+                square += value * value;
+            }
+        }
+    m_context->Unmap(staging.Get(), 0);
+    const double count = static_cast<double>(resolution) * resolution * resolution;
+    m_nearMicroVolumeMean = sum / count;
+    m_nearMicroVolumeStd = std::sqrt(std::max(
+        square / count - m_nearMicroVolumeMean * m_nearMicroVolumeMean, 0.0));
+    m_nearMicroVolume = texture;
+    m_nearMicroVolumeSrv = srv;
+    std::ostringstream message;
+    message << std::setprecision(9) << "[NearMicro] baked 64^3 R8 mean=" << m_nearMicroVolumeMean
+            << " std=" << m_nearMicroVolumeStd << '\n';
+    OutputDebugStringA(message.str().c_str());
     return true;
 }
 
@@ -2597,6 +2671,9 @@ void Renderer::RenderCloudPass(bool prepareOnlyForValidation)
         m_shadowNearSrv.Get(), m_shadowFarSrv.Get()
     };
     m_context->PSSetShaderResources(6, 2, shadowResources);
+    // t14 근경 미세 Worley 64³. strength 0이면 셰이더가 읽지 않는다.
+    ID3D11ShaderResourceView* nearMicroResource = m_nearMicroVolumeSrv.Get();
+    m_context->PSSetShaderResources(14, 1, &nearMicroResource);
     ID3D11SamplerState* samplers[2] = {
         m_pointClampSampler.Get(), m_weatherLinearWrapSampler.Get()
     };
@@ -2608,7 +2685,7 @@ void Renderer::RenderCloudPass(bool prepareOnlyForValidation)
     if (prepareOnlyForValidation) return;
     m_context->Draw(3, 0);
 
-    UnbindCloudShaderResources(14);
+    UnbindCloudShaderResources(15);
 }
 
 void Renderer::UpdateStage12ShadowParameters(const Camera& camera)
@@ -2796,8 +2873,12 @@ void Renderer::UpdateCloudConstantBuffers(const Camera& camera,
            sizeof(m_cloudDomainParameters));
     update(5, m_noiseVolumeCb.Get(), &m_noiseVolumeParameters,
            sizeof(m_noiseVolumeParameters));
-    update(6, m_cloudShapeCb.Get(), &m_cloudShapeParameters,
-           sizeof(m_cloudShapeParameters));
+    // 미세 텍스처가 없으면(굽기 전/실패) 빈 SRV 0을 읽어 평균 편향이 생기므로 업로드 사본에서만 미세 대역을 끈다.
+    // 사용자/프리셋 값(m_cloudShapeParameters)은 바꾸지 않는다.
+    CloudShapeParameters uploadedShape = m_cloudShapeParameters;
+    if (!m_nearMicroVolumeSrv) uploadedShape.nearMicroStrength = 0.0f;
+    update(6, m_cloudShapeCb.Get(), &uploadedShape,
+           sizeof(uploadedShape));
     update(7, m_shadowCb.Get(), &m_shadowParameters,
            sizeof(m_shadowParameters));
     update(8, m_weatherColumnCb.Get(), &m_weatherColumnParameters,
@@ -2826,6 +2907,13 @@ void Renderer::Render(Camera& camera, float timeSeconds)
     ++m_renderFrameSerial;
     m_frameProfiler.BeginCpuFrame();
     if (!m_determinismValidation) CheckShaderHotReload();
+    // 근경 미세 텍스처는 첫 프레임에 한 번만 굽는다. GPU 프레임 계측 구간 밖이다.
+    if (!m_nearMicroVolumesAttempted)
+    {
+        m_nearMicroVolumesAttempted = true;
+        if (!GenerateNearMicroVolumes())
+            OutputDebugStringA("[NearMicro] bake failed; near micro detail disabled\n");
+    }
     m_frameProfiler.BeginGpuFrame(m_context.Get());
 
     if (m_atmosphereParameters.timePlaybackEnabled)
@@ -2987,7 +3075,7 @@ void Renderer::Render(Camera& camera, float timeSeconds)
             m_noiseVolumeCb.Get(), m_cloudShapeCb.Get(),
             m_weatherColumnCb.Get(), m_weatherMapSrv.Get(),
             m_baseNoiseVolumeSrv.Get(), m_detailNoiseVolumeSrv.Get(),
-            m_weatherLinearWrapSampler.Get());
+            m_weatherLinearWrapSampler.Get(), m_nearMicroVolumeSrv.Get());
     }
     if (!m_automatedRenderMode && m_noiseLab.ConsumeExportRequest())
         ExportNoiseLabSnapshot(DefaultNoiseLabOutputRoot());

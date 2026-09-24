@@ -139,6 +139,16 @@ w = smoothstep(24000, 50000, sampleDistance)
 step = 100 × lerp(1, 1.25, w)
 ```
 
+각 구간의 밀도는 구간 가운데가 아니라 픽셀별 지터 위치에서 읽는다(2026-09-25).
+모든 픽셀이 같은 거리에서 읽으면 구름층 경계에서 카메라 중심의 동심원 줄무늬가 생기기 때문이다.
+지터는 화면 좌표의 interleaved gradient noise이며 시간에 따라 바뀌지 않는다. 구간 경계와 적분 길이는 같다.
+자세한 문제·원인·해결은 [시선 표본 지터](changes/stage15-view-sample-jitter.md)를 따른다.
+
+```text
+jitter         = frac(52.9829189 × frac(dot(pixel, (0.06711056, 0.00583715))))
+sampleDistance = cursor + jitter × marchLength   // 이전: cursor + 0.5 × marchLength
+```
+
 정상 표본에서 Beer–Lambert 적분:
 
 ```text
