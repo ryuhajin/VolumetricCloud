@@ -7,6 +7,16 @@ tests 없이 VolumetricCloud를 만든다. 로컬 검증은 ON + 별도 Volumetr
 아래 과거 CLI 명령의 실행 파일은 검사 앱 경로로 바꿔 사용한다. 일반 앱에는 테스트 CLI가 없다.
 원격은 일반 코드·필수 빌드 설정·프리셋·doc만 반영하며 로컬 테스트/도구/notes/captures는 전송하지 않는다.
 
+### GitHub 원격 반영 규칙 (2026-09-22, 이후 작업에도 적용)
+
+- 테스트 연결을 분리한 일반 빌드 코드만 원격에 반영한다. 일반 빌드는 `VCLOUD_BUILD_TESTS=OFF`이며 테스트 폴더 없이 구성·빌드되어야 한다.
+- 반영 범위는 `src/`, 일반 `shaders/`, `presets/`, 필요한 CMake·의존성 설정과 `doc/` 문서다. 문서 변경은 `doc/`로 제한한다.
+- 테스트 소스·검사용 셰이더·분석/정리 도구·스크린샷·원시 덤프·개인 노트·빌드 산출물·캐시는 로컬에만 둔다. 완료된 캡처는 [데이터 관리 규칙](DATA_MANAGEMENT.md)에 따라 기록 후 삭제한다.
+- 테스트가 포함된 로컬 브랜치나 미전송 이력을 그대로 push하거나 공개 브랜치에 merge하지 않는다. 원격 브랜치의 최신 HEAD를 기준으로 허용된 변경만 담은 커밋을 만들고 fast-forward로 push한다.
+- push 전 변경 파일과 전송할 커밋 이력을 모두 확인한다. 일반 코드 변경은 테스트 없는 체크아웃의 Debug/Release 빌드와 로컬 회귀 검사로 검증한다. 문서만 변경하면 문서 차이와 링크를 확인한다.
+- 테스트와 개인 자료는 로컬 검증 브랜치에 보존한다. 원격에서 테스트를 제외하기 위해 로컬 테스트를 삭제하거나 Git 이력을 재작성하지 않는다. push 후 원격 SHA를 확인한다.
+- 이 규칙은 과거의 코드·테스트 동시 업로드 지시보다 우선한다. 업로드 요청은 이 범위로 해석하며, 범위 확대는 별도 사용자 지시를 따른다. `main` 보호·PR 병합·사용자 화면 승인 규칙은 유지한다.
+
 ## 현재 산출물 관리 계약
 
 [데이터 관리 규칙](DATA_MANAGEMENT.md)을 먼저 적용한다. 완료 실험은 반영·재검증·노트 기록 후
@@ -67,7 +77,7 @@ tests 없이 VolumetricCloud를 만든다. 로컬 검증은 ON + 별도 Volumetr
 - 로드맵의 각 단계는 최신 `origin/main`에서 만든 전용 `feature/stage<번호>-<설명>` 브랜치에서만
   진행합니다. Stage 12/14/15의 이름은 각각 `feature/stage12-shadow`,
   `feature/stage14-atmosphere-integration`, `feature/stage15-final-quality`입니다.
-- 단계 코드·테스트·공식 문서는 같은 단계 브랜치에 둡니다. 다른 단계 구현을 섞지 않습니다.
+- 로컬에서는 단계 코드·테스트·공식 문서를 함께 검증하되, 원격 단계 브랜치에는 위 허용 범위만 반영합니다. 다른 단계 구현을 섞지 않습니다.
 - 작업 완료 뒤 브랜치를 최신 `origin/main` 기준으로 갱신하고 Debug/Release 빌드, 전체 CTest,
   해당 GPU smoke와 사용자 렌더 승인을 다시 확인합니다.
 - GitHub PR은 **merge commit** 방식으로만 병합합니다. squash/rebase merge와 main 직접 push는
@@ -337,7 +347,7 @@ P0–P2 근경/원경 보완: `ctest --test-dir build -C Release -R CloudNearFar
 `--cloud-detail-core-types-test` / CTest `VolumetricCloud.CloudDetailCoreTypes`: 기존 형상 실행기로 저장된 네 타입의 기존/가중치35%를 직렬 비교한다. 결과 cloud-detail-core-types/<ID>/comparison.html. 일반 실행 변경 없음. Debug/Release 사용 가능, 성능 재측정 제외.
 
 
-2026-09-21: `--detail-core-slider-smoke` / DetailCoreSliderSmoke는0/.325/.65/1전달,이전후보동등성,Base태양T보존,핫리로드,원상복원,원본8JSON불변검사. `--cloud-density-transition-test`/CloudDensityTransition은렌더수식과함께폐기. 과거자료는보존.
+2026-09-21(2026-09-24 슬라이더와 함께 폐기): `--detail-core-slider-smoke` / DetailCoreSliderSmoke는0/.325/.65/1전달,이전후보동등성,Base태양T보존,핫리로드,원상복원,원본8JSON불변검사. `--cloud-density-transition-test`/CloudDensityTransition은렌더수식과함께폐기. 과거자료는보존.
 
 근경 경계 재분석: `python tests/AnalyzeCloudBoundary.py <대기합성결과> <보존계보폴더> <출력폴더>`. NumPy 필요. 대기 진단은 Near752배의 화면 전체 폭1920×64 Cloud T를 near-boundary-strip.csv에 추가 저장한다.
 

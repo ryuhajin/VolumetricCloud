@@ -84,13 +84,13 @@ public:
     LightingPresetSettings CurrentLightingPreset() const;
     void LoadUserPresetDefaults();
     bool RunPresetSlotDiagnostics(Camera& camera, bool capture);
-    bool RunDetailCoreSliderSmoke(Camera& camera);
     bool RunBaseCandidateUiSmoke(Camera& camera);
     bool RunCloudPathLengthDiagnostics(Camera& camera);
     bool RunCloudNearFarDiagnostics(Camera& camera);
     bool RunCloudAerialCompositionDiagnostics(Camera& camera);
     bool RunCloudNearClarityDiagnostics(Camera& camera);
     bool RunCloudDetailBandsDiagnostics(Camera& camera, bool spectrum = false);
+    bool RunCloudNearMicroDiagnostics(Camera& camera);
     bool ApplyBaseCandidate(int candidate);
 
     bool LoadCustomFormation();
@@ -511,6 +511,8 @@ private:
     bool ReadNoiseVolumeBytesFromTexture(
         ID3D11Texture3D* texture,
         std::vector<std::uint8_t>& bytes) const;
+    // 근경 미세 Worley를 R8 64³로 한 번 굽는다. 실패해도 일반 렌더는 계속되며 미세 대역만 꺼진다.
+    bool GenerateNearMicroVolumes();
     bool InitializeStage15Presets();
 
     bool ApplyCloudFormationAtomic(
@@ -625,6 +627,13 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_baseNoiseVolumeSrv;
     ComPtr<ID3D11Texture3D> m_detailNoiseVolume;
     ComPtr<ID3D11ShaderResourceView> m_detailNoiseVolumeSrv;
+    // 근경 미세 Detail 전용 Worley 64³ R8(t14). 첫 Render에서 한 번 굽고 텍셀 평균/표준편차를 기록한다.
+    // 굽기에 실패하면 SRV가 비고 CB의 near micro strength를 0으로 올려 미세 대역을 끈다.
+    ComPtr<ID3D11Texture3D> m_nearMicroVolume;
+    ComPtr<ID3D11ShaderResourceView> m_nearMicroVolumeSrv;
+    double m_nearMicroVolumeMean = 0.0;
+    double m_nearMicroVolumeStd = 0.0;
+    bool m_nearMicroVolumesAttempted = false;
 
     CloudParameters m_cloudParameters;
     CloudDomainParameters m_cloudDomainParameters;

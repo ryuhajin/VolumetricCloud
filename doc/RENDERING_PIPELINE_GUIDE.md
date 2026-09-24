@@ -122,13 +122,14 @@ m_swapChain->Present(present.syncInterval, present.flags);
 | Atmosphere LUT compute | b0 camera, b9 Stage14 | 2D LUT 4장 + 3D LUT 2장, 모두 RGBA16F | 없음 | 대기 계수 변경 시 전부, ground albedo 시 multi 이후, 태양/카메라 높이 시 sky/aerial, 카메라 투영·회전·far 시 aerial. 변화가 없으면 재사용 |
 | Deep Cache compute | b0,b1,b5,b6,b7,b8,b10, Weather/Base/Detail | Near 512²×80 + Far 512²×40 R32F optical depth | 없음 | cache 사용 가능할 때 매 frame 재생성. 카메라 중심, 태양 basis, formation, motion time을 즉시 반영 |
 | Opaque Scene | scene geometry, b0=`SceneCB`, b8,b9, cache/LUT | 창 크기 RGBA16F Scene Color + D32F Depth | 쓰기/테스트 | 매 frame |
-| Cloud PS | b0,b1,b3~b10, Scene Color/Depth, Weather/Base/Detail, cache, LUT | 창 크기 RGBA16F HDR Cloud | D32F를 SRV로 읽기만 함 | 매 frame, fullscreen triangle 1회 |
+| Cloud PS | b0,b1,b3~b10, Scene Color/Depth, Weather/Base/Detail, 근경 미세 64³(t14), cache, LUT | 창 크기 RGBA16F HDR Cloud | D32F를 SRV로 읽기만 함 | 매 frame, fullscreen triangle 1회 |
 | Tone Map PS | HDR Cloud, b9 | R8G8B8A8 back buffer | 없음 | 매 frame |
 
 Weather Map은 8×8 Compute Shader가 임시 UAV에 만든 뒤 성공한 결과만 `CopyResource`로
 공개 texture에 반영한다. 공개 texture/SRV identity와 실패 전 마지막 정상 결과를 보존한다.
 CPU `BuildWeatherMap`은 GPU byte 검증 기준으로만 남는다. Base/Detail Texture3D의 **내용**은
 F2 `Regenerate Base and Detail` 또는 관련 shader hot reload 때만 다시 생성한다.
+근경 미세 Detail 전용 Worley 64³ R8(t14)은 첫 Render에서 `CSNearMicro`로 한 번 굽는다.
 
 `src/Renderer.cpp::RenderCloudPass`는 실제 슬롯 계약과 자원을 한곳에서 보여 준다.
 
@@ -215,9 +216,10 @@ if (shouldApplyDetail)
     float S = saturate(sample.weatherThresholdDensity);
     float A = insideColumn * weatherSupport * verticalProfile
               * densityMultiplier * weatherDensity;
+    // 근경 미세 Detail: View 표본이 가까우면(w>0) strength>0일 때 평균0 섭동을 더한다.
+    detail.value = saturate(detail.value + nearMicroStrength * w * microPerturbation);
     float e = detail.value * detailErosionStrength
-              * (1.0 - smoothstep(0.45, 0.90, S))
-              * (1.0 - detailCoreProtection * core);
+              * (1.0 - smoothstep(0.45, 0.90, S));   // 몸체 보호 항은 2026-09-24 제거
     float carved = e >= 1.0 ? 0.0 : saturate((S - e) / max(1.0 - e, 1e-6));
     sample.finalDensity = saturate(A * carved);
 }
@@ -227,6 +229,12 @@ if (shouldApplyDetail)
 `[e,1]→[0,1]` remap 후 밀도 배율을 적용한다. 최종 shaping, Base 태양 차폐와 High는 유지한다.
 외곽 표현의 선호에 따른 채택이며 근경 선명도 해결 판정은 아니다.
 문제·해결·남은 한계는 [근경 선명도 기록](changes/stage15-cloud-near-clarity.md)을 따른다.
+
+2026-09-24 근경 미세 Detail(E19): `w=1−smoothstep(tile/64, tile/32, 표본거리×픽셀각)`이므로 가까운 표본에서만 켜지고
+원경과 strength 0에서는 조회 없이 기존 값과 같다. `microPerturbation`은 전용 Worley 64³를 서로 다른 회전·0.731배 좌표로 두 번 읽은 평균에서
+mean을 빼고 Detail 표준편차에 맞춘 값이며, warp>0이면 좌표를 gradient noise 벡터로 부드럽게 비튼다.
+tile/strength/mean/warp/warp freq는 F2 슬라이더로 편집하고 타입별 Save Preset에 저장한다. 태양 차폐는 계속 Base다.
+실험·기각 이력(SHELL, 근경 Detail 그림자, 128³, 셰이더 계산 Worley 등)은 [근경 미세 Detail 기록](changes/stage15-cloud-near-micro-detail.md)을 따른다.
 
 ## 4. 뷰 레이마칭
 
@@ -259,6 +267,8 @@ flowchart TD
 - Base density가 `0.0001` 이하인 표본 3개 뒤 2× coarse, 최대 200m
 - coarse가 밀도를 찾으면 직전 구간으로 되감아 정상 step으로 재진입
 - 누적 transmittance가 `0.01` 이하이면 조기 종료
+- 각 구간의 밀도 표본은 픽셀별 interleaved gradient noise 지터 위치(`cursor + jitter × marchLength`)에서 읽어
+  거리 정렬에 의한 동심원 줄무늬를 미세 노이즈로 흩는다([시선 표본 지터](changes/stage15-view-sample-jitter.md))
 
 `shaders/VolumetricClouds.hlsl::RaymarchCloud`의 핵심 적분은 다음과 같다.
 

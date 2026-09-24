@@ -230,9 +230,19 @@ bool ParseFormation(const std::string& text, std::uint32_t schemaVersion,
     {
         return false;
     }
-    value.shape.detailCoreProtection = 0.0f;
-    if (text.find("\"detailCoreProtection\"") != std::string::npos &&
-        !ParseFloat(text, "detailCoreProtection", value.shape.detailCoreProtection)) return false;
+    // 옛 detailCoreProtection 키(2026-09-24 제거)는 읽지 않고 무시한다.
+    // 근경 미세 Detail(E19): 선택 키. 없는 옛 파일은 기본값(strength 0=끔)으로 읽어 기존 화면을 유지한다.
+    // 키가 있으면 숫자여야 하며 범위 검사는 IsValidCloudFormationSettings가 한다(범위 밖은 거부).
+    const auto optionalFloat = [&](const char* key, float& target, float fallback) {
+        target = fallback;
+        return text.find(std::string("\"") + key + "\"") == std::string::npos || ParseFloat(text, key, target);
+    };
+    if (!optionalFloat("nearMicroTileMeters", value.nearMicroTileMeters, nearmicro::kDefaultTileMeters) ||
+        !optionalFloat("nearMicroStrength", value.shape.nearMicroStrength, nearmicro::kDefaultStrength) ||
+        !optionalFloat("nearMicroMean", value.shape.nearMicroMean, nearmicro::kDefaultMean) ||
+        !optionalFloat("nearMicroWarp", value.shape.nearMicroWarp, nearmicro::kDefaultWarp) ||
+        !optionalFloat("nearMicroWarpFrequency", value.shape.nearMicroWarpFrequency, nearmicro::kDefaultWarpFrequency))
+        return false;
     value.shape.densityShaping = 0.0f;
     if (schemaVersion >= 3u &&
         !ParseFloat(text, "densityShaping", value.shape.densityShaping))
@@ -371,8 +381,12 @@ void WriteFormation(std::ostream& stream, const CloudFormationSettings& value)
            << value.weather.column.maximumBaseLiftMeters << ",\n"
            << "    \"footprintCoverageInfluence\": "
            << value.shape.footprintCoverageInfluence << ",\n"
-           << "    \"detailCoreProtection\": " << value.shape.detailCoreProtection << ",\n"
            << "    \"densityShaping\": " << value.shape.densityShaping << ",\n"
+           << "    \"nearMicroTileMeters\": " << value.nearMicroTileMeters << ",\n"
+           << "    \"nearMicroStrength\": " << value.shape.nearMicroStrength << ",\n"
+           << "    \"nearMicroMean\": " << value.shape.nearMicroMean << ",\n"
+           << "    \"nearMicroWarp\": " << value.shape.nearMicroWarp << ",\n"
+           << "    \"nearMicroWarpFrequency\": " << value.shape.nearMicroWarpFrequency << ",\n"
            << "    \"domainBottomMeters\": "
            << value.domainBottomMeters << ",\n"
            << "    \"domainThicknessMeters\": "

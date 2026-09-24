@@ -98,7 +98,8 @@ CPU `src/NoiseLab.h` ↔ HLSL `shaders/NoiseLab.hlsl`. **미리보기 전용**�
 | `outputMode` | enum uint | 미리보기 전용 | density sample의 표시 필드 선택 |
 | `sliceAxis` | enum uint | 미리보기 전용 | 0=XY, 1=XZ, 2=YZ |
 | `effectiveTime` | s | 미리보기 전용 | 최종 구름과 같은 advection 시간 |
-| `padding[2]` | - | 예약 | 32B 정렬 |
+| `microPreviewExtentMeters` | m | 미리보기 전용(E19 시험) | offset24. F2 미세 비교 미리보기(output105~107)의 한 변 월드 길이. UI 500~8000m, 기본2000 |
+| `padding` | - | 예약 | offset28, 32B 정렬 |
 
 ## b3 — LightCB, 80B
 
@@ -173,7 +174,7 @@ CPU `src/Stage13NoiseVolumeMath.h` ↔ HLSL `shaders/NoiseVolumeParameters.hlsli
 | `detailWorldSizeMeters` | m/cycle | 직접 사용 | Detail XYZ 반복 크기, F2/formation 저장 |
 | `baseFrequencies`, `detailFrequencies` | cycle | 생성 계약 | Texture3D RGBA 대역. UI 없음 |
 | `baseWeights`, `detailWeights` | 무차원 | 직접 사용 | RGBA 조합 weight. UI 없음 |
-| padding | - | 예약 | ABI 정렬 |
+| `nearMicroTileMeters` | m/cycle | 직접 사용 | offset12(옛 `paddingUint0` 칸). F2 "Near micro tile" [200,2000], 기본570. 근경 미세 Detail 무늬 크기와 사라지는 거리(1080p/FOV60 중앙 약 tile×14.6~29.3m). `CloudFormationSettings.nearMicroTileMeters`가 소유하고 타입별 Save Preset에 저장. 생성 CS는 읽지 않아 변경해도 재생성 없음 |
 
 world size를 바꾸면 같은 Texture3D를 더 크거나 작게 월드에 매핑한다. `Regenerate Base and Detail`은 seed/frequency shader로 **내용**을 다시 만들지만 world size slider 변경 자체는 재생성을 요구하지 않는다.
 
@@ -189,13 +190,19 @@ CPU `src/CloudShapeParameters.h` ↔ HLSL `shaders/CloudShapeParameters.hlsli`.
 | lowerDensityScale | 8 | 0~1, 상부 대비 하부 밀도 |
 | upperTransitionStart | 12 | 0~.99, 밀도 증가 시작 높이 |
 | upperTransitionEnd | 16 | start+.01~1, 밀도 증가 끝 높이 |
-| padding0/2/3/4 | 20/24/28/32 | CPU0, 예약 |
+| nearMicroStrength | 20 | [0,2], 기본0=끔. 근경 미세 섭동 세기(Detail 표준편차 대비 배수). F2, 타입별 저장 |
+| nearMicroMean | 24 | [.30,.60], 기본.456036(구운 64³ texel 평균). 미세 값에서 빼는 중심; 낮추면 근경이 더 깎인다 |
+| nearMicroWarp | 28 | [0,1], 기본.15. 미세 좌표 domain warp 표준편차(tile 단위), 0=비틀지 않음 |
+| nearMicroWarpFrequency | 32 | [.05,1], 기본.2 cycle/tile. warp 무늬 주파수 |
 | footprintCoverageInfluence | 36 | 0~1, F1 Height-based narrowing |
 | densityShaping | 40 | 0~1, View/Light 공통 밀도 곡선 |
-| detailCoreProtection | 44 | [0,1], 기본0. View Detail 몸체 보존 가중치 |
+| cloudShapeReserved44 | 44 | 예약, 항상0. 2026-09-24 detailCoreProtection 제거 |
 
 `profile=smoothstep(0,bottom,h)*(1-smoothstep(top,1,h))*lerp(lower,1,smoothstep(start,end,h))`.
 Renderer reflection은 활성 필드 offset/크기도 검사한다. DensityShaping GPU probe는 공통 profile도 CPU와 대조한다.
+2026-09-24: 옛 padding0/2/3/4(20~32)를 근경 미세 Detail 4값으로 사용한다(크기 48B 유지). 미세 텍스처(t14)가 없으면 Renderer가 업로드 사본의 strength만 0으로 올린다.
+근경 미세 식: `detail' = saturate(detail + strength·w·(avg(T(p),T(Rp·.731+o)) − mean)·(.056369/.107505)·√2)`, `p=바람 위치/tile(+warp)`,
+`w=1−smoothstep(tile/64, tile/32, t·pixelAngle)`. T는 전용 Worley 64³ R8, R은 고정 직교 회전이다.
 
 ## b8 — ShadowCB, 160B
 
@@ -440,3 +447,5 @@ Stage14CB224B renderFlags offset160의 x(uint)는 기존예약0에서0/91/92로 
 2026-09-21: b7 offset44는 float `detailCoreProtection` [0,1], 기본0으로 변경. CPU CloudShapeParameters/HLSL CloudShapeCB 총48B와 나머지 offset은 유지한다. 기존 densityTransitionWidth의 UI/수식/출력은 제거했고 옛JSON필드는 무시한다. Formation4 선택필드 detailCoreProtection(누락0), snapshot44 동일필드 기록. View Detail 침식에만 Eold*(1−protection*core)를 적용하며 Base 태양 차폐는 유지한다.0.65는 과거35%후보이다.
 
 2026-09-22: 사용자 승인으로 구름 합성 및91/92 Air T/L은 대표거리2배에서 조회한다. Cloud Depth 자체는 실제거리이며, 90대기제외/하늘/지면은 유지한다. CB크기/번호는 그대로다.
+
+2026-09-24: Detail core protection 제거. 저장된 모든 타입 값이 0(Custom은 키 없음=0)이라 일반 화면에 영향이 없었다. b7 offset44는 예약 `cloudShapeReserved44`(CPU `reserved44`, 항상0)로 바꾸고 48B/나머지 offset은 유지한다. F1 슬라이더, JSON 쓰기·범위 검사, snapshot 필드, DetailCoreSliderSmoke를 제거했다. 옛 JSON의 `detailCoreProtection` 키는 값과 무관하게 무시하며 원본 프리셋 파일은 자동 수정하지 않는다(다음 Save Preset에서 빠진다). 일반 침식식은 `(1-p*core)` 항 없이 `e=D*s*(1-smoothstep(.45,.90,S))`이다. 과거 .65 비교는 시험 정의 `VCLOUD_TEST_DETAIL_CORE_MODE`로만 재현한다.

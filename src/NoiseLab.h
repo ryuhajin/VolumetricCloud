@@ -92,7 +92,9 @@ struct alignas(16) NoiseLabParameters
         static_cast<std::uint32_t>(NoiseOutputMode::RawNoise);
     std::uint32_t sliceAxis = static_cast<std::uint32_t>(NoiseSliceAxis::XY);
     float effectiveTime = 0.0f;
-    float padding[2] = {};
+    // [시험 전용 E19] F2 미세 Detail 비교 미리보기의 한 변 월드 길이(m). 다른 미리보기는 읽지 않는다.
+    float microPreviewExtentMeters = 2000.0f;
+    float padding = 0.0f;
 };
 
 static_assert(sizeof(NoiseLabParameters) == 32,
@@ -162,7 +164,8 @@ public:
                         ID3D11ShaderResourceView* weatherMapSrv,
                         ID3D11ShaderResourceView* baseNoiseVolumeSrv,
                         ID3D11ShaderResourceView* detailNoiseVolumeSrv,
-                        ID3D11SamplerState* weatherSampler);
+                        ID3D11SamplerState* weatherSampler,
+                        ID3D11ShaderResourceView* nearMicroVolumeSrv = nullptr);
     void EndFrame(ID3D11RenderTargetView* backBufferRtv);
 
     float EffectiveTime() const { return m_effectiveTime; }
@@ -264,6 +267,7 @@ private:
                             bool& vsyncEnabled,
                             bool tearingSupported);
     void DrawWeatherMapPanel(CloudParameters& cloud,
+                             CloudShapeParameters& shape,
                              WeatherMapGeneratorSettings& weather,
                              NoiseVolumeParameters& noiseVolume,
                              std::uint64_t baseHash,
@@ -321,6 +325,8 @@ private:
     ID3D11DeviceContext* m_context = nullptr;
     std::array<SliceTarget, 3> m_targets;
     std::array<SliceTarget, 4> m_weatherTargets; // RBA(불투명) + R/B/A
+    // [시험 전용 E19] F2 같은 월드 크기 비교: Detail / 미세 텍스처 원본 / 실제 적용 섭동.
+    std::array<SliceTarget, 3> m_microTargets;
     ComPtr<ID3D11Buffer> m_noiseLabCb;
     bool m_initialized = false;
 

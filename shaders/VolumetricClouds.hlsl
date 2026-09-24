@@ -214,6 +214,28 @@ bool IntersectCloudVolume(float3 rayOrigin, float3 rayDirection,
 // CloudResult와 관찰용 CloudMarchDebug다. 모든 실패 경로는 산란 0, 투과율 1의
 // 중립 결과를 반환해 배경을 바꾸지 않는다.
 
+// [근경 미세 Detail] 픽셀 하나가 보는 각도(rad). main에서 인접 픽셀 ray 차이로 한 번 구한다.
+static float nearMicroPixelAngle = 0.0;
+// [시선 표본 지터] 각 step 구간 안에서 밀도를 읽는 위치(0~1). 모든 픽셀이 구간 중점(0.5)을
+// 쓰면 카메라 중심 거리별 표본 경계가 동심원 줄무늬로 드러난다. main에서 픽셀마다
+// interleaved gradient noise로 정해 줄무늬를 미세한 노이즈로 흩는다. 구간 적분 범위는 같다.
+static float viewSampleJitter = 0.5;
+
+float InterleavedGradientNoise(float2 pixel)
+{
+    return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+// 표본 한 개의 화면 footprint(m)가 tile/64 이하면 1, tile/32 이상이면 0(1080p/FOV60 중앙 약 tile×14.6~29.3m).
+// 미세 무늬의 R 4× 대역(tile/8 파장)이 8px 이상일 때 유지하고 4px에서 사라진다. strength 0이면 항상 0이다.
+float NearMicroWeight(float sampleDistance)
+{
+    if (nearMicroStrength <= 0.0)
+        return 0.0;
+    float footprint = sampleDistance * nearMicroPixelAngle;
+    return 1.0 - smoothstep(NearMicroTileMeters() / 64.0,
+        NearMicroTileMeters() / 32.0, footprint);
+}
+
 float Stage9ViewStep(float sampleDistance)
 {
 #if defined(VCLOUD_TEST_VIEW_STEP_METERS)
@@ -364,7 +386,7 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
                   max(kHighMaximumSearchStepMeters, fullStep))
             : fullStep;
         float marchLength = min(candidateStep, tEnd - cursor);
-        float sampleDistance = cursor + 0.5 * marchLength;
+        float sampleDistance = cursor + viewSampleJitter * marchLength;
 #if defined(VCLOUD_TEST_NEAR_FAR)
         debugData.sampleCount += 1;
         debugData.minDs = min(debugData.minDs,marchLength);
@@ -390,8 +412,10 @@ CloudResult RaymarchCloud(float3 rayOrigin, float3 rayDirection,
             continue;
         }
 
+        // 근경 미세 가중치(0~1). 원경·strength 0에서는 0이라 기존 밀도와 같다.
+        float nearMicroWeight = NearMicroWeight(sampleDistance);
         CloudDensitySample densitySample = SampleCloudDensity(
-            samplePosition, time, true);
+            samplePosition, time, true, nearMicroWeight);
         float distanceFade = CloudViewDistanceFade(sampleDistance);
         densitySample.baseDensity *= distanceFade;
         densitySample.finalDensity *= distanceFade;
@@ -887,10 +911,18 @@ float4 main(VSOut input) : SV_TARGET
         float value=debugMode==93?occupied:(debugMode==94?mass/max(occupied,1e-6):first);
         return float4(value.xxx,occupied>0.0?1.0:0.0);
     }
+    nearMicroPixelAngle = length(ReconstructWorldRay(
+        saturate(input.uv + float2(0.0, 1.0 / max(renderSize.y, 1.0)))) - rayDirection);
+    viewSampleJitter = InterleavedGradientNoise(input.position.xy);
     CloudMarchDebug marchDebug = (CloudMarchDebug)0;
     CloudResult cloud = (CloudResult)0;
     cloud = RaymarchCloud(
         cameraPos, rayDirection, sceneDistance, marchDebug);
+    // 원경 불변 검사용 진단(half 정밀도 보호로 km): 진입 거리, 픽셀 각도 mrad, 미세 가중치가 0이 되는 거리.
+    if (debugMode == 130)
+        return float4(marchDebug.entryDistance * 0.001, nearMicroPixelAngle * 1000.0,
+            NearMicroTileMeters() / (32000.0 * max(nearMicroPixelAngle, 1e-9)),
+            marchDebug.hit);
 #if defined(VCLOUD_TEST_AERIAL_SCALE_RUNTIME)
     // 하나의 같은 DXBC/같은 View 경로에서 공기 거리만 바꾼다. Alpha에는 원시 Cloud T.
     testAerialScale=debugMode==122?1.5:(debugMode==123?2.0:1.0);

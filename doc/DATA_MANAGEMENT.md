@@ -57,7 +57,7 @@ BLOCKED가 있으면 일부 대상만 정리되었을 수 있으므로 경고와
 ## 반복 테스트의 출력
 
 - 기본 CTest는 `VCLOUD_ENABLE_DIAGNOSTIC_TESTS=OFF`를 유지한다. 대량 비교는 필요한 진단만 명시적으로 실행한다.
-- `DetailCoreSliderSmoke`: 모든 수치·복원·프리셋·D3D 검사를 마친 뒤 이번 실행의 HDR을 제거하고
+- `DetailCoreSliderSmoke`(2026-09-24 슬라이더와 함께 폐기, 과거 기록): 모든 수치·복원·프리셋·D3D 검사를 마친 뒤 이번 실행의 HDR을 제거하고
   `captures/detail-core-slider/latest-success.txt` 하나에 결과·동등성·reload 수치를 갱신한다.
   상대 `captures/` 위치는 실행 작업 디렉터리에 따른다. 실패·중단한 실행 폴더는 보존한다.
 - `RunDeterminism.ps1`: 성공한 행렬의 로그를 WorkRoot의 `latest-success.log` 하나로 갱신하고

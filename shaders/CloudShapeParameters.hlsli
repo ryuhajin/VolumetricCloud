@@ -8,13 +8,13 @@ cbuffer CloudShapeCB : register(b7)
  float lowerDensityScale;
  float upperTransitionStart;
  float upperTransitionEnd;
- float shapePadding0;
- float shapePadding2;
- float shapePadding3;
- float shapePadding4;
+ float nearMicroStrength;      // offset20 근경 미세 세기 [0,2], 0=끔(F2, 타입별 저장)
+ float nearMicroMean;          // offset24 미세 텍스처 중심값 [0.30,0.60]
+ float nearMicroWarp;          // offset28 좌표 비틀기 표준편차 tile 단위 [0,1]
+ float nearMicroWarpFrequency; // offset32 비틀기 무늬 주파수 cycle/tile [0.05,1]
  float footprintCoverageInfluence;
  float densityShaping;
- float detailCoreProtection;
+ float cloudShapeReserved44;   // offset44 예약(2026-09-24 detailCoreProtection 제거, 48B 유지)
 };
 // CPU EvaluateCommonVerticalProfile과 같은 공통 곡선. 표본 간격과 무관하다.
 float EvaluateCommonVerticalProfile(float heightFraction)

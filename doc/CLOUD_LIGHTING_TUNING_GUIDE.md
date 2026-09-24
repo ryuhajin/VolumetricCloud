@@ -101,6 +101,11 @@ F1/F2 편집은 현재 runtime 값에 임시로 쓴 뒤 raw 후보를 캡처하�
 | Base world size | `NoiseVolumeParameters.baseWorldSizeMeters` → b6 | m/cycle | `1000~64000 → 1~200000` | 덩어리가 월드에서 더 커지고 반복 주기가 길어짐 | Texture3D 내용 재생성 없음; Custom O | `1`,`3` |
 | Base vertical size | `baseVerticalWorldSizeMeters` → b6 | m/cycle | `1000~64000 → 1~200000` | Y 방향 noise 변화가 느려져 큰 수직 질량 | 재생성 없음; O | F1 slice, F7 |
 | Detail world size | `detailWorldSizeMeters` → b6 | m/cycle | `250~8000 → 1~100000` | 침식 무늬가 커지고 거칠게 보임 | 재생성 없음; O | `4`,`5` |
+| Near micro tile | `nearMicroTileMeters` → b6 | m/cycle | `200~2000` | 근경 미세 굴곡이 굵어지고 더 먼 곳까지(약 tile×14.6~29.3m) 적용된다. 작으면 잘고 가까이서만 보이며 반투명 구름에서 시선 방향 번짐이 늘 수 있다 | F2, 타입별 저장; O | 근경 Composite |
+| Near micro strength | `shape.nearMicroStrength` → b7 | ×Detail σ | `0~2`, 기본0=끔 | 근경 외곽 굴곡이 진해진다. 너무 크면 알갱이·줄무늬 | F2, 타입별 저장; O | 근경 Composite |
+| Near micro mean | `shape.nearMicroMean` → b7 | 무차원 | `.30~.60`, 기본.456036 | 낮추면 근경이 더 깎여 얇아지고, 올리면 채워진다(평균 침식 편향) | F2, 타입별 저장; O | 근경 Alpha |
+| Near micro warp | `shape.nearMicroWarp` → b7 | tile | `0~1`, 기본.15 | 반복 무늬 정렬이 더 흐트러진다. 크면 한 방향으로 늘어나 구름답지 않다 | F2, 타입별 저장; O | 근경 Composite |
+| Near micro warp freq | `shape.nearMicroWarpFrequency` → b7 | cycle/tile | `.05~1`, 기본.2 | 비틀기 방향이 더 자주 바뀐다(잘게 휜다) | F2, 타입별 저장; O | 근경 Composite |
 | Wind direction XYZ | F1 세션 Motion → b1 `windDirection` | 방향 | 각 `-1~1`; sanitize 후 XZ 정규화·Y=0 | 속도는 그대로, 이동 방향만 회전 | Weather/noise 재생성·Custom 저장 없음 | speed 100m/s, F2 RGBA와 그림자 |
 
 ### Weather RGBA 생성 채널
@@ -582,9 +587,9 @@ F4 신규 Cloud view90~92는구름대기제외/실제구름깊이 Air T/Air L이
 
 2026-09-19: Mie scale height 내장 기본/reset/fallback 및 환경3 저장값2km 사용자 승인. g0.3/Turbidity1.5 고정 후 근경 Density shaping0.48±10% 비교. 사용자 선택 전 형상 후보는 저장하지 않는다.
 
-F1 Cloud Local → Detail core protection: 0=보호 없음, 0.65=코어 침식량35%, 1=추정몸체의침식제거. 타입별Save Preset으로저장. 2026-09-22부터 일반 밀도식은 정규화 remap이므로 .65가 옛 감산식의 화면을 재현한다는 뜻은 아니다. Density transition width는2026-09-21사용자요청으로UI/수식제거. 기존JSON의옛필드는무시한다.
+F1 Cloud Local → Detail core protection: 2026-09-24 사용자 요청으로 UI/런타임에서 제거(모든 저장값 0으로 미사용). 옛 JSON 키는 무시한다. 아래는 역사 기록: 0=보호 없음, 0.65=코어 침식량35%, 1=추정몸체의침식제거. 2026-09-22부터 일반 밀도식은 정규화 remap이므로 .65가 옛 감산식의 화면을 재현한다는 뜻은 아니다. Density transition width는2026-09-21사용자요청으로UI/수식제거. 기존JSON의옛필드는무시한다.
 
-F2 → Temporary Base comparison → Base candidate: Original / Threshold+0.05 / Contrast x2 / Mid octaves x2.5 / Combined. 변경시셰이더컴파일/노이즈생성으로잠시멈출수있다. Restore original Base로복귀. F4환경슬롯과카메라는그대로사용가능. 선택은세션전용이며Save Preset으로저장되지않는다. 재시작Original. High100m/512거리step불변. 실패시이전후보와오류표시. 후보삭제/기본채택은사용자선택후진행.
+F2 → Temporary Base comparison → Base candidate: Original / Mid octaves x2.5(2026-09-24 정리로 Threshold+0.05·Contrast x2·Combined는 UI에서 제거). 변경시Base노이즈재생성으로잠시멈출수있다. F2 Base / Detail Noise Scale 제목 바로 아래가 Base world size/Base vertical size/Detail world size 슬라이더다. Restore original Base로복귀. F4환경슬롯과카메라는그대로사용가능. 선택은세션전용이며Save Preset으로저장되지않는다. 재시작Original. High100m/512거리step불변. 실패시이전후보와오류표시. 후보삭제/기본채택은사용자선택후진행.
 
 F4 Cloud view: Occupied cloud length=구름점유구간길이합(빈공간제외), Mean density in occupied cloud=그구간평균밀도, Distance to first occupied cloud=카메라에서첫밀도표본까지거리. 점유문턱rho>0.001/100m간격,조기종료없음. 길이/거리검정0→흰색10km이상,밀도검정0→흰색1이상,청록구름없음. 뒤에가려진구름도포함하므로단일구름두께아님. Tone/대기없음. 실제원근은첫거리/CloudDepth로보고통과길이로근원경을판정하지않는다.
 

@@ -14,8 +14,33 @@ cbuffer NoiseLabCB : register(b2)
     uint noiseOutputMode;           // CPU NoiseOutputMode. 표시할 CloudDensitySample 필드.
     uint noiseSliceAxis;            // CPU NoiseSliceAxis. 0=XY, 1=XZ, 2=YZ.
     float effectiveTime;            // CPU Noise Lab 시간(s). 구름 바람과 동일한 시간.
-    float2 noiseLabPadding;         // 16바이트 정렬용 예약 값.
+    float microPreviewExtentMeters; // F2 근경 미세 비교 미리보기 한 변 월드 길이(m).
+    float noiseLabPadding;          // 16바이트 정렬용 예약 값.
 };
+
+
+// 105/106/107: 같은 수평 월드 정사각형(원점 기준, 층 중간 높이, 바람 없음)에서
+// Detail 가중합 / 미세 텍스처 원본(DUAL·WARP 없음) / 실제 적용 섭동(DUAL·WARP·mean 반영)을 비교한다.
+// 각 값은 자기 평균을 0.5 회색, ±3 표준편차를 검정/흰색으로 표시해 무늬 크기만 비교하게 한다.
+float4 NearMicroComparePreview(float2 uv)
+{
+    float extent = max(microPreviewExtentMeters, 1.0);
+    float3 p = float3(uv.x * extent, lerp(cloudBoundsMin.y, cloudBoundsMax.y, 0.5), (1.0 - uv.y) * extent);
+    float value = 0.5;
+    if (noiseOutputMode == 105u)
+        value = 0.5 + (SampleDetailErosionNoise(p, 0.0).value - 0.450834) / (6.0 * 0.056369);
+    else if (noiseOutputMode == 106u)
+    {
+        float raw = nearMicroVolume.SampleLevel(weatherMapSampler, frac(p / NearMicroTileMeters()), 0);
+        value = 0.5 + (raw - 0.456036) / (6.0 * 0.107505);
+    }
+    else
+    {
+        // 실제 경로와 같은 함수(DUAL+WARP, 현재 mean). strength/거리 가중치 전의 섭동이며 표준편차는 Detail과 같게 맞춰져 있다.
+        value = 0.5 + SampleNearMicroPerturbation(p, 0.0) / (6.0 * 0.056369);
+    }
+    return float4(saturate(value).xxx, 1.0);
+}
 
 struct VSOut
 {
@@ -47,6 +72,8 @@ float4 main(VSOut input) : SV_TARGET
         float channel = weather[noiseOutputMode - 101u];
         return float4(channel.xxx, 1.0);
     }
+    if (noiseOutputMode >= 105u && noiseOutputMode <= 107u)
+        return NearMicroComparePreview(saturate(input.uv));
     // Base/Height 전용 출력은 sampleDetail=false로 Detail 함수 자체를 생략한다.
     // Final/Detail/Erosion/Mask만 실제 침식 결과가 필요하다.
     bool requiresDetail = noiseOutputMode == 2u ||

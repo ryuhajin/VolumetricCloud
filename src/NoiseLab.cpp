@@ -209,6 +209,7 @@ void NoiseLab::Shutdown()
     m_noiseLabCb.Reset();
     m_targets = {};
     m_weatherTargets = {};
+    m_microTargets = {};
     m_context = nullptr;
     m_device = nullptr;
     m_hwnd = nullptr;
@@ -244,6 +245,13 @@ bool NoiseLab::CreatePreviewTargets()
         {
             return false;
         }
+    }
+    for (SliceTarget& target : m_microTargets)
+    {
+        if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &target.texture)) ||
+            FAILED(m_device->CreateRenderTargetView(target.texture.Get(), nullptr, &target.rtv)) ||
+            FAILED(m_device->CreateShaderResourceView(target.texture.Get(), nullptr, &target.srv)))
+            return false;
     }
     for (SliceTarget& target : m_weatherTargets)
     {
@@ -428,7 +436,7 @@ void NoiseLab::BeginFrame(
                            hasCustomFormation, formationStatus,
                            vsyncEnabled, tearingSupported);
     if (m_panelVisible[1])
-        DrawWeatherMapPanel(cloud, weather.generator, noiseVolume,
+        DrawWeatherMapPanel(cloud, shape, weather.generator, noiseVolume,
                             baseNoiseVolumeHash, detailNoiseVolumeHash,
                             noiseVolumeGenerationMilliseconds,
                             weatherMapGenerationMilliseconds,
@@ -533,8 +541,6 @@ void NoiseLab::DrawFormationPanel(
         &shape.densityShaping, 0.0f, 1.0f, "%.2f");
 
     ImGui::SeparatorText("Cloud Local");
-    edited |= FormationSliderFloat("Detail core protection", &shape.detailCoreProtection, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normalized shape remap. 0 = no core protection. 0.65 = 35% erosion in inferred cores. 1 = no erosion in full cores. Save Preset stores this slot only. Base shadows unchanged.");
     auto& column = weather.column;
     edited |= FormationSliderFloat("Cloud min thickness", &column.minimumThicknessMeters,
         1.0f, column.maximumThicknessMeters, "%.0f m", ImGuiSliderFlags_Logarithmic);
@@ -643,6 +649,7 @@ bool NoiseLab::DrawPeriodicChannelFields(
 
 void NoiseLab::DrawWeatherMapPanel(
     CloudParameters& cloud,
+    CloudShapeParameters& shape,
     WeatherMapGeneratorSettings& weather,
     NoiseVolumeParameters& noiseVolume,
     std::uint64_t baseHash,
@@ -660,25 +667,6 @@ void NoiseLab::DrawWeatherMapPanel(
         return;
     }
     ImGui::SeparatorText("Base / Detail Noise Scale");
-    ImGui::SeparatorText("Temporary Base comparison");
-    const char* baseCandidates[]={"Original", "Threshold +0.05", "Contrast x2 (pivot 0.65)",
-        "Mid octaves x2.5", "Contrast x2 + Mid x2.5"};
-    int baseCandidate=m_baseCandidate;
-    if(ImGui::Combo("Base candidate", &baseCandidate, baseCandidates, 5))
-        m_baseCandidateRequest=baseCandidate;
-    if(ImGui::Button("Restore original Base"))m_baseCandidateRequest=0;
-    ImGui::TextDisabled("Session only; Save Preset does not save this candidate.");
-    ImGui::TextDisabled("View step unchanged: High 100m / 512, far 100-125m.");
-    if(!m_baseCandidateStatus.empty())ImGui::TextWrapped("%s",m_baseCandidateStatus.c_str());
-    ImGui::TextDisabled("Base mid octaves: %.2fx%s", m_baseCandidate>=3?2.5f:1.0f+noiseVolume.baseMidOctaveExtra,
-        m_baseCandidate>=3?" (temporary)":" (original)");
-    if (ImGui::Button("Regenerate Base and Detail"))
-        m_noiseVolumeRegeneratePending = true;
-    ImGui::Text("Base hash: %016llx",
-        static_cast<unsigned long long>(baseHash));
-    ImGui::Text("Detail hash: %016llx",
-        static_cast<unsigned long long>(detailHash));
-    ImGui::Text("Generation: %.2f ms", generationMilliseconds);
     bool edited = false;
     edited |= FormationSliderFloat("Base world size",
         &noiseVolume.baseWorldSizeMeters, 3000.0f, 40000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
@@ -687,6 +675,66 @@ void NoiseLab::DrawWeatherMapPanel(
         3000.0f, 40000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
     edited |= FormationSliderFloat("Detail world size",
         &noiseVolume.detailWorldSizeMeters, 700.0f, 6000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    if (ImGui::Button("Regenerate Base and Detail"))
+        m_noiseVolumeRegeneratePending = true;
+    ImGui::Text("Base hash: %016llx",
+        static_cast<unsigned long long>(baseHash));
+    ImGui::Text("Detail hash: %016llx",
+        static_cast<unsigned long long>(detailHash));
+    ImGui::Text("Generation: %.2f ms", generationMilliseconds);
+
+    // 세션 전용 Base 비교. Original과 중간 옥타브 x2.5만 남긴다(2026-09-24 정리).
+    ImGui::SeparatorText("Temporary Base comparison");
+    const char* baseCandidates[]={"Original", "Mid octaves x2.5"};
+    int baseCandidate=m_baseCandidate;
+    if(ImGui::Combo("Base candidate", &baseCandidate, baseCandidates, 2))
+        m_baseCandidateRequest=baseCandidate;
+    if(ImGui::Button("Restore original Base"))m_baseCandidateRequest=0;
+    ImGui::TextDisabled("Session only; Save Preset does not save this candidate.");
+    if(!m_baseCandidateStatus.empty())ImGui::TextWrapped("%s",m_baseCandidateStatus.c_str());
+    ImGui::TextDisabled("Base mid octaves: %.2fx%s", m_baseCandidate==1?2.5f:1.0f+noiseVolume.baseMidOctaveExtra,
+        m_baseCandidate==1?" (temporary)":" (original)");
+
+    // 근경 미세 Detail(E19). 선택한 타입의 Formation 값이며 F1 Save Preset으로 타입별 JSON에 저장된다.
+    ImGui::SeparatorText("Near micro detail");
+    edited |= FormationSliderFloat("Near micro tile", &noiseVolume.nearMicroTileMeters,
+        formationrange::microTileMin, formationrange::microTileMax, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    edited |= FormationSliderFloat("Near micro strength", &shape.nearMicroStrength,
+        0.0f, formationrange::microStrengthMax, "%.2f");
+    edited |= FormationSliderFloat("Near micro mean", &shape.nearMicroMean,
+        formationrange::microMeanMin, formationrange::microMeanMax, "%.4f");
+    edited |= FormationSliderFloat("Near micro warp", &shape.nearMicroWarp,
+        0.0f, formationrange::microWarpMax, "%.2f");
+    edited |= FormationSliderFloat("Near micro warp freq", &shape.nearMicroWarpFrequency,
+        formationrange::microWarpFrequencyMin, formationrange::microWarpFrequencyMax, "%.2f");
+    if (ImGui::Button("Reset near micro"))
+    {
+        noiseVolume.nearMicroTileMeters = nearmicro::kDefaultTileMeters;
+        shape.nearMicroStrength = nearmicro::kDefaultStrength;
+        shape.nearMicroMean = nearmicro::kDefaultMean;
+        shape.nearMicroWarp = nearmicro::kDefaultWarp;
+        shape.nearMicroWarpFrequency = nearmicro::kDefaultWarpFrequency;
+        edited = true;
+    }
+    ImGui::TextDisabled("Strength 0 = off. Mean %.4f = texture mean (lower: more erosion).", nearmicro::kDefaultMean);
+    ImGui::TextDisabled("Fades from ~%.1f km to ~%.1f km at 1080p/FOV60. Saved per type (F1 Save Preset).",
+        noiseVolume.nearMicroTileMeters * 14.6f * 0.001f, noiseVolume.nearMicroTileMeters * 29.3f * 0.001f);
+    ImGui::SliderFloat("Preview extent", &m_parameters.microPreviewExtentMeters,
+        500.0f, 8000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    {
+        const char* names[] = {"Detail (world)", "Near micro texture", "Near micro applied"};
+        for (int i = 0; i < 3; ++i) {
+            if (i > 0) ImGui::SameLine();
+            ImGui::BeginGroup();
+            ImGui::TextUnformatted(names[i]);
+            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(
+                reinterpret_cast<std::uintptr_t>(m_microTargets[i].srv.Get()))),
+                ImVec2(Ui(160.0f), Ui(160.0f)));
+            ImGui::EndGroup();
+        }
+        ImGui::TextDisabled("Same horizontal world square, mid-layer height, no wind.");
+        ImGui::TextDisabled("Each image: 0.5 gray = mean, black/white = -/+3 std. Applied = dual lookup + warp, before strength.");
+    }
     ImGui::SeparatorText("Weather Map");
     edited |= FormationSliderFloat("Weather map scale", &cloud.weatherMapWorldSize,
         10000.0f, 64000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
@@ -1154,7 +1202,8 @@ void NoiseLab::RenderPreviews(
     ID3D11ShaderResourceView* weatherMapSrv,
     ID3D11ShaderResourceView* baseNoiseVolumeSrv,
     ID3D11ShaderResourceView* detailNoiseVolumeSrv,
-    ID3D11SamplerState* weatherSampler)
+    ID3D11SamplerState* weatherSampler,
+    ID3D11ShaderResourceView* nearMicroVolumeSrv)
 {
     if (!m_initialized || !fullscreenVs || !noiseLabPs ||
         std::none_of(m_panelVisible.begin(), m_panelVisible.end(),
@@ -1215,6 +1264,25 @@ void NoiseLab::RenderPreviews(
             m_context->OMSetRenderTargets(1, &target, nullptr);
             m_context->Draw(3, 0);
         }
+    }
+    // [시험 전용 E19] 105=Detail, 106=미세 텍스처 원본, 107=실제 적용 섭동. t14=미세 64³.
+    if (m_panelVisible[1]) {
+        m_context->PSSetShaderResources(14, 1, &nearMicroVolumeSrv);
+        NoiseLabParameters microParameters = m_parameters;
+        for (std::uint32_t i = 0; i < m_microTargets.size(); ++i) {
+            microParameters.outputMode = 105u + i;
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(m_context->Map(m_noiseLabCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) continue;
+            std::memcpy(mapped.pData, &microParameters, sizeof(microParameters));
+            m_context->Unmap(m_noiseLabCb.Get(), 0);
+            ID3D11Buffer* labCb = m_noiseLabCb.Get();
+            m_context->PSSetConstantBuffers(2, 1, &labCb);
+            ID3D11RenderTargetView* target = m_microTargets[i].rtv.Get();
+            m_context->OMSetRenderTargets(1, &target, nullptr);
+            m_context->Draw(3, 0);
+        }
+        ID3D11ShaderResourceView* nullMicro = nullptr;
+        m_context->PSSetShaderResources(14, 1, &nullMicro);
     }
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
     ID3D11ShaderResourceView* nullResources[3] = {};
@@ -1399,7 +1467,6 @@ bool NoiseLab::WriteMetadata(
         << formation.weather.column.maximumBaseLiftMeters << ",\n"
         << "      \"footprintCoverageInfluence\": "
         << formation.shape.footprintCoverageInfluence << ",\n"
-        << "      \"detailCoreProtection\": " << formation.shape.detailCoreProtection << ",\n"
         << "      \"densityShaping\": " << formation.shape.densityShaping << "\n"
         << "    },\n"
         << "    \"domainBottomMeters\": " << formation.domainBottomMeters
