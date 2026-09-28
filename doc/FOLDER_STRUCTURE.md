@@ -37,7 +37,8 @@ VolumetricCloud/
 ├─ shaders/
 ├─ tests/
 ├─ doc/
-│  └─ changes/
+│  ├─ changes/
+│  └─ images/                   # README 스크린샷
 ├─ third_party/imgui/
 └─ captures/                    # 실행 중 생성; 대부분 gitignore
 ```
@@ -152,6 +153,7 @@ Stage10/11, Cirrus, LOD, Reference 전용 테스트는 삭제했다.
 | `ROADMAP.md` | 승인 이력, 폐기 기능과 현재 gate |
 | `CONTRIBUTING.md` | 브랜치·커밋·문서 규칙 |
 | `changes/` | 구현 당시의 짧은 변경 이력 |
+| `images/` | 루트 README에 표시하는 대표 스크린샷(`hero`, `sun-overview`, `above-layer`, `debug-views`, `ui-panels`) |
 
 `notes/`는 로컬 작업 일지이며 gitignore 대상이다. 공식 구조는 항상 `doc/`가 기준이다.
 
