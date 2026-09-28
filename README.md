@@ -162,8 +162,3 @@ VolumetricCloud/
 - [GPU Gems Ch.39 — Volume Rendering Techniques](https://developer.nvidia.com/gpugems/gpugems/part-vi-beyond-triangles/chapter-39-volume-rendering-techniques)
 - [Unreal Engine — Volumetric Cloud Component](https://dev.epicgames.com/documentation/en-us/unreal-engine/volumetric-cloud-component-in-unreal-engine) · [Sky Atmosphere](https://dev.epicgames.com/documentation/en-us/unreal-engine/sky-atmosphere-component-properties-in-unreal-engine)
 - 조사 메모는 [구름 조명 리서치](doc/research/stage15-cloud-lighting-research.md)에 정리되어 있습니다.
-
-## 관련 프로젝트
-
-- [sdf-playground](https://github.com/ryuhajin/sdf-playground) — HLSL로 SDF 함수를 카드 단위로 실험하는 coverflow 셰이더 앱
-- [WaterShader](https://github.com/ryuhajin/WaterShader) — Sine wave·normal map·Fresnel 반사로 만든 스타일라이즈드 수면 셰이더
