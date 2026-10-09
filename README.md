@@ -1,6 +1,6 @@
 # VolumetricCloud
 
-> DirectX 11과 HLSL 레이마칭으로 수십 km 규모의 볼류메트릭 구름을 형성하고, 물리 대기·HDR 조명과 합성하는 실시간 렌더러
+> DirectX 11과 HLSL 레이마칭으로 최대 50 km까지 이어지는 볼류메트릭 구름층을 그리고, 물리 대기·HDR 조명과 합성하는 실시간 렌더러
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
 ![DirectX 11](https://img.shields.io/badge/DirectX-11-107C10)
@@ -8,83 +8,31 @@
 ![Windows](https://img.shields.io/badge/Windows-Win32-0078D6?logo=windows&logoColor=white)
 ![CMake](https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake&logoColor=white)
 
-![지상에서 본 구름층과 대기](doc/images/hero.png)
+**프로젝트 페이지** · [ryuhajin.github.io/projects/volumetric-cloud](https://ryuhajin.github.io/projects/volumetric-cloud/) &nbsp;|&nbsp; **시연 영상** · [YouTube](https://youtu.be/3h6GUrbkmDY)
+
+![지평선까지 이어지는 구름층과 대기](doc/images/cover.webp)
 
 ## 프로젝트 개요
 
-레이마칭을 처음부터 학습해 **대규모 볼류메트릭 클라우드**까지 단계적으로 쌓아 올린 Windows 프로젝트입니다.
-정점 버퍼 없이 풀스크린 삼각형 하나를 그리고, 픽셀 셰이더가 카메라 광선을 따라 구름 밀도를 적분합니다.
-Weather Map과 3D 노이즈로 구름 모양을 만들고, 태양 그림자 캐시·위상 함수·환경광으로 조명합니다.
-마지막으로 물리 대기 LUT와 HDR Tone Map으로 지면·하늘과 합성합니다.
-
-학습 단계는 기초 교차·적분(0~8), km 단위 평면 구름층(13), 레이마칭 최적화(9), 그림자 캐시(12), 대기·HDR(14)
-순서로 진행했습니다. 최종 단계(15)에서는 실험용 선택지를 걷어 내고 **Full-resolution High 한 경로**만 남겼습니다.
+DirectX 11과 HLSL 레이마칭으로 지평선까지 이어지는 km 규모의 구름층을 그리고, 물리 대기·HDR 조명과 합성하는 실시간 렌더러입니다.
+4가지 구름 타입과 조명 프리셋을 F1~F4 패널에서 바로 조절하고, JSON으로 저장·복원할 수 있습니다.
 
 | 한눈에 보기 | |
 |---|---|
 | 분야 | 실시간 렌더링 · 볼류메트릭 레이마칭 · 대기 산란 |
-| 핵심 기술 | Beer-Lambert 적분, 3D Worley fBm 노이즈, Dual-lobe Henyey-Greenstein 위상, Deep Shadow Cache, 대기 LUT(Transmittance·Multi-scattering·Sky-View·Aerial Perspective) |
+| 핵심 기술 | Beer-Lambert 적분, Perlin-Worley / Worley 3D 노이즈, Dual-lobe Henyey-Greenstein 위상, Deep Shadow Cache, 대기 LUT 6장(Transmittance·Multi-scattering·Sky-View·Sky Irradiance·Aerial Radiance/Transmittance) |
 | 렌더 방식 | 풀스크린 삼각형 + 픽셀 셰이더 레이마칭, Compute Shader로 Weather·노이즈·LUT·그림자 생성 |
 | 장면 규모 | 10km × 10km 지면, 최대 50km 시선 추적, meter 단위 |
-| 상태 | Stage 15 최종 품질 다듬기 진행 중 (기본 화면 사용자 승인 2026-09-05) |
+| 성능 | 1920×1080 Full resolution, 12개 장면·카메라 조합 전체 Cloud p95 **4.56ms** (RTX 4080 SUPER) |
 
 ## 스크린샷
 
-| | |
-|---|---|
-| ![태양 방향 조감](doc/images/sun-overview.png) | ![구름층 위 상공](doc/images/above-layer.png) |
-| **F7** 태양 방향 조감 — 역광 가장자리와 대기 원근 | **F8** 구름층 위 상공 — 층 상단과 원경 소멸 |
-| ![디버그 뷰](doc/images/debug-views.png) | ![F1~F4 패널](doc/images/ui-panels.png) |
-| **디버그 뷰** — Weather coverage / Final density / Sun transmittance | **F1~F4 패널** — 형상·노이즈·조명·진단 실시간 조절 |
-
-## 주요 기능
-
-- **대규모 구름층**: meter 단위 PlanarLayer, 10km 진단 장면(지면 + 20층 건물), 최대 50km 시선 추적
-- **구름 형상**: 256² GPU Weather Map, Base 128³ / Detail 64³ Texture3D, 근경 전용 micro detail
-- **형상 프리셋**: Stratus · Cumulus · Altocumulus · Custom 슬롯과 공통 Vertical Profile 곡선
-- **구름 조명**: Balanced512 Deep Shadow Cache, Dual-lobe Henyey-Greenstein 위상, 하늘·지면 환경광과 다중 산란 근사, 가장자리 Rim
-- **대기와 HDR**: Rayleigh · Mie · 오존 대기 LUT, HDR 지면 조명, 구름 앞 대기 원근(aerial perspective), ACES Tone Map
-- **프리셋 저장**: 형상 4슬롯과 조명 4슬롯을 JSON으로 저장·복원 (`presets/`)
-- **개발 도구**: include 의존성 단위 원자적 셰이더 핫 리로드, Weather/Atmosphere/Shadow/Cloud/Tone GPU 구간 프로파일러
-
-## 구현 포인트
-
-```mermaid
-flowchart LR
-    A[Weather Map CS<br/>256² RGBA] --> D
-    B[Base 128³ · Detail 64³<br/>Texture3D] --> D
-    C[Atmosphere LUT CS<br/>+ Deep Shadow Cache] --> D
-    S[HDR Opaque Scene<br/>+ Depth] --> D
-    D[Full-resolution<br/>Cloud Raymarch PS] --> E[Scene · Atmosphere 합성]
-    E --> F[Tone Map<br/>ACES · sRGB] --> G[Back Buffer]
-```
-
-- **레이마칭 적분**: 광선과 구름층 교차 구간만 걷고, Beer-Lambert `T = exp(-τ)`로 투과율을 누적합니다. 투과율이 0.01 이하가 되면 조기 종료합니다.
-- **빈 공간 건너뛰기**: 빈 표본이 3번 이어지면 2배 coarse step으로 탐색하고, 구름을 만나면 되감아 정밀 적분합니다.
-- **거리 step**: 24~50km 원경에서 step을 1×에서 1.25×까지 늘려 비용을 줄입니다.
-- **그림자**: 태양 방향 광학 깊이를 Near/Far Deep Cache(512²)에 미리 구워 조회합니다. 캐시 밖은 결정적 8-tap cone으로 대체합니다.
-- **대기 합성**: 구름 불투명도로 가중한 대표 거리에서 대기 투과·산란을 조회해 구름 앞 공기층을 입힙니다.
-
-| High 고정 계약 | 값 |
-|---|---:|
-| 렌더 해상도 | 창과 같은 Full resolution |
-| 기본 View step / 최대 step 수 | 100m / 512 |
-| View early exit | `T <= 0.01` |
-| 빈 공간 탐색 | 빈 표본 3개, 2× coarse, 최대 200m |
-| Light fallback | cone 8 taps, 2° |
-
-위 값은 UI로 바뀌지 않습니다. CPU 기준은 [`src/HighCloudQuality.h`](src/HighCloudQuality.h), GPU 기준은 [`shaders/HighCloudQuality.hlsli`](shaders/HighCloudQuality.hlsli)입니다.
-
-### 성능
-
-| 조건 | 결과 |
-|---|---|
-| RTX 4080 SUPER · 1920×1080 · Release · VSync/UI Off | 12개 장면·카메라 조합, 1,440 GPU 표본 |
-| 전체 p95 | Cloud **4.56ms** / Frame **5.09ms** |
-| 가장 무거운 조합 | Cloud 6.95ms / Frame 7.50ms |
-| 예산 | 조합별 Cloud p95 ≤ 10ms, Frame p95 ≤ 16.67ms |
-
-측정 조건과 이력은 [성능 기준](doc/PERFORMANCE.md)에 있습니다.
+| | | | |
+|---|---|---|---|
+| ![Stratus](doc/images/type-stratus-f6.webp) | ![Cumulus](doc/images/type-cumulus-f6.webp) | ![Altocumulus](doc/images/type-altocumulus-f6.webp) | ![Custom](doc/images/type-custom-f6.webp) |
+| **Stratus** — 두께 850 m, 얇고 넓게 | **Cumulus** — 두께 2–3.2 km, 뚜렷한 명암 | **Altocumulus** — 양떼처럼 모인 조각 | **Custom** — 직접 조절해 저장 |
+| ![Autumn morning](doc/images/light-1.webp) | ![Beach sunset](doc/images/light-2.webp) | ![Bright noon](doc/images/light-3.webp) | ![Lavender dream](doc/images/light-4.webp) |
+| **Autumn morning** · 태양 12° | **Beach sunset** · 태양 11.5° | **Bright noon** · 태양 17.4° | **Lavender dream** · 태양 10.9° |
 
 ## 빌드와 실행
 
@@ -160,5 +108,7 @@ VolumetricCloud/
 - [Nubis, Evolved](https://advances.realtimerendering.com/s2022/SIGGRAPH2022-Advances-NubisEvolved-NoVideos.pdf) — SIGGRAPH 2022 Advances
 - [PBR Book 4ed — Volume Scattering / Transmittance](https://pbr-book.org/4ed/Volume_Scattering/Transmittance)
 - [GPU Gems Ch.39 — Volume Rendering Techniques](https://developer.nvidia.com/gpugems/gpugems/part-vi-beyond-triangles/chapter-39-volume-rendering-techniques)
+- Sébastien Hillaire, [A Scalable and Production Ready Sky and Atmosphere Rendering Technique](https://blog.selfshadow.com/publications/s2020-shading-course/hillaire/s2020_pbs_hillaire_slides.pdf), EGSR 2020
+- [chihirobelmo/volumetric-cloud-for-directx11](https://github.com/chihirobelmo/volumetric-cloud-for-directx11) — 이 프로젝트를 시작하게 된 계기
 - [Unreal Engine — Volumetric Cloud Component](https://dev.epicgames.com/documentation/en-us/unreal-engine/volumetric-cloud-component-in-unreal-engine) · [Sky Atmosphere](https://dev.epicgames.com/documentation/en-us/unreal-engine/sky-atmosphere-component-properties-in-unreal-engine)
 - 조사 메모는 [구름 조명 리서치](doc/research/stage15-cloud-lighting-research.md)에 정리되어 있습니다.
